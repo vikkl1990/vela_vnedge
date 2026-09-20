@@ -33,6 +33,19 @@ export interface PaperConfig {
   fallbackAtrSl: number;
   fallbackRR: [number, number, number];
   maxOpenPositions: number;
+  // ---- execution realism (phase 2) ----
+  /** `tape`: fill on Delta's trade stream (1m candles only when the tape is silent > tapeFallbackMs). `candles`: legacy 1-minute candle fills. */
+  fillSource: 'candles' | 'tape';
+  /** Resting take-profit limits (tape mode): `through` needs a print beyond the level, `touch` fills on a print at the level. */
+  limitFill: 'touch' | 'through';
+  /** Book-depth assumption: USD notional that moves the price 1 bp; market fills add notional / depthUsdPerBp bps of slippage (0 = fixed slippageBps only). */
+  depthUsdPerBp: number;
+  /** Tape mode: a signal's entry fills at the first print after signal time + latencyMs (candles mode fills immediately). */
+  latencyMs: number;
+  /** Tape mode: fall back to 1m candles when no print arrived for this long. */
+  tapeFallbackMs: number;
+  /** Charge Delta funding (rate × notional, sign by side) to open positions at every funding timestamp. */
+  fundingCharges: boolean;
 }
 
 export interface ScannerConfig {
@@ -45,8 +58,14 @@ export interface ScannerConfig {
 }
 
 export interface ExecutionConfig {
-  /** `paper` runs the internal simulator. `testnet` additionally mirrors paper fills to Delta's demo account (needs API keys). */
-  mode: 'paper' | 'testnet';
+  /** `paper` runs the internal simulator. `dry-run` logs the exact exchange order payloads without sending. `testnet` sends them to Delta's demo account (needs API keys). */
+  mode: 'paper' | 'dry-run' | 'testnet';
+  /** Place exchange-side reduce-only stop + take-profit orders after each paper entry (cancel/replace on break-even). */
+  bracket: boolean;
+  /** Reconcile the exchange account with paper positions every N seconds (0 = off). */
+  reconcileSec: number;
+  /** Production host is only selectable when this is true AND env DELTA_LIVE=1; even then only market orders with reduce-only exits are sent. */
+  allowProduction: boolean;
 }
 
 export interface SymbolUniverse {
@@ -81,7 +100,41 @@ export interface AppConfig {
   historyBars: number;
   paper: PaperConfig;
   execution: ExecutionConfig;
+  risk: RiskConfig;
   scanners: Record<string, ScannerConfig>;
+}
+
+/** Portfolio risk layer (phase 3). Percentages are of equity at the start of the period / of current equity. */
+export interface RiskConfig {
+  enabled: boolean;
+  /** Kill switch: no new entries when the UTC day's loss reaches this % of the day-start equity (0 = off). */
+  maxDailyLossPct: number;
+  /** Kill switch: same for the ISO week (Monday 00:00 UTC). */
+  maxWeeklyLossPct: number;
+  /** Close every open position when a kill switch trips. */
+  closeAllOnKill: boolean;
+  maxPositionsTotal: number;
+  maxPositionsPerSymbol: number;
+  /** Cap |Σ side × notional × corr(symbol, BTCUSD)| as % of equity (0 = off). Correlation over the last `corrBars` closed bars of the entry timeframe. */
+  maxBetaExposurePct: number;
+  corrBars: number;
+  /** After this many consecutive losing trades a scanner pauses for cooldownMinutes (0 = off). */
+  cooldownAfterLosses: number;
+  cooldownMinutes: number;
+  /** Drawdown-scaled sizing: when the equity drawdown from its peak is ≥ ddPct, multiply leverage/risk by leverageMult (largest matching ddPct wins). */
+  ddScale: Array<{ ddPct: number; leverageMult: number }>;
+  perScannerMaxPositions: number;
+  /** A scanner stops entering for the day when its realized loss today reaches this % of day-start equity (0 = off). */
+  perScannerDailyLossPct: number;
+  regime: {
+    enabled: boolean;
+    /** Skip entries when ATR(14) / price × 100 is below this. */
+    minAtrPct: number;
+    /** Skip entries on Saturday/Sunday (UTC). */
+    noWeekend: boolean;
+    /** Scanner ids exempt from the regime filter. */
+    exempt: string[];
+  };
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -109,8 +162,30 @@ export const DEFAULT_CONFIG: AppConfig = {
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
+    fillSource: 'tape',
+    limitFill: 'through',
+    depthUsdPerBp: 0,
+    latencyMs: 1500,
+    tapeFallbackMs: 5000,
+    fundingCharges: true,
   },
-  execution: { mode: 'paper' },
+  execution: { mode: 'paper', bracket: true, reconcileSec: 60, allowProduction: false },
+  risk: {
+    enabled: true,
+    maxDailyLossPct: 15,
+    maxWeeklyLossPct: 30,
+    closeAllOnKill: false,
+    maxPositionsTotal: 8,
+    maxPositionsPerSymbol: 2,
+    maxBetaExposurePct: 0,
+    corrBars: 20,
+    cooldownAfterLosses: 0,
+    cooldownMinutes: 120,
+    ddScale: [{ ddPct: 10, leverageMult: 0.5 }],
+    perScannerMaxPositions: 4,
+    perScannerDailyLossPct: 0,
+    regime: { enabled: true, minAtrPct: 0.30, noWeekend: true, exempt: [] },
+  },
   scanners: {},
 };
 
@@ -184,9 +259,36 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');
   if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
-  if (!['paper', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|testnet');
+  if (!['paper', 'dry-run', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|dry-run|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
   if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
+  errs.push(...validateRealismAndRisk(c));
+  return errs;
+}
+
+/** Validation for the phase 2/3/5 sections (paper realism, execution, risk). */
+export function validateRealismAndRisk(c: AppConfig): string[] {
+  const errs: string[] = [];
+  const p = c.paper;
+  if (!['candles', 'tape'].includes(p.fillSource)) errs.push('paper.fillSource must be candles|tape');
+  if (!['touch', 'through'].includes(p.limitFill)) errs.push('paper.limitFill must be touch|through');
+  if (!(Number.isFinite(p.depthUsdPerBp) && p.depthUsdPerBp >= 0)) errs.push('paper.depthUsdPerBp must be ≥ 0');
+  if (!(Number.isFinite(p.latencyMs) && p.latencyMs >= 0 && p.latencyMs <= 60_000)) errs.push('paper.latencyMs must be 0..60000');
+  if (!(Number.isFinite(p.tapeFallbackMs) && p.tapeFallbackMs >= 1000 && p.tapeFallbackMs <= 300_000)) errs.push('paper.tapeFallbackMs must be 1000..300000');
+  const x = c.execution;
+  if (!(Number.isFinite(x.reconcileSec) && x.reconcileSec >= 0)) errs.push('execution.reconcileSec must be ≥ 0');
+  const r = c.risk;
+  if (!r) return errs.concat('risk section missing');
+  const pct = (v: number, k: string, max = 100) => { if (!(Number.isFinite(v) && v >= 0 && v <= max)) errs.push(`risk.${k} must be 0..${max}`); };
+  pct(r.maxDailyLossPct, 'maxDailyLossPct'); pct(r.maxWeeklyLossPct, 'maxWeeklyLossPct'); pct(r.perScannerDailyLossPct, 'perScannerDailyLossPct');
+  pct(r.maxBetaExposurePct, 'maxBetaExposurePct', 100_000);
+  if (!(r.maxPositionsTotal >= 1)) errs.push('risk.maxPositionsTotal must be ≥ 1');
+  if (!(r.maxPositionsPerSymbol >= 1)) errs.push('risk.maxPositionsPerSymbol must be ≥ 1');
+  if (!(r.perScannerMaxPositions >= 1)) errs.push('risk.perScannerMaxPositions must be ≥ 1');
+  if (!(r.corrBars >= 5 && r.corrBars <= 500)) errs.push('risk.corrBars must be 5..500');
+  if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');
+  if (!Array.isArray(r.ddScale) || r.ddScale.some(d => !(d.ddPct >= 0 && d.ddPct <= 100 && d.leverageMult >= 0 && d.leverageMult <= 1))) errs.push('risk.ddScale must be [{ddPct 0..100, leverageMult 0..1}]');
+  if (!(r.regime && Number.isFinite(r.regime.minAtrPct) && r.regime.minAtrPct >= 0 && Array.isArray(r.regime.exempt))) errs.push('risk.regime.minAtrPct must be ≥ 0 and exempt an array');
   return errs;
 }
 

@@ -13,10 +13,31 @@ export interface WsCandle {
   updatedMs: number;
 }
 export interface WsTicker { symbol: string; price: number; markPrice: number; timeMs: number }
+/** One print from the `all_trades` channel (the tape). `qty` is in contracts. */
+export interface WsTrade { symbol: string; price: number; qty: number; timeMs: number; aggressor: 'buy' | 'sell' | null }
+/** `mark_price` channel (Delta sends symbols as `MARK:BTCUSD`; `symbol` here is the bare product symbol). */
+export interface WsMark { symbol: string; markPrice: number; timeMs: number; bestBid: number | null; bestAsk: number | null }
+/** `funding_rate` channel. Rates are Delta's percent-per-interval figures (0.01 = 0.01 % per 8 h). */
+export interface WsFunding { symbol: string; ratePct: number; predictedRatePct: number | null; intervalSec: number; nextAt: number; timeMs: number }
+
+/** Channels whose subscription symbols carry a prefix on the wire. */
+const WIRE_PREFIX: Record<string, string> = { mark_price: 'MARK:' };
+const PREFIXES = new Set(Object.values(WIRE_PREFIX));
+function toWire(channel: string, symbols: string[]): string[] { const p = WIRE_PREFIX[channel]; return p ? symbols.map(s => (s.startsWith(p) ? s : p + s)) : symbols; }
+function fromWire(symbol: string): string { const i = symbol.indexOf(':'); return i > 0 && PREFIXES.has(symbol.slice(0, i + 1)) ? symbol.slice(i + 1) : symbol; }
+/** Delta timestamps are epoch microseconds on the socket; normalise anything that looks like µs/ms/s to ms. */
+export function toMs(ts: unknown, fallback = Date.now()): number {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  if (n > 1e15) return Math.floor(n / 1000);   // µs
+  if (n > 1e12) return Math.floor(n);          // ms
+  return Math.floor(n * 1000);                 // s
+}
 
 /**
  * Delta Exchange public websocket feed with auto-reconnect and subscription replay.
- * Emits: 'candle' (WsCandle), 'ticker' (WsTicker), 'status' ({connected}).
+ * Emits: 'candle' (WsCandle), 'ticker' (WsTicker), 'trade' (WsTrade, live prints only),
+ * 'tradeSnapshot' ({symbol, trades: WsTrade[]}), 'mark' (WsMark), 'funding' (WsFunding), 'status' ({connected}).
  */
 export class DeltaFeed extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -66,14 +87,14 @@ export class DeltaFeed extends EventEmitter {
     const fresh = symbols.filter(s => !set.has(s));
     for (const s of symbols) set.add(s);
     this.subs.set(channel, set);
-    if (fresh.length && this.connected) this.send({ type: 'subscribe', payload: { channels: [{ name: channel, symbols: fresh }] } });
+    if (fresh.length && this.connected) this.send({ type: 'subscribe', payload: { channels: [{ name: channel, symbols: toWire(channel, fresh) }] } });
   }
 
   unsubscribe(channel: string, symbols: string[]): void {
     const set = this.subs.get(channel);
     if (!set) return;
     for (const s of symbols) set.delete(s);
-    if (this.connected) this.send({ type: 'unsubscribe', payload: { channels: [{ name: channel, symbols }] } });
+    if (this.connected) this.send({ type: 'unsubscribe', payload: { channels: [{ name: channel, symbols: toWire(channel, symbols) }] } });
   }
 
   /** Replace all subscriptions so exactly `wanted` (channel → symbols) remain. */
@@ -100,7 +121,7 @@ export class DeltaFeed extends EventEmitter {
       this.connected = true; this.reconnectDelay = 1000; this.lastMessageAt = Date.now();
       log.info('connected');
       this.emit('status', { connected: true });
-      const channels = [...this.subs.entries()].filter(([, s]) => s.size).map(([name, s]) => ({ name, symbols: [...s] }));
+      const channels = [...this.subs.entries()].filter(([, s]) => s.size).map(([name, s]) => ({ name, symbols: toWire(name, [...s]) }));
       if (channels.length) this.send({ type: 'subscribe', payload: { channels } });
       this.send({ type: 'enable_heartbeat' });
     };
@@ -149,7 +170,38 @@ export class DeltaFeed extends EventEmitter {
       if (Number.isFinite(t.price)) this.emit('ticker', t);
       return;
     }
+    if (type === 'all_trades') {
+      const t = parseTrade(msg.symbol, msg);
+      if (t) this.emit('trade', t);
+      return;
+    }
+    if (type === 'all_trades_snapshot') {
+      const trades = (Array.isArray(msg.trades) ? msg.trades : []).map((x: any) => parseTrade(msg.symbol, x)).filter(Boolean) as WsTrade[];
+      trades.sort((a, b) => a.timeMs - b.timeMs);
+      this.emit('tradeSnapshot', { symbol: msg.symbol, trades });
+      return;
+    }
+    if (type === 'mark_price') {
+      const m: WsMark = { symbol: fromWire(String(msg.symbol ?? '')), markPrice: Number(msg.price), timeMs: toMs(msg.timestamp), bestBid: num(msg.best_bid), bestAsk: num(msg.best_ask) };
+      if (m.symbol && Number.isFinite(m.markPrice) && m.markPrice > 0) this.emit('mark', m);
+      return;
+    }
+    if (type === 'funding_rate') {
+      const f: WsFunding = { symbol: String(msg.symbol ?? ''), ratePct: Number(msg.funding_rate), predictedRatePct: num(msg.predicted_funding_rate), intervalSec: Number(msg.funding_interval ?? 28800) || 28800, nextAt: toMs(msg.next_funding_realization, 0), timeMs: toMs(msg.timestamp) };
+      if (f.symbol && Number.isFinite(f.ratePct)) this.emit('funding', f);
+      return;
+    }
     if (type === 'subscriptions') { log.debug('subscriptions ack', msg.channels); return; }
     if (type === 'error') { log.warn('feed error', msg); }
   }
+}
+
+function num(v: unknown): number | null { const n = Number(v); return v === null || v === undefined || v === '' || !Number.isFinite(n) ? null : n; }
+
+/** Parse one `all_trades` print (`price` is a string, `size` in contracts, `timestamp` in µs). */
+export function parseTrade(symbol: string, x: any): WsTrade | null {
+  const price = Number(x?.price), qty = Number(x?.size ?? x?.qty ?? 0);
+  if (!symbol || !Number.isFinite(price) || price <= 0) return null;
+  const aggressor: WsTrade['aggressor'] = x?.buyer_role === 'taker' ? 'buy' : x?.seller_role === 'taker' ? 'sell' : null;
+  return { symbol: String(symbol), price, qty: Number.isFinite(qty) ? qty : 0, timeMs: toMs(x?.timestamp), aggressor };
 }
