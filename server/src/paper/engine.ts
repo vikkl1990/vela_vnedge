@@ -4,7 +4,7 @@ import type { AppConfig, ExitMode, PaperConfig } from '../config.ts';
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, type PriceBar, applyLiveBar, applyScriptExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
+  type Position, type Fill, type PriceBar, applyLiveBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
 } from './logic.ts';
 
 const log = logger.scoped('paper');
@@ -90,6 +90,8 @@ export class PaperEngine extends EventEmitter {
     const price = ev.price && ev.price > 0 ? ev.price : ctx.refPrice;
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
+    const feeErr = checkRiskVsFees(price, levels.sl, cfg);
+    if (feeErr) return { action: 'rejected', reason: feeErr, closed };
     const openNotional = [...this.open.values()].reduce((a, p) => a + notionalOf(p), 0);
     const reservedMargin = [...this.open.values()].reduce((a, p) => a + notionalOf(p) / (p.marginLeverage || p.leverage || cfg.maxLeverage), 0);
     const size = sizeContracts(price, levels.sl, { equity: this.equity(), availableMargin: this.initialEquity + this.realizedPnl() - reservedMargin, contractValue: ctx.market.contractValue, tickSize: ctx.market.tickSize, cfg }, openNotional, ev.score ?? ctx.scoreOverride);

@@ -32,3 +32,11 @@ Gross P&L = (exit − filled entry) × underlying quantity for longs, with rever
 SL and TP levels must remain positive and on the correct side after tick rounding. Zero-quantity target allocations neither fill nor activate break-even. Backtests ignore exits explicitly addressed to the opposite side.
 
 Statistics are based on closed trades. Reported maximum drawdown is closed-trade equity drawdown, not full intratrade drawdown; backtest equity curves likewise omit open-position unrealized swings. Trade pnlPct is return on original notional, not return on margin. These definitions should be considered when comparing results to exchange reports.
+
+## Fee-aware entry filter
+
+An entry is rejected when |entry − stop| < `minRiskFeeRatio` × (entry × takerFee × 2). With 0.05% taker fees and the default ratio of 4 a stop must be at least 0.4% away; tighter stops let fees consume more than a quarter of the risk budget and, on 15-minute crypto, sit inside noise. Set the ratio to 0 to disable.
+
+## Scanner removal
+
+Removing or disabling a scanner stops new entries only; positions already open keep running to their stop and targets, because closing them at market was measured to give back roughly 0.7R per trade.

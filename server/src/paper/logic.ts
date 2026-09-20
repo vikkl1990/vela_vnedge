@@ -111,6 +111,19 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   return { sl, tp, source };
 }
 
+/**
+ * Stop distance versus round-trip taker fees. Returns an error string when the stop is so
+ * tight that fees would consume more than 1/minRiskFeeRatio of the risk (0 disables).
+ */
+export function checkRiskVsFees(entry: number, sl: number, cfg: PaperConfig): string | null {
+  const ratio = cfg.minRiskFeeRatio ?? 0;
+  if (!(ratio > 0)) return null;
+  const risk = Math.abs(entry - sl);
+  const feeRoundTrip = entry * (cfg.feeRatePct / 100) * 2;
+  if (risk < feeRoundTrip * ratio) return `stop too tight for fees (${(risk / entry * 100).toFixed(2)}% stop vs ${(feeRoundTrip / entry * 100).toFixed(2)}% round-trip fee; need ≥ ${ratio}×)`;
+  return null;
+}
+
 /** Leverage for a signal quality score (0..100) in `quality` sizing mode: linear from minLeverage to maxLeverage. */
 export function leverageForScore(score: number | undefined, cfg: PaperConfig): number {
   const q = score === undefined || !Number.isFinite(score) ? 0 : Math.max(0, Math.min(1, score / 100));

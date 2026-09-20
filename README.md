@@ -70,6 +70,8 @@ Other commands:
   enabled scanner is restricted to the symbols where its backtest is profitable (≥ 3 trades,
   PF ≥ 1); a scanner with no qualifying symbol is disabled. Settings → Auto-tune, or the
   "Auto-tune symbols" button / `POST /api/scanners/auto-tune`.
+* **Fee-aware entries**: a signal is skipped when its stop is closer than `minRiskFeeRatio`
+  (default 4) × the round-trip taker fee, so fees cannot eat the risk budget on tight stops.
 * The **paper engine** sizes by risk % of equity, fills SL/TP legs on 1-minute candles,
   moves SL to break-even after TP1, charges Delta taker fees + slippage, and keeps a full
   audit trail (signals → positions → fills → trades → equity curve).

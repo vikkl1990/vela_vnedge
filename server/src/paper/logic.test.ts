@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick } from './logic.ts';
+import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick, checkRiskVsFees } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
 
@@ -163,4 +163,11 @@ test('partial target P&L and maker fees reconcile exactly with closed-trade stat
   assert.ok(Math.abs(stats.pnl - 0.093781) < 1e-12);
   assert.equal(stats.wins, 1);
   assert.equal(stats.losses, 0);
+});
+
+test('fee-aware entry filter rejects stops tighter than N× round-trip fees', () => {
+  const c = { ...DEFAULT_CONFIG.paper, feeRatePct: 0.05, minRiskFeeRatio: 4 };
+  assert.ok(checkRiskVsFees(100, 99.8, c)); // 0.2% stop vs 0.1% round trip → 2× < 4×
+  assert.equal(checkRiskVsFees(100, 99.5, c), null); // 0.5% stop = 5×
+  assert.equal(checkRiskVsFees(100, 99.8, { ...c, minRiskFeeRatio: 0 }), null);
 });

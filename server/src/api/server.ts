@@ -194,7 +194,7 @@ export class ApiServer {
       if (body?.exitMode) { if (!['levels', 'script', 'both'].includes(body.exitMode)) throw new HttpError(400, 'bad exitMode'); patch.exitMode = body.exitMode; }
       if (typeof body?.hidden === 'boolean') { patch.hidden = body.hidden; if (body.hidden) patch.enabled = false; }
       a.config.setScanner(p.id, patch);
-      if (patch.hidden) { const n = a.paper.closeScanner(p.id, 'removed'); if (n) log.info(`closed ${n} open position(s) of removed scanner ${p.id}`); }
+      // removal stops new entries; positions already open keep running to their stop/targets (closing them at market gave back profits)
       await a.onConfigChanged();
       return a.scannerView(p.id);
     });

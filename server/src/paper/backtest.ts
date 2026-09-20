@@ -6,7 +6,7 @@ import type { PaperConfig, ExitMode } from '../config.ts';
 import type { Bar } from '../data/candleStore.ts';
 import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
-import { applyBar, applyScriptExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, type Position } from './logic.ts';
+import { applyBar, applyScriptExit, checkRiskVsFees, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, type Position } from './logic.ts';
 import { tradeOf } from './engine.ts';
 import { SIMULATION_VERSION } from './version.ts';
 import { computeFeatures } from '../ml/features.ts';
@@ -74,6 +74,8 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const price = ev.price && ev.price > 0 ? ev.price : bar.close;
       const lv = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i] }, cfg, inp.tickSize);
       if ('error' in lv) { rejected[lv.error] = (rejected[lv.error] ?? 0) + 1; continue; }
+      const feeErr = checkRiskVsFees(price, lv.sl, cfg);
+      if (feeErr) { rejected['stop too tight for fees'] = (rejected['stop too tight for fees'] ?? 0) + 1; continue; }
       const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, cfg }, 0, ev.score);
       if (sz.qty < 1) { rejected[sz.reason ?? 'size'] = (rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
       const features = computeFeatures({ bars, i, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[i], levelsSource: lv.source });

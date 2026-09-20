@@ -220,6 +220,7 @@ export function Settings() {
             {numField('minLeverage', 'Min leverage', '1', 'quality mode: unscored / score 0')}
             {numField('maxLeverage', 'Max leverage', '1', 'risk mode: isolated leverage · quality mode: score 100 · account exposure cap')}
             {numField('maintenanceMarginPct', 'Maintenance margin %', '0.1', 'for liquidation modelling')}
+            {numField('minRiskFeeRatio', 'Min stop ÷ round-trip fee', '0.5', 'skip entries whose stop is tighter than this × fees (0 = off)')}
             {numField('feeRatePct', 'Fee rate %', '0.01')}
             {numField('slippageBps', 'Slippage (bps)', '1')}
             {numField('maxOpenPositions', 'Max open positions', '1')}

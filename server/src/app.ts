@@ -82,8 +82,7 @@ export class App {
 
   async start(): Promise<void> {
     this.feed.start();
-    // positions left behind by scanners that were removed while the server was down
-    for (const p of this.paper.openPositions()) { const c = this.config.get().scanners[p.scannerId]; if (c?.hidden) { this.paper.closeManual(p.id, 'removed'); log.info(`closed stale position #${p.id} of removed scanner ${p.scannerId}`); } }
+    // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
     await this.resolveUniverse();
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     if (this.testnet) await this.testnet.start();

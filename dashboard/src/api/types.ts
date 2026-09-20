@@ -32,6 +32,7 @@ export interface PaperConfig {
   minLeverage: number
   liquidation: boolean
   maintenanceMarginPct: number
+  minRiskFeeRatio?: number
   feeRatePct: number
   slippageBps: number
   tpSplit: [number, number, number]
