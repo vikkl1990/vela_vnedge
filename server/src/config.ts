@@ -55,9 +55,17 @@ export interface SymbolUniverse {
   exclude: string[];
 }
 
+export interface MlConfig {
+  /** Skip entries whose predicted win probability is below this (0 = off). */
+  minProb: number;
+  /** When a script publishes no score, use the ML probability (×100) as the quality score for leverage. */
+  useAsScore: boolean;
+}
+
 export interface AppConfig {
   symbols: string[];
   universe: SymbolUniverse;
+  ml: MlConfig;
   timeframes: string[];
   historyBars: number;
   paper: PaperConfig;
@@ -68,6 +76,7 @@ export interface AppConfig {
 export const DEFAULT_CONFIG: AppConfig = {
   symbols: ['BTCUSD', 'ETHUSD'],
   universe: { mode: 'list', top: 20, exclude: [] },
+  ml: { minProb: 0, useAsScore: false },
   timeframes: ['15m'],
   historyBars: 1000,
   paper: {
@@ -160,6 +169,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3)) errs.push('paper.fallbackRR must be 3 numbers');
   if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
   if (!['paper', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|testnet');
+  if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
   return errs;
 }
 

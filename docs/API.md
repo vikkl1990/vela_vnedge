@@ -120,6 +120,10 @@ re-subscribes the feed and re-warms scanners.
 
 `POST /api/backtest/run` body `{ "scanner": id, "symbol", "tf" }` → re-runs and returns the same shape.
 
+`GET /api/ml` → `{ trainedAt, samples, liveSamples, scannersWithModel, global: { model: {holdout, accuracy, auc, logLoss, baseWinRate}, importance: [{feature,label,weight}], rules: [...], baseline }, scanners: [{ scannerId, scannerName, samples, liveSamples, baseline, model, importance, rules }], counts, config }`
+`POST /api/ml/train` → trains now, returns the same shape. `GET /api/ml/scanner/:id`, `GET /api/ml/samples?scanner=&limit=`.
+Rule shape: `{ feature, label, kind: "prefer"|"avoid", condition, n, coverage, winRate, avgR, baselineAvgR, lift, text }`. Signals carry `mlProb`; config has `ml: { minProb, useAsScore }`.
+
 `GET /api/logs?limit=200&level=info` → `[{ "at", "level": "debug|info|warn|error", "scope": "feed|scanner|paper|api", "msg", "data" }]`
 
 ## Server-Sent Events

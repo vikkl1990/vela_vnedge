@@ -20,8 +20,7 @@ import type {
   Stats,
   Ticker,
   Trade,
-  TradeQuery,
-} from './types'
+  TradeQuery, MlSnapshot, MlScannerInsight } from './types'
 
 export class ApiError extends Error {
   readonly status: number
@@ -118,6 +117,9 @@ export const api = {
 
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
+  ml: () => get<MlSnapshot>('/ml'),
+  mlTrain: () => post<MlSnapshot>('/ml/train'),
+  mlScanner: (id: string) => get<MlScannerInsight>(`/ml/scanner/${id}`),
 }
 
 export type Api = typeof api

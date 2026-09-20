@@ -71,8 +71,15 @@ Other commands:
   audit trail (signals → positions → fills → trades → equity curve).
 * On start-up every scanner is **backtested over the loaded history** so the dashboard
   shows win-rate / profit-factor / expectancy immediately.
+* **Trade learning** (`server/src/ml`): every backtest and live trade is stored with its
+  entry-time features (direction, script score, hour/weekday, ATR %, stop distance in ATR,
+  TP1 reward:risk, 5/20-bar returns, trend vs EMA50/200, volume ratio, range position, level
+  and signal source, leverage). A dependency-free logistic regression per scanner (≥ 40 trades)
+  and globally gives every new signal a win probability; bucket analysis produces rules such as
+  "avoid ATR % ≤ 0.30" or "prefer weekdays". Settings → Machine learning can gate entries below
+  a probability and use the probability as the leverage score. Dashboard page: **Learn**.
 * Dashboard pages: Overview, Scanners, Scanner detail (chart with the script overlaid),
-  Signals, Positions & Trades, Chart, Settings, Logs — live via Server-Sent Events.
+  Signals, Positions & Trades, Chart, Learn, Settings, Logs — live via Server-Sent Events.
 
 ## Configuration
 
