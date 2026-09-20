@@ -1221,3 +1221,33 @@ html, body { overflow-x: hidden; }
 .table.heat thead th:first-child { position: sticky; left: 0; z-index: 2; }
 .table.heat tbody tr:nth-child(even) td { background: transparent; }
 .table.heat td.heat-empty { background: transparent; }
+
+/* Audit: keep risk and navigation usable without horizontal hunting. */
+.rail { display: none; }
+.filters { min-width: 0; max-width: 100%; }
+.filters .select, .filters .input { min-width: 0; max-width: 100%; width: 200px; }
+.filters .scanner-search { width: 180px; }
+.position-cards { display: none; }
+.kpi-value { overflow-wrap: anywhere; white-space: normal; }
+@media (max-width: 1000px) {
+  .topstat { display: inline-flex; }
+  .topnav { grid-template-columns: 1fr; }
+  .brand, .topright, .navpills { grid-column: 1; min-width: 0; }
+  .brand { grid-row: 1; }
+  .topright { grid-row: 2; }
+  .navpills { grid-row: 3; }
+  .topright { justify-self: stretch; justify-content: flex-start; flex-wrap: wrap; }
+  .navpills { overflow-x: auto; justify-self: stretch; scrollbar-width: thin; }
+  .navpills::-webkit-scrollbar { display: block; height: 4px; }
+  .position-desktop { display: none; }
+  .position-cards { display: grid; gap: 12px; padding: 12px; }
+  .position-card { padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; min-width: 0; overflow-wrap: anywhere; }
+  .position-card > .link { display: block; margin-top: 8px; }
+  .position-card > button { margin-top: 12px; min-height: 44px; width: 100%; }
+  .position-metrics { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .position-metrics dt { font-size: 12px; color: var(--muted); }
+  .position-metrics dd { margin: 4px 0 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .filters { width: 100%; }
+  .filters .select, .filters .input { width: 100%; min-height: 44px; }
+  .small { font-size: 12px; }
+}

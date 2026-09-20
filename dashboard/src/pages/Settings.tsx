@@ -101,7 +101,7 @@ export function Settings() {
   if (config.isLoading && !config.data)
     return (
       <div className="page">
-        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Bound to GET/PUT /api/config." />
+        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Configure market data and paper risk settings." />
         <div className="grid-2">
           <Panel title="Market data">
             <Loading rows={6} />
@@ -144,7 +144,7 @@ export function Settings() {
   return (
     <div className="page">
       <div className="page-head">
-        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Bound to GET/PUT /api/config. Changing symbols or timeframes re-subscribes the feed and re-warms scanners." />
+        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Configure market data and paper risk settings. Changing symbols or timeframes re-subscribes the feed and re-warms scanners." />
         <div className="page-actions">
           <Pill tone="muted">execution: {config.data.execution?.mode ?? 'paper'}</Pill>
           {dirty && <Pill tone="warn">unsaved changes</Pill>}

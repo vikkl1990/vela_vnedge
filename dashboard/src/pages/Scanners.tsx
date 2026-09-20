@@ -8,7 +8,7 @@ import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconGrid, IconPlay, IconRows } from '../components/Icons'
 import { ChipSelect, ConfirmDialog, Empty, ErrorState, Loading, PageTitle, Pill, Pnl, ScannerStatusPill, Segmented, Time } from '../components/ui'
 import { CATEGORIES, categorize, type Category } from '../lib/categories'
-import { fmtMs, fmtNum, fmtPct } from '../lib/format'
+import { fmtMs, fmtProfitFactor, fmtPct } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
 
@@ -41,20 +41,22 @@ export function Scanners() {
     return Array.from(set)
   }, [config.data, markets.data, scanners.data])
 
-  const rows = useMemo(() => {
-    const list = (scanners.data ?? []).filter((s) => (showHidden || !s.hidden) && (author === 'All' || (s.author ?? 'WillyAlgoTrader') === author))
+  const filteredScanners = useMemo(() => {
     const f = filter.trim().toLowerCase()
-    return list.filter((s) => (cat === 'All' || categorize(s.name) === cat) && (!f || s.name.toLowerCase().includes(f) || s.id.includes(f)))
-  }, [scanners.data, cat, filter, showHidden, author])
+    return (scanners.data ?? []).filter((s) =>
+      (showHidden || !s.hidden) &&
+      (author === 'All' || (s.author ?? 'WillyAlgoTrader') === author) &&
+      (!f || s.name.toLowerCase().includes(f) || s.id.toLowerCase().includes(f)))
+  }, [scanners.data, filter, showHidden, author])
+  const rows = useMemo(() => filteredScanners.filter((s) => cat === 'All' || categorize(s.name) === cat), [filteredScanners, cat])
   const authors = useMemo(() => ['All', ...Array.from(new Set((scanners.data ?? []).map((s) => s.author ?? 'WillyAlgoTrader')))], [scanners.data])
   const hiddenCount = (scanners.data ?? []).filter((s) => s.hidden).length
   const enabledCount = (scanners.data ?? []).filter((s) => s.enabled).length
-
   const counts = useMemo(() => {
     const c = new Map<Category, number>()
-    for (const s of scanners.data ?? []) c.set(categorize(s.name), (c.get(categorize(s.name)) ?? 0) + 1)
+    for (const s of filteredScanners) c.set(categorize(s.name), (c.get(categorize(s.name)) ?? 0) + 1)
     return c
-  }, [scanners.data])
+  }, [filteredScanners])
 
   const patch = (s: Scanner, body: Parameters<typeof update.mutate>[0]['body'], okMsg?: string) =>
     update.mutate(
@@ -206,8 +208,8 @@ export function Scanners() {
       { key: 'trades', header: 'Trd', numeric: true, value: (s) => s.stats?.trades ?? 0 },
       { key: 'win', header: 'Win%', numeric: true, value: (s) => s.stats?.winRatePct, render: (s) => fmtPct(s.stats?.winRatePct) },
       { key: 'pnl', header: 'PnL', numeric: true, value: (s) => s.stats?.pnl, render: (s) => <Pnl value={s.stats?.pnl} /> },
-      { key: 'pf', header: 'PF', numeric: true, value: (s) => s.stats?.profitFactor, render: (s) => fmtNum(s.stats?.profitFactor) },
-      { key: 'bpf', header: 'BT PF', numeric: true, value: (s) => s.stats?.backtest?.profitFactor, render: (s) => <span className="muted">{fmtNum(s.stats?.backtest?.profitFactor)}</span>, title: 'Backtest profit factor' },
+      { key: 'pf', header: 'PF', numeric: true, value: (s) => s.stats?.profitFactor, render: (s) => fmtProfitFactor(s.stats?.profitFactor) },
+      { key: 'bpf', header: 'BT PF', numeric: true, value: (s) => s.stats?.backtest?.profitFactor, render: (s) => <span className="muted">{fmtProfitFactor(s.stats?.backtest?.profitFactor)}</span>, title: 'Backtest profit factor' },
       {
         key: 'actions',
         header: '',
@@ -381,7 +383,7 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner
         </span>
         <span className="stat-chip">
           <span className="stat-k">PF</span>
-          <span className="mono">{fmtNum(st?.profitFactor)}</span>
+          <span className="mono">{fmtProfitFactor(st?.profitFactor)}</span>
         </span>
         <span className="stat-chip">
           <span className="stat-k">PNL</span>
@@ -389,7 +391,7 @@ function ScannerCard({ s, onToggle, onRun, busy, runBusy, onHide }: { s: Scanner
         </span>
         <span className="stat-chip" title="Backtest profit factor">
           <span className="stat-k">BT PF</span>
-          <span className="mono muted">{fmtNum(st?.backtest?.profitFactor)}</span>
+          <span className="mono muted">{fmtProfitFactor(st?.backtest?.profitFactor)}</span>
         </span>
       </div>
       <div className="card-foot">
