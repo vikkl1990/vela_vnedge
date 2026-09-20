@@ -6,6 +6,7 @@ import type { App } from '../app.ts';
 import { DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
 import { logger } from '../log.ts';
 import { positionView } from '../paper/engine.ts';
+import { EXTENSIONS } from './extensions.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
 
 const log = logger.scoped('api');
@@ -27,6 +28,7 @@ export class ApiServer {
     this.app = app;
     this.server = http.createServer((req, res) => this.dispatch(req, res));
     this.defineRoutes();
+    for (const ext of EXTENSIONS) ext((method, route, handler) => this.add(method, route, (_r, _s, params, url, body) => handler(params, url, body)), app);
     this.wireEvents();
   }
 
