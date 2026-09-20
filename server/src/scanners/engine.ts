@@ -156,6 +156,39 @@ export class ScannerEngine extends EventEmitter {
     log.info(`warming ${jobs.length} scanner runs`);
     await Promise.allSettled(jobs);
     log.info('warm-up complete');
+    this.maybeAutoTune('warm-up');
+    this.scheduleRetune();
+  }
+
+  private retuneTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Apply auto-tune when enabled; emits scanner updates so the dashboard refreshes. */
+  private maybeAutoTune(reason: string) {
+    const at = this.cfgRef().autoTune;
+    if (!at?.enabled) return;
+    const report = this.autoTune({ minTrades: at.minTrades, minProfitFactor: at.minProfitFactor });
+    const changed = report.filter(r => r.disabled || r.after.length !== r.before.length);
+    log.info(`auto-tune (${reason}): ${report.length} scanners checked, ${changed.length} changed, ${report.filter(r => r.disabled).length} disabled`);
+    for (const r of report) this.emit('scanner', { id: r.id, lastRun: this.getLastRun(r.id), stats: this.paper.scannerStats(r.id) });
+  }
+
+  /** Periodic: re-backtest every active scanner on its current symbols, then re-tune. */
+  private scheduleRetune() {
+    if (this.retuneTimer) clearTimeout(this.retuneTimer);
+    const at = this.cfgRef().autoTune;
+    if (!at?.enabled) return;
+    this.retuneTimer = setTimeout(async () => {
+      this.retuneTimer = null;
+      try {
+        const jobs: Promise<void>[] = [];
+        for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) jobs.push(this.runOnce(s, symbol, tf, { backtest: true, live: false }));
+        log.info(`scheduled re-backtest: ${jobs.length} runs`);
+        await Promise.allSettled(jobs);
+        this.maybeAutoTune('scheduled');
+      } catch (e: any) { log.error(`scheduled retune failed: ${e?.message ?? e}`); }
+      this.scheduleRetune();
+    }, Math.max(1, at.intervalHours) * 3600_000);
+    this.retuneTimer.unref();
   }
 
   /** Called when config changed: subscribe new series, warm newly enabled scanners. */
@@ -167,7 +200,8 @@ export class ScannerEngine extends EventEmitter {
     for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) {
       if (!this.warmed.has(`${s.id}:${symbol}:${tf}`)) jobs.push(this.warm(s, symbol, tf));
     }
-    if (jobs.length) { log.info(`warming ${jobs.length} scanner runs in the background`); void Promise.allSettled(jobs).then(() => log.info('warm-up complete')); }
+    if (jobs.length) { log.info(`warming ${jobs.length} scanner runs in the background`); void Promise.allSettled(jobs).then(() => { log.info('warm-up complete'); this.maybeAutoTune('refresh'); }); }
+    this.scheduleRetune();
   }
 
   /** Full-history run: backtest for stats + overlay; live signals only for the last closed bar. */

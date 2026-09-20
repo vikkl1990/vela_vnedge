@@ -66,6 +66,10 @@ Other commands:
   signals to `maxLeverage` for score 100). Exchange-style liquidation is modelled
   (`liquidation`, `maintenanceMarginPct`). `npm run verdict` backtests the whole fleet under
   any override, e.g. `npm run verdict -- BTCUSD,ETHUSD 15m 1500 '{"initialEquity":1000,"sizingMode":"quality","minLeverage":5,"maxLeverage":50}'`.
+* **Auto-tune** (on by default): after every warm-up and every 6 hours (re-backtest first) each
+  enabled scanner is restricted to the symbols where its backtest is profitable (≥ 3 trades,
+  PF ≥ 1); a scanner with no qualifying symbol is disabled. Settings → Auto-tune, or the
+  "Auto-tune symbols" button / `POST /api/scanners/auto-tune`.
 * The **paper engine** sizes by risk % of equity, fills SL/TP legs on 1-minute candles,
   moves SL to break-even after TP1, charges Delta taker fees + slippage, and keeps a full
   audit trail (signals → positions → fills → trades → equity curve).

@@ -62,10 +62,19 @@ export interface MlConfig {
   useAsScore: boolean;
 }
 
+export interface AutoTuneConfig {
+  /** Re-tune scanner symbol lists automatically after warm-up and every `intervalHours`. */
+  enabled: boolean;
+  minTrades: number;
+  minProfitFactor: number;
+  intervalHours: number;
+}
+
 export interface AppConfig {
   symbols: string[];
   universe: SymbolUniverse;
   ml: MlConfig;
+  autoTune: AutoTuneConfig;
   timeframes: string[];
   historyBars: number;
   paper: PaperConfig;
@@ -77,6 +86,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   symbols: ['BTCUSD', 'ETHUSD'],
   universe: { mode: 'list', top: 20, exclude: [] },
   ml: { minProb: 0, useAsScore: false },
+  autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6 },
   timeframes: ['15m'],
   historyBars: 1000,
   paper: {
@@ -172,6 +182,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
   if (!['paper', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
+  if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
   return errs;
 }
 

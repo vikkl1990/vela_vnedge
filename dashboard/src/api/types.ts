@@ -54,6 +54,7 @@ export interface Config {
   universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
   resolvedSymbols?: string[]
   ml?: { minProb: number; useAsScore: boolean }
+  autoTune?: { enabled: boolean; minTrades: number; minProfitFactor: number; intervalHours: number }
   timeframes: string[]
   historyBars: number
   paper: PaperConfig

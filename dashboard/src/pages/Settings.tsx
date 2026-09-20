@@ -9,6 +9,7 @@ type Form = {
   symbols: string[]
   universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
   ml?: { minProb: number; useAsScore: boolean }
+  autoTune?: { enabled: boolean; minTrades: number; minProfitFactor: number; intervalHours: number }
   timeframes: string[]
   historyBars: number
   paper: PaperConfig
@@ -19,6 +20,7 @@ function toForm(c: Config): Form {
     symbols: [...(c.symbols ?? [])],
     universe: c.universe ? { ...c.universe, exclude: [...(c.universe.exclude ?? [])] } : { mode: 'list' as const, top: 20, exclude: [] },
     ml: { minProb: c.ml?.minProb ?? 0, useAsScore: c.ml?.useAsScore ?? false },
+    autoTune: { enabled: c.autoTune?.enabled ?? true, minTrades: c.autoTune?.minTrades ?? 3, minProfitFactor: c.autoTune?.minProfitFactor ?? 1, intervalHours: c.autoTune?.intervalHours ?? 6 },
     timeframes: [...(c.timeframes ?? [])],
     historyBars: c.historyBars,
     paper: {
@@ -115,7 +117,7 @@ export function Settings() {
   const save = () => {
     if (Object.keys(errors).length) return toast.error('Fix validation errors first')
     update.mutate(
-      { symbols: form.symbols, universe: form.universe, ml: form.ml, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
+      { symbols: form.symbols, universe: form.universe, ml: form.ml, autoTune: form.autoTune, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
       {
         onSuccess: () => {
           setDraft(null)
@@ -177,6 +179,17 @@ export function Settings() {
               <span className="field-label">Execution mode</span>
               <input className="input mono" value={config.data.execution?.mode ?? 'paper'} readOnly disabled />
             </label>
+          </div>
+        </Panel>
+
+        <Panel title="Auto-tune">
+          <div className="form form-2">
+            <label className="check">
+              <input type="checkbox" checked={form.autoTune?.enabled ?? true} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { minTrades: 3, minProfitFactor: 1, intervalHours: 6 }), enabled: e.target.checked } }))} /> Keep each scanner only on symbols where its backtest is profitable (after warm-up and on a schedule)
+            </label>
+            <label className="field"><span className="field-label">Min trades per symbol</span><input className="input mono" type="number" min={1} step={1} value={form.autoTune?.minTrades ?? 3} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { enabled: true, minProfitFactor: 1, intervalHours: 6 }), minTrades: Number(e.target.value) } }))} /></label>
+            <label className="field"><span className="field-label">Min profit factor</span><input className="input mono" type="number" min={0} step={0.1} value={form.autoTune?.minProfitFactor ?? 1} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { enabled: true, minTrades: 3, intervalHours: 6 }), minProfitFactor: Number(e.target.value) } }))} /></label>
+            <label className="field"><span className="field-label">Re-backtest and re-tune every (hours)</span><input className="input mono" type="number" min={1} step={1} value={form.autoTune?.intervalHours ?? 6} onChange={(e) => edit((f) => ({ ...f, autoTune: { ...(f.autoTune ?? { enabled: true, minTrades: 3, minProfitFactor: 1 }), intervalHours: Number(e.target.value) } }))} /></label>
           </div>
         </Panel>
 
