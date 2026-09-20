@@ -61,7 +61,15 @@ export function Scanners() {
 
   const bulk = async (enabled: boolean) => {
     const list = (scanners.data ?? []).filter((s) => (enabled ? s.status === 'ok' && !s.enabled : s.enabled))
-    if (!list.length) return toast.info('Nothing to change')
+    if (!list.length) {
+      const all = scanners.data ?? []
+      const runnable = all.filter((s) => s.status === 'ok').length
+      const on = all.filter((s) => s.enabled).length
+      return toast.info(
+        enabled ? `All ${runnable} runnable scanners are already enabled` : 'No scanners are enabled',
+        enabled ? `${all.length - runnable} scanner(s) have no published source and cannot run` : `${on} enabled of ${runnable} runnable`,
+      )
+    }
     setBulkBusy(true)
     let ok = 0
     for (const s of list) {
