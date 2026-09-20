@@ -189,6 +189,7 @@ export class ApiServer {
       if (body?.exitMode) { if (!['levels', 'script', 'both'].includes(body.exitMode)) throw new HttpError(400, 'bad exitMode'); patch.exitMode = body.exitMode; }
       if (typeof body?.hidden === 'boolean') { patch.hidden = body.hidden; if (body.hidden) patch.enabled = false; }
       a.config.setScanner(p.id, patch);
+      if (patch.hidden) { const n = a.paper.closeScanner(p.id, 'removed'); if (n) log.info(`closed ${n} open position(s) of removed scanner ${p.id}`); }
       await a.onConfigChanged();
       return a.scannerView(p.id);
     });
@@ -232,6 +233,10 @@ export class ApiServer {
       fs.writeFileSync(file, JSON.stringify(body.list, null, 1));
       return { file, n: body.list.length };
     });
+    this.add('GET', '/api/ml', () => ({ ...(a.ml.insights() ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), counts: a.ml.count(), config: a.config.get().ml }));
+    this.add('POST', '/api/ml/train', () => a.ml.train());
+    this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });
+    this.add('GET', '/api/ml/samples', (_r, _s, _p, url) => a.ml.samples(url.searchParams.get('scanner') ?? undefined, Number(url.searchParams.get('limit') ?? 500)));
     this.add('GET', '/api/logs', (_r, _s, _p, url) => logger.tail(Number(url.searchParams.get('limit') ?? 200), (url.searchParams.get('level') as any) ?? undefined));
   }
 }

@@ -8,6 +8,7 @@ import { useToast } from '../lib/toast'
 type Form = {
   symbols: string[]
   universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
+  ml?: { minProb: number; useAsScore: boolean }
   timeframes: string[]
   historyBars: number
   paper: PaperConfig
@@ -17,6 +18,7 @@ function toForm(c: Config): Form {
   return {
     symbols: [...(c.symbols ?? [])],
     universe: c.universe ? { ...c.universe, exclude: [...(c.universe.exclude ?? [])] } : { mode: 'list' as const, top: 20, exclude: [] },
+    ml: { minProb: c.ml?.minProb ?? 0, useAsScore: c.ml?.useAsScore ?? false },
     timeframes: [...(c.timeframes ?? [])],
     historyBars: c.historyBars,
     paper: {
@@ -113,7 +115,7 @@ export function Settings() {
   const save = () => {
     if (Object.keys(errors).length) return toast.error('Fix validation errors first')
     update.mutate(
-      { symbols: form.symbols, universe: form.universe, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
+      { symbols: form.symbols, universe: form.universe, ml: form.ml, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
       {
         onSuccess: () => {
           setDraft(null)
@@ -174,6 +176,19 @@ export function Settings() {
             <label className="field">
               <span className="field-label">Execution mode</span>
               <input className="input mono" value={config.data.execution?.mode ?? 'paper'} readOnly disabled />
+            </label>
+          </div>
+        </Panel>
+
+        <Panel title="Machine learning">
+          <div className="form form-2">
+            <label className="field">
+              <span className="field-label">Minimum win probability <span className="muted">· 0 = no gate</span></span>
+              <input className="input mono" type="number" min={0} max={0.95} step={0.05} value={form.ml?.minProb ?? 0} onChange={(e) => edit((f) => ({ ...f, ml: { minProb: Number(e.target.value), useAsScore: f.ml?.useAsScore ?? false } }))} />
+              <span className="muted small">entries whose predicted P(win) is below this are skipped and logged as rejected</span>
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.ml?.useAsScore ?? false} onChange={(e) => edit((f) => ({ ...f, ml: { minProb: f.ml?.minProb ?? 0, useAsScore: e.target.checked } }))} /> Use P(win) as the quality score for leverage when the script publishes none
             </label>
           </div>
         </Panel>

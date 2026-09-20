@@ -46,6 +46,9 @@ export interface Position {
   signalId: number | null;
   fills: Fill[];
   bt: boolean;
+  /** Entry-time ML features (see ml/features.ts); optional. */
+  features?: Record<string, number>;
+  mlProb?: number | null;
 }
 
 export interface EntryRequest {
@@ -171,6 +174,8 @@ export interface OpenParams {
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; qty: number; contractValue: number;
   entryPrice: number; at: number; sl: number; tp: number[]; riskAmount: number; levelsSource: Position['levelsSource']; signalId: number | null; cfg: PaperConfig; bt: boolean;
   leverage?: number;
+  features?: Record<string, number>;
+  mlProb?: number | null;
 }
 
 export function openPosition(p: OpenParams): Position {
@@ -182,7 +187,7 @@ export function openPosition(p: OpenParams): Position {
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
     levelsSource: p.levelsSource, leverage: p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
-    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt,
+    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null,
   };
 }
 

@@ -16,6 +16,8 @@ import type { PinePool } from '../pine/pool.ts';
 import type { WorkerResult } from '../pine/worker.ts';
 import { extractEvents, describeEvent, type ScanEvent } from './extractor.ts';
 import { applyRules, labelKey } from './rules.ts';
+import type { MlService } from '../ml/service.ts';
+import { atrSeries } from '../data/indicators.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 
 const log = logger.scoped('scanner');
@@ -40,11 +42,15 @@ export class ScannerEngine extends EventEmitter {
   private warmed = new Set<string>();
   private seenLabels = new Map<string, Set<string>>();
   private symbolsRef: () => string[];
+  private ml: MlService | null;
 
-  constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[] }) {
+  constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[]; ml?: MlService }) {
     super();
     this.registry = deps.registry; this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
     this.symbolsRef = deps.symbolsRef ?? (() => this.cfgRef().symbols);
+    this.ml = deps.ml ?? null;
+    // every closed live trade becomes a learning sample
+    this.paper.on('trade', (t: any) => { if (this.ml && t.features) this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? '')); });
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
     for (const r of this.db.all<any>('SELECT * FROM backtests')) { try { this.backtests.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, JSON.parse(r.result)); } catch { /* ignore */ } }
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar }) => this.onBarClosed(e.symbol, e.tf, e.bar));
@@ -138,6 +144,9 @@ export class ScannerEngine extends EventEmitter {
   private async warm(s: LoadedScanner, symbol: string, tf: string): Promise<void> {
     const key = `${s.id}:${symbol}:${tf}`;
     this.warmed.add(key);
+    // resume: a backtest from the last hour that already carries ML features does not need re-running
+    const prev = this.backtests.get(key);
+    if (prev && Date.now() - prev.at < 3600_000 && (prev.trades.length === 0 || (prev.trades[0] as any).features)) { log.debug(`warm ${key}: fresh backtest, skipping`); return; }
     try {
       await this.runOnce(s, symbol, tf, { backtest: true, live: true });
     } catch (e: any) { log.error(`warm ${key} failed: ${e?.message ?? e}`); }
@@ -163,6 +172,8 @@ export class ScannerEngine extends EventEmitter {
     if (tf === '1m') return; // price feed only
     const active = this.registry.all().filter(s => this.isActive(s) && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf));
     if (!active.length) return;
+    // backpressure: if the worker queue is already deep (warm-up or an earlier bar still running), skip this bar for this symbol
+    if (this.pool.stats.queued > 500) { log.warn(`bar closed ${symbol} ${tf}: worker queue ${this.pool.stats.queued} deep — skipping live runs for this bar (reduce scanners × symbols)`); return; }
     log.info(`bar closed ${symbol} ${tf} @ ${new Date(bar.time).toISOString().slice(11, 16)} → running ${active.length} scanners`);
     for (const s of active) this.runOnce(s, symbol, tf, { backtest: false, live: true }).catch(e => log.error(`run ${s.id} ${symbol} ${tf} failed: ${e?.message ?? e}`));
   }
@@ -195,6 +206,7 @@ export class ScannerEngine extends EventEmitter {
         const events = extractEvents(res.alerts, res.shapes, { derived });
         const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: this.cfgRef().paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
+        if (this.ml) this.ml.replaceBacktestSamples(s.id, symbol, tf, bt.trades.filter((t: any) => t.features).map((t: any) => ({ at: t.entryAt, features: t.features, win: t.pnl > 0, r: t.rMultiple ?? 0, pnl: t.pnl, exitReason: String(t.exitReason ?? '') })));
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));
         log.info(`backtest ${key}: ${bt.stats.trades} trades, win ${bt.stats.winRatePct.toFixed(0)}%, pnl ${bt.stats.pnl.toFixed(0)} (${res.ms}ms)`);
       }
@@ -220,9 +232,29 @@ export class ScannerEngine extends EventEmitter {
     if (sigId === null) return;
 
     if (ev.kind === 'entry' && ev.side) {
-      const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, atr: lastAtr(bars, 14), refPrice, at: now, signalId: sigId, exitMode });
-      action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
-      positionId = d.position?.id ?? null;
+      const atr = lastAtr(bars, 14);
+      // entry-time features + ML probability (levels are provisional here: script levels or ATR fallback)
+      let features: Record<string, number> | undefined; let mlProb: number | null = null;
+      if (this.ml && atr) {
+        const price = ev.price && ev.price > 0 ? ev.price : refPrice;
+        const dir = ev.side === 'long' ? 1 : -1;
+        const sl = ev.sl && ((ev.side === 'long' && ev.sl < price) || (ev.side === 'short' && ev.sl > price)) ? ev.sl : price - dir * this.cfgRef().paper.fallbackAtrSl * atr;
+        const tp1 = ev.tp[0] ?? price + dir * this.cfgRef().paper.fallbackRR[0] * Math.abs(price - sl);
+        const cfgP = this.cfgRef().paper;
+        const lev = cfgP.sizingMode === 'quality' ? cfgP.minLeverage + (cfgP.maxLeverage - cfgP.minLeverage) * Math.max(0, Math.min(1, (ev.score ?? 0) / 100)) : 0;
+        features = this.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl, tp1, atr, levelsSource: ev.sl && ev.tp.length ? 'script' : ev.sl || ev.tp.length ? 'mixed' : 'atr-fallback', leverage: lev });
+        const sc = this.ml.score(s.id, features as any); mlProb = sc?.prob ?? null;
+      }
+      const mlCfg = this.cfgRef().ml;
+      const scoreOverride = mlCfg.useAsScore && ev.score === undefined && mlProb !== null ? mlProb * 100 : undefined;
+      if (mlCfg.minProb > 0 && mlProb !== null && mlProb < mlCfg.minProb) {
+        action = `rejected:ml ${(mlProb * 100).toFixed(0)}% < ${(mlCfg.minProb * 100).toFixed(0)}%`;
+      } else {
+        const d = this.paper.onEntry(ev, { scannerId: s.id, scannerName: s.name, symbol, tf, market, atr, refPrice, at: now, signalId: sigId, exitMode, features, mlProb, scoreOverride });
+        action = d.action === 'opened' || d.action === 'reversed' ? d.action : `${d.action}:${d.reason ?? ''}`;
+        positionId = d.position?.id ?? null;
+      }
+      if (mlProb !== null) this.db.run('UPDATE signals SET ml_prob=? WHERE id=?', mlProb, sigId);
     } else if (ev.kind === 'exit') {
       const pos = this.paper.onScriptExit(s.id, symbol, tf, ev.exitType ?? 'close', ev.price, now, exitMode, ev.side);
       action = pos ? (pos.status === 'closed' ? 'closed' : 'reduced') : 'ignored:no position';

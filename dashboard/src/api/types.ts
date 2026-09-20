@@ -53,6 +53,7 @@ export interface Config {
   symbols: string[]
   universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
   resolvedSymbols?: string[]
+  ml?: { minProb: number; useAsScore: boolean }
   timeframes: string[]
   historyBars: number
   paper: PaperConfig
@@ -210,6 +211,7 @@ export interface Signal {
   message: string
   /** Plain-English description of the signal. */
   summary?: string
+  mlProb?: number | null
   source: string
   levelsSource: string
   action: string
@@ -392,4 +394,17 @@ export interface CandleQuery {
   limit?: number
   from?: number
   to?: number
+}
+
+// ---- machine learning ----
+export interface MlRule { feature: string; label: string; kind: 'prefer' | 'avoid'; condition: string; n: number; coverage: number; winRate: number; avgR: number; baselineAvgR: number; lift: number; text: string }
+export interface MlMetrics { holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number }
+export interface MlImportance { feature: string; label: string; weight: number }
+export interface MlScannerInsight { scannerId: string; scannerName: string; samples: number; liveSamples: number; baseline: { n: number; winRate: number; avgR: number }; model: MlMetrics | null; importance: MlImportance[]; rules: MlRule[] }
+export interface MlSnapshot {
+  trainedAt: number | null; samples: number; liveSamples: number; scannersWithModel: number
+  global: { model: MlMetrics | null; importance: MlImportance[]; rules: MlRule[]; baseline: { n: number; winRate: number; avgR: number } } | null
+  scanners: MlScannerInsight[]
+  counts?: { total: number; live: number }
+  config?: { minProb: number; useAsScore: boolean }
 }

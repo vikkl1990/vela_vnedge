@@ -9,6 +9,7 @@ import { PinePool } from './pine/pool.ts';
 import { ScannerEngine } from './scanners/engine.ts';
 import { ScannerRegistry } from './scanners/registry.ts';
 import { TestnetExecutor } from './execution/testnet.ts';
+import { MlService } from './ml/service.ts';
 
 const log = logger.scoped('app');
 
@@ -23,6 +24,7 @@ export class App {
   readonly pool: PinePool;
   readonly registry = new ScannerRegistry();
   readonly paper: PaperEngine;
+  readonly ml: MlService;
   readonly scanners: ScannerEngine;
   readonly testnet: TestnetExecutor | null = null;
   lastError: string | null = null;
@@ -35,7 +37,8 @@ export class App {
     this.candles = new CandleStore(this.rest, this.feed, cfg().historyBars + 50);
     this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined);
     this.paper = new PaperEngine(this.db, cfg);
-    this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols });
+    this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
+    this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml });
     this.resolvedSymbols = cfg().symbols;
     // 1m candles drive paper fills for every open position
     this.candles.on('bar', (e: { symbol: string; tf: string; bar: any }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar); });
@@ -79,6 +82,8 @@ export class App {
 
   async start(): Promise<void> {
     this.feed.start();
+    // positions left behind by scanners that were removed while the server was down
+    for (const p of this.paper.openPositions()) { const c = this.config.get().scanners[p.scannerId]; if (c?.hidden) { this.paper.closeManual(p.id, 'removed'); log.info(`closed stale position #${p.id} of removed scanner ${p.scannerId}`); } }
     await this.resolveUniverse();
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     if (this.testnet) await this.testnet.start();

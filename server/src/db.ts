@@ -6,7 +6,7 @@ import { DATA_DIR } from './config.ts';
 export interface SignalRow {
   id: number; at: number; barTime: number; scannerId: string; scannerName: string; symbol: string; tf: string;
   kind: string; side: string | null; price: number | null; sl: number | null; tp: number[]; score: number | null;
-  label: string; message: string; summary: string; source: string; levelsSource: string | null; action: string; positionId: number | null;
+  label: string; message: string; summary: string; source: string; levelsSource: string | null; action: string; positionId: number | null; mlProb?: number | null;
 }
 
 const SCHEMA = `
@@ -63,6 +63,7 @@ export class Db {
     // additive migrations
     const cols = this.db.prepare('PRAGMA table_info(signals)').all() as Array<{ name: string }>;
     if (!cols.some(c => c.name === 'summary')) this.db.exec("ALTER TABLE signals ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
+    if (!cols.some(c => c.name === 'ml_prob')) this.db.exec('ALTER TABLE signals ADD COLUMN ml_prob REAL');
   }
 
   run(sql: string, ...params: any[]) { return this.db.prepare(sql).run(...params); }
@@ -112,6 +113,6 @@ export function rowToSignal(r: any): SignalRow {
   return {
     id: r.id, at: r.at, barTime: r.bar_time, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, kind: r.kind, side: r.side,
     price: r.price, sl: r.sl, tp: JSON.parse(r.tp || '[]'), score: r.score, label: r.label, message: r.message, summary: r.summary ?? '', source: r.source, levelsSource: r.levels_source,
-    action: r.action, positionId: r.position_id,
+    action: r.action, positionId: r.position_id, mlProb: r.ml_prob ?? null,
   };
 }
