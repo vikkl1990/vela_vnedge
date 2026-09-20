@@ -4,6 +4,7 @@
  */
 import { EventEmitter } from 'node:events';
 import type { AppConfig, ScannerConfig, ExitMode } from '../config.ts';
+import { SIGNAL_MAX_AGE_MS } from '../execution/shadow.ts';
 import { TF_SECONDS } from '../config.ts';
 import type { CandleStore, Bar } from '../data/candleStore.ts';
 import { lastAtr } from '../data/indicators.ts';
@@ -248,6 +249,7 @@ export class ScannerEngine extends EventEmitter {
     const key = `${s.id}:${symbol}:${tf}`;
     if (this.inFlight.has(key)) { log.debug(`skip ${key}: already running`); return; }
     this.inFlight.add(key);
+    const executionModeAtStart = this.cfgRef().execution.mode;
     const scannerConfigAtStart = this.cfgRef().scanners[s.id];
     const at = Date.now();
     try {
@@ -276,8 +278,9 @@ export class ScannerEngine extends EventEmitter {
         log.info(`backtest ${key}: ${bt.stats.trades} trades, win ${bt.stats.winRatePct.toFixed(0)}%, pnl ${bt.stats.pnl.toFixed(0)} (${res.ms}ms)`);
       }
       // A pending job cannot trade after disable/removal or a configuration change.
-      if (mode.live && this.isActive(s) && this.cfgRef().scanners[s.id] === scannerConfigAtStart
-          && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf)) {
+      if (mode.live && this.cfgRef().execution.mode === executionModeAtStart && this.isActive(s) && this.cfgRef().scanners[s.id] === scannerConfigAtStart
+          && this.symbolsFor(s.id).includes(symbol) && this.timeframesFor(s.id).includes(tf)
+          && (!this.paper.isShadow || Date.now() - (bars.at(-1)!.time + TF_SECONDS[tf] * 1000) <= SIGNAL_MAX_AGE_MS)) {
         const lastBar = bars.at(-1)!;
         const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, bars, mode: 'live', newLabelKeys });
         const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: lastBar.time, derived });
@@ -303,7 +306,7 @@ export class ScannerEngine extends EventEmitter {
       // entry-time features + ML probability (levels are provisional here: script levels or ATR fallback)
       let features: Record<string, number> | undefined; let mlProb: number | null = null;
       if (this.ml && atr) {
-        const price = ev.price && ev.price > 0 ? ev.price : refPrice;
+        const price = this.paper.isShadow ? (this.paper.quotePrice(symbol, ev.side, true) ?? NaN) : ev.price && ev.price > 0 ? ev.price : refPrice;
         const levels = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr }, this.cfgRef().paper, market.tickSize);
         if (!('error' in levels)) {
           features = this.ml.features({ bars, i: bars.length - 1, ev, entry: price, sl: levels.sl, tp1: levels.tp[0], atr, levelsSource: levels.source });

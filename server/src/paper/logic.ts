@@ -13,6 +13,7 @@ import type { Side, ExitType } from '../scanners/extractor.ts';
 export interface Fill { at: number; price: number; qty: number; reason: string; fee: number; pnl: number }
 
 export interface Position {
+  executionMode?: 'paper' | 'shadow' | 'testnet';
   id: number;
   status: 'open' | 'closed';
   scannerId: string;
@@ -201,6 +202,7 @@ export function unrealized(pos: Position, mark: number): number {
 }
 
 export interface OpenParams {
+  executionMode?: Position['executionMode'];
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; qty: number; contractValue: number;
   entryPrice: number; at: number; sl: number; tp: number[]; riskAmount: number; levelsSource: Position['levelsSource']; signalId: number | null; cfg: PaperConfig; bt: boolean;
   leverage?: number;
@@ -216,7 +218,7 @@ export function openPosition(p: OpenParams): Position {
   const fee = feeFor(fillPrice, p.qty, p.contractValue, p.cfg);
   const legs = splitLegs(p.qty, p.cfg.tpSplit, p.tp.length);
   return {
-    id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,
+    executionMode: p.executionMode ?? 'paper', id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
     levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
@@ -230,18 +232,18 @@ export interface FillEvent { position: Position; fill: Fill; closed: boolean }
 export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean): Fill {
   let q = Math.min(qty, pos.qtyOpen);
   // an exchange would have liquidated before any exit could print beyond the liquidation price
-  if (pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
+  if (pos.executionMode !== 'shadow' && pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
   let px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg) : price;
   const marginLeverage = pos.marginLeverage ?? pos.leverage;
   const margin = marginLeverage > 0 ? pos.entryPrice * q * pos.contractValue / marginLeverage : Infinity;
-  if (reason === 'liquidation' && marginLeverage > 0) {
+  if (pos.executionMode !== 'shadow' && reason === 'liquidation' && marginLeverage > 0) {
     const bankruptcy = Math.max(0, pos.entryPrice * (1 + (pos.side === 'long' ? -1 : 1) / marginLeverage));
     px = pos.side === 'long' ? Math.max(px, bankruptcy) : Math.min(px, bankruptcy);
   }
   // take-profit legs rest as limit orders → maker fee; everything else crosses the spread → taker fee
   const pnl = pnlOf(pos, px, q);
   const quotedFee = feeFor(px, q, pos.contractValue, cfg, /^tp[123]$/.test(reason) && !withSlippage);
-  const fee = reason === 'liquidation' ? Math.min(quotedFee, Math.max(0, margin + pnl)) : quotedFee;
+  const fee = pos.executionMode !== 'shadow' && reason === 'liquidation' ? Math.min(quotedFee, Math.max(0, margin + pnl)) : quotedFee;
   pos.qtyOpen -= q;
   pos.realizedPnl += pnl;
   pos.fees += fee;
@@ -328,7 +330,7 @@ export function applyScriptExit(pos: Position, exitType: ExitType, price: number
       if (pos.legs[k] <= 0) continue;
       const isLast = k === pos.tp.length - 1;
       const q = isLast ? pos.qtyOpen : Math.min(pos.legs[k], pos.qtyOpen);
-      fills.push(fillExit(pos, k === i ? px : pos.tp[k], q, `tp${k + 1}`, at, cfg, false));
+      fills.push(fillExit(pos, pos.executionMode === 'shadow' || k === i ? px : pos.tp[k], q, `tp${k + 1}`, at, cfg, false));
       if (k === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven && pos.status === 'open') { pos.sl = pos.entryPrice; pos.breakEven = true; }
     }
     return fills;

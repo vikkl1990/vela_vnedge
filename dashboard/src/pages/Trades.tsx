@@ -54,6 +54,7 @@ export function Trades() {
           </span>
         ),
       },
+      { key: 'mode', header: 'Mode', value: t => t.executionMode ?? 'paper', render: t => <span className="muted small">{t.executionMode === 'shadow' ? 'Shadow (hypothetical)' : t.executionMode ?? 'paper'}</span> },
       { key: 'side', header: 'Side', value: (t) => t.side, render: (t) => <SidePill side={t.side} /> },
       { key: 'qty', header: 'Qty', numeric: true, value: (t) => t.qty, render: (t) => <span className="mono">{fmtInt(t.qty)}</span> },
       { key: 'entry', header: 'Entry', numeric: true, value: (t) => t.entryPrice, render: (t) => <span className="mono">{fmtPrice(t.entryPrice, tick(t.symbol))}</span> },

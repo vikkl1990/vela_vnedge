@@ -221,6 +221,7 @@ export interface Signal {
 }
 
 export interface Position {
+  executionMode?: 'paper' | 'shadow' | 'testnet'
   id: number
   scannerId: string
   scannerName: string
@@ -261,6 +262,7 @@ export interface Fill {
 export type ExitReason = 'tp3' | 'sl' | 'be' | 'script_exit' | 'reversal' | 'manual' | 'tp_partial' | string
 
 export interface Trade {
+  executionMode?: 'paper' | 'shadow' | 'testnet'
   id: number
   positionId: number
   scannerId: string

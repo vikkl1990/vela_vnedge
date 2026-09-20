@@ -45,8 +45,8 @@ export interface ScannerConfig {
 }
 
 export interface ExecutionConfig {
-  /** `paper` runs the internal simulator. `testnet` additionally mirrors paper fills to Delta's demo account (needs API keys). */
-  mode: 'paper' | 'testnet';
+  /** `paper` runs the candle simulator. `shadow` tracks public live quotes without orders. `testnet` additionally mirrors paper fills to Delta's demo account (needs API keys). */
+  mode: 'paper' | 'shadow' | 'testnet';
 }
 
 export interface SymbolUniverse {
@@ -184,7 +184,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
   if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');
   if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
-  if (!['paper', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|testnet');
+  if (!['paper', 'shadow', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|shadow|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
   if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
   return errs;

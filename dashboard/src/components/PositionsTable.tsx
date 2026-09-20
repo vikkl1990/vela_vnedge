@@ -64,6 +64,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
           </span>
         ),
       },
+      { key: 'mode', header: 'Mode', value: p => p.executionMode ?? 'paper', render: p => <span className="muted small">{p.executionMode === 'shadow' ? 'Shadow (hypothetical)' : p.executionMode ?? 'paper'}</span> },
       { key: 'side', header: 'Side', value: (p) => p.side, render: (p) => <SidePill side={p.side} /> },
       {
         key: 'qty',

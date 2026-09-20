@@ -130,7 +130,7 @@ export function Layout() {
         </nav>
 
         <div className="topright">
-          <span className="pill pill-accent">{(h?.mode ?? 'paper').toUpperCase()}</span>
+          <span className="pill pill-accent">{h?.mode === 'shadow' ? 'SHADOW · HYPOTHETICAL · NO ORDERS' : (h?.mode ?? 'paper').toUpperCase()}</span>
           <span className="topstat" title="Equity">
             <span className="topstat-label">EQ</span>
             <span className="mono">{s ? fmtMoney(s.equity, 0) : '–'}</span>
