@@ -8,9 +8,10 @@
  * pivot), not the bar on which the script confirmed it. Live runs therefore fire on the bar
  * where a label FIRST APPEARS (`newLabelKeys`); backtests shift the anchor by `delayBars`.
  */
-import type { WorkerAlert, WorkerLabel, WorkerShape } from '../pine/worker.ts';
+import type { WorkerAlert, WorkerLabel, WorkerPlot, WorkerShape } from '../pine/worker.ts';
 import type { ScanEvent, Side } from './extractor.ts';
 import type { Bar } from '../data/candleStore.ts';
+import type { GenericRule } from '../config.ts';
 
 export interface RuleContext {
   scannerId: string;
@@ -21,6 +22,10 @@ export interface RuleContext {
   mode: 'live' | 'backtest';
   /** Labels not present in the previous run (live only). */
   newLabelKeys?: Set<string>;
+  /** Plot series (needed by the generic rules; must cover the bars a backtest replays). */
+  plots?: WorkerPlot[];
+  /** Generic rule selected per scanner in config (`scanners.<id>.rule`); replaces the per-scanner rule. */
+  rule?: GenericRule | null;
 }
 
 export type Rule = (ctx: RuleContext) => ScanEvent[];
@@ -170,7 +175,157 @@ export const RULES: Record<string, Rule> = {
 };
 
 export function applyRules(ctx: RuleContext): ScanEvent[] {
-  const rule = RULES[ctx.scannerId];
+  const rule = ctx.rule ? GENERIC_RULES[ctx.rule] : RULES[ctx.scannerId];
   if (!rule) return [];
   try { return rule(ctx); } catch { return []; }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Generic rules for silent-but-tradeable scripts (enabled per scanner via `scanners.<id>.rule`)
+// ---------------------------------------------------------------------------------------------
+
+/** Value of a plot at every bar index (null where the plot is na or missing). */
+function alignPlot(p: WorkerPlot, bars: Bar[]): Array<number | null> {
+  const byTime = new Map<number, number | null>();
+  for (const d of p.data) byTime.set(d.time, d.value);
+  return bars.map(b => { const v = byTime.get(b.time); return v === undefined || v === null || !Number.isFinite(v) ? null : v; });
+}
+
+const isLine = (p: WorkerPlot) => !/^(shape|char|fill|bgcolor|barcolor|histogram|columns|areabr|area)$/i.test(p.style ?? 'line');
+const TRAIL_TITLE = /trail|super\s*trend|supertrend|\bst\b|\bsar\b|chandelier|stop|kijun|trend\s*line|\bts\b|halftrend|ut bot|\bline\b/i;
+const UP_TITLE = /\b(up|bull|bullish|long|buy|support|uptrend)\b/i;
+const DOWN_TITLE = /\b(down|dn|bear|bearish|short|sell|resistance|downtrend)\b/i;
+
+export interface TrailSelection { title: string; values: Array<number | null>; flips: number; merged: boolean }
+
+/** Count how often the close changes side relative to a series. */
+function countFlips(values: Array<number | null>, bars: Bar[]): number {
+  let prev: Side | null = null, flips = 0;
+  for (let i = 0; i < bars.length; i++) {
+    const v = values[i]; if (v === null) continue;
+    const side: Side = bars[i].close >= v ? 'long' : 'short';
+    if (prev && side !== prev) flips++;
+    prev = side;
+  }
+  return flips;
+}
+
+/**
+ * Pick the overlay series that behaves like a trailing stop: a title hint wins, otherwise the
+ * candidate the close crosses least often (but at least once). Complementary up/down plots
+ * (e.g. `plot(up ? st : na)` / `plot(dn ? st : na)`) are merged into one series first.
+ */
+export function selectTrail(plots: WorkerPlot[] | undefined, bars: Bar[]): TrailSelection | null {
+  if (!plots?.length || bars.length < 20) return null;
+  const overlay = plots.filter(p => p.overlay && isLine(p));
+  const cands: TrailSelection[] = [];
+  for (const p of overlay) {
+    const values = alignPlot(p, bars);
+    const filled = values.filter(v => v !== null).length;
+    if (filled < bars.length * 0.3) continue;
+    cands.push({ title: p.title, values, flips: countFlips(values, bars), merged: false });
+  }
+  const ups = overlay.filter(p => UP_TITLE.test(p.title) && !DOWN_TITLE.test(p.title));
+  const downs = overlay.filter(p => DOWN_TITLE.test(p.title) && !UP_TITLE.test(p.title));
+  if (ups.length && downs.length) {
+    const u = alignPlot(ups[0], bars), d = alignPlot(downs[0], bars);
+    const overlap = u.filter((v, i) => v !== null && d[i] !== null).length;
+    const values = u.map((v, i) => v ?? d[i]);
+    const filled = values.filter(v => v !== null).length;
+    if (filled >= bars.length * 0.3 && overlap < filled * 0.5) cands.push({ title: `${ups[0].title} / ${downs[0].title}`, values, flips: countFlips(values, bars), merged: true });
+  }
+  const usable = cands.filter(c => c.flips >= 1 && c.flips <= bars.length / 4);
+  if (!usable.length) return null;
+  const hinted = usable.filter(c => c.merged || TRAIL_TITLE.test(c.title));
+  const pool = hinted.length ? hinted : usable;
+  return pool.sort((a, b) => a.flips - b.flips)[0];
+}
+
+/** Trailing-stop / SuperTrend rule: entry when the close flips to the other side of the trail; the trail is the stop. */
+export const trailingRule: Rule = (ctx) => {
+  const sel = selectTrail(ctx.plots, ctx.bars);
+  if (!sel) return [];
+  const out: ScanEvent[] = [];
+  let prev: Side | null = null;
+  for (let i = 0; i < ctx.bars.length; i++) {
+    const v = sel.values[i]; if (v === null) continue;
+    const b = ctx.bars[i];
+    const side: Side = b.close > v ? 'long' : b.close < v ? 'short' : prev ?? 'long';
+    if (prev && side !== prev) {
+      const sl = side === 'long' ? (v < b.close ? v : undefined) : (v > b.close ? v : undefined);
+      out.push(mk(ctx, b.time, side, `Trail flip ${side === 'long' ? '▲' : '▼'} (${sel.title})`, `close ${b.close} crossed ${sel.title} ${v}`, { price: b.close, sl }));
+    }
+    prev = side;
+  }
+  return out;
+};
+
+const OSC_TITLE = /rsi|stoch|cci|macd|osc|moment|\bmom\b|hist|wave|signal|\broc\b|cmf|mfi|williams|%r|rvi|tsi|\bao\b|\bdmi\b|adx|trix|fisher|squeeze|value|main|\bline\b/i;
+const OSC_EXCLUDE = /zero|level|band|overbought|oversold|\bob\b|\bos\b|upper|lower|mid|threshold|limit|\bfill\b/i;
+
+export type OscMode = 'zero' | 'obos';
+export interface OscSelection { title: string; values: Array<number | null>; mode: OscMode; ob: number; os: number; crosses: number }
+
+/** Pick the pane oscillator and decide between zero-line and overbought/oversold crossings from its range. */
+export function selectOscillator(plots: WorkerPlot[] | undefined, bars: Bar[]): OscSelection | null {
+  if (!plots?.length || bars.length < 20) return null;
+  const cands: OscSelection[] = [];
+  for (const p of plots.filter(p => !p.overlay)) {
+    if (OSC_EXCLUDE.test(p.title) && !OSC_TITLE.test(p.title)) continue;
+    const values = alignPlot(p, bars);
+    const nn = values.filter((v): v is number => v !== null);
+    if (nn.length < bars.length * 0.3) continue;
+    const min = Math.min(...nn), max = Math.max(...nn);
+    if (!(max > min)) continue;
+    let mode: OscMode, ob: number, os: number;
+    if (min >= -0.5 && max <= 100.5 && max > 50) { mode = 'obos'; ob = 70; os = 30; }
+    else if (min >= -100.5 && max <= 0.5 && min < -50) { mode = 'obos'; ob = -20; os = -80; }
+    else if (min >= -0.01 && max <= 1.01 && max > 0.5) { mode = 'obos'; ob = 0.8; os = 0.2; }
+    else if (min < 0 && max > 0) { mode = 'zero'; ob = 0; os = 0; }
+    else continue;
+    const crosses = mode === 'zero' ? countZero(values) : countObOs(values, ob, os);
+    if (crosses < 1) continue;
+    cands.push({ title: p.title, values, mode, ob, os, crosses });
+  }
+  if (!cands.length) return null;
+  const hinted = cands.filter(c => OSC_TITLE.test(c.title));
+  const pool = hinted.length ? hinted : cands;
+  // prefer the series with the most activity that is still not noise (≤ one cross per 5 bars)
+  return pool.filter(c => c.crosses <= bars.length / 5).sort((a, b) => b.crosses - a.crosses)[0] ?? pool.sort((a, b) => a.crosses - b.crosses)[0];
+}
+
+function countZero(values: Array<number | null>): number {
+  let prev: number | null = null, n = 0;
+  for (const v of values) { if (v === null) continue; if (prev !== null && ((prev <= 0 && v > 0) || (prev >= 0 && v < 0))) n++; prev = v; }
+  return n;
+}
+function countObOs(values: Array<number | null>, ob: number, os: number): number {
+  let prev: number | null = null, n = 0;
+  for (const v of values) { if (v === null) continue; if (prev !== null && ((prev < os && v >= os) || (prev > ob && v <= ob))) n++; prev = v; }
+  return n;
+}
+
+/** Oscillator rule: zero-line crosses, or leaving oversold (long) / overbought (short); stops/targets from ATR. */
+export const oscillatorRule: Rule = (ctx) => {
+  const sel = selectOscillator(ctx.plots, ctx.bars);
+  if (!sel) return [];
+  const out: ScanEvent[] = [];
+  let prev: number | null = null;
+  for (let i = 0; i < ctx.bars.length; i++) {
+    const v = sel.values[i]; if (v === null) continue;
+    const b = ctx.bars[i];
+    if (prev !== null) {
+      let side: Side | undefined;
+      if (sel.mode === 'zero') side = prev <= 0 && v > 0 ? 'long' : prev >= 0 && v < 0 ? 'short' : undefined;
+      else side = prev < sel.os && v >= sel.os ? 'long' : prev > sel.ob && v <= sel.ob ? 'short' : undefined;
+      if (side) {
+        const what = sel.mode === 'zero' ? `zero-line cross ${side === 'long' ? '▲' : '▼'}` : side === 'long' ? `left oversold (${sel.os})` : `left overbought (${sel.ob})`;
+        out.push(mk(ctx, b.time, side, `Oscillator ${what} (${sel.title})`, `${sel.title} ${prev.toFixed(3)} → ${v.toFixed(3)}`, { price: b.close }));
+      }
+    }
+    prev = v;
+  }
+  return out;
+};
+
+export const GENERIC_RULES: Record<GenericRule, Rule> = { trailing: trailingRule, oscillator: oscillatorRule };
