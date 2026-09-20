@@ -31,7 +31,10 @@ export class ApiServer {
   }
 
   listen(port: number, host = '127.0.0.1'): Promise<void> {
-    return new Promise((resolve) => this.server.listen(port, host, () => { log.info(`listening on http://${host}:${port}`); resolve(); }));
+    return new Promise((resolve, reject) => {
+      this.server.once('error', reject);
+      this.server.listen(port, host, () => { this.server.off('error', reject); log.info(`listening on http://${host}:${port}`); resolve(); });
+    });
   }
 
   close() { for (const r of this.sse) r.end(); this.server.close(); }
