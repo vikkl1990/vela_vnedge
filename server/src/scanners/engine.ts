@@ -44,12 +44,14 @@ export class ScannerEngine extends EventEmitter {
   private seenLabels = new Map<string, Set<string>>();
   private symbolsRef: () => string[];
   private ml: MlService | null;
+  private cfgStore: { setScanner(id: string, patch: Partial<ScannerConfig>): ScannerConfig } | null = null;
 
-  constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[]; ml?: MlService }) {
+  constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[]; ml?: MlService; cfgStore?: { setScanner(id: string, patch: Partial<ScannerConfig>): ScannerConfig } }) {
     super();
     this.registry = deps.registry; this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
     this.symbolsRef = deps.symbolsRef ?? (() => this.cfgRef().symbols);
     this.ml = deps.ml ?? null;
+    this.cfgStore = deps.cfgStore ?? null;
     // every closed live trade becomes a learning sample
     this.paper.on('trade', (t: any) => { if (this.ml && t.features) this.ml.addLiveSample(t.scannerId, t.symbol, t.tf, t.entryAt, t.features, t.pnl > 0, t.rMultiple ?? 0, t.pnl, String(t.exitReason ?? '')); });
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
@@ -112,6 +114,33 @@ export class ScannerEngine extends EventEmitter {
     agg.pnlPct = this.cfgRef().paper.initialEquity ? agg.pnl / this.cfgRef().paper.initialEquity * 100 : 0;
     agg.avgWin = agg.wins ? agg.grossProfit / agg.wins : 0; agg.avgLoss = agg.losses ? agg.grossLoss / agg.losses : 0;
     return agg;
+  }
+
+  /**
+   * Restrict each enabled scanner to the symbols where its backtest is profitable with at
+   * least `minTrades` trades; scanners with no qualifying symbol are disabled. Returns a report.
+   */
+  autoTune(opts: { minTrades?: number; minProfitFactor?: number } = {}): Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean; dropped: Array<{ symbol: string; trades: number; pnl: number }> }> {
+    const minTrades = opts.minTrades ?? 3, minPf = opts.minProfitFactor ?? 1;
+    const report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean; dropped: Array<{ symbol: string; trades: number; pnl: number }> }> = [];
+    for (const s of this.registry.all()) {
+      if (!this.isActive(s)) continue;
+      const before = this.symbolsFor(s.id);
+      const keep: string[] = []; const dropped: Array<{ symbol: string; trades: number; pnl: number }> = [];
+      for (const symbol of before) {
+        const tfs = this.timeframesFor(s.id);
+        let trades = 0, pnl = 0, gp = 0, gl = 0;
+        for (const tf of tfs) { const b = this.backtests.get(`${s.id}:${symbol}:${tf}`); if (!b) continue; trades += b.stats.trades; pnl += b.stats.pnl; gp += b.stats.grossProfit; gl += b.stats.grossLoss; }
+        const pf = gl > 0 ? gp / gl : gp > 0 ? 999 : 0;
+        if (trades >= minTrades && pnl > 0 && pf >= minPf) keep.push(symbol); else dropped.push({ symbol, trades, pnl });
+      }
+      const disabled = keep.length === 0;
+      // store an explicit list (null would mean "follow the universe" and re-widen on the next universe change)
+      this.cfgStore?.setScanner(s.id, disabled ? { enabled: false } : { symbols: keep });
+      report.push({ id: s.id, name: s.name, before, after: keep, disabled, dropped });
+      log.info(`auto-tune ${s.id}: ${before.length} → ${keep.length} symbols${disabled ? ' (disabled: no profitable symbol)' : ''}`);
+    }
+    return report;
   }
 
   // ---- lifecycle ----

@@ -62,6 +62,8 @@ re-subscribes the feed and re-warms scanners.
 
 `POST /api/scanners/:id` body `{ "enabled": true, "symbols": ["BTCUSD"], "timeframes": ["15m"], "exitMode": "levels", "hidden": false }` (all optional; `hidden: true` also disables) → updated scanner. Scanner objects carry `hidden`; the dashboard lists hidden ones only behind a "show removed" toggle.
 
+`POST /api/scanners/auto-tune` body `{ "minTrades": 3, "minProfitFactor": 1 }` → restricts every enabled scanner to the symbols where its backtest is profitable (pnl > 0, PF ≥ min, trades ≥ min); scanners with no qualifying symbol are disabled. Returns `{ tuned, disabled, report: [{ id, name, before, after, disabled, dropped: [{symbol, trades, pnl}] }] }`.
+
 `POST /api/scanners/:id/run` → runs now on all its symbols/timeframes; returns `{ "queued": 2 }`.
 
 `GET /api/scanners/:id/source` → `{ "id", "source": "<original pine>", "patched": "<pine actually executed>", "patches": ["label.all-size"] }`

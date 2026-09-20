@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useConfig, useMarkets, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
+import { qk, useConfig, useMarkets, useRunScanner, useScanners, useUpdateScanner } from '../api/queries'
+import { useQueryClient } from '@tanstack/react-query'
+import { api } from '../api/client'
 import type { ExitMode, Scanner } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconGrid, IconPlay, IconRows } from '../components/Icons'
@@ -25,6 +27,7 @@ export function Scanners() {
   const [cat, setCat] = useState<Category>('All')
   const [filter, setFilter] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
+  const qc = useQueryClient()
   const [showHidden, setShowHidden] = useState(false)
   const [author, setAuthor] = useState<string>('All')
 
@@ -62,6 +65,15 @@ export function Scanners() {
       onSuccess: (r) => toast.success(`Queued ${s.name}`, `${r.queued} run(s)`),
       onError: (e) => toast.error(`Run failed: ${s.name}`, e.message),
     })
+
+  const autoTune = async () => {
+    setBulkBusy(true)
+    try {
+      const r = await api.autoTune()
+      qc.invalidateQueries({ queryKey: qk.scanners }); qc.invalidateQueries({ queryKey: qk.config })
+      toast.success(`Auto-tuned ${r.tuned} scanners`, `${r.disabled} disabled (no profitable symbol) · ${r.report.filter((x) => !x.disabled).map((x) => `${x.name.slice(0, 18)}: ${x.after.length}/${x.before.length}`).slice(0, 6).join(' · ')}`)
+    } catch (e) { toast.error('Auto-tune failed', (e as Error).message) } finally { setBulkBusy(false) }
+  }
 
   const bulk = async (enabled: boolean) => {
     const list = (scanners.data ?? []).filter((s) => (enabled ? s.status === 'ok' && !s.enabled && !s.hidden : s.enabled))
@@ -201,6 +213,9 @@ export function Scanners() {
         <div className="page-actions">
           <button className="btn btn-cta" onClick={() => bulk(true)} disabled={bulkBusy || !scanners.data}>
             {bulkBusy ? 'Working…' : 'Enable all runnable'}
+          </button>
+          <button className="btn" onClick={() => autoTune()} disabled={bulkBusy || !scanners.data} title="Keep each scanner only on symbols where its backtest is profitable (≥ 3 trades, PF ≥ 1); disable scanners with none">
+            Auto-tune symbols
           </button>
           <button className="btn" onClick={() => setShowHidden((v) => !v)} disabled={!scanners.data} title="Removed scanners stay disabled; restore any from here">
             {showHidden ? 'Hide removed' : `Show removed (${hiddenCount})`}

@@ -38,7 +38,7 @@ export class App {
     this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined);
     this.paper = new PaperEngine(this.db, cfg);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
-    this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml });
+    this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
     this.resolvedSymbols = cfg().symbols;
     // 1m candles drive paper fills for every open position
     this.candles.on('bar', (e: { symbol: string; tf: string; bar: any }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar); });

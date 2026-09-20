@@ -117,6 +117,7 @@ export const api = {
 
   // logs
   logs: (limit = 200, level?: LogLevel) => get<LogEntry[]>(`/logs${qs({ limit, level })}`),
+  autoTune: () => post<{ tuned: number; disabled: number; report: Array<{ id: string; name: string; before: string[]; after: string[]; disabled: boolean }> }>('/scanners/auto-tune'),
   ml: () => get<MlSnapshot>('/ml'),
   mlTrain: () => post<MlSnapshot>('/ml/train'),
   mlScanner: (id: string) => get<MlScannerInsight>(`/ml/scanner/${id}`),
