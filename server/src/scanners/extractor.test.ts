@@ -100,3 +100,13 @@ test('alertcondition titles and directional shapes become entries (LuxAlgo style
   assert.deepEqual(evs.map(e => [e.source, e.side, e.barTime]), [['alertcondition', 'long', 10], ['alertcondition', 'short', 20], ['alert', 'long', 30]]);
   assert.match(describeEvent(evs[0]), /script condition/);
 });
+
+test('exit prices use the hit level, never the contextual entry price', () => {
+  assert.equal(parseAlert(A('🛑 SL HIT | Long | Entry: 100 | SL: 95'))?.price, 95);
+  assert.equal(parseAlert(A('🛑 SL HIT | Short | Entry: 100 | SL: 105'))?.price, 105);
+  assert.equal(parseAlert(A('🎯 TP2 HIT | Entry: 100 | TP2: 110'))?.price, 110);
+  assert.equal(parseAlert(A('🛡️ BE STOP-OUT | Entry: 100 | SL: 100'))?.price, 100);
+  assert.equal(parseAlert(A('STOP HIT | Ref entry: 100'))?.price, undefined);
+  assert.equal(parseAlert(A('TARGET REACHED | Ref entry: 100 | Target: 110'))?.price, 110);
+  assert.equal(parseAlert(A('TRADE CLOSED | Entry: 100 | Price: 103'))?.price, 103);
+});

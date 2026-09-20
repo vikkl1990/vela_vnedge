@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice } from './logic.ts';
+import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
 
@@ -73,4 +73,94 @@ test('quality sizing scales leverage with score and models liquidation', () => {
   const p = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 500, contractValue: 0.001, entryPrice: 100, at: 0, sl: 97, tp: [105], riskAmount: 1.5, levelsSource: 'script', signalId: null, cfg: q, bt: true, leverage: 50 });
   const f = applyBar(p, { time: 1, high: 100, low: 98, close: 99 }, q);
   assert.equal(f[0].reason, 'liquidation'); assert.equal(p.status, 'closed');
+});
+
+
+test('roundTick preserves fractional tick precision including scientific notation', () => {
+  for (const [price, tick, expected] of [[100.25, 0.25, 100.25], [100.37, 0.25, 100.25], [100.38, 0.25, 100.5], [10.125, 0.125, 10.125], [2.5, 2.5, 2.5], [0.000000025, 2.5e-8, 2.5e-8], [100.5, 0.5, 100.5]]) {
+    assert.equal(roundTick(price, tick), expected);
+  }
+});
+
+test('isolated leverage is independent of account exposure and reserves margin plus entry fees', () => {
+  const c = { ...cfg, liquidation: true, maxLeverage: 10, feeRatePct: 0.1, slippageBps: 10 };
+  const s = sizeContracts(100, 95, { equity: 1000, availableMargin: 1000, contractValue: 1, tickSize: 0.01, cfg: c });
+  assert.equal(s.marginLeverage, 10);
+  assert.ok(s.leverage < 1);
+  assert.ok(s.riskAmount <= 10);
+  const p = openPosition({ ...pos(), contractValue: 1, entryPrice: 100, at: 0, qty: s.qty, sl: 95, tp: [110], riskAmount: s.riskAmount, cfg: c, leverage: s.leverage, marginLeverage: s.marginLeverage });
+  assert.ok(p.liqPrice! > 90 && p.liqPrice! < 91);
+  const fill = applyBar(p, { time: 1, high: 100, low: 94, close: 95 }, c)[0];
+  assert.equal(fill.reason, 'sl');
+  assert.ok(Math.abs(p.realizedPnl - p.fees + s.riskAmount) < 1e-9);
+  const exhausted = sizeContracts(100, 95, { equity: 1000, availableMargin: 0, contractValue: 1, tickSize: 0.01, cfg: c });
+  assert.equal(exhausted.qty, 0);
+  const q = sizeContracts(100, 95, { equity: 1000, availableMargin: 100, contractValue: 1, tickSize: 0.01, cfg: { ...c, sizingMode: 'quality' } });
+  assert.ok(q.qty * 100.1 * (1 / q.marginLeverage + 0.001) <= 100);
+});
+
+test('long and short stop risk budgets include both fees and slippage', () => {
+  for (const side of ['long', 'short'] as const) {
+    const c = { ...cfg, feeRatePct: 0.1, slippageBps: 20 };
+    const sl = side === 'long' ? 95 : 105;
+    const size = sizeContracts(100, sl, { equity: 10000, contractValue: 1, tickSize: 0.01, cfg: c });
+    const p = openPosition({ ...pos(side), contractValue: 1, entryPrice: 100, qty: size.qty, at: 0, sl, tp: [], cfg: c, riskAmount: size.riskAmount });
+    applyScriptExit(p, 'sl', sl, 1, c, 'both', sl);
+    assert.ok(Math.abs(p.realizedPnl - p.fees + size.riskAmount) < 1e-8);
+    assert.ok(size.riskAmount <= 100);
+  }
+});
+
+test('liquidation handles both sides, unreachable prices and invalid initial margin', () => {
+  const c = { ...cfg, liquidation: true, maintenanceMarginPct: 0.5 };
+  assert.equal(liquidationPrice('long', 100, 0.5, c), null);
+  assert.ok(Math.abs(liquidationPrice('short', 100, 50, c)! - 101.5) < 1e-9);
+  assert.equal(sizeContracts(100, 95, { equity: 1000, contractValue: 1, tickSize: 0.1, cfg: { ...c, maxLeverage: 200 } }).qty, 0);
+  for (const side of ['long', 'short'] as const) {
+    const p = openPosition({ ...pos(side), entryPrice: 100, at: 0, sl: side === 'long' ? 90 : 110, cfg: c, leverage: 0.1, marginLeverage: 50 });
+    const f = applyScriptExit(p, 'tp1', side === 'long' ? 98 : 102, 1, c, 'both', 100);
+    assert.equal(f.length, 1);
+    assert.equal(f[0].reason, 'liquidation');
+    assert.equal(p.qtyOpen, 0, 'liquidation closes the entire remainder, not a TP allocation');
+  }
+});
+
+test('liquidation loss including its exit fee is bounded by allocated margin', () => {
+  const c = { ...cfg, liquidation: true, feeRatePct: 0.1, slippageBps: 1000 };
+  for (const side of ['long', 'short'] as const) {
+    const p = openPosition({ ...pos(side), entryPrice: 100, at: 0, sl: side === 'long' ? 1 : 1000, cfg: c, marginLeverage: 50 });
+    const margin = p.entryPrice * p.qty * p.contractValue / 50;
+    const f = applyBar(p, { time: 1, high: 1000, low: 1, close: 100 }, c)[0];
+    assert.equal(f.reason, 'liquidation');
+    assert.ok(-f.pnl + f.fee <= margin + 1e-9);
+  }
+});
+
+test('rounded levels must remain positive and on the correct side of entry', () => {
+  for (const request of [
+    { side: 'long' as const, price: 100, sl: 99.99, tp: [110] },
+    { side: 'short' as const, price: 100, sl: 100.01, tp: [90] },
+    { side: 'long' as const, price: 100, sl: 95, tp: [100.01] },
+    { side: 'long' as const, price: 1, atr: 10 },
+    { side: 'short' as const, price: 1, sl: 2 },
+  ]) assert.ok('error' in resolveLevels(request, cfg, 0.5));
+});
+
+test('zero-contract script TP legs do not move stop to break-even', () => {
+  const p = pos(); p.qty = p.qtyOpen = 1; p.legs = [0, 0, 1];
+  assert.equal(applyScriptExit(p, 'tp1', 105, 1, cfg, 'both', 105).length, 0);
+  assert.equal(p.breakEven, false);
+  assert.equal(p.sl, 95);
+});
+
+test('partial target P&L and maker fees reconcile exactly with closed-trade statistics', () => {
+  const c = { ...cfg, feeRatePct: 0.1, makerFeeRatePct: 0.02 };
+  const p = openPosition({ ...pos(), entryPrice: 100, at: 0, sl: 95, cfg: c });
+  applyBar(p, { time: 1, high: 115, low: 100, close: 115 }, c);
+  assert.ok(Math.abs(p.realizedPnl - 0.095) < 1e-12);
+  assert.ok(Math.abs(p.fees - (0.001 + 0.000219)) < 1e-12);
+  const stats = computeStats([p], 1000);
+  assert.ok(Math.abs(stats.pnl - 0.093781) < 1e-12);
+  assert.equal(stats.wins, 1);
+  assert.equal(stats.losses, 0);
 });

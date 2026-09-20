@@ -61,7 +61,7 @@ export function PositionsTable({ positions, compact = false }: { positions: Posi
     },
     { key: 'entry', header: 'Entry', align: 'right', value: (p) => p.entryPrice, render: (p) => <span className="mono">{fmtPrice(p.entryPrice, tick(p.symbol))}</span> },
     { key: 'mark', header: 'Mark', align: 'right', value: (p) => liveMark(p), render: (p) => <span className="mono">{fmtPrice(liveMark(p), tick(p.symbol))}</span> },
-    { key: 'lev', header: 'Lev', align: 'right', value: (p) => p.leverage ?? 0, render: (p) => <span className="mono">{p.leverage ? `${p.leverage.toFixed(1)}x` : '–'}</span> },
+    { key: 'lev', header: 'Lev', align: 'right', value: (p) => p.marginLeverage ?? p.leverage ?? 0, render: (p) => <span className="mono">{(p.marginLeverage ?? p.leverage) ? `${(p.marginLeverage ?? p.leverage)!.toFixed(1)}x` : '–'}</span> },
     { key: 'notional', header: 'Notional', align: 'right', value: (p) => p.qtyOpen * p.contractValue * liveMark(p), render: (p) => <span className="mono">{fmtMoney(p.qtyOpen * p.contractValue * liveMark(p), 2)}</span> },
     { key: 'margin', header: 'Margin', align: 'right', value: (p) => p.margin ?? 0, render: (p) => <span className="mono">{p.margin != null ? fmtMoney(p.margin, 2) : '–'}</span> },
     { key: 'liq', header: 'Liq', align: 'right', value: (p) => p.liqPrice ?? 0, render: (p) => <span className="mono loss">{p.liqPrice != null ? fmtPrice(p.liqPrice, tick(p.symbol)) : '–'}</span> },

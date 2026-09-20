@@ -205,7 +205,7 @@ export function Settings() {
             </label>
             {numField('riskPerTradePct', 'Risk per trade %', '0.1', 'risk mode only')}
             {numField('minLeverage', 'Min leverage', '1', 'quality mode: unscored / score 0')}
-            {numField('maxLeverage', 'Max leverage', '1', 'quality mode: score 100 · also the notional cap')}
+            {numField('maxLeverage', 'Max leverage', '1', 'risk mode: isolated leverage · quality mode: score 100 · account exposure cap')}
             {numField('maintenanceMarginPct', 'Maintenance margin %', '0.1', 'for liquidation modelling')}
             {numField('feeRatePct', 'Fee rate %', '0.01')}
             {numField('slippageBps', 'Slippage (bps)', '1')}
@@ -259,7 +259,7 @@ export function Settings() {
               <input type="checkbox" checked={form.paper.allowReversal} onChange={(e) => setPaper('allowReversal', e.target.checked)} /> Allow reversal (opposite signal closes & flips)
             </label>
             <label className="check">
-              <input type="checkbox" checked={form.paper.liquidation ?? true} onChange={(e) => setPaper('liquidation', e.target.checked)} /> Model exchange liquidation (loss reaching margin closes the position)
+              <input type="checkbox" checked={form.paper.liquidation ?? true} onChange={(e) => setPaper('liquidation', e.target.checked)} /> Model approximate isolated liquidation (fixed maintenance rate; candle prices)
             </label>
           </div>
         </Panel>

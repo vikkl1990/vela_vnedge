@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DeltaRest } from '../delta/rest.ts';
+import type { WorkerResult } from '../pine/worker.ts';
 import { PinePool } from '../pine/pool.ts';
 import { applyPatches } from '../pine/patches.ts';
 import { PINE_DIR, SCRIPTS_DIR, TF_SECONDS } from '../config.ts';
@@ -33,7 +34,7 @@ const withDeadline = <T,>(p: Promise<T>, ms: number, onTimeout: () => T): Promis
 await Promise.all(manifest.filter(m => m.status !== 'unavailable' && (!only || only === '-' || only.split(',').some((o: string) => m.id === o || m.id.includes(o)))).map(async (m) => {
   const raw = fs.readFileSync(path.join(PINE_DIR, m.file), 'utf8');
   const { source, applied } = applyPatches(raw, m.file);
-  const r = await withDeadline(pool.run({ scannerId: m.id, source, symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 }), 150_000, () => ({ ok: false, error: 'hung: no result within 150s (script likely loops forever under PineTS)', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 } as any));
+  const r = await withDeadline(pool.run({ scannerId: m.id, source, symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 }), 150_000, (): WorkerResult => ({ id: -1, bars: bars.length, lastBarTime: bars.at(-1)?.time ?? 0, ok: false, error: 'hung: no result within 150s (script likely loops forever under PineTS)', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 }));
   const entryish = r.alerts.filter(a => a.type === 'alert' && /🟢|🔴|LONG|SHORT|BUY|SELL/i.test(a.message)).length;
   rows.push({ id: m.id, ok: r.ok, ms: r.ms, error: r.error, patches: applied, alerts: r.alerts.length, entryish, shapes: r.shapes.map(s => `${s.title}:${s.times.length}`).join(','), labels: r.labels.length, plots: r.plots.length, warnings: r.warnings });
   if (rows.length % 10 === 0) save();

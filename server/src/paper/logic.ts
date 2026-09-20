@@ -38,6 +38,8 @@ export interface Position {
   levelsSource: 'script' | 'atr-fallback' | 'mixed';
   /** Effective leverage (notional / equity at entry). */
   leverage: number;
+  /** Selected isolated leverage; separate from account exposure above. */
+  marginLeverage?: number;
   /** Modelled liquidation price (null when liquidation modelling is off). */
   liqPrice: number | null;
   exitAt: number | null;
@@ -49,6 +51,8 @@ export interface Position {
   /** Entry-time ML features (see ml/features.ts); optional. */
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** Last cumulative live candle observed; retained across restarts. */
+  lastPriceBar?: PriceBar;
 }
 
 export interface EntryRequest {
@@ -62,6 +66,8 @@ export interface EntryRequest {
 
 export interface SizingInputs {
   equity: number;
+  /** Wallet cash available after reserving existing position margin (excludes unrealized gains). */
+  availableMargin?: number;
   contractValue: number;
   tickSize: number;
   cfg: PaperConfig;
@@ -72,7 +78,8 @@ export interface LevelResult { sl: number; tp: number[]; source: Position['level
 export function roundTick(p: number, tick: number): number {
   if (!tick || tick <= 0) return p;
   const d = Math.round(p / tick) * tick;
-  const decimals = Math.min(8, Math.max(0, Math.ceil(-Math.log10(tick))));
+  const [coefficient, exponent = '0'] = tick.toString().toLowerCase().split('e');
+  const decimals = Math.min(15, Math.max(0, (coefficient.split('.')[1]?.length ?? 0) - Number(exponent)));
   return Number(d.toFixed(decimals));
 }
 
@@ -80,6 +87,7 @@ export function roundTick(p: number, tick: number): number {
 export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number): LevelResult | { error: string } {
   const dir = req.side === 'long' ? 1 : -1;
   const entry = req.price;
+  if (!Number.isFinite(entry) || entry <= 0) return { error: 'invalid entry price' };
   let sl = req.sl;
   let source: Position['levelsSource'] = 'script';
   const validSl = (v: number | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0 && (req.side === 'long' ? v < entry : v > entry);
@@ -96,7 +104,11 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
     tp = cfg.fallbackRR.map(rr => entry + dir * rr * risk);
     source = source === 'script' ? 'mixed' : 'atr-fallback';
   }
-  return { sl: roundTick(sl!, tick), tp: tp.slice(0, 3).map(v => roundTick(v, tick)), source };
+  sl = roundTick(sl!, tick);
+  tp = [...new Set(tp.slice(0, 3).map(v => roundTick(v, tick)))];
+  if (!validSl(sl)) return { error: 'stop invalid after tick rounding' };
+  if (!tp.length || tp.some(v => !Number.isFinite(v) || v <= 0 || (req.side === 'long' ? v <= entry : v >= entry))) return { error: 'target invalid after tick rounding' };
+  return { sl, tp, source };
 }
 
 /** Leverage for a signal quality score (0..100) in `quality` sizing mode: linear from minLeverage to maxLeverage. */
@@ -110,31 +122,36 @@ export function leverageForScore(score: number | undefined, cfg: PaperConfig): n
  *  - `risk` mode: the stop loses riskPerTradePct of equity, capped by maxLeverage.
  *  - `quality` mode: notional = equity × leverage(score); the stop decides the R.
  */
-export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNotional = 0, score?: number): { qty: number; riskAmount: number; leverage: number; reason?: string } {
-  const perContractRisk = Math.abs(entry - sl) * s.contractValue;
-  if (perContractRisk <= 0) return { qty: 0, riskAmount: 0, leverage: 0, reason: 'zero risk per contract' };
+export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNotional = 0, score?: number): { qty: number; riskAmount: number; leverage: number; marginLeverage: number; reason?: string } {
+  const marginLeverage = s.cfg.sizingMode === 'quality' ? leverageForScore(score, s.cfg) : s.cfg.maxLeverage;
+  const rejected = (reason: string) => ({ qty: 0, riskAmount: 0, leverage: 0, marginLeverage, reason });
+  if (![entry, sl, s.equity, s.contractValue, marginLeverage].every(v => Number.isFinite(v) && v > 0) || entry === sl) return rejected('invalid sizing inputs');
+  if (s.cfg.liquidation && 1 / marginLeverage <= s.cfg.maintenanceMarginPct / 100) return rejected('initial margin must exceed maintenance margin');
+  const long = sl < entry;
+  const fillEntry = slip(entry, long ? 'buy' : 'sell', s.cfg);
+  const fillStop = slip(sl, long ? 'sell' : 'buy', s.cfg);
+  const entryFee = feeFor(fillEntry, 1, s.contractValue, s.cfg);
+  const perContractRisk = Math.abs(fillEntry - fillStop) * s.contractValue + entryFee + feeFor(fillStop, 1, s.contractValue, s.cfg);
+  const notional = fillEntry * s.contractValue;
+  const availableMargin = s.availableMargin ?? (s.equity - openNotional / s.cfg.maxLeverage);
   const maxNotional = s.equity * s.cfg.maxLeverage - openNotional;
-  const maxQty = Math.floor(maxNotional / (entry * s.contractValue));
-  if (s.cfg.sizingMode === 'quality') {
-    const lev = leverageForScore(score, s.cfg);
-    let qty = Math.floor((s.equity * lev) / (entry * s.contractValue));
-    if (qty > maxQty) qty = maxQty;
-    if (qty < 1) return { qty: 0, riskAmount: 0, leverage: lev, reason: maxQty < 1 ? 'leverage cap exhausted' : 'purse too small for one contract' };
-    return { qty, riskAmount: qty * perContractRisk, leverage: qty * entry * s.contractValue / Math.max(1e-9, s.equity) };
-  }
-  const riskAmount = s.equity * (s.cfg.riskPerTradePct / 100);
-  let qty = Math.floor(riskAmount / perContractRisk);
-  if (qty > maxQty) qty = maxQty;
-  if (qty < 1) return { qty: 0, riskAmount, leverage: 0, reason: qty <= 0 && maxQty < 1 ? 'leverage cap exhausted' : 'risk budget too small for one contract' };
-  return { qty, riskAmount: qty * perContractRisk, leverage: qty * entry * s.contractValue / Math.max(1e-9, s.equity) };
+  // Entry fees consume wallet cash too. Margin is released pro-rata on partial exits.
+  const maxQty = Math.min(Math.floor(maxNotional / notional), Math.floor(availableMargin / (notional / marginLeverage + entryFee)));
+  const desired = s.cfg.sizingMode === 'quality'
+    ? Math.floor(s.equity * marginLeverage / notional)
+    : Math.floor(s.equity * (s.cfg.riskPerTradePct / 100) / perContractRisk);
+  const qty = Math.min(desired, maxQty);
+  if (!Number.isFinite(qty) || qty < 1) return rejected(maxQty < 1 ? 'margin or leverage cap exhausted' : 'risk budget too small for one contract');
+  return { qty, riskAmount: qty * perContractRisk, leverage: qty * notional / s.equity, marginLeverage };
 }
 
-/** Exchange-style liquidation price for an isolated position at `leverage`. */
+/** Simplified isolated liquidation: fixed maintenance on entry notional, no funding or tiering. */
 export function liquidationPrice(side: Side, entry: number, leverage: number, cfg: PaperConfig): number | null {
-  if (!cfg.liquidation || !(leverage > 0)) return null;
+  if (!cfg.liquidation || !Number.isFinite(entry) || entry <= 0 || !Number.isFinite(leverage) || !(leverage > 0)) return null;
   const move = 1 / leverage - cfg.maintenanceMarginPct / 100;
   if (move <= 0) return entry;
-  return side === 'long' ? entry * (1 - move) : entry * (1 + move);
+  const price = side === 'long' ? entry * (1 - move) : entry * (1 + move);
+  return price > 0 ? price : null;
 }
 
 /** Split `qty` into TP legs following `split` (remainder goes to the last leg; zero legs are skipped at fill time). */
@@ -174,8 +191,11 @@ export interface OpenParams {
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; qty: number; contractValue: number;
   entryPrice: number; at: number; sl: number; tp: number[]; riskAmount: number; levelsSource: Position['levelsSource']; signalId: number | null; cfg: PaperConfig; bt: boolean;
   leverage?: number;
+  marginLeverage?: number;
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** Last cumulative live candle observed; retained across restarts. */
+  lastPriceBar?: PriceBar;
 }
 
 export function openPosition(p: OpenParams): Position {
@@ -186,8 +206,8 @@ export function openPosition(p: OpenParams): Position {
     id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
-    levelsSource: p.levelsSource, leverage: p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
-    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null,
+    levelsSource: p.levelsSource, leverage: p.leverage ?? 0, marginLeverage: p.marginLeverage ?? p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.marginLeverage ?? p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
+    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar,
   };
 }
 
@@ -195,13 +215,20 @@ export interface FillEvent { position: Position; fill: Fill; closed: boolean }
 
 /** Reduce/close a position at `price`. Mutates and returns the fill. */
 export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean): Fill {
-  const q = Math.min(qty, pos.qtyOpen);
+  let q = Math.min(qty, pos.qtyOpen);
   // an exchange would have liquidated before any exit could print beyond the liquidation price
-  if (pos.liqPrice !== null && (pos.side === 'long' ? price < pos.liqPrice : price > pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; }
-  const px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg) : price;
+  if (pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
+  let px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg) : price;
+  const marginLeverage = pos.marginLeverage ?? pos.leverage;
+  const margin = marginLeverage > 0 ? pos.entryPrice * q * pos.contractValue / marginLeverage : Infinity;
+  if (reason === 'liquidation' && marginLeverage > 0) {
+    const bankruptcy = Math.max(0, pos.entryPrice * (1 + (pos.side === 'long' ? -1 : 1) / marginLeverage));
+    px = pos.side === 'long' ? Math.max(px, bankruptcy) : Math.min(px, bankruptcy);
+  }
   // take-profit legs rest as limit orders → maker fee; everything else crosses the spread → taker fee
-  const fee = feeFor(px, q, pos.contractValue, cfg, !withSlippage);
   const pnl = pnlOf(pos, px, q);
+  const quotedFee = feeFor(px, q, pos.contractValue, cfg, /^tp[123]$/.test(reason) && !withSlippage);
+  const fee = reason === 'liquidation' ? Math.min(quotedFee, Math.max(0, margin + pnl)) : quotedFee;
   pos.qtyOpen -= q;
   pos.realizedPnl += pnl;
   pos.fees += fee;
@@ -243,10 +270,33 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
     const isLast = i === pos.tp.length - 1;
     const q = isLast ? pos.qtyOpen : Math.min(pos.legs[i], pos.qtyOpen);
     fills.push(fillExit(pos, pos.tp[i], q, `tp${i + 1}`, at, cfg, false));
-    if (pos.status === 'closed') return fills;
+    if (pos.qtyOpen <= 0) return fills;
     if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
   }
   return fills;
+}
+
+export interface PriceBar { time: number; high: number; low: number; close: number }
+
+/** Process only price information newly observed since entry/the previous update.
+ * OHLC extremes are cumulative; replaying an old low after TP1 must not hit the new BE stop.
+ * In an entry minute without a baseline, only the current close is known to be post-entry.
+ */
+export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, observedAt: number): Fill[] {
+  const previous = pos.lastPriceBar;
+  if (pos.status !== 'open' || observedAt < pos.entryAt || bar.time + 60_000 <= pos.entryAt) return [];
+  if (previous && bar.time < previous.time) return [];
+  const sameBar = previous?.time === bar.time;
+  if (sameBar && previous.high === bar.high && previous.low === bar.low && previous.close === bar.close) return [];
+  let high = bar.high, low = bar.low;
+  if (sameBar) {
+    high = bar.high > previous.high ? Math.max(bar.high, bar.close) : bar.close;
+    low = bar.low < previous.low ? Math.min(bar.low, bar.close) : bar.close;
+  } else if (bar.time < pos.entryAt) {
+    high = low = bar.close;
+  }
+  pos.lastPriceBar = { ...bar };
+  return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg);
 }
 
 /** Script-emitted exit event applied according to the scanner's exit mode. */
@@ -262,6 +312,7 @@ export function applyScriptExit(pos: Position, exitType: ExitType, price: number
     for (let k = 0; k <= i && pos.status === 'open'; k++) {
       if (pos.tpHit[k]) continue;
       pos.tpHit[k] = true;
+      if (pos.legs[k] <= 0) continue;
       const isLast = k === pos.tp.length - 1;
       const q = isLast ? pos.qtyOpen : Math.min(pos.legs[k], pos.qtyOpen);
       fills.push(fillExit(pos, k === i ? px : pos.tp[k], q, `tp${k + 1}`, at, cfg, false));

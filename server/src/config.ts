@@ -165,8 +165,10 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
-  if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
-  if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3)) errs.push('paper.fallbackRR must be 3 numbers');
+  if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && p.tpSplit.every(v => Number.isFinite(v) && v >= 0 && v <= 1) && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');
+  if (!(Array.isArray(p.fallbackRR) && p.fallbackRR.length === 3 && p.fallbackRR.every((v, i, a) => Number.isFinite(v) && v > 0 && (i === 0 || v > a[i - 1])))) errs.push('paper.fallbackRR must be 3 numbers');
+  if (!(Number.isFinite(p.slippageBps) && p.slippageBps >= 0 && p.slippageBps < 10_000)) errs.push('paper.slippageBps must be 0..10000');
+  if (!(Number.isFinite(p.fallbackAtrSl) && p.fallbackAtrSl > 0)) errs.push('paper.fallbackAtrSl must be positive');
   if (!(p.maxOpenPositions >= 1)) errs.push('paper.maxOpenPositions must be >= 1');
   if (!['paper', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');

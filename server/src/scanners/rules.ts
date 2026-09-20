@@ -117,6 +117,9 @@ export const RULES: Record<string, Rule> = {
 
   // "🟡 ENTRY ZONE | … | Price: #" — direction/targets from the script's TP1..TP4 labels.
   'automatic-fibonacci-levels': (ctx) => {
+    // The worker exposes final drawing state, not historical TP snapshots.
+    // Deriving old entries from those labels would leak future targets/direction.
+    if (ctx.mode === 'backtest') return [];
     const tpLabels = ctx.labels.filter(l => /^TP\d$/i.test(l.text.trim())).map(l => l.y).filter(Number.isFinite);
     if (tpLabels.length < 2) return [];
     return alertRule({
@@ -124,7 +127,7 @@ export const RULES: Record<string, Rule> = {
       side: (m) => { const p = numIn((m.match(/Price:\s*(-?\d+(?:[.,]\d+)?)/i) ?? [])[1] ?? ''); if (p === undefined) return undefined; const above = tpLabels.filter(t => t > p).length; const below = tpLabels.length - above; return above > below ? 'long' : below > above ? 'short' : undefined; },
       label: () => 'Fib entry zone',
       tp: (m) => { const p = numIn((m.match(/Price:\s*(-?\d+(?:[.,]\d+)?)/i) ?? [])[1] ?? '') ?? 0; const above = tpLabels.filter(t => t > p).sort((a, b) => a - b); const below = tpLabels.filter(t => t < p).sort((a, b) => b - a); return (above.length >= below.length ? above : below).slice(0, 3); },
-    })(ctx).filter(e => ctx.mode === 'live' || true);
+    })(ctx);
   },
 
   // "Breakout ▲/▼" labels with a "🎯 <price>" target label.
