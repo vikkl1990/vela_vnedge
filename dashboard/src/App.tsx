@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { ChartPage } from './pages/ChartPage'
+import { Analytics } from './pages/Analytics'
 import { Learn } from './pages/Learn'
 import { Logs } from './pages/Logs'
 import { Overview } from './pages/Overview'
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="signals" element={<Signals />} />
           <Route path="trades" element={<Trades />} />
           <Route path="chart" element={<ChartPage />} />
+          <Route path="analytics" element={<Analytics />} />
           <Route path="learn" element={<Learn />} />
           <Route path="settings" element={<Settings />} />
           <Route path="logs" element={<Logs />} />

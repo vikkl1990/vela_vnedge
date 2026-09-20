@@ -139,6 +139,55 @@ export class App {
 
   scannerViews() { return this.registry.all().map(s => this.scannerView(s.id)); }
 
+  /** Cross-sectional analytics: pairs, scanners, scanner×pair matrix, exits and time-of-day, for backtest and live. */
+  analytics() {
+    type Agg = { trades: number; wins: number; pnl: number; gp: number; gl: number; fees: number };
+    const mk = (): Agg => ({ trades: 0, wins: 0, pnl: 0, gp: 0, gl: 0, fees: 0 });
+    const add = (a: Agg, pnl: number, fees: number) => { a.trades++; if (pnl > 0) { a.wins++; a.gp += pnl; } else a.gl += -pnl; a.pnl += pnl; a.fees += fees; };
+    const fin = (a: Agg) => ({ trades: a.trades, wins: a.wins, winRatePct: a.trades ? a.wins / a.trades * 100 : 0, pnl: a.pnl, fees: a.fees, profitFactor: a.gl > 0 ? a.gp / a.gl : a.gp > 0 ? 999 : null });
+    const names = Object.fromEntries(this.registry.all().map(s => [s.id, { name: s.name, author: s.author }]));
+    const active = new Set(this.registry.all().filter(s => this.scanners.isActive(s)).map(s => s.id));
+    // backtest side (enabled scanners on their configured symbols only)
+    const btSym: Record<string, Agg> = {}, btSc: Record<string, Agg> = {}, btCell: Record<string, Agg> = {};
+    for (const b of this.scanners.allBacktests()) {
+      if (!active.has(b.id) || !this.scanners.symbolsFor(b.id).includes(b.symbol)) continue;
+      for (const t of b.result.trades) {
+        add(btSym[b.symbol] ??= mk(), t.pnl, t.fees ?? 0); add(btSc[b.id] ??= mk(), t.pnl, t.fees ?? 0); add(btCell[`${b.id}|${b.symbol}`] ??= mk(), t.pnl, t.fees ?? 0);
+      }
+    }
+    // live side
+    const trades = this.paper.trades({ limit: 5000 });
+    const lvSym: Record<string, Agg> = {}, lvSc: Record<string, Agg> = {}, lvCell: Record<string, Agg> = {}, exits: Record<string, Agg> = {}, hours: Agg[] = Array.from({ length: 24 }, mk), dows: Agg[] = Array.from({ length: 7 }, mk);
+    const btHours: Agg[] = Array.from({ length: 24 }, mk), btDows: Agg[] = Array.from({ length: 7 }, mk);
+    for (const t of trades) {
+      add(lvSym[t.symbol] ??= mk(), t.pnl, t.fees); add(lvSc[t.scannerId] ??= mk(), t.pnl, t.fees); add(lvCell[`${t.scannerId}|${t.symbol}`] ??= mk(), t.pnl, t.fees);
+      add(exits[String(t.exitReason ?? 'unknown')] ??= mk(), t.pnl, t.fees);
+      const d = new Date(t.entryAt); add(hours[d.getUTCHours()], t.pnl, t.fees); add(dows[d.getUTCDay()], t.pnl, t.fees);
+    }
+    for (const b of this.scanners.allBacktests()) { if (!active.has(b.id) || !this.scanners.symbolsFor(b.id).includes(b.symbol)) continue; for (const t of b.result.trades) { const d = new Date(t.entryAt); add(btHours[d.getUTCHours()], t.pnl, t.fees ?? 0); add(btDows[d.getUTCDay()], t.pnl, t.fees ?? 0); } }
+    const open = this.paper.openPositions();
+    const symbols = [...new Set([...Object.keys(btSym), ...Object.keys(lvSym)])].map(symbol => ({
+      symbol, backtest: fin(btSym[symbol] ?? mk()), live: fin(lvSym[symbol] ?? mk()),
+      scannersOn: [...active].filter(id => this.scanners.symbolsFor(id).includes(symbol)).length,
+      profitableScanners: [...active].filter(id => (btCell[`${id}|${symbol}`]?.pnl ?? 0) > 0).length,
+      openPositions: open.filter(p => p.symbol === symbol).length,
+      unrealized: open.filter(p => p.symbol === symbol).reduce((a, p) => a + (this.paper.mark(p.symbol) ?? p.entryPrice) * 0 + ((this.paper.mark(p.symbol) ?? p.entryPrice) - p.entryPrice) * (p.side === 'long' ? 1 : -1) * p.contractValue * p.qtyOpen, 0),
+    })).sort((a, b) => (b.live.pnl + b.backtest.pnl) - (a.live.pnl + a.backtest.pnl));
+    const scanners = [...active].map(id => ({
+      id, name: names[id]?.name ?? id, author: names[id]?.author ?? '', symbols: this.scanners.symbolsFor(id).length,
+      backtest: fin(btSc[id] ?? mk()), live: fin(lvSc[id] ?? mk()), openPositions: open.filter(p => p.scannerId === id).length,
+    })).sort((a, b) => (b.live.pnl + b.backtest.pnl) - (a.live.pnl + a.backtest.pnl));
+    const matrix = Object.entries(btCell).map(([k, v]) => { const [id, symbol] = k.split('|'); const lv = lvCell[k]; return { scannerId: id, scannerName: names[id]?.name ?? id, symbol, backtest: fin(v), live: lv ? fin(lv) : null }; });
+    for (const [k, v] of Object.entries(lvCell)) if (!btCell[k]) { const [id, symbol] = k.split('|'); matrix.push({ scannerId: id, scannerName: names[id]?.name ?? id, symbol, backtest: fin(mk()), live: fin(v) }); }
+    return {
+      at: Date.now(), symbols, scanners, matrix,
+      exits: Object.entries(exits).map(([reason, a]) => ({ reason, ...fin(a) })).sort((a, b) => b.trades - a.trades),
+      hours: hours.map((a, h) => ({ hour: h, live: fin(a), backtest: fin(btHours[h]) })),
+      weekdays: dows.map((a, d) => ({ dow: d, live: fin(a), backtest: fin(btDows[d]) })),
+      totals: { live: fin(trades.reduce((acc, t) => (add(acc, t.pnl, t.fees), acc), mk())), backtest: fin(Object.values(btSc).reduce((acc, a) => ({ trades: acc.trades + a.trades, wins: acc.wins + a.wins, pnl: acc.pnl + a.pnl, gp: acc.gp + a.gp, gl: acc.gl + a.gl, fees: acc.fees + a.fees }), mk())) },
+    };
+  }
+
   async stop() {
     this.feed.stop();
     await this.pool.stop();

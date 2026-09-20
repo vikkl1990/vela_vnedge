@@ -85,7 +85,9 @@ Other commands:
   "avoid ATR % ≤ 0.30" or "prefer weekdays". Settings → Machine learning can gate entries below
   a probability and use the probability as the leverage score. Dashboard page: **Learn**.
 * Dashboard pages: Overview, Scanners, Scanner detail (chart with the script overlaid),
-  Signals, Positions & Trades, Chart, Learn, Settings, Logs — live via Server-Sent Events.
+  Signals, Positions & Trades, Chart, Analytics (pair and scanner leaderboards, scanner × pair
+  heatmap, hour/weekday PnL, exit reasons; backtest vs live), Learn, Settings, Logs — live via
+  Server-Sent Events.
 
 ## Configuration
 

@@ -411,3 +411,16 @@ export interface MlSnapshot {
   counts?: { total: number; live: number }
   config?: { minProb: number; useAsScore: boolean }
 }
+
+// ---- analytics ----
+export interface Agg { trades: number; wins: number; winRatePct: number; pnl: number; fees: number; profitFactor: number | null }
+export interface Analytics {
+  at: number
+  symbols: Array<{ symbol: string; backtest: Agg; live: Agg; scannersOn: number; profitableScanners: number; openPositions: number; unrealized: number }>
+  scanners: Array<{ id: string; name: string; author: string; symbols: number; backtest: Agg; live: Agg; openPositions: number }>
+  matrix: Array<{ scannerId: string; scannerName: string; symbol: string; backtest: Agg; live: Agg | null }>
+  exits: Array<Agg & { reason: string }>
+  hours: Array<{ hour: number; live: Agg; backtest: Agg }>
+  weekdays: Array<{ dow: number; live: Agg; backtest: Agg }>
+  totals: { live: Agg; backtest: Agg }
+}

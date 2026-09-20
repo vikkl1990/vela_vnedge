@@ -238,6 +238,7 @@ export class ApiServer {
       fs.writeFileSync(file, JSON.stringify(body.list, null, 1));
       return { file, n: body.list.length };
     });
+    this.add('GET', '/api/analytics', () => a.analytics());
     this.add('GET', '/api/ml', () => ({ ...(a.ml.insights() ?? { trainedAt: null, samples: 0, liveSamples: 0, scannersWithModel: 0, global: null, scanners: [] }), counts: a.ml.count(), config: a.config.get().ml }));
     this.add('POST', '/api/ml/train', () => a.ml.train());
     this.add('GET', '/api/ml/scanner/:id', (_r, _s, p) => a.ml.insightFor(p.id) ?? { scannerId: p.id, samples: 0, rules: [], model: null });

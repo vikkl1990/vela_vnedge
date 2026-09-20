@@ -1023,3 +1023,8 @@ thead.sticky th { position: sticky; top: 0; z-index: 1; }
 .rule { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); font-size: 13px; }
 .rule-text { line-height: 1.35; }
 .table tr.row-active td { background: rgba(124, 111, 245, 0.08); }
+
+/* Analytics heatmap */
+.table.heat th.heat-col { font-size: 10px; letter-spacing: 0.04em; }
+.table.heat td.heat-cell { text-align: right; padding: 6px 8px; min-width: 52px; }
+.table.heat td.heat-empty { background: transparent; }

@@ -19,6 +19,7 @@ export const qk = {
   backtest: (scanner: string, symbol: string, tf: string) => ['backtest', scanner, symbol, tf] as const,
   logs: (level?: LogLevel) => ['logs', level ?? 'all'] as const,
   ml: ['ml'] as const,
+  analytics: ['analytics'] as const,
   mlScanner: (id: string) => ['ml', id] as const,
   candles: (symbol: string, tf: string) => ['candles', symbol, tf] as const,
 }
@@ -150,3 +151,4 @@ export function useRunBacktest() {
 
 export const useMl = () => useQuery({ queryKey: qk.ml, queryFn: api.ml, retry: 1, refetchInterval: 60_000 })
 export const useMlScanner = (id: string) => useQuery({ queryKey: qk.mlScanner(id), queryFn: () => api.mlScanner(id), enabled: !!id, retry: 1 })
+export const useAnalytics = () => useQuery({ queryKey: qk.analytics, queryFn: api.analytics, retry: 1, refetchInterval: 30_000 })

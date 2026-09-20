@@ -28,6 +28,7 @@ const NAV = [
   { to: '/trades', label: 'Trades', icon: IconTrades },
   { to: '/chart', label: 'Chart', icon: IconChart },
   { to: '/settings', label: 'Settings', icon: IconSettings },
+  { to: '/analytics', label: 'Analytics', icon: IconChart },
   { to: '/learn', label: 'Learn', icon: IconChart },
   { to: '/logs', label: 'Logs', icon: IconLogs },
 ]

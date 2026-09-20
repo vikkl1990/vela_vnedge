@@ -101,6 +101,7 @@ export class ScannerEngine extends EventEmitter {
   }
   getOverlay(id: string, symbol: string, tf: string): Overlay | undefined { return this.overlays.get(`${id}:${symbol}:${tf}`); }
   getBacktest(id: string, symbol: string, tf: string): BacktestResult | undefined { return this.backtests.get(`${id}:${symbol}:${tf}`); }
+  allBacktests(): Array<{ id: string; symbol: string; tf: string; result: BacktestResult }> { return [...this.backtests.entries()].map(([k, result]) => { const [id, symbol, tf] = k.split(':'); return { id, symbol, tf, result }; }); }
   backtestSummary(id: string): BacktestResult['stats'] | null {
     const list = [...this.backtests.entries()].filter(([k]) => k.startsWith(id + ':')).map(([, v]) => v);
     if (!list.length) return null;
