@@ -1,0 +1,710 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+indicator("Inversion Order Blocks [iOB] (Zeiierman)", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=1000)
+// }
+
+// ~~ Tooltips {
+var string t1 = "Defines how many completed bars are used to establish the structure high or low that the displacement candle must close through. Higher values require a more important structural break but produce fewer order blocks."
+var string t2 = "Controls how far back the script searches for the final opposing candle before the displacement. The nearest qualifying candle becomes the order block."
+var string t3 = "Requires the displacement candle range to be at least this multiple of ATR. Higher values keep only stronger expansion moves."
+var string t4 = "Requires the displacement candle body to occupy at least this fraction of its full range. Higher values favor decisive directional candles with smaller wicks."
+var string t5 = "Selects whether the order block uses the complete candle range or only the candle body. Full Candle creates wider zones, while Body creates tighter zones."
+var string t6 = "Rejects order blocks smaller than this ATR fraction. Raise the value to remove very thin blocks that may be caused by small candles."
+var string t7 = "Controls how long a failed order block remains available to pair with a later opposing order block in the same price area."
+var string t8 = "Controls the maximum total age of an order block memory, including the period before it fails."
+var string t9 = "Controls what happens after a displayed zone reaches its mitigation level. Delete removes it, while disabling this option freezes it as historical context."
+var string t10 = "Defines how deeply price must enter a zone before mitigation. 50% Fill uses the midpoint, while Full Fill uses the far edge."
+var string t11 = "Selects whether mitigation is confirmed by any wick touch or only by a candle close."
+var string t12 = "Hides regular OBs and inversion OBs that are too far from current price while keeping their internal state active."
+var string t13 = "Sets the maximum visible distance from current price in ATR for both regular OBs and inversion OBs. This affects drawings only and does not change memory, pairing, mitigation, or alerts."
+var string t14 = "Visually combines nearby compatible zones. Bullish and bearish iOBs may merge into one neutral iOB area. Retained mitigated zones merge only with other retained zones that overlap in time."
+var string t15 = "Sets how far apart compatible zones may be and still appear merged, measured in ATR."
+var string t16 = "Shows regular order blocks. Their detection and memory continue even when hidden."
+var string t17 = "Shows inversion order blocks created when a failed block pairs with a later opposing block in the same area."
+var string t18 = "Shows the equilibrium midpoint of each visible zone."
+var string t19 = "Gradually increases transparency as zones age. This changes appearance only."
+var string t20 = "Shows the live zone name beside each active order block."
+var string t21 = "Uses the matching zone color for label text. Disable it to use one custom text color."
+var string t22 = "Sets the label size for regular and inversion order blocks."
+var string t23 = "Moves live labels this many bars to the right of current price."
+var string t24 = "Allows a new opposing OB to confirm a failed OB when they overlap or sit within this ATR distance. A value of zero requires direct overlap."
+var string t25 = "Sets the display color used when bullish and bearish iOBs are visually merged into one neutral area."
+var string t26 = "When mitigated zones are retained, visually combines overlapping historical zones that were active during the same period. Live and mitigated zones remain separate."
+var string t27 = "Sets the transparency of retained mitigated zones so historical interactions remain visible without dominating live zones."
+var string t28 = "Shows equilibrium lines inside retained mitigated zones. Disabled by default to reduce historical clutter."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+var string gDet = "1. Detection"
+var string gMem = "2. Memory"
+var string gMit = "3. Mitigation"
+var string gDist = "4. Distance Filter"
+var string gMerge = "5. Zone Merging"
+var string gView = "6. Display"
+var string gText = "7. Labels"
+var string gStyle = "8. Styling"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+int structureLen = input.int(10, "Structure Lookback", minval=2, maxval=100, group=gDet, tooltip=t1)
+int searchLen = input.int(5, "Order Block Search", minval=1, maxval=50, group=gDet, tooltip=t2)
+float displacementAtr = input.float(0.85, "Minimum Displacement Range", minval=0.10, maxval=10.0, step=0.05, group=gDet, tooltip=t3)
+float displacementBody = input.float(0.50, "Minimum Displacement Body", minval=0.10, maxval=1.00, step=0.05, group=gDet, tooltip=t4)
+string blockSource = input.string("Full Candle", "Order Block Source", options=["Full Candle", "Body"], group=gDet, tooltip=t5)
+float minBlockSize = input.float(0.05, "Minimum Order Block Size", minval=0.0, maxval=2.0, step=0.05, group=gDet, tooltip=t6)
+
+int pairWin = input.int(30, "Pairing Window", minval=1, maxval=200, group=gMem, tooltip=t7)
+int maxMemoryAge = input.int(300, "Maximum Memory Age", minval=20, maxval=2000, group=gMem, tooltip=t8)
+float pairDist = input.float(0.25, "Maximum Pairing Proximity", minval=0.0, maxval=5.0, step=0.05, group=gMem, tooltip=t24)
+
+bool delFilled = input.bool(true, "Delete Mitigated Zones", group=gMit, tooltip=t9)
+string fillLvl = input.string("Full Fill", "Mitigation Level", options=["50% Fill", "Full Fill"], group=gMit, tooltip=t10)
+string fillSrc = input.string("Wicks", "Mitigation Source", options=["Wicks", "Close"], group=gMit, tooltip=t11)
+bool mergeMitigated = input.bool(true, "Merge Retained Mitigated Zones", group=gMit, tooltip=t26)
+int mitigatedTransparency = input.int(88, "Mitigated Zone Transparency", minval=0, maxval=100, group=gMit, tooltip=t27)
+bool showMitigatedEq = input.bool(true, "Show Mitigated EQ Lines", group=gMit, tooltip=t28)
+
+bool useDist = input.bool(true, "Filter Distant Zones", group=gDist, tooltip=t12)
+float maxDist = input.float(50.0, "Maximum Distance From Price", minval=1.0, maxval=500.0, step=1.0, group=gDist, tooltip=t13)
+
+bool useMerge = input.bool(true, "Merge Nearby Zones", group=gMerge, tooltip=t14)
+float mergeDist = input.float(0.50, "Maximum Merge Distance", minval=0.0, maxval=10.0, step=0.05, group=gMerge, tooltip=t15)
+
+bool showIob = input.bool(true, "Show iOBs", group=gView, tooltip=t17)
+bool showOb = input.bool(false, "Show Regular OBs", group=gView, tooltip=t16)
+bool showEq = input.bool(true, "Show EQ Line", group=gView, tooltip=t18)
+bool fadeOld = input.bool(false, "Fade With Age", group=gView, tooltip=t19)
+
+bool showText = input.bool(true, "Show Labels", group=gText, tooltip=t20)
+bool zoneTextColor = input.bool(true, "Use Zone Color as Text", group=gText, tooltip=t21)
+color textClr = input.color(color.white, "Custom Text Color", group=gText)
+string textSz = input.string("Normal", "Text Size", options=["Tiny", "Small", "Normal", "Large"], group=gText, tooltip=t22)
+int textOff = input.int(5, "Label Offset Right", minval=0, maxval=50, group=gText, tooltip=t23)
+
+color obUpClr = input.color(color.new(#00A884, 89), "Bullish OB", group=gStyle)
+color obDnClr = input.color(color.new(#E5484D, 89), "Bearish OB", group=gStyle)
+color iobUpClr = input.color(color.new(#2E6BFF, 72), "Bullish iOB", group=gStyle)
+color iobDnClr = input.color(color.new(#FF8A1F, 72), "Bearish iOB", group=gStyle)
+color mixedIobClr = input.color(color.new(#A66CFF, 72), "Merged Bull/Bear iOB", group=gStyle, tooltip=t25)
+color eqClr = input.color(color.new(#A7B0BD, 20), "EQ Line", group=gStyle)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type Mem
+    float hi
+    float lo
+    bool up
+    int born
+    int left
+    int leftTime
+    int breakBar
+
+type Zone
+    float hi
+    float lo
+    float mid
+    float mit
+    bool up
+    bool inv
+    bool mixed
+    int left
+    int leftTime
+    int born
+    int bornTime
+    int stop
+    int endTime
+    bool hit
+    bool live
+    bool dead
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ State {
+var array<Mem> mem = array.new<Mem>()
+var array<Zone> zones = array.new<Zone>()
+var array<box> boxes = array.new_box()
+var array<line> lines = array.new_line()
+var array<label> labels = array.new_label()
+var array<bool> drawMerged = array.new_bool()
+var array<int> ownerGroup = array.new_int()
+var array<bool> visibleCache = array.new_bool()
+var array<int> groupReps = array.new_int()
+var array<Zone> groupZones = array.new<Zone>()
+var array<int> groupCounts = array.new_int()
+var array<int> group0 = array.new_int()
+var array<int> group1 = array.new_int()
+var array<int> group2 = array.new_int()
+var array<int> group3 = array.new_int()
+float atr = ta.atr(14)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+zoneColor(Zone z) =>
+    z.inv ? (z.mixed ? mixedIobClr : z.up ? iobUpClr : iobDnClr) : (z.up ? obUpClr : obDnClr)
+
+fadeColor(color clr, int age) =>
+    float base = color.t(clr)
+    float pct = math.min(age, 100) / 100.0
+    color.new(clr, math.min(95.0, base + pct * (95.0 - base)))
+
+zoneText(Zone z) =>
+    z.inv ? (z.mixed ? "Merged iOB" : z.up ? "Bullish iOB" : "Bearish iOB") : (z.up ? "Bullish OB" : "Bearish OB")
+
+textSize() =>
+    textSz == "Tiny" ? size.tiny : textSz == "Small" ? size.small : textSz == "Normal" ? size.normal : size.large
+
+textColor(Zone z) =>
+    zoneTextColor ? color.new(zoneColor(z), 0) : textClr
+
+zoneDist(float hi, float lo) =>
+    close > hi ? close - hi : close < lo ? lo - close : 0.0
+
+distanceVisible(Zone z) =>
+    not useDist or na(atr) or zoneDist(z.hi, z.lo) <= atr * maxDist
+
+typeVisible(Zone z) =>
+    z.inv ? showIob : showOb
+
+isVisible(Zone z) =>
+    typeVisible(z) and not z.dead and distanceVisible(z)
+
+rightTime(Zone z) =>
+    z.live ? time : z.endTime
+
+newZone(float hi, float lo, bool up, bool inv, int left, int leftTime, int born, int bornTime) =>
+    float mid = math.avg(hi, lo)
+    float mit = fillLvl == "50% Fill" ? mid : up ? lo : hi
+    Zone.new(hi, lo, mid, mit, up, inv, false, left, leftTime, born, bornTime, -1, na, false, true, false)
+
+freezeZone(Zone z, int endBar, int endTime) =>
+    Zone.new(z.hi, z.lo, z.mid, z.mit, z.up, z.inv, z.mixed, z.left, z.leftTime, z.born, z.bornTime, endBar, endTime, z.hit, false, false)
+
+killZone(Zone z) =>
+    Zone.new(z.hi, z.lo, z.mid, z.mit, z.up, z.inv, z.mixed, z.left, z.leftTime, z.born, z.bornTime, z.stop, z.endTime, z.hit, false, true)
+
+markTested(Zone z) =>
+    Zone.new(z.hi, z.lo, z.mid, z.mit, z.up, z.inv, z.mixed, z.left, z.leftTime, z.born, z.bornTime, z.stop, z.endTime, true, z.live, z.dead)
+
+findBullBlock(bool active, int bars, string src) =>
+    float outHi = na
+    float outLo = na
+    int outOff = na
+    if active and bars > 0
+        for j = 1 to bars
+            if close[j] < open[j]
+                outHi := src == "Full Candle" ? high[j] : math.max(open[j], close[j])
+                outLo := src == "Full Candle" ? low[j] : math.min(open[j], close[j])
+                outOff := j
+                break
+    [outHi, outLo, outOff]
+
+findBearBlock(bool active, int bars, string src) =>
+    float outHi = na
+    float outLo = na
+    int outOff = na
+    if active and bars > 0
+        for j = 1 to bars
+            if close[j] > open[j]
+                outHi := src == "Full Candle" ? high[j] : math.max(open[j], close[j])
+                outLo := src == "Full Candle" ? low[j] : math.min(open[j], close[j])
+                outOff := j
+                break
+    [outHi, outLo, outOff]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Merge {
+mergeEnabled(Zone z) =>
+    not z.dead and (z.live or mergeMitigated)
+
+mergeKey(Zone z) =>
+    z.inv ? 0 : z.up ? 2 : 3
+
+zoneGap(Zone a, Zone b) =>
+    float gap = 0.0
+    if a.hi < b.lo
+        gap := b.lo - a.hi
+    else if b.hi < a.lo
+        gap := a.lo - b.hi
+    gap
+
+rangeGap(float aHi, float aLo, float bHi, float bLo) =>
+    aHi < bLo ? bLo - aHi : bHi < aLo ? aLo - bHi : 0.0
+
+canMerge(Zone a, Zone b) =>
+    bool sameKind = a.inv == b.inv
+    bool directionOk = a.inv ? true : a.up == b.up
+    bool sameState = a.live == b.live
+    bool historicalOk = a.live or mergeMitigated
+    bool timeOk = a.live or (a.stop >= b.left and b.stop >= a.left)
+    bool distOk = na(atr) or zoneGap(a, b) <= atr * mergeDist
+    useMerge and sameKind and directionOk and sameState and historicalOk and timeOk and distOk
+
+mergeZone(Zone a, Zone b) =>
+    float hi = math.max(a.hi, b.hi)
+    float lo = math.min(a.lo, b.lo)
+    float mid = math.avg(hi, lo)
+    bool bNewer = b.born > a.born
+    bool up = bNewer ? b.up : a.up
+    bool mixed = a.mixed or b.mixed or (a.inv and b.inv and a.up != b.up)
+    float mit = fillLvl == "50% Fill" ? mid : up ? lo : hi
+    bool aLeft = a.left <= b.left
+    int left = aLeft ? a.left : b.left
+    int leftTime = aLeft ? a.leftTime : b.leftTime
+    int born = bNewer ? b.born : a.born
+    int bornTime = bNewer ? b.bornTime : a.bornTime
+    bool hit = a.hit or b.hit
+    bool live = a.live and b.live
+    bool bEndsLater = nz(b.stop, -1) > nz(a.stop, -1)
+    int stop = live ? -1 : math.max(a.stop, b.stop)
+    int endTime = live ? na : (bEndsLater ? b.endTime : a.endTime)
+    Zone.new(hi, lo, mid, mit, up, a.inv, mixed, left, leftTime, born, bornTime, stop, endTime, hit, live, false)
+
+bucketSize(int key) =>
+    key == 0 ? group0.size() : key == 1 ? group1.size() : key == 2 ? group2.size() : group3.size()
+
+bucketGet(int key, int index) =>
+    key == 0 ? group0.get(index) : key == 1 ? group1.get(index) : key == 2 ? group2.get(index) : group3.get(index)
+
+bucketPush(int key, int groupId) =>
+    if key == 0
+        group0.push(groupId)
+    else if key == 1
+        group1.push(groupId)
+    else if key == 2
+        group2.push(groupId)
+    else
+        group3.push(groupId)
+    true
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Memory {
+addMem(float hi, float lo, bool up, int born, int left, int leftTime) =>
+    mem.push(Mem.new(hi, lo, up, born, left, leftTime, -1))
+    true
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Zone State {
+entered(Zone z) =>
+    high >= z.lo and low <= z.hi
+
+mitigated(Zone z) =>
+    float p = fillSrc == "Wicks" ? (z.up ? low : high) : close
+    z.up ? p <= z.mit : p >= z.mit
+
+invalidateRegular(bool up, float hi, float lo) =>
+    int n = zones.size()
+    if n > 0
+        for i = n - 1 to 0
+            Zone z = zones.get(i)
+            bool sameOriginal = not z.dead and not z.inv and z.up == up
+            bool overlap = z.lo < hi and z.hi > lo
+            if sameOriginal and overlap
+                zones.set(i, killZone(z))
+    true
+
+removeZoneState(int i) =>
+    if i < boxes.size()
+        box bx = boxes.get(i)
+        line ln = lines.get(i)
+        label lb = labels.get(i)
+        if not na(bx)
+            box.delete(bx)
+        if not na(ln)
+            line.delete(ln)
+        if not na(lb)
+            label.delete(lb)
+        boxes.remove(i)
+        lines.remove(i)
+        labels.remove(i)
+        drawMerged.remove(i)
+    zones.remove(i)
+    true
+
+cleanZoneState() =>
+    if zones.size() > 0
+        for i = zones.size() - 1 to 0
+            if zones.get(i).dead
+                bool removed = removeZoneState(i)
+    while zones.size() > 450
+        bool removed = removeZoneState(0)
+    true
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pairing Engine {
+processBlock(float hi, float lo, bool up, int left, int leftTime) =>
+    bool madeInv = false
+    int n = mem.size()
+    if n > 0
+        for i = n - 1 to 0
+            Mem old = mem.get(i)
+            float overlapHi = math.min(hi, old.hi)
+            float overlapLo = math.max(lo, old.lo)
+            float gap = rangeGap(hi, lo, old.hi, old.lo)
+            float tolerance = nz(atr) * pairDist
+            bool opposite = old.up != up
+            bool broken = old.breakBar >= 0
+            bool inWindow = broken and bar_index - old.breakBar <= pairWin
+            bool overlaps = overlapHi > overlapLo
+            bool nearby = not overlaps and gap <= tolerance
+            float zoneHi = overlaps ? overlapHi : old.hi
+            float zoneLo = overlaps ? overlapLo : old.lo
+            bool largeEnough = not na(atr) and zoneHi - zoneLo >= atr * minBlockSize
+            if opposite and inWindow and (overlaps or nearby) and largeEnough
+                zones.push(newZone(zoneHi, zoneLo, up, true, math.min(left, old.left), old.leftTime, bar_index, time))
+                bool invalidated = invalidateRegular(old.up, old.hi, old.lo)
+                mem.remove(i)
+                madeInv := true
+    zones.push(newZone(hi, lo, up, false, left, leftTime, bar_index, time))
+    bool remembered = addMem(hi, lo, up, bar_index, left, leftTime)
+    madeInv
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Detection {
+float priorHigh = ta.highest(high, structureLen)[1]
+float priorLow = ta.lowest(low, structureLen)[1]
+float candleRange = high - low
+float candleBody = math.abs(close - open)
+float bodyRatio = candleRange > 0.0 ? candleBody / candleRange : 0.0
+bool displacementOk = not na(atr) and candleRange >= atr * displacementAtr and bodyRatio >= displacementBody
+bool bullBreak = displacementOk and close > open and not na(priorHigh) and close > priorHigh
+bool bearBreak = displacementOk and close < open and not na(priorLow) and close < priorLow
+[bullHi, bullLo, bullOff] = findBullBlock(bullBreak, searchLen, blockSource)
+[bearHi, bearLo, bearOff] = findBearBlock(bearBreak, searchLen, blockSource)
+bool bullValid = bullBreak and not na(bullOff) and bullHi > bullLo and bullHi - bullLo >= atr * minBlockSize
+bool bearValid = bearBreak and not na(bearOff) and bearHi > bearLo and bearHi - bearLo >= atr * minBlockSize
+
+bool newBullOb = false
+bool newBearOb = false
+bool newBullIob = false
+bool newBearIob = false
+bool bullRetest = false
+bool bearRetest = false
+bool bullFilled = false
+bool bearFilled = false
+bool bullIobBreak = false
+bool bearIobBreak = false
+bool bullObBreak = false
+bool bearObBreak = false
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Processing {
+if barstate.isconfirmed
+    int memN = mem.size()
+    if memN > 0
+        for i = memN - 1 to 0
+            Mem m = mem.get(i)
+            int br = m.breakBar
+            if br < 0
+                bool breakNow = m.up ? close < m.lo : close > m.hi
+                if breakNow
+                    br := bar_index
+                    if m.up
+                        bullObBreak := true
+                    else
+                        bearObBreak := true
+            Mem updated = Mem.new(m.hi, m.lo, m.up, m.born, m.left, m.leftTime, br)
+            bool tooOld = bar_index - updated.born > maxMemoryAge
+            bool spent = updated.breakBar >= 0 and bar_index - updated.breakBar > pairWin
+            if tooOld or spent
+                mem.remove(i)
+            else
+                mem.set(i, updated)
+    while mem.size() > 150
+        mem.shift()
+    if bullValid
+        newBullOb := true
+        bool made = processBlock(bullHi, bullLo, true, bar_index - bullOff, time[bullOff])
+        if made
+            newBullIob := true
+    if bearValid
+        newBearOb := true
+        bool made = processBlock(bearHi, bearLo, false, bar_index - bearOff, time[bearOff])
+        if made
+            newBearIob := true
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Zone Updates {
+if barstate.isconfirmed and zones.size() > 0
+    for i = zones.size() - 1 to 0
+        Zone z = zones.get(i)
+        if not z.dead and z.live and bar_index > z.born
+            bool zoneBreak = z.up ? close < z.lo : close > z.hi
+            if zoneBreak
+                if z.inv
+                    if z.up
+                        bullIobBreak := true
+                    else
+                        bearIobBreak := true
+                z := killZone(z)
+                zones.set(i, z)
+                continue
+            if not z.hit and entered(z)
+                z := markTested(z)
+                if z.inv
+                    if z.up
+                        bullRetest := true
+                    else
+                        bearRetest := true
+                zones.set(i, z)
+            if mitigated(z)
+                if z.inv
+                    if z.up
+                        bullFilled := true
+                    else
+                        bearFilled := true
+                z := delFilled ? killZone(z) : freezeZone(z, bar_index, time)
+                zones.set(i, z)
+
+if barstate.isconfirmed
+    bool stateCleaned = cleanZoneState()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing Helpers {
+delBox(box src) =>
+    if not na(src)
+        box.delete(src)
+    true
+
+delLine(line src) =>
+    if not na(src)
+        line.delete(src)
+    true
+
+delLabel(label src) =>
+    if not na(src)
+        label.delete(src)
+    true
+
+clearDraw(box bx, line ln, label lb) =>
+    if not na(bx)
+        box.delete(bx)
+    if not na(ln)
+        line.delete(ln)
+    if not na(lb)
+        label.delete(lb)
+    true
+
+syncSlots() =>
+    while boxes.size() < zones.size()
+        boxes.push(na)
+        lines.push(na)
+        labels.push(na)
+        drawMerged.push(false)
+    true
+
+newBox(Zone z, color clr, int rightT) =>
+    box.new(z.leftTime, z.hi, rightT, z.lo, xloc=xloc.bar_time, bgcolor=clr, border_color=na)
+
+eqVisible(Zone z) =>
+    showEq and (z.live or showMitigatedEq)
+
+newLine(Zone z, int rightT) =>
+    eqVisible(z) ? line.new(z.leftTime, z.mid, rightT, z.mid, xloc=xloc.bar_time, color=eqClr, style=line.style_solid) : na
+
+newLabel(Zone z) =>
+    showText and z.live ? label.new(bar_index + textOff, z.mid, zoneText(z), xloc=xloc.bar_index, style=label.style_label_left, color=color.new(color.white, 100), textcolor=textColor(z), size=textSize()) : na
+
+syncBox(Zone z, box src, color clr, int rightT) =>
+    box out = src
+    if na(out)
+        out := newBox(z, clr, rightT)
+    box.set_left(out, z.leftTime)
+    box.set_top(out, z.hi)
+    box.set_bottom(out, z.lo)
+    box.set_bgcolor(out, clr)
+    box.set_border_color(out, na)
+    box.set_extend(out, extend.none)
+    box.set_right(out, rightT)
+    out
+
+syncLine(Zone z, line src, int rightT) =>
+    line out = src
+    if eqVisible(z)
+        if na(out)
+            out := newLine(z, rightT)
+        line.set_x1(out, z.leftTime)
+        line.set_y1(out, z.mid)
+        line.set_y2(out, z.mid)
+        line.set_color(out, eqClr)
+        line.set_extend(out, extend.none)
+        line.set_x2(out, rightT)
+    else
+        if not na(out)
+            line.delete(out)
+            out := na
+    out
+
+syncLabel(Zone z, label src) =>
+    label out = src
+    if showText and z.live
+        if na(out)
+            out := newLabel(z)
+        label.set_x(out, bar_index + textOff)
+        label.set_y(out, z.mid)
+        label.set_text(out, zoneText(z))
+        label.set_textcolor(out, textColor(z))
+        label.set_style(out, label.style_label_left)
+        label.set_size(out, textSize())
+    else
+        if not na(out)
+            label.delete(out)
+            out := na
+    out
+
+updateLiveLine(Zone z, line src, int rightT) =>
+    line out = src
+    if eqVisible(z)
+        if na(out)
+            out := newLine(z, rightT)
+        else
+            line.set_x2(out, rightT)
+    else
+        if not na(out)
+            line.delete(out)
+            out := na
+    out
+
+updateLiveLabel(Zone z, label src) =>
+    label out = src
+    if showText and z.live
+        if na(out)
+            out := newLabel(z)
+        else
+            label.set_x(out, bar_index + textOff)
+    out
+
+drawZone(int i, Zone z, bool mergedView, bool visible) =>
+    box bx = boxes.get(i)
+    line ln = lines.get(i)
+    label lb = labels.get(i)
+    bool wasMerged = drawMerged.get(i)
+    int age = bar_index - z.born
+    int rightT = rightTime(z)
+    color base = zoneColor(z)
+    color agedClr = fadeOld ? fadeColor(base, age) : base
+    color drawClr = z.live ? agedClr : color.new(agedClr, math.max(color.t(agedClr), mitigatedTransparency))
+    if visible
+        bool fullSync = na(bx) or mergedView or wasMerged != mergedView or fadeOld
+        if fullSync
+            bx := syncBox(z, bx, drawClr, rightT)
+            ln := syncLine(z, ln, rightT)
+            lb := syncLabel(z, lb)
+        else if z.live
+            box.set_right(bx, rightT)
+            ln := updateLiveLine(z, ln, rightT)
+            lb := updateLiveLabel(z, lb)
+        else
+            ln := updateLiveLine(z, ln, rightT)
+        drawMerged.set(i, mergedView)
+    else
+        if not na(bx) or not na(ln) or not na(lb)
+            bool cleared = clearDraw(bx, ln, lb)
+        bx := na
+        ln := na
+        lb := na
+        drawMerged.set(i, false)
+    boxes.set(i, bx)
+    lines.set(i, ln)
+    labels.set(i, lb)
+    true
+
+hideZone(int i) =>
+    box bx = boxes.get(i)
+    line ln = lines.get(i)
+    label lb = labels.get(i)
+    if not na(bx) or not na(ln) or not na(lb)
+        bool cleared = clearDraw(bx, ln, lb)
+    boxes.set(i, na)
+    lines.set(i, na)
+    labels.set(i, na)
+    drawMerged.set(i, false)
+    true
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Render {
+bool renderNow = barstate.islastconfirmedhistory or (barstate.islast and barstate.isconfirmed)
+
+if renderNow
+    bool slotsOk = syncSlots()
+    int n = zones.size()
+    if n > 0
+        if not useMerge
+            for i = 0 to n - 1
+                Zone z = zones.get(i)
+                bool drawn = drawZone(i, z, false, isVisible(z))
+        else
+            ownerGroup.clear()
+            visibleCache.clear()
+            groupReps.clear()
+            groupZones.clear()
+            groupCounts.clear()
+            group0.clear()
+            group1.clear()
+            group2.clear()
+            group3.clear()
+            for i = 0 to n - 1
+                ownerGroup.push(-1)
+                visibleCache.push(false)
+            for i = 0 to n - 1
+                Zone z = zones.get(i)
+                bool visible = isVisible(z)
+                visibleCache.set(i, visible)
+                if visible and mergeEnabled(z)
+                    int key = mergeKey(z)
+                    int found = -1
+                    int bucketCount = bucketSize(key)
+                    if bucketCount > 0
+                        for b = 0 to bucketCount - 1
+                            int groupId = bucketGet(key, b)
+                            Zone group = groupZones.get(groupId)
+                            if canMerge(group, z)
+                                found := groupId
+                                break
+                    if found < 0
+                        int groupId = groupZones.size()
+                        groupReps.push(i)
+                        groupZones.push(z)
+                        groupCounts.push(1)
+                        bool added = bucketPush(key, groupId)
+                        ownerGroup.set(i, groupId)
+                    else
+                        Zone group = groupZones.get(found)
+                        groupZones.set(found, mergeZone(group, z))
+                        groupCounts.set(found, groupCounts.get(found) + 1)
+                        ownerGroup.set(i, found)
+            for i = 0 to n - 1
+                Zone z = zones.get(i)
+                int groupId = ownerGroup.get(i)
+                if groupId < 0
+                    bool drawn = drawZone(i, z, false, visibleCache.get(i))
+                else
+                    int rep = groupReps.get(groupId)
+                    if i == rep
+                        Zone viewZone = groupZones.get(groupId)
+                        bool actuallyMerged = groupCounts.get(groupId) > 1
+                        bool drawn = drawZone(i, viewZone, actuallyMerged, isVisible(viewZone))
+                    else
+                        bool hidden = hideZone(i)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(newBullOb, "New Bullish OB", "A new bullish order block formed on {{ticker}} ({{interval}}).")
+alertcondition(newBearOb, "New Bearish OB", "A new bearish order block formed on {{ticker}} ({{interval}}).")
+alertcondition(newBullOb or newBearOb, "New OB", "A new order block formed on {{ticker}} ({{interval}}).")
+alertcondition(newBullIob, "New Bullish iOB", "A failed bearish order block paired with a later bullish order block on {{ticker}} ({{interval}}).")
+alertcondition(newBearIob, "New Bearish iOB", "A failed bullish order block paired with a later bearish order block on {{ticker}} ({{interval}}).")
+alertcondition(newBullIob or newBearIob, "New iOB", "A new inversion order block formed on {{ticker}} ({{interval}}).")
+alertcondition(bullRetest, "Bullish iOB Retest", "Price retested a bullish inversion order block on {{ticker}} ({{interval}}).")
+alertcondition(bearRetest, "Bearish iOB Retest", "Price retested a bearish inversion order block on {{ticker}} ({{interval}}).")
+alertcondition(bullRetest or bearRetest, "iOB Retest", "Price retested an inversion order block on {{ticker}} ({{interval}}).")
+alertcondition(bullFilled, "Bullish iOB Mitigated", "A bullish inversion order block was mitigated on {{ticker}} ({{interval}}).")
+alertcondition(bearFilled, "Bearish iOB Mitigated", "A bearish inversion order block was mitigated on {{ticker}} ({{interval}}).")
+alertcondition(bullFilled or bearFilled, "iOB Mitigated", "An inversion order block was mitigated on {{ticker}} ({{interval}}).")
+alertcondition(bullIobBreak, "Bullish iOB Break", "Price closed below a bullish inversion order block on {{ticker}} ({{interval}}).")
+alertcondition(bearIobBreak, "Bearish iOB Break", "Price closed above a bearish inversion order block on {{ticker}} ({{interval}}).")
+alertcondition(bullIobBreak or bearIobBreak, "iOB Break", "Price closed through an inversion order block on {{ticker}} ({{interval}}).")
+alertcondition(bullObBreak, "Bullish OB Memory Break", "Price closed below a remembered bullish order block on {{ticker}} ({{interval}}).")
+alertcondition(bearObBreak, "Bearish OB Memory Break", "Price closed above a remembered bearish order block on {{ticker}} ({{interval}}).")
+alertcondition(bullObBreak or bearObBreak, "OB Memory Break", "Price closed through a remembered order block on {{ticker}} ({{interval}}).")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

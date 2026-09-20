@@ -1,0 +1,57 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Zeiierman
+
+//@version=5
+indicator('Adaptive Trend Lines (Zeiierman)', overlay=true)
+
+// Inputs
+_src               = close
+_lookback_positive = input.int(100,minval=1, title='Positive Trend Length')
+_lookback_negative = input.int(100,minval=1,  title='Negative Trend Length')
+_std  = input.int(10,minval=1,  title='Standard deviation Period')
+_tr   = 10
+_mult = input.float(1,minval=0.1, title='Multiplicator')
+_Self_Adjusts = ta.tr[_tr] + ta.stdev(_src, _std) * _mult
+
+// Function to create and update Horizontal lines
+HorizontalLine(color, lookback, isLowest) =>
+    var line_ = line.new(bar_index[0], high[0], bar_index, low, color=color)
+    value = isLowest ? ta.lowest(low, lookback) : ta.highest(high, lookback)
+    bars = isLowest ? ta.lowestbars(low, lookback) : ta.highestbars(high, lookback)
+    line.set_xy1(line_, bar_index[0], value)
+    line.set_xy2(line_, bar_index[bars * -1], value)
+    line_
+
+// Function to create and positive  trend lines
+PositiveTrendLine(color, lookback, adjustment, isChannel) =>
+    var line_ = line.new(bar_index[0], high[0], bar_index, low, color=color, extend=extend.left)
+    if isChannel
+        line.set_xy1(line_, bar_index[0], ta.highest(high, lookback) + adjustment / 2)
+        line.set_xy2(line_, bar_index[ta.lowestbars(low, lookback) * -1], ta.highest(low, lookback))
+    else
+        line.set_xy1(line_, bar_index[0], ta.lowest(low, lookback) + adjustment)
+        line.set_xy2(line_, bar_index[ta.lowestbars(low, lookback) * -1], ta.lowest(low, lookback))
+    line_
+
+// Function to create negative trend lines 
+NegativeTrendLine(color, lookback, adjustment, isChannel) =>
+    var line_ = line.new(bar_index[0], high[0], bar_index, low, color=color, extend=extend.left)
+    if isChannel
+        line.set_xy1(line_, bar_index[0], ta.lowest(high, lookback) - adjustment / 2)
+        line.set_xy2(line_, bar_index[ta.highestbars(high, lookback) * -1], ta.lowest(high, lookback))
+    else
+        line.set_xy1(line_, bar_index[0], ta.highest(high, lookback) - adjustment)
+        line.set_xy2(line_, bar_index[ta.highestbars(high, lookback) * -1], ta.highest(high, lookback))
+    line_
+
+// Create Horizontal lines 
+lowest_low_line   = HorizontalLine(color.lime, _lookback_positive, true)
+highest_high_line = HorizontalLine(color.red, _lookback_negative, false)
+
+// Creating the positive trend lines
+positive_trend_line    = PositiveTrendLine(color.lime, _lookback_positive, _Self_Adjusts, false)
+positive_trend_channel = PositiveTrendLine(color.lime, _lookback_positive, _Self_Adjusts, true)
+
+// Creating negative trend line and channel
+negative_trend_line    = NegativeTrendLine(color.red, _lookback_negative, _Self_Adjusts, false)
+negative_trend_channel = NegativeTrendLine(color.red, _lookback_negative, _Self_Adjusts, true)

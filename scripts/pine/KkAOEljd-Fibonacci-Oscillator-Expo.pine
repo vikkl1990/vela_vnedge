@@ -1,0 +1,100 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=5
+indicator("Fibonacci Oscillator (Expo)",overlay=false, precision = 1)
+//~~}
+
+// ~~ Inputs {
+oscType     = input.string("RSI","Oscillator Type", ["RSI", "MACD","Histogram"],group="Fibonacci Settings")
+fibonacci   = input.float(0.236,"Fibonacci Level  ",options=[0.236,0.382,0.50,0.618,0.786], group="Fibonacci Settings")
+custom      = input.bool(false,"Custom Value",inline="custom", group="Fibonacci Settings")
+customfib   = input.float(0.1,"",.001,.999,.001,inline="custom", group="Fibonacci Settings")
+rsi_len     = input.int(14,"RSI Length    ",group="Relative Strength Index",inline="rsi")
+rsi_sig     = input.int(14,"Signal Length",group="Relative Strength Index",inline="rsi_sig")
+rsi_col     = input.color(color.purple,"",group="Relative Strength Index",inline="rsi")
+rsi_sigcol  = input.color(color.yellow,"",group="Relative Strength Index",inline="rsi_sig")
+macd_fast   = input.int(12,"Fast  ",group="MACD",inline="macd")
+macd_slow   = input.int(26,"Slow",group="MACD",inline="macd")
+macd_sig    = input.int(9,"Signal",group="MACD",inline="sig")
+macd_col    = input.color(#2962FF,"",group="MACD",inline="macd")
+macd_sigcol = input.color(#FF6D00,"",group="MACD",inline="sig")
+grow_above  = input.color(#26A69A, "Above   Grow", group="MACD", inline="Above")
+fall_above  = input.color(#B2DFDB, "Fall", group="MACD", inline="Above")
+grow_below  = input.color(#FFCDD2, "Below Grow", group="MACD", inline="Below")
+fall_below  = input.color(#FF5252, "Fall", group="MACD", inline="Below")
+hist_src    = input.source(close,"Source",group="Histogram",inline="hist")
+hist_colup  = input.color(color.green,"",group="Histogram",inline="hist")
+hist_coldn  = input.color(color.red,"",group="Histogram",inline="hist")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+var pos     = 0
+var hi      = high
+var lo      = low
+var retrace = 0.0
+fib         = custom?customfib:fibonacci
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Track high/low and calculate fibonacci level {
+if pos>=0
+    if high<retrace
+        pos     := -1
+        lo      := low
+        retrace := lo+(hi-lo)*fib
+    else if high>hi
+        hi      := high
+        retrace := hi-(hi-lo)*fib
+if pos<=0
+    if low>retrace
+        pos     := 1
+        hi      := high
+        retrace := hi-(hi-lo)*fib
+    else if low<lo
+        lo      := low
+        retrace := lo+(hi-lo)*fib
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Switch Function {
+OscType(r,h,m)=>
+    output = switch oscType
+        "RSI" => r
+        "Histogram"=> h
+        "MACD"=> m
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Oscillator Declaration {
+[src,signal,osc] = switch oscType
+    "RSI" => [na,ta.sma(ta.rsi(retrace,rsi_len),rsi_sig),ta.rsi(retrace,rsi_len)]
+    "Histogram"=> [na,na,close-retrace]
+    "MACD"=> ta.macd(retrace,macd_fast,macd_slow,macd_sig)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+p1 = plot(osc,"Oscillator Type",OscType(rsi_col,(osc>=0?hist_colup:hist_coldn),(osc>=0?(osc[1]<osc?grow_above:fall_above):(osc[1]<osc?grow_below:fall_below))),
+ 1,OscType(plot.style_line,plot.style_columns,plot.style_columns))
+m2 = plot(OscType(float(na),float(na),src),"MACD Line",macd_col)
+m3 = plot(OscType(signal,float(na),signal),"Signal",OscType(rsi_sigcol,color(na),macd_sigcol))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Gradient Fill {
+upper         = OscType(100,ta.highest(osc,1000),ta.highest(src,1000))
+lower         = OscType(0,ta.lowest(osc,1000),ta.lowest(src,1000))
+mid           = OscType(50,0,0)
+upper_        = OscType(90,upper-ta.ema(ta.stdev(osc,20),20),upper-ta.ema(ta.stdev(src,20),20))
+lower_        = OscType(10,lower+ta.ema(ta.stdev(osc,20),20),lower+ta.ema(ta.stdev(src,20),20))
+channel_upper = plot(upper, color = na, editable = false, display = display.none)
+channel_lower = plot(lower, color = na, editable = false, display = display.none)
+channel_mid   = plot(mid, color=color.gray, editable = false)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Channel Gradient Fill {
+fill(channel_mid, channel_upper, top_value = upper, bottom_value=mid, bottom_color = na, top_color = color.new(color.lime,75),title = "Channel Gradient Fill")
+fill(channel_mid, channel_lower, top_value =  mid, bottom_value=lower, bottom_color = color.new(color.red,75) , top_color = na,title = "Channel Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Overbought/Oversold Gradient Fill {
+fill(p1, channel_mid, upper, upper_, top_color = color.new(color.lime, 0), bottom_color = color.new(color.green, 100),title = "Overbought Gradient Fill")
+fill(p1, channel_mid, lower_,  lower,  top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0),title = "Oversold Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

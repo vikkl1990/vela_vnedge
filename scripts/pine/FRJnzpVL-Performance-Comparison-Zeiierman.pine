@@ -1,0 +1,834 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Performance Comparison (Zeiierman)", overlay=false, format=format.percent, precision=2, max_lines_count=500, max_boxes_count=400, max_labels_count=500, max_polylines_count=100)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Choose how periods are grouped for comparison: Monthly, Quarterly, or Yearly."
+var string t2  = "Number of fully completed past periods to include in the comparison engine and statistics."
+var string t3  = "How many normalized steps are used to draw each period from start to finish. Higher values create smoother curves but use more drawing resources."
+
+var string t4  = "Show or hide the median path built from all compared historical periods."
+var string t5  = "Color used for the median path."
+var string t6  = "Line thickness of the median path."
+
+var string t7  = "Show or hide the average path built from all compared historical periods."
+var string t8  = "Color used for the average path."
+var string t9  = "Line thickness of the average path."
+
+var string t10 = "Show or hide the current active period."
+var string t11 = "Color used for the current period path."
+var string t12 = "Line thickness of the current period path."
+
+var string t13 = "Show or hide the historical completed period paths."
+var string t14 = "How many historical period lines remain visible on the chart."
+var string t15 = "Show or hide labels at the end of visible paths."
+var string t16 = "Fade older historical curves so recent periods stand out more clearly."
+var string t17 = "Line thickness of the historical paths."
+
+var string t18 = "Show or hide the timeline bar under the comparison chart."
+var string t19 = "Color used for the timeline bar and its ticks."
+var string t20 = "Text color used for timeline labels."
+var string t21 = "Line thickness of the timeline bar."
+var string t22 = "Vertical spacing between the main chart and the timeline bar."
+var string t23 = "Height of the timeline tick marks relative to the chart range."
+
+var string t24 = "Show or hide the right-side Y ladder."
+var string t25 = "Color used for the Y ladder line and its tick marks."
+var string t26 = "Text color used for Y ladder value labels."
+var string t27 = "Line thickness of the Y ladder."
+var string t28 = "Approximate number of value levels shown on the ladder."
+var string t29 = "Horizontal distance, in bars, between the last plotted bar and the Y ladder."
+var string t30 = "Highlight the current period's latest value on the Y ladder."
+
+var string t31 = "Show or hide the similarity table that compares historical periods to the current one."
+var string t32 = "Maximum number of historical curves included in the similarity table."
+var string t33 = "Number of decimal places used inside the similarity table."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ INPUTS {
+grpPeriod = "Period & Data"
+grpShow   = "What To Show"
+grpTime   = "Timeline"
+grpAxis   = "Y Ladder"
+grpTable  = "Similarity Table"
+
+periodMode   = input.string("Quarterly", "Period", options=["Monthly", "Quarterly", "Yearly"], group=grpPeriod, tooltip=t1)
+lookback     = input.int(10, "Completed periods to compare", minval=1, maxval=30, group=grpPeriod, tooltip=t2)
+depth        = input.int(80, "Chart resolution", minval=20, maxval=200, group=grpPeriod, tooltip=t3)
+
+showMedian   = input.bool(true, "Show median path", group=grpShow, inline="a", tooltip=t4)
+medianCol    = input.color(color.white, "", group=grpShow, inline="a", tooltip=t5)
+medianWidth  = input.int(4, "", minval=1, maxval=6, group=grpShow, inline="a", tooltip=t6)
+
+showAverage  = input.bool(false, "Show average path", group=grpShow, inline="b", tooltip=t7)
+avgCol       = input.color(color.rgb(255, 215, 0), "", group=grpShow, inline="b", tooltip=t8)
+avgWidth     = input.int(2, "", minval=1, maxval=6, group=grpShow, inline="b", tooltip=t9)
+
+showCurrent  = input.bool(true, "Show current period", group=grpShow, inline="c", tooltip=t10)
+currentCol   = input.color(color.rgb(0, 255, 255), "", group=grpShow, inline="c", tooltip=t11)
+currentWidth = input.int(3, "", minval=1, maxval=6, group=grpShow, inline="c", tooltip=t12)
+
+showHist     = input.bool(true, "Show historical periods", group=grpShow, inline="d", tooltip=t13)
+histToShow   = input.int(8, "", minval=1, maxval=20, group=grpShow, inline="d", tooltip=t14)
+showEndTags  = input.bool(true, "Label", group=grpShow, inline="e", tooltip=t15)
+fadeHist     = input.bool(true, "Fade", group=grpShow, inline="e", tooltip=t16)
+histWidth    = input.int(1, "", minval=1, maxval=4, group=grpShow, inline="e", tooltip=t17)
+
+showTimeline     = input.bool(true, "Show timeline bar", group=grpTime, inline="tl", tooltip=t18)
+timelineCol      = input.color(color.rgb(0, 110, 255), "", group=grpTime, inline="tl", tooltip=t19)
+timelineTextCol  = input.color(color.white, "", group=grpTime, inline="tl", tooltip=t20)
+timelineWidth    = input.int(3, "Timeline width", minval=1, maxval=6, group=grpTime, tooltip=t21)
+timelineOffset   = input.float(0.12, "Timeline gap below chart", minval=0.02, maxval=0.50, step=0.01, group=grpTime, tooltip=t22)
+timelineTickSize = input.float(0.05, "Tick size", minval=0.01, maxval=0.20, step=0.01, group=grpTime, tooltip=t23)
+
+showYLadder      = input.bool(true, "Show right-side Y ladder", group=grpAxis, inline="ya", tooltip=t24)
+yLadderCol       = input.color(color.rgb(0, 110, 255), "", group=grpAxis, inline="ya", tooltip=t25)
+yLadderTextCol   = input.color(color.white, "", group=grpAxis, inline="ya", tooltip=t26)
+yLadderWidth     = input.int(2, "Ladder width", minval=1, maxval=4, group=grpAxis, tooltip=t27)
+yTargetTicks     = input.int(6, "Approx ladder levels", minval=3, maxval=12, group=grpAxis, tooltip=t28)
+yAxisOffsetBars  = input.int(14, "Right offset in bars", minval=6, maxval=40, group=grpAxis, tooltip=t29)
+showCurrentTick  = input.bool(true, "Highlight current value on ladder", group=grpAxis, tooltip=t30)
+
+showCorrTable   = input.bool(false, "Show similarity table", group=grpTable, tooltip=t31)
+corrMaxCurves   = input.int(10, "Max curves in table", minval=3, maxval=12, group=grpTable, tooltip=t32)
+corrDecimals    = input.int(2, "Decimals", minval=1, maxval=4, group=grpTable, tooltip=t33)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ TYPES {
+type PeriodData
+    array<float> c
+    int startTime
+    string name
+
+type Bucket
+    array<float> vals
+
+type CurveInfo
+    string name
+    color col
+    array<float> vals
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ STORAGE {
+var periods        = array.new<PeriodData>()
+var drawnLines     = array.new_line()
+var drawnBoxes     = array.new_box()
+var drawnLabels    = array.new_label()
+var drawnPolylines = array.new<polyline>()
+var corrTbl        = table.new(position.top_right, 14, 5, bgcolor=color.new(color.black, 82), frame_color=color.new(color.gray, 65), frame_width=1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HELPERS {
+monthName(m) =>
+    switch m
+        1  => "Jan"
+        2  => "Feb"
+        3  => "Mar"
+        4  => "Apr"
+        5  => "May"
+        6  => "Jun"
+        7  => "Jul"
+        8  => "Aug"
+        9  => "Sep"
+        10 => "Oct"
+        11 => "Nov"
+        12 => "Dec"
+        => "?"
+
+periodLabel(ts) =>
+    y = year(ts)
+    m = month(ts)
+    q = int(math.floor((m - 1) / 3)) + 1
+    switch periodMode
+        "Yearly"    => str.tostring(y)
+        "Quarterly" => "Q" + str.tostring(q) + " " + str.tostring(y)
+        "Monthly"   => monthName(m) + " " + str.tostring(y)
+        => str.tostring(y)
+
+periodChanged() =>
+    qNow  = int(math.floor((month - 1) / 3)) + 1
+    qPrev = int(math.floor((month[1] - 1) / 3)) + 1
+    switch periodMode
+        "Yearly"    => year != year[1]
+        "Quarterly" => year != year[1] or qNow != qPrev
+        "Monthly"   => year != year[1] or month != month[1]
+        => false
+
+histColor(i, total) =>
+    base = switch i % 10
+        0 => color.rgb(0, 180, 255)
+        1 => color.rgb(255, 110, 70)
+        2 => color.rgb(90, 220, 120)
+        3 => color.rgb(255, 205, 60)
+        4 => color.rgb(215, 90, 255)
+        5 => color.rgb(255, 70, 145)
+        6 => color.rgb(65, 205, 205)
+        7 => color.rgb(255, 160, 35)
+        8 => color.rgb(150, 210, 90)
+        9 => color.rgb(110, 135, 255)
+        => color.gray
+    tr = fadeHist ? int(math.min(92, i * (70.0 / math.max(total - 1, 1)))) : 0
+    color.new(base, tr)
+
+clearObjects() =>
+    linesCount = array.size(drawnLines)
+    if linesCount > 0
+        for i = 0 to linesCount - 1
+            line.delete(array.get(drawnLines, i))
+    array.clear(drawnLines)
+
+    boxesCount = array.size(drawnBoxes)
+    if boxesCount > 0
+        for i = 0 to boxesCount - 1
+            box.delete(array.get(drawnBoxes, i))
+    array.clear(drawnBoxes)
+
+    labelsCount = array.size(drawnLabels)
+    if labelsCount > 0
+        for i = 0 to labelsCount - 1
+            label.delete(array.get(drawnLabels, i))
+    array.clear(drawnLabels)
+
+    polyCount = array.size(drawnPolylines)
+    if polyCount > 0
+        for i = 0 to polyCount - 1
+            polyline.delete(array.get(drawnPolylines, i))
+    array.clear(drawnPolylines)
+
+addLine(int x1, float y1, int x2, float y2, color col, int width, style) =>
+    ln = line.new(x1=x1, y1=y1, x2=x2, y2=y2, xloc=xloc.bar_index, extend=extend.none, color=col, width=width, style=style)
+    array.push(drawnLines, ln)
+
+addBox(int left, float top, int right, float bottom, color bg, color brd) =>
+    bx = box.new(left=left, top=top, right=right, bottom=bottom, xloc=xloc.bar_index, bgcolor=bg, border_color=brd)
+    array.push(drawnBoxes, bx)
+
+addLabel(int x, float y, string txt, color txtCol, color bgCol, style, sizeVal) =>
+    lb = label.new(x=x, y=y, text=txt, xloc=xloc.bar_index, style=style, textcolor=txtCol, color=bgCol, size=sizeVal)
+    array.push(drawnLabels, lb)
+
+addPolyline(array<chart.point> pts, color col, int width, style) =>
+    if array.size(pts) > 1
+        pl = polyline.new(pts, xloc=xloc.bar_index, line_color=col, line_width=width, line_style=style)
+        array.push(drawnPolylines, pl)
+
+scaledAt(arrPrice, idx) =>
+    sz = array.size(arrPrice)
+    if sz == 0
+        na
+    else
+        idxSafe = math.max(0, math.min(sz - 1, idx))
+        base = array.get(arrPrice, 0)
+        base != 0.0 ? array.get(arrPrice, idxSafe) / base - 1.0 : na
+
+scaledAtProgress(arrPrice, progress) =>
+    sz = array.size(arrPrice)
+    if sz == 0
+        na
+    else
+        idx = int(math.round(progress * math.max(sz - 1, 0)))
+        idx := math.max(0, math.min(sz - 1, idx))
+        scaledAt(arrPrice, idx)
+
+percentileNearest(src, p) =>
+    n = array.size(src)
+    if n == 0
+        na
+    else
+        tmp = array.copy(src)
+        array.sort(tmp, order.ascending)
+        idx = int(math.round((n - 1) * p))
+        array.get(tmp, math.max(0, math.min(n - 1, idx)))
+
+medianFloat(src) =>
+    percentileNearest(src, 0.50)
+
+canUseSegmentLines(neededSegments) =>
+    array.size(drawnLines) + neededSegments <= 320
+
+histShouldUseLines(idx, visibleCount, neededSegments) =>
+    idx < math.min(2, visibleCount) and canUseSegmentLines(neededSegments)
+
+timelineLabel(periodMode, idx) =>
+    switch periodMode
+        "Yearly" =>
+            switch idx
+                0  => "Jan"
+                1  => "Feb"
+                2  => "Mar"
+                3  => "Apr"
+                4  => "May"
+                5  => "Jun"
+                6  => "Jul"
+                7  => "Aug"
+                8  => "Sep"
+                9  => "Oct"
+                10 => "Nov"
+                11 => "Dec"
+                12 => "End"
+                => ""
+        "Quarterly" =>
+            switch idx
+                0 => "Start"
+                1 => "M1"
+                2 => "M2"
+                3 => "M3"
+                => ""
+        "Monthly" =>
+            switch idx
+                0 => "W1"
+                1 => "W2"
+                2 => "W3"
+                3 => "W4"
+                4 => "End"
+                => ""
+        => ""
+
+timelineTicksCount() =>
+    switch periodMode
+        "Yearly"    => 12
+        "Quarterly" => 3
+        "Monthly"   => 4
+        => 4
+
+fmtVal(v) =>
+    str.tostring(v * 100.0, "#.##") + "%"
+
+shortName(s) =>
+    str.length(s) <= 10 ? s : str.substring(s, 0, 10)
+
+bestLowIndex(vals) =>
+    int bestIdx = na
+    float bestVal = na
+
+    for i = 0 to array.size(vals) - 1
+        v = array.get(vals, i)
+        if not na(v)
+            if na(bestVal) or v < bestVal
+                bestVal := v
+                bestIdx := i
+    bestIdx
+
+bestHighIndex(vals) =>
+    int bestIdx = na
+    float bestVal = na
+
+    for i = 0 to array.size(vals) - 1
+        v = array.get(vals, i)
+        if not na(v)
+            if na(bestVal) or v > bestVal
+                bestVal := v
+                bestIdx := i
+    bestIdx
+
+bestAbsZeroIndex(vals) =>
+    int bestIdx = na
+    float bestVal = na
+
+    for i = 0 to array.size(vals) - 1
+        v = array.get(vals, i)
+        if not na(v)
+            av = math.abs(v)
+            if na(bestVal) or av < bestVal
+                bestVal := av
+                bestIdx := i
+    bestIdx
+
+highlightBg(baseBg, isBest) =>
+    isBest ? color.new(#acd9ff, 0) : baseBg
+
+highlightTxt(isBest) =>
+    isBest ? color.black : color.white
+
+highlightCellText(txt, isBest) =>
+    isBest ? "★ " + txt : txt
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ SIMILARITY METRICS {
+maeMetric(a, b) =>
+    nA = array.size(a)
+    nB = array.size(b)
+    n  = math.min(nA, nB)
+
+    if n < 1
+        na
+    else
+        float sumAbs = 0.0
+        int count = 0
+
+        for i = 0 to n - 1
+            x = array.get(a, i)
+            y = array.get(b, i)
+            if not na(x) and not na(y)
+                sumAbs += math.abs(x - y)
+                count += 1
+
+        count > 0 ? sumAbs / count : na
+
+maxDevMetric(a, b) =>
+    nA = array.size(a)
+    nB = array.size(b)
+    n  = math.min(nA, nB)
+
+    if n < 1
+        na
+    else
+        float maxAbs = na
+
+        for i = 0 to n - 1
+            x = array.get(a, i)
+            y = array.get(b, i)
+            if not na(x) and not na(y)
+                d = math.abs(x - y)
+                maxAbs := na(maxAbs) ? d : math.max(maxAbs, d)
+        maxAbs
+
+dirMatchMetric(a, b) =>
+    nA = array.size(a)
+    nB = array.size(b)
+    n  = math.min(nA, nB)
+
+    if n < 2
+        na
+    else
+        int matches = 0
+        int count = 0
+
+        for i = 1 to n - 1
+            x0 = array.get(a, i - 1)
+            x1 = array.get(a, i)
+            y0 = array.get(b, i - 1)
+            y1 = array.get(b, i)
+
+            if not na(x0) and not na(x1) and not na(y0) and not na(y1)
+                dx = x1 - x0
+                dy = y1 - y0
+                sx = dx > 0 ? 1 : dx < 0 ? -1 : 0
+                sy = dy > 0 ? 1 : dy < 0 ? -1 : 0
+
+                if sx == sy
+                    matches += 1
+                count += 1
+        count > 0 ? matches / float(count) : na
+
+endDiffMetric(a, b) =>
+    nA = array.size(a)
+    nB = array.size(b)
+    n  = math.min(nA, nB)
+
+    if n < 1
+        na
+    else
+        float out = na
+        for i = n - 1 to 0
+            x = array.get(a, i)
+            y = array.get(b, i)
+            if not na(x) and not na(y) and na(out)
+                out := x - y
+        out
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ TABLE {
+headerBlue(colIdx) =>
+    colIdx % 2 == 0 ? color.rgb(90, 145, 255) : color.rgb(52, 102, 210)
+
+metricOrange(rowIdx) =>
+    rowIdx % 2 == 0 ? color.rgb(255, 176, 76) : color.rgb(210, 118, 24)
+
+metricBgLow(v) =>
+    if na(v)
+        color.rgb(70, 70, 70)
+    else
+        strength = int(math.min(75, math.abs(v) * 800))
+        color.new(color.lime, 100 - strength)
+
+metricBgSigned(v) =>
+    if na(v)
+        color.rgb(70, 70, 70)
+    else
+        strength = int(math.min(75, math.abs(v) * 800))
+        v >= 0 ? color.new(color.lime, 100 - strength) : color.new(color.red, 100 - strength)
+
+metricBgPct(v) =>
+    if na(v)
+        color.rgb(70, 70, 70)
+    else
+        strength = int(math.min(75, v * 75))
+        color.new(color.lime, 100 - strength)
+
+fmtMetric(v) =>
+    na(v) ? "na" : str.tostring(v, "#." + str.repeat("0", corrDecimals))
+
+fmtPctMetric(v) =>
+    na(v) ? "na" : str.tostring(v * 100.0, "#." + str.repeat("0", corrDecimals)) + "%"
+
+pushCurve(curves, name, col, vals) =>
+    if array.size(vals) > 1
+        array.push(curves, CurveInfo.new(name, col, vals))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ BUILD PERIODS {
+if barstate.isfirst
+    array.unshift(periods, PeriodData.new(array.new<float>(), time, periodLabel(time)))
+
+if periodChanged()
+    array.unshift(periods, PeriodData.new(array.new<float>(), time, periodLabel(time)))
+
+if array.size(periods) > 0
+    curRef = array.get(periods, 0)
+    array.push(curRef.c, close)
+
+while array.size(periods) > lookback + 8
+    array.pop(periods)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ DRAW {
+if barstate.islast and array.size(periods) > 0
+    clearObjects()
+
+    currentPeriod = array.get(periods, 0)
+    currentSize   = array.size(currentPeriod.c)
+
+    completedCount = math.min(lookback, math.max(array.size(periods) - 1, 0))
+    visibleHist    = math.min(histToShow, completedCount)
+
+    sizeBucket = array.new<float>()
+    if completedCount > 0
+        for i = 0 to completedCount - 1
+            if i + 1 < array.size(periods)
+                p = array.get(periods, i + 1)
+                array.push(sizeBucket, array.size(p.c))
+
+    expectedSize = array.size(sizeBucket) > 0 ? int(math.round(medianFloat(sizeBucket))) : currentSize
+    expectedSize := math.max(expectedSize, 2)
+
+    int x0 = bar_index - depth
+    int x1 = bar_index
+
+    buckets = array.new<Bucket>()
+    for s = 0 to depth
+        array.push(buckets, Bucket.new(array.new<float>()))
+
+    float globalTop = na
+    float globalBottom = na
+    float dataTop = na
+    float dataBottom = na
+    plotCurves = array.new<CurveInfo>()
+
+    // Historical paths
+    if completedCount > 0
+        for i = 0 to completedCount - 1
+            if i + 1 < array.size(periods)
+                pd = array.get(periods, i + 1)
+                lineCol  = histColor(i, visibleHist)
+                drawThis = showHist and i < visibleHist
+                useLines = drawThis and histShouldUseLines(i, visibleHist, depth)
+
+                histPts  = array.new<chart.point>()
+                histVals = array.new<float>()
+                int prevX = na
+                float prevY = na
+                float lastY = na
+
+                for s = 0 to depth
+                    float prog = s / float(depth)
+                    yVal = scaledAtProgress(pd.c, prog)
+                    b = array.get(buckets, s)
+
+                    if not na(yVal)
+                        array.push(b.vals, yVal)
+                        if drawThis
+                            array.push(histVals, yVal)
+                            globalTop := na(globalTop) ? yVal : math.max(globalTop, yVal)
+                            globalBottom := na(globalBottom) ? yVal : math.min(globalBottom, yVal)
+                            dataTop := na(dataTop) ? yVal : math.max(dataTop, yVal)
+                            dataBottom := na(dataBottom) ? yVal : math.min(dataBottom, yVal)
+
+                    int xPos = x0 + s
+
+                    if drawThis and not na(yVal)
+                        if useLines
+                            if not na(prevX) and not na(prevY)
+                                addLine(prevX, prevY, xPos, yVal, lineCol, histWidth, line.style_solid)
+                            prevX := xPos
+                            prevY := yVal
+                        else
+                            array.push(histPts, chart.point.from_index(xPos, yVal))
+                        lastY := yVal
+
+                if drawThis and not useLines
+                    addPolyline(histPts, lineCol, histWidth, line.style_solid)
+
+                if drawThis
+                    pushCurve(plotCurves, pd.name, lineCol, histVals)
+
+                if drawThis and showEndTags and not na(lastY)
+                    addLabel(x1 + 1, lastY, pd.name, color.white, color.new(lineCol, 65), label.style_label_left, size.tiny)
+
+    // Median / average
+    if completedCount > 0
+        medPts = array.new<chart.point>()
+        avgPts = array.new<chart.point>()
+        medVals = array.new<float>()
+        avgVals = array.new<float>()
+
+        for s = 0 to depth
+            vals = array.get(buckets, s).vals
+            med = medianFloat(vals)
+            avg = array.size(vals) > 0 ? array.avg(vals) : na
+            int xPos = x0 + s
+
+            if showMedian and not na(med)
+                array.push(medVals, med)
+                array.push(medPts, chart.point.from_index(xPos, med))
+                globalTop := na(globalTop) ? med : math.max(globalTop, med)
+                globalBottom := na(globalBottom) ? med : math.min(globalBottom, med)
+                dataTop := na(dataTop) ? med : math.max(dataTop, med)
+                dataBottom := na(dataBottom) ? med : math.min(dataBottom, med)
+
+            if showAverage and not na(avg)
+                array.push(avgVals, avg)
+                array.push(avgPts, chart.point.from_index(xPos, avg))
+                globalTop := na(globalTop) ? avg : math.max(globalTop, avg)
+                globalBottom := na(globalBottom) ? avg : math.min(globalBottom, avg)
+                dataTop := na(dataTop) ? avg : math.max(dataTop, avg)
+                dataBottom := na(dataBottom) ? avg : math.min(dataBottom, avg)
+
+        if showMedian
+            addPolyline(medPts, medianCol, medianWidth, line.style_solid)
+            pushCurve(plotCurves, "Median", medianCol, medVals)
+
+        if showAverage
+            addPolyline(avgPts, avgCol, avgWidth, line.style_dashed)
+            pushCurve(plotCurves, "Average", avgCol, avgVals)
+
+    // Current period
+    currentProgress = math.min(1.0, (currentSize - 1) / float(math.max(expectedSize - 1, 1)))
+
+    float currentEndY = na
+    int currentEndX = na
+
+    if showCurrent and currentSize > 1
+        useLinesCurrent = canUseSegmentLines(currentSize)
+        curPts = array.new<chart.point>()
+        curVals = array.new<float>()
+        int prevX = na
+        float prevY = na
+        float endY = na
+        int endX = na
+        int lastPolyX = na
+
+        for i = 0 to currentSize - 1
+            float prog = i / float(math.max(expectedSize - 1, 1))
+            prog := math.min(prog, 1.0)
+            int xPos = x0 + int(math.round(prog * depth))
+            yVal = scaledAt(currentPeriod.c, i)
+
+            if not na(yVal)
+                array.push(curVals, yVal)
+                globalTop := na(globalTop) ? yVal : math.max(globalTop, yVal)
+                globalBottom := na(globalBottom) ? yVal : math.min(globalBottom, yVal)
+                dataTop := na(dataTop) ? yVal : math.max(dataTop, yVal)
+                dataBottom := na(dataBottom) ? yVal : math.min(dataBottom, yVal)
+
+                if useLinesCurrent
+                    if not na(prevX) and not na(prevY) and (xPos != prevX or yVal != prevY)
+                        addLine(prevX, prevY, xPos, yVal, currentCol, currentWidth, line.style_solid)
+                    prevX := xPos
+                    prevY := yVal
+                else
+                    if na(lastPolyX) or xPos != lastPolyX
+                        array.push(curPts, chart.point.from_index(xPos, yVal))
+                        lastPolyX := xPos
+                    else
+                        if array.size(curPts) > 0
+                            array.pop(curPts)
+                        array.push(curPts, chart.point.from_index(xPos, yVal))
+
+                endX := xPos
+                endY := yVal
+
+        if not useLinesCurrent
+            addPolyline(curPts, currentCol, currentWidth, line.style_solid)
+
+        pushCurve(plotCurves, "Current", currentCol, curVals)
+
+        currentEndX := endX
+        currentEndY := endY
+
+        if showEndTags and not na(endX) and not na(endY)
+            addLabel(endX + 1, endY, "Current: " + currentPeriod.name, color.black, currentCol, label.style_label_left, size.small)
+
+    // Timeline bar
+    if showTimeline
+        float yTopTl = na(globalTop) ? 0.15 : globalTop
+        float yBotTl = na(globalBottom) ? -0.15 : globalBottom
+        float rngTl  = math.max(yTopTl - yBotTl, 0.05)
+
+        float tlY = yBotTl - rngTl * timelineOffset
+        float tickHalf = rngTl * timelineTickSize * 0.5
+
+        addLine(x0, tlY, x1, tlY, timelineCol, timelineWidth, line.style_solid)
+        addLine(x0, tlY - tickHalf, x0, tlY + tickHalf, timelineCol, timelineWidth, line.style_solid)
+        addLine(x1, tlY - tickHalf, x1, tlY + tickHalf, timelineCol, timelineWidth, line.style_solid)
+
+        ticks = timelineTicksCount()
+
+        for i = 0 to ticks
+            frac = i / float(ticks)
+            int xTick = x0 + int(math.round(depth * frac))
+
+            addLine(xTick, tlY - tickHalf, xTick, tlY + tickHalf, timelineCol, 2, line.style_solid)
+
+            lbl = timelineLabel(periodMode, i)
+            if str.length(lbl) > 0
+                addLabel(xTick, tlY - tickHalf * 1.8, lbl, timelineTextCol, color.new(color.black, 85), label.style_label_up, size.tiny)
+
+        int xCurTl = x0 + int(math.round(depth * currentProgress))
+        addLine(xCurTl, tlY - tickHalf * 1.8, xCurTl, tlY + tickHalf * 1.8, currentCol, 3, line.style_solid)
+        addLabel(xCurTl, tlY + tickHalf * 2.2, "Now", color.black, currentCol, label.style_label_down, size.tiny)
+
+        globalBottom := math.min(yBotTl, tlY - tickHalf * 3.0)
+
+    // Right-side Y ladder
+    if showYLadder
+        float yTopAx = na(dataTop) ? (na(globalTop) ? 0.15 : globalTop) : dataTop
+        float yBotAx = na(dataBottom) ? (na(globalBottom) ? -0.15 : globalBottom) : dataBottom
+
+        if showCurrentTick and showCurrent and not na(currentEndY)
+            yTopAx := math.max(yTopAx, currentEndY)
+            yBotAx := math.min(yBotAx, currentEndY)
+
+        float plotRange = math.max(yTopAx - yBotAx, 0.000001)
+        float padAx = math.max(plotRange * 0.06, 0.000001)
+
+        float ladderStart = yBotAx - padAx
+        float ladderEnd   = yTopAx + padAx
+
+        if ladderEnd <= ladderStart
+            ladderEnd := ladderStart + 0.000001
+
+        int xAxis = x1 + yAxisOffsetBars
+        addLine(xAxis, ladderStart, xAxis, ladderEnd, yLadderCol, yLadderWidth, line.style_solid)
+
+        int tickCount = math.max(yTargetTicks - 1, 1)
+
+        for i = 0 to tickCount
+            float frac = i / float(tickCount)
+            float lvl = ladderStart + (ladderEnd - ladderStart) * frac
+
+            int xLeft  = xAxis - 1
+            int xRight = xAxis + 1
+
+            addLine(xLeft, lvl, xRight, lvl, yLadderCol, 2, line.style_solid)
+
+            addLabel(
+                 xRight + 1,
+                 lvl,
+                 fmtVal(lvl),
+                 yLadderTextCol,
+                 color.new(color.black, 85),
+                 label.style_label_left,
+                 size.tiny)
+
+        if showCurrentTick and showCurrent and not na(currentEndY)
+            int xCurLeft  = xAxis - (1 + 2)
+            int xCurRight = xAxis + (1 + 4)
+
+            addLine(xCurLeft, currentEndY, xCurRight, currentEndY, currentCol, 3, line.style_solid)
+            addLabel(xCurRight + 1, currentEndY, "Current " + fmtVal(currentEndY), color.black, currentCol, label.style_label_left, size.small)
+
+    // Similarity table
+    if showCorrTable
+        table.clear(corrTbl, 0, 0, 13, 4)
+
+        CurveInfo currentCurve = na
+
+        for i = 0 to array.size(plotCurves) - 1
+            ci = array.get(plotCurves, i)
+            if ci.name == "Current"
+                currentCurve := ci
+
+        histCurves = array.new<CurveInfo>()
+
+        for i = 0 to array.size(plotCurves) - 1
+            ci = array.get(plotCurves, i)
+            if ci.name != "Current" and ci.name != "Median" and ci.name != "Average"
+                array.push(histCurves, ci)
+
+        while array.size(histCurves) > corrMaxCurves
+            array.pop(histCurves)
+
+        n = array.size(histCurves)
+
+        if n > 0 and not na(currentCurve)
+            metricHdrTip = "Rows compare each past period to the Current path using only the overlapping part of the period."
+            maeTip       = "MAE = average gap vs Current. Lower means the path stayed closer overall."
+            maxDevTip    = "Max Dev = biggest gap vs Current at any point. Lower means no large divergence."
+            dirMatchTip  = "Dir Match % = how often both paths moved in the same direction step by step. Higher is better."
+            endDiffTip   = "End Diff = final gap at the last comparable point. Closest to 0 is most similar."
+
+            table.cell(corrTbl, 0, 0, "Metric", text_color=color.white, bgcolor=color.rgb(38, 38, 48), tooltip=metricHdrTip)
+
+            for c = 0 to n - 1
+                hc = array.get(histCurves, c)
+                colTip = hc.name + " compared to Current using MAE, Max Dev, Direction Match, and End Diff."
+                table.cell(corrTbl, c + 1, 0, shortName(hc.name), text_color=color.white, bgcolor=headerBlue(c), tooltip=colTip)
+
+            table.cell(corrTbl, 0, 1, "MAE", text_color=color.white, bgcolor=metricOrange(0), tooltip=maeTip)
+            table.cell(corrTbl, 0, 2, "Max Dev", text_color=color.white, bgcolor=metricOrange(1), tooltip=maxDevTip)
+            table.cell(corrTbl, 0, 3, "Dir Match %", text_color=color.white, bgcolor=metricOrange(0), tooltip=dirMatchTip)
+            table.cell(corrTbl, 0, 4, "End Diff", text_color=color.white, bgcolor=metricOrange(1), tooltip=endDiffTip)
+
+            maeVals = array.new<float>()
+            maxVals = array.new<float>()
+            dirVals = array.new<float>()
+            endVals = array.new<float>()
+
+            for c = 0 to n - 1
+                hc = array.get(histCurves, c)
+                array.push(maeVals, maeMetric(hc.vals, currentCurve.vals))
+                array.push(maxVals, maxDevMetric(hc.vals, currentCurve.vals))
+                array.push(dirVals, dirMatchMetric(hc.vals, currentCurve.vals))
+                array.push(endVals, endDiffMetric(hc.vals, currentCurve.vals))
+
+            bestMaeIdx = bestLowIndex(maeVals)
+            bestMaxIdx = bestLowIndex(maxVals)
+            bestDirIdx = bestHighIndex(dirVals)
+            bestEndIdx = bestAbsZeroIndex(endVals)
+
+            for c = 0 to n - 1
+                hc = array.get(histCurves, c)
+
+                mMae = array.get(maeVals, c)
+                mMax = array.get(maxVals, c)
+                mDir = array.get(dirVals, c)
+                mEnd = array.get(endVals, c)
+
+                valMaeTxt = fmtMetric(mMae)
+                valMaxTxt = fmtMetric(mMax)
+                valDirTxt = fmtPctMetric(mDir)
+                valEndTxt = fmtMetric(mEnd)
+
+                maeBg = metricBgLow(mMae)
+                maxBg = metricBgLow(mMax)
+                dirBg = metricBgPct(mDir)
+                endBg = metricBgSigned(mEnd)
+
+                isBestMae = c == bestMaeIdx
+                isBestMax = c == bestMaxIdx
+                isBestDir = c == bestDirIdx
+                isBestEnd = c == bestEndIdx
+
+                table.cell(corrTbl, c + 1, 1, highlightCellText(valMaeTxt, isBestMae), text_color=highlightTxt(isBestMae), bgcolor=highlightBg(maeBg, isBestMae), tooltip=hc.name + " | MAE vs Current: " + valMaeTxt + "\nLower = closer average path.")
+                table.cell(corrTbl, c + 1, 2, highlightCellText(valMaxTxt, isBestMax), text_color=highlightTxt(isBestMax), bgcolor=highlightBg(maxBg, isBestMax), tooltip=hc.name + " | Max Dev vs Current: " + valMaxTxt + "\nLower = smaller worst gap.")
+                table.cell(corrTbl, c + 1, 3, highlightCellText(valDirTxt, isBestDir), text_color=highlightTxt(isBestDir), bgcolor=highlightBg(dirBg, isBestDir), tooltip=hc.name + " | Direction Match vs Current: " + valDirTxt + "\nHigher = more similar step-by-step moves.")
+                table.cell(corrTbl, c + 1, 4, highlightCellText(valEndTxt, isBestEnd), text_color=highlightTxt(isBestEnd), bgcolor=highlightBg(endBg, isBestEnd), tooltip=hc.name + " | End Diff vs Current: " + valEndTxt + "\nClosest to 0 = most similar ending level.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ BASE PLOT {
+hline(0, color=chart.fg_color)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

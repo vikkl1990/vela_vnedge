@@ -1,0 +1,353 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=5
+indicator("ICT Market Structure Screener (Zeiierman)",overlay=true,max_bars_back=500,max_labels_count=500,max_lines_count=500)
+//~~}
+
+// ~~ Tooltips {
+string t1 = "Set the pivot period. Increasing this value will capture broader trends, making the structure more representative of long-term movements. Decreasing this value will focus on shorter-term trends, increasing sensitivity."
+string t2 = "Set the response period. A low value returns a short-term structure and a high value returns a long-term structure. If you disable this option, the pivot length above will be used. Increasing this value smoothens the structure, making it less reactive to short-term fluctuations. Decreasing this value makes the structure more responsive to short-term changes."
+string t3 = "Choose between displaying the active range or the previous range. 'Active Range' shows real-time premium, discount, and mid-range levels based on the current structure. 'Previous Range' displays past ranges, useful for analyzing historical support/resistance levels."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+//~~Structure{
+prd    = input.int(20,minval=1,title="Period",group="Structure",inline="resp")
+s1     = input.bool(true,title="Response  ",group="Structure", inline="resp")
+resp   = input.int(7,minval=1,title="",group="Structure",inline="resp",tooltip=t1+"\n\n"+t2)
+curr   = input.string("Active Range", "Structure Display",["Active Range","Previous Range"], tooltip=t3)
+
+bull   = input.bool(true,"Bullish Structure     ",inline="Bullish"), bull2 = input.color(color.rgb(8, 236, 126),"",inline="Bullish")
+bear   = input.bool(true,"Bearish Structure    ",inline="Bearish"), bear2 = input.color(color.rgb(255, 34, 34),"",inline="Bearish")
+showPD = input.bool(true,"Premium & Discount & Mid",inline="pd"), prem = input.color(color.new(color.rgb(255, 34, 34),80),"",inline="pd"), disc = input.color(color.new(color.rgb(8, 236, 126),80),"",inline="pd"), midcol = input.color(color.rgb(124, 128, 126, 56),"",inline="pd")
+//~~}
+//~~Table{
+headers = array.from(input.bool(true,"Ticker",group="Table",inline="h1"),
+ input.bool(true,"Price",group="Table",inline="h1"),
+ input.bool(true,"Trend",group="Table",inline="h1"),
+ input.bool(true,"Signal",group="Table",inline="h1"),
+ input.bool(true,"Range",group="Table",inline="h1"),
+ input.bool(true,"Premium",group="Table",inline="h1"),
+ input.bool(true,"Mid",group="Table",inline="h1"),
+ input.bool(true,"Discount",group="Table",inline="h1"))
+
+pos  = input.string(position.top_right, "Table Position", [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_center, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right],group="")
+size = input.string(size.auto, "Table Size", [size.auto, size.tiny, size.small, size.normal, size.large, size.huge],group="")
+
+headCol    = input.color(color.blue,"",inline="tbl")
+tblBullCol = input.color(color.teal,"",inline="tbl")
+tblBearCol = input.color(color.red,"",inline="tbl")
+//~~}
+//~~Tickers{
+show = array.from(
+ input.bool(true, "", group="Tickers", inline = "00"), 
+ input.bool(true, "",  inline = "01"), 
+ input.bool(true, "",  inline = "02"), 
+ input.bool(true, "",  inline = "03"), 
+ input.bool(true, "",  inline = "04"), 
+ input.bool(false, "",  inline = "05"), 
+ input.bool(false, "",  inline = "06"), 
+ input.bool(false, "",  inline = "07"), 
+ input.bool(false, "",  inline = "08"), 
+ input.bool(false, "",  inline = "09"),
+ input.bool(false, "", inline = "10"), 
+ input.bool(false, "", inline = "11"), 
+ input.bool(false, "", inline = "12"), 
+ input.bool(false, "", inline = "13"), 
+ input.bool(false, "", inline = "14"), 
+ input.bool(false, "", inline = "15"), 
+ input.bool(false, "", inline = "16"), 
+ input.bool(false, "", inline = "17"), 
+ input.bool(false, "", inline = "18"), 
+ input.bool(false, "", inline = "19")
+ )
+
+s00 = input.symbol("TSLA", "", group="Tickers", inline = "00")
+s01 = input.symbol("NVDA", "", inline = "01")
+s02 = input.symbol("META", "", inline = "02")
+s03 = input.symbol("GOOGL", "",inline = "03")
+s04 = input.symbol("AMZN", "", inline = "04")
+s05 = input.symbol("AVGO", "", inline = "05")
+s06 = input.symbol("JPM", "",  inline = "06")
+s07 = input.symbol("V", "",    inline = "07")
+s08 = input.symbol("WMT", "",  inline = "08")
+s09 = input.symbol("KO", "",   inline = "09")
+s10 = input.symbol("MCD", "",  inline = "10")
+s11 = input.symbol("WMT", "",  inline = "11")
+s12 = input.symbol("NWN", "",  inline = "12")
+s13 = input.symbol("VZ", "",   inline = "13")
+s14 = input.symbol("T", "",    inline = "14")
+s15 = input.symbol("INTC", "", inline = "15")
+s16 = input.symbol("PFE", "",  inline = "16")
+s17 = input.symbol("CVX", "",  inline = "17")
+s18 = input.symbol("XOM", "",  inline = "18")
+s19 = input.symbol("AA", "",   inline = "19")
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ UDTs {
+type SMC
+    array<float>Ups
+    array<float>Dns
+    bool alt
+    string tick
+    Up = high
+    Dn = low
+    pos = 0
+    iUp = 0
+    iDn = 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+alrt = array.new<string>()
+symbols = array.from(s00,s01,s02,s03,s04,s05,s06,s07,
+ s08,s09,s10,s11,s12,s13,s14,s15,s16,s17,s18,s19)
+var smcData = array.new<SMC>()
+var cs = SMC.new(array.new<float>(),array.new<float>())
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+//~~Labels{
+CreateLabel(x,y,txt,col,z)=>
+    label.new(x,y,txt,textcolor=col,style=z?label.style_label_down:label.style_label_up,color=color(na))
+//~~}
+//~~Lines{
+CreateLine(x1,x2,y,col)=>
+    line.new(x1,x2,b,y,color=col)
+//~~}
+//~~Structure{
+method SmartMoneyStructure(SMC x,rh,rl,plot)=>
+    if x.Up>rh
+        centerBull = math.round(math.avg(x.iUp,b))
+        if x.pos<=0
+            if plot and bull
+                CreateLabel(centerBull,rh,"CHoCH",bull2,true)
+                CreateLine(x.iUp,rh,rh,bull2)
+            if x.alt
+                alrt.push(x.tick+": Bullish CHoCH")
+            x.pos := 1
+        else if x.pos==1 and rh==x.Ups.get(math.min(x.Ups.size()-1,s1?resp:prd))
+            if plot and bull
+                CreateLabel(centerBull,rh,"SMS",bull2,true)
+                CreateLine(x.iUp,rh,rh,bull2)
+            if x.alt
+                alrt.push(x.tick+": Bullish SMS")
+            x.pos := 2
+        else if x.pos>1 and rh==x.Ups.get(math.min(x.Ups.size()-1,s1?resp:prd))
+            if plot and bull
+                CreateLabel(centerBull,rh,"BMS",bull2,true)
+                CreateLine(x.iUp,rh,rh,bull2)
+            if x.alt
+                alrt.push(x.tick+": Bullish BMS")
+            x.pos += 1
+        x.iUp := b
+    else if x.Up<rh
+        x.iUp := b-prd
+    if x.Dn<rl
+        centerBear = math.round(math.avg(x.iDn,b))
+        if x.pos>=0
+            if plot and bear
+                CreateLabel(centerBear,rl,"CHoCH",bear2,false)
+                CreateLine(x.iDn,rl,rl,bear2)
+            if x.alt
+                alrt.push(x.tick+": Bearish CHoCH")
+            x.pos := -1
+        else if x.pos==-1 and rl==x.Dns.get(math.min(x.Dns.size()-1,s1?resp:prd))
+            if plot and bear
+                CreateLabel(centerBear,rl,"SMS",bear2,false)
+                CreateLine(x.iDn,rl,rl,bear2)
+            if x.alt
+                alrt.push(x.tick+": Bearish SMS")
+            x.pos := -2
+        else if x.pos<-1 and rl==x.Dns.get(math.min(x.Dns.size()-1,s1?resp:prd))
+            if plot and bear
+                CreateLabel(centerBear,rl,"BMS",bear2,false)
+                CreateLine(x.iDn,rl,rl,bear2)
+            if x.alt
+                alrt.push(x.tick+": Bearish BMS")
+            x.pos += -1
+        x.iDn := b
+    else if x.Dn>rl
+        x.iDn := b-prd
+//~~}
+//~~Screen{
+method SMCScreen(SMC data,h,l,pvtHi,pvtLo,plot)=>
+    data.Ups.unshift(data.Up)
+    data.Dns.unshift(data.Dn)
+    prevUp = data.Up
+    prevDn = data.Dn
+    data.Up := math.max(prevUp,h)
+    data.Dn := math.min(prevDn,l)
+    if not na(pvtHi)
+        data.Up := pvtHi
+    if not na(pvtLo)
+        data.Dn := pvtLo
+    data.SmartMoneyStructure(prevUp,prevDn,plot)
+    true
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Declare {
+if smcData.size()<=0
+    for [i,s] in show
+        t = str.split(symbols.get(i),":")
+        smcData.push(SMC.new(array.new<float>(),array.new<float>(),s,t.get(1)))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Requests {
+[c00,h00,l00,ph00,pl00] = request.security(s00,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c01,h01,l01,ph01,pl01] = request.security(s01,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c02,h02,l02,ph02,pl02] = request.security(s02,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c03,h03,l03,ph03,pl03] = request.security(s03,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c04,h04,l04,ph04,pl04] = request.security(s04,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c05,h05,l05,ph05,pl05] = request.security(s05,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c06,h06,l06,ph06,pl06] = request.security(s06,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c07,h07,l07,ph07,pl07] = request.security(s07,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c08,h08,l08,ph08,pl08] = request.security(s08,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c09,h09,l09,ph09,pl09] = request.security(s09,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c10,h10,l10,ph10,pl10] = request.security(s10,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c11,h11,l11,ph11,pl11] = request.security(s11,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c12,h12,l12,ph12,pl12] = request.security(s12,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c13,h13,l13,ph13,pl13] = request.security(s13,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c14,h14,l14,ph14,pl14] = request.security(s14,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c15,h15,l15,ph15,pl15] = request.security(s15,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c16,h16,l16,ph16,pl16] = request.security(s16,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c17,h17,l17,ph17,pl17] = request.security(s17,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c18,h18,l18,ph18,pl18] = request.security(s18,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+[c19,h19,l19,ph19,pl19] = request.security(s19,timeframe.period,[close,high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd)],ignore_invalid_symbol=true)
+
+//Run Screener
+smcData.get(0).SMCScreen(h00,l00,ph00,pl00,false)
+smcData.get(1).SMCScreen(h01,l01,ph01,pl01,false)
+smcData.get(2).SMCScreen(h02,l02,ph02,pl02,false)
+smcData.get(3).SMCScreen(h03,l03,ph03,pl03,false)
+smcData.get(4).SMCScreen(h04,l04,ph04,pl04,false)
+smcData.get(5).SMCScreen(h05,l05,ph05,pl05,false)
+smcData.get(6).SMCScreen(h06,l06,ph06,pl06,false)
+smcData.get(7).SMCScreen(h07,l07,ph07,pl07,false)
+smcData.get(8).SMCScreen(h08,l08,ph08,pl08,false)
+smcData.get(9).SMCScreen(h09,l09,ph09,pl09,false)
+smcData.get(10).SMCScreen(h10,l10,ph10,pl10,false)
+smcData.get(11).SMCScreen(h11,l11,ph11,pl11,false)
+smcData.get(12).SMCScreen(h12,l12,ph12,pl12,false)
+smcData.get(13).SMCScreen(h13,l13,ph13,pl13,false)
+smcData.get(14).SMCScreen(h14,l14,ph14,pl14,false)
+smcData.get(15).SMCScreen(h15,l15,ph15,pl15,false)
+smcData.get(16).SMCScreen(h16,l16,ph16,pl16,false)
+smcData.get(17).SMCScreen(h17,l17,ph17,pl17,false)
+smcData.get(18).SMCScreen(h18,l18,ph18,pl18,false)
+smcData.get(19).SMCScreen(h19,l19,ph19,pl19,false)
+prices = array.from(c00,c01,c02,c03,c04,c05,c06,c07,
+     c08,c09,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+if barstate.islast
+    //~~Header{
+    var tbl = table.new(pos,8,symbols.size()+2, frame_color = color.white, frame_width = 1, border_color = color.white, border_width = 1)
+    header = array.from("Ticker","Price","Trend","Signal","Range","Premium","Mid","Discount")
+    for [i,h] in headers
+        if h
+            tbl.cell(i,0,header.get(i),text_color=color.white,bgcolor=headCol, text_size = size)
+    //~~}
+    //~~Plot & Alert{
+    //Rows
+    for [i,val] in smcData
+        if show.get(i)
+            t = str.split(symbols.get(i),":")
+
+            Up = val.Up
+            Dn = val.Dn
+            PremiumTop   = Up-(Up-Dn)*.1
+            PremiumBot   = Up-(Up-Dn)*.25
+            DiscountTop  = Dn+(Up-Dn)*.25
+            DiscountBot  = Dn+(Up-Dn)*.1
+            MidTop       = Up-(Up-Dn)*.45
+            MidBot       = Dn+(Up-Dn)*.45
+
+            sig = val.pos==1 or val.pos==-1?"CHoCH":
+             val.pos==2 or val.pos==-2?"SMS":"BMS"
+
+            values = array.from(t.get(1),str.format("{0,number,currency}",prices.get(i)),val.pos>0?"Bullish":"Bearish",
+             sig,str.format("{0,number,currency}",Up)+"-"+str.format("{0,number,currency}",Dn),
+             str.format("{0,number,currency}",PremiumTop)+"-"+str.format("{0,number,currency}",PremiumBot),
+             str.format("{0,number,currency}",MidTop)+"-"+str.format("{0,number,currency}",MidBot),
+             str.format("{0,number,currency}",DiscountTop)+"-"+str.format("{0,number,currency}",DiscountBot))
+
+            //Columns
+            for [j,h] in headers
+                if h
+                    tbl.cell(j,i+1,values.get(j),text_color=color.white,bgcolor=val.pos>0?tblBullCol:tblBearCol,text_size = size)
+
+            //~~Alerts{
+            priceInPremium  = prices.get(i)<=PremiumTop and prices.get(i)>=PremiumBot
+            priceInMid      = prices.get(i)<=MidTop and prices.get(i)>=MidBot
+            priceInDiscount = prices.get(i)<=DiscountTop and prices.get(i)>=DiscountBot
+            if priceInPremium or priceInMid or priceInDiscount
+                str = priceInPremium?"Premium":priceInMid?"Mid":"Discount"
+                alrt.push(t.get(1)+" in "+str+" area!")
+            //~~}
+        //~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main {
+cs.SMCScreen(high,low,ta.pivothigh(high,prd,prd),ta.pivotlow(low,prd,prd),true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Premium & Discount {
+Up = cs.Up
+Dn = cs.Dn
+PremiumTop   = Up-(Up-Dn)*.1
+PremiumBot   = Up-(Up-Dn)*.25
+DiscountTop  = Dn+(Up-Dn)*.25
+DiscountBot  = Dn+(Up-Dn)*.1
+MidTop       = Up-(Up-Dn)*.45
+MidBot       = Dn+(Up-Dn)*.45
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+//Active Range
+var top = line.new(chart.point.from_index(na,na),chart.point.from_index(na,na),color=bear2,width=2)
+var bot = line.new(chart.point.from_index(na,na),chart.point.from_index(na,na),color=bull2,width=2)
+var pre = box.new(chart.point.from_index(na,na),chart.point.from_index(na,na),bgcolor=prem,border_color=na)
+var mid = box.new(chart.point.from_index(na,na),chart.point.from_index(na,na),bgcolor=midcol,border_color=na)
+var dis = box.new(chart.point.from_index(na,na),chart.point.from_index(na,na),bgcolor=disc,border_color=na)
+
+if curr=="Active Range"
+    right = bar_index+20
+    leftUp = cs.iUp
+    leftDn = cs.iDn
+    top.set_first_point(chart.point.from_index(leftUp,Up))
+    top.set_second_point(chart.point.from_index(right,Up))
+    bot.set_first_point(chart.point.from_index(leftDn,Dn))
+    bot.set_second_point(chart.point.from_index(right,Dn))
+    left = math.max(leftUp,leftDn)
+    if showPD
+        pre.set_lefttop(left,PremiumTop)
+        pre.set_rightbottom(right,PremiumBot)
+        mid.set_lefttop(left,MidTop)
+        mid.set_rightbottom(right,MidBot)
+        dis.set_lefttop(left,DiscountTop)
+        dis.set_rightbottom(right,DiscountBot)
+
+//Previous Range
+r1 = plot(curr=="Previous Range"?Up:na,"Range High",bear2)
+r2 = plot(curr=="Previous Range"?Dn:na,"Range Low",bull2)
+p1 = plot(showPD and curr=="Previous Range"?PremiumTop:na,"Premium",na)
+p2 = plot(showPD and curr=="Previous Range"?PremiumBot:na,"Premium",na)
+d1 = plot(showPD and curr=="Previous Range"?DiscountTop:na,"Discount",na)
+d2 = plot(showPD and curr=="Previous Range"?DiscountBot:na,"Discount",na)
+m1 = plot(showPD and curr=="Previous Range"?MidTop:na,"Mid",na)
+m2 = plot(showPD and curr=="Previous Range"?MidBot:na,"Mid",na)
+
+fill(p1,p2,color=prem)
+fill(d1,d2,color=disc)
+fill(m1,m2,color=midcol)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert {
+if alrt.size()>0
+    alert(alrt.join("\n"),alert.freq_once_per_bar_close)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

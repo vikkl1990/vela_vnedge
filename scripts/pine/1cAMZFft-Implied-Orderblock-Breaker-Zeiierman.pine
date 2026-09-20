@@ -1,0 +1,99 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ © Zeiierman {
+//@version=6
+indicator('Implied Orderblock Breaker (Zeiierman)', overlay = true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Tooltips {
+t1 = 'The \'Period\' setting in the indicator determines the number of bars used to identify pivot highs and lows. Increasing this value leads to fewer but more significant pivot points, as it considers a wider range of data. Decreasing it results in more frequent pivot points but with potentially less significance, suitable for short-term analysis.'
+t2 = 'The \'Pivot Surrounding\' or \'candles\' setting defines the number of candles analyzed around each pivot point to identify bullish or bearish patterns. Increasing this value extends the analysis range, possibly capturing more patterns but including less significant ones. Decreasing the value focuses on a narrower range, potentially highlighting more significant trade setups but missing broader patterns. This setting can be adjusted based on trading style: smaller numbers for short-term trades and larger numbers for broader market analysis.'
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+prd = input.int(20, minval = 1, title = 'Period', group = '', inline = '', tooltip = t1)
+candles = input.int(5, minval = 1, title = 'Pivot Surrounding', group = '', inline = '', tooltip = t2)
+Bullish = input.color(color.lime, title = '', group = '', inline = 'color', tooltip = '')
+Bearish = input.color(color.red, title = '', group = '', inline = 'color', tooltip = '')
+
+showBosLabels = input.bool(true, title = 'Enable BoS Labels', group = 'BoS Labels')
+bosLabelSize = input.string('Small', title = 'BoS Label Size', options = ['Auto', 'Tiny', 'Small', 'Normal', 'Large', 'Huge'], group = 'BoS Labels')
+bosLabelBgColor = input.color(color.new(color.black, 0), title = 'BoS Label Background Color', group = 'BoS Labels')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Declaration {
+type Box
+    array<box> bull
+    array<box> bear
+
+b = bar_index
+var bo = Box.new(array.new<box>(), array.new<box>())
+var hi = float(na)
+var lo = float(na)
+var hiLoc = int(na)
+var loLoc = int(na)
+
+bosSize = switch bosLabelSize
+    'Auto' => size.auto
+    'Tiny' => size.tiny
+    'Small' => size.small
+    'Normal' => size.normal
+    'Large' => size.large
+    'Huge' => size.huge
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivots {
+pvtHi = ta.pivothigh(high, prd, prd)
+pvtLo = ta.pivotlow(low, prd, prd)
+
+if not na(pvtHi)
+    hi := high[prd]
+    hiLoc := b - prd
+    hiLoc
+if not na(pvtLo)
+    lo := low[prd]
+    loLoc := b - prd
+    loLoc
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Logic {
+lo_ = lo <= ta.lowest(low, prd)
+hi_ = hi >= ta.highest(high, prd)
+locross = ta.crossover(close, hi) and lo_
+hicross = ta.crossunder(close, lo) and hi_
+
+if locross
+    for i = loLoc to loLoc + candles by 1
+        loc = b - i
+        if close[loc] > open[loc] and low[loc - 1] > open[loc]
+            bo.bull.push(box.new(i, low[loc - 1], b, open[loc], border_color = Bullish, bgcolor = color.new(Bullish, 75), text = str.tostring(volume[loc], format.volume), text_color = chart.fg_color))
+            line.new(hiLoc, high[b - hiLoc], b, high[b - hiLoc], color = Bullish)
+            if showBosLabels
+                label.new(math.round((hiLoc + b) / 2), high[b - hiLoc], 'BOS', style = label.style_label_center, textcolor = Bullish, color = bosLabelBgColor, size = bosSize)
+            hi := float(na)
+            break
+
+if hicross
+    for i = hiLoc to hiLoc + candles by 1
+        loc = b - i
+        if close[loc] < open[loc] and high[loc - 1] < open[loc]
+            bo.bear.push(box.new(i, high[loc - 1], b, open[loc], border_color = Bearish, bgcolor = color.new(Bearish, 75), text = str.tostring(volume[loc], format.volume), text_color = chart.fg_color))
+            line.new(loLoc, low[b - loLoc], b, low[b - loLoc], color = Bearish)
+            if showBosLabels
+                label.new(math.round((loLoc + b) / 2), low[b - loLoc], 'BOS', style = label.style_label_center, textcolor = Bearish, color = bosLabelBgColor, size = bosSize)
+            lo := float(na)
+            break
+            //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Validation {
+BoxCheck(arr, bube) =>
+    for [i, element] in arr
+        if bube and close < element.get_bottom() or not bube and close > element.get_top()
+            arr.remove(i)
+        else
+            element.set_right(b)
+    true
+
+BoxCheck(bo.bull, true)
+BoxCheck(bo.bear, false)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

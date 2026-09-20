@@ -1,0 +1,133 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator('Dynamic Price Oscillator Overlay (Zeiierman)', overlay = true, precision = 0)
+//}
+
+// ~~ Tooltips {
+var string t1 = 'Defines the main lookback period used for the oscillator and Bollinger Band calculations. Higher values create smoother, slower signals. Lower values make the oscillator more responsive to recent price movement.'
+var string t2 = 'Controls the EMA smoothing applied to the Dynamic Price Oscillator. Higher values reduce noise but add delay. Lower values react faster but may produce more false signals.'
+var string t3 = 'Defines the EMA length used as the price anchor for the overlay. The oscillator is wrapped around this price-based anchor so it follows the chart instead of appearing in a separate pane.'
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+length = input.int(33, 'Length', minval = 1, group = 'Dynamic Price Oscillator', tooltip = t1)
+smoothFactor = input.int(5, 'Smoothing Factor', minval = 1, group = 'Dynamic Price Oscillator', tooltip = t2)
+anchorLength = input.int(33, 'Price Anchor Length', minval = 1, group = 'Overlay Settings', tooltip = t3)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ True Range Function {
+trueRange(h, l, c) =>
+    tr1 = h - l
+    tr2 = math.abs(h - c[1])
+    tr3 = math.abs(l - c[1])
+    math.max(tr1, tr2, tr3)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Bollinger Bands Function {
+bollingerBands(src, length, mult) =>
+    basis = ta.sma(src, length)
+    dev = mult * ta.stdev(src, length)
+    upper = basis + dev
+    lower = basis - dev
+    [upper, lower]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Volatility Adjusted Price {
+volAdjPrice = ta.ema(trueRange(high, low, close), length)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Oscillator Calculation {
+priceChange = close - close[length]
+priceDelta = close - volAdjPrice
+oscillator = ta.ema(math.avg(priceDelta, priceChange), smoothFactor)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Oscillator Bands {
+[bbHigh, bbLow] = bollingerBands(oscillator, length * 5, 1)
+[bbHighExp, bbLowExp] = bollingerBands(oscillator, length * 5, 2)
+mean = math.avg(bbHighExp, bbLowExp)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Wrapped Price Overlay {
+priceAnchor = ta.ema(close, anchorLength)
+
+overlayOsc = priceAnchor + oscillator - mean
+overlayMean = priceAnchor
+overlayBBHigh = priceAnchor + bbHigh - mean
+overlayBBHighExp = priceAnchor + bbHighExp - mean
+overlayBBLow = priceAnchor + bbLow - mean
+overlayBBLowExp = priceAnchor + bbLowExp - mean
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+p1 = plot(overlayOsc, 'Dynamic Price Oscillator Overlay', color = color.rgb(227, 161, 54), linewidth = 2)
+plot(overlayMean, 'Dynamic Mean Overlay', color = color.new(#f7cb85, 0))
+
+p2 = plot(overlayBBHigh, 'Bollinger High Overlay', color = color.new(#089981, 60))
+p3 = plot(overlayBBHighExp, 'Expanded Bollinger High Overlay', color = color.new(#089981, 0))
+p4 = plot(overlayBBLow, 'Bollinger Low Overlay', color = color.new(#f23645, 60))
+p5 = plot(overlayBBLowExp, 'Expanded Bollinger Low Overlay', color = color.new(#f23645, 0))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fills {
+fill(p1, p2, oscillator > bbHigh ? color.new(#089981, 80) : na)
+fill(p1, p3, oscillator > bbHighExp ? color.new(#089981, 80) : na)
+fill(p1, p4, oscillator < bbLow ? color.new(#f23645, 80) : na)
+fill(p1, p5, oscillator < bbLowExp ? color.new(#f23645, 80) : na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Conditions {
+bullCrossMean = ta.crossover(oscillator, mean)
+bearCrossMean = ta.crossunder(oscillator, mean)
+
+bullCrossBB = ta.crossover(oscillator, bbHigh)
+bearCrossBB = ta.crossunder(oscillator, bbLow)
+
+bullCrossExpandedBB = ta.crossover(oscillator, bbHighExp)
+bearCrossExpandedBB = ta.crossunder(oscillator, bbLowExp)
+
+bullReentryBB = ta.crossunder(oscillator, bbHigh)
+bearReentryBB = ta.crossover(oscillator, bbLow)
+
+bullReentryExpandedBB = ta.crossunder(oscillator, bbHighExp)
+bearReentryExpandedBB = ta.crossover(oscillator, bbLowExp)
+
+bullTrend = oscillator > mean
+bearTrend = oscillator < mean
+
+extremeBull = oscillator > bbHighExp
+extremeBear = oscillator < bbLowExp
+
+anyBullSignal = bullCrossMean or bullCrossBB or bullCrossExpandedBB or bullReentryBB or bullReentryExpandedBB
+anyBearSignal = bearCrossMean or bearCrossBB or bearCrossExpandedBB or bearReentryBB or bearReentryExpandedBB
+anySignal = anyBullSignal or anyBearSignal
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(bullCrossMean, 'Bullish Mean Cross', 'Dynamic Price Oscillator crossed above the mean.')
+alertcondition(bearCrossMean, 'Bearish Mean Cross', 'Dynamic Price Oscillator crossed below the mean.')
+
+alertcondition(bullCrossBB, 'Bullish Bollinger Breakout', 'Dynamic Price Oscillator crossed above the upper Bollinger Band.')
+alertcondition(bearCrossBB, 'Bearish Bollinger Breakout', 'Dynamic Price Oscillator crossed below the lower Bollinger Band.')
+
+alertcondition(bullCrossExpandedBB, 'Bullish Expanded Bollinger Breakout', 'Dynamic Price Oscillator crossed above the expanded upper Bollinger Band.')
+alertcondition(bearCrossExpandedBB, 'Bearish Expanded Bollinger Breakout', 'Dynamic Price Oscillator crossed below the expanded lower Bollinger Band.')
+
+alertcondition(bullReentryBB, 'Bullish Upper Band Reentry', 'Dynamic Price Oscillator crossed back below the upper Bollinger Band.')
+alertcondition(bearReentryBB, 'Bearish Lower Band Reentry', 'Dynamic Price Oscillator crossed back above the lower Bollinger Band.')
+
+alertcondition(bullReentryExpandedBB, 'Bullish Expanded Upper Band Reentry', 'Dynamic Price Oscillator crossed back below the expanded upper Bollinger Band.')
+alertcondition(bearReentryExpandedBB, 'Bearish Expanded Lower Band Reentry', 'Dynamic Price Oscillator crossed back above the expanded lower Bollinger Band.')
+
+alertcondition(extremeBull, 'Extreme Bullish Condition', 'Dynamic Price Oscillator is above the expanded upper Bollinger Band.')
+alertcondition(extremeBear, 'Extreme Bearish Condition', 'Dynamic Price Oscillator is below the expanded lower Bollinger Band.')
+
+alertcondition(bullTrend, 'Bullish Trend Condition', 'Dynamic Price Oscillator is above the mean.')
+alertcondition(bearTrend, 'Bearish Trend Condition', 'Dynamic Price Oscillator is below the mean.')
+
+alertcondition(anyBullSignal, 'Any Bullish Signal', 'Dynamic Price Oscillator triggered a bullish alert.')
+alertcondition(anyBearSignal, 'Any Bearish Signal', 'Dynamic Price Oscillator triggered a bearish alert.')
+alertcondition(anySignal, 'Any Signal', 'Dynamic Price Oscillator triggered any alert.')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,57 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator('Fearzone (Zeiierman) - Contrarian Indicator', overlay=true, shorttitle='Fearzone (Zeiierman)')
+
+// Input Settings
+source       = input.source(ohlc4, title='Source', group='Source', tooltip='Select the source for calculations')
+High_period  = input.int(30, title='High Period', group='Fearzone Settings', tooltip='Number of bars for the highest high calculation')
+Stdev_period = input.int(50, title='Stdev Period', group='Fearzone Settings', tooltip='Number of bars for standard deviation calculation')
+matype       = input.string("WMA", options = ["SMA","EMA","WMA","HMA","RMA"], title="Select Moving Average",group="Average Type", inline="", tooltip="Choose the average")
+
+average(src_,len_)=>
+    ma = switch matype
+        "SMA" => ta.sma(src_, len_)
+        "EMA" => ta.ema(src_, len_)
+        "WMA" => ta.wma(src_, len_)
+        "HMA" => ta.hma(src_, len_)
+        "RMA" => ta.rma(src_, len_)
+
+// Function to calculate FZ1 values
+calc_FZ1(source, High_period, Stdev_period) =>
+    FZ1      = (ta.highest(source, High_period) - source) / ta.highest(source, High_period)
+    AVG1     = average(FZ1,Stdev_period)
+    STDEV1   = ta.stdev(FZ1, Stdev_period)
+    FZ1Limit = AVG1 + STDEV1
+    [FZ1, FZ1Limit]
+
+// Function to calculate FZ2 values
+calc_FZ2(source, High_period, Stdev_period) =>
+    FZ2      = average(source,High_period)
+    AVG2     = average(FZ2,Stdev_period)
+    STDEV2   = ta.stdev(FZ2, Stdev_period)
+    FZ2Limit = AVG2 - STDEV2
+    [FZ2, FZ2Limit]
+
+// Calculate FZ1 and FZ2
+[FZ1, FZ1Limit] = calc_FZ1(source, High_period, Stdev_period)
+[FZ2, FZ2Limit] = calc_FZ2(source, High_period, Stdev_period)
+
+// FearZone Condition
+Fearzone_Con  = FZ1 > FZ1Limit and FZ2 < FZ2Limit
+FearZoneOpen  = Fearzone_Con ? low - ta.tr : na
+FearZoneClose = Fearzone_Con ? low - 2 * ta.tr : na
+
+// Plot FearZone Candlesticks
+plotcandle(FearZoneOpen, FearZoneOpen, FearZoneClose, FearZoneClose, color=#FC6C85, bordercolor=color.red, title='FearZone Candlesticks')
+
+// Alerts Settings
+AlertCircle = input.bool(true, title='Show Alert Circle?', group='Alerts', tooltip='Enable or disable alert circles on the chart')
+Alert_Col   = Fearzone_Con != Fearzone_Con[1] and AlertCircle ? #FC6C85 : na
+
+// Plot Alert Circles
+plotshape(Fearzone_Con, style=shape.circle, location=location.belowbar, size=size.tiny, color=Alert_Col, title='Alert Circles')
+
+// Alert Condition
+alertcondition(Fearzone_Con != Fearzone_Con[1], title='FearZone', message='FearZone detected')

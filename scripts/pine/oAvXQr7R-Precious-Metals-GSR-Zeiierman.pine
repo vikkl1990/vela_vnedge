@@ -1,0 +1,314 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator("Precious Metals & GSR (Zeiierman)", precision = 1, max_bars_back = 500, overlay = false)
+//~~}
+
+//~~ Tooltips {
+var string t1 = "Select the currency in which the precious metal prices will be displayed. This setting does not affect
+ the calculation of ratios but only modifies the price table display."
+var string t2 = "Select which precious metals should be displayed in the price table. The selected metals will be
+ included in the table with their respective prices in the chosen currency."
+var string t3 = "Select which measurement units (e.g., ounces, kilograms, grams) should be included in the price table.
+ This setting allows you to display prices in multiple formats."
+var string t4 = "Choose where the price table should be placed on the chart. You can select different positions depending
+ on your preference."
+var string t5 = "Choose the text size of the price table. Adjust this setting if the table appears too large or too small
+ on your chart."
+var string t6 = "The ratio is calculated by dividing the price of Metal 1 by the price of Metal 2. A rising ratio means
+ that Metal 1 is outperforming Metal 2, while a falling ratio means Metal 2 is outperforming Metal 1."
+var string t7 = "Set the number of bars used to calculate both:\n\n1. **Ratio High/Low Bands**: Defines the highest and
+ lowest values the ratio has reached over the selected period.\n\n2. **Quantile Ratio Bands**: These are percentile-based
+ levels that help classify the ratio into different strength zones in the ratio interpretation table.\n\nA longer length
+ provides a broader historical context, while a shorter length makes the bands more responsive to recent price movements."
+var string t8 = "Enable this option to display the estimated value of your physical metal holdings. You must specify the
+ weight, metal type, and purity for an accurate calculation."
+var string t9 = "Enter the weight of the physical metal you own. This value is used in conjunction with the selected
+ measurement unit and metal type to estimate the total value of your holdings."
+var string t10 = "Select the type of metal you own. The value of your holdings is calculated based on the current market
+ price of the chosen metal."
+var string t11 = "Select the measurement unit for your holdings (e.g., ounces, kilos, grams). This unit should match how
+ you measure your metal holdings."
+var string t12 = "Select the purity of your metal holdings. This setting is used to adjust the calculation for gold
+ alloys, such as 22K, 18K, etc."
+var string t13 = "Choose where the metal holdings table should be placed on the chart. This table displays the estimated
+ value of your holdings."
+var string t14 = "Choose the text size for the holdings table. Adjust this setting if the table text appears too small
+ or too large."
+var string t15 = "Enable this option to display a ratio analysis table that interprets the current ratio level. The
+ table will indicate whether Metal 1 is outperforming or underperforming Metal 2 based on historical quantiles."
+var string t16 = "Choose where the ratio interpretation table should be placed on the chart. This table provides a quick
+ summary of the ratio's current position relative to its historical values."
+var string t17 = "Choose the text size of the ratio analysis table. Adjust this setting to ensure readability."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Inputs {
+currency = input.string("USD", "User Currency", options=["AUD", "BTC", "CAD", "CHF", "DKK", "EUR", "GBP", "HKD", "INR", "JPY", "KRW",
+ "MYR", "NOK", "NZD", "RUB", "SEK", "SGD", "TRY", "USD", "ZAR"], inline="c1", group="Precious Metals Table", tooltip=t1)
+
+p_metals = array.from(input.bool(true, "Gold", inline="p"), input.bool(true, "Silver", inline="p"),
+ input.bool(true, "Platinum", inline="p"), input.bool(true, "Palladium", inline="p"))
+
+metrics = array.from(input.bool(true, "oz", inline="m", tooltip=t3), input.bool(true, "kg", inline="m", tooltip=t3),
+ input.bool(true, "g", inline="m", tooltip=t3), input.bool(false, "ozt", inline="m", tooltip=t3))
+
+tableLoc = input.string(position.top_right, "Table Position/Size",
+ [position.top_left, position.middle_left, position.bottom_left,
+      position.top_center, position.middle_center, position.bottom_center,
+      position.top_right, position.middle_right, position.bottom_right], inline="tableLoc", group="Precious Metals Table", tooltip=t4)
+
+size = input.string(size.auto, "",
+ [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline="tableLoc", group="Precious Metals Table", tooltip= t4 + "\n\n" + t5)
+
+symbol1 = input.string("GOLD", "Metal 1", ["GOLD", "SILVER", "PLATINUM", "PALLADIUM"], inline="r1", group="Metals Ratio", tooltip=t6)
+symbol2 = input.string("SILVER", "Metal 2", ["GOLD", "SILVER", "PLATINUM", "PALLADIUM"], inline="r1", group="Metals Ratio", tooltip=t6)
+length  = input.int(1095, "Ratio Calculation Length", group="Metals Ratio",tooltip=t7)
+
+
+holder    = input.bool(false, "Calculate Metal Holding", group="Physical Holding", tooltip=t8)
+userHold  = input.int(10, "Weight", inline="user", tooltip=t9)
+userMetal = input.string("GOLD", "Metal Type", ["GOLD", "SILVER", "PLATINUM", "PALLADIUM"], inline="user", tooltip= t9 + "\n\n" + t10)
+userMetr  = input.string("Kilos", "Measurement Unit", ["Ounces", "Kilos", "Grams", "Troy Ounces"], inline="user2", tooltip=t11)
+purity    = input.string("24K", "Purity", ["24K", "22K", "18K", "14K", "9K"], inline="user2", tooltip= t11 + "\n\n" + t12)
+
+holdLoc = input.string(position.bottom_right, "Table Position/Size",
+ [position.top_left, position.middle_left, position.bottom_left,
+      position.top_center, position.middle_center, position.bottom_center,
+      position.top_right, position.middle_right, position.bottom_right], inline="holdLoc", group="Physical Holding", tooltip=t13)
+
+holdSize = input.string(size.auto, "",
+ [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline="holdLoc", group="Physical Holding", tooltip= t13 + "\n\n" + t14)
+
+ratioAnalysis = input.bool(true, "Enable Ratio Interpretation", group="Ratio Analysis", tooltip=t15)
+
+ratioAnalysisLoc = input.string(position.top_right, "Table Position/Size",
+ [position.top_left, position.middle_left, position.bottom_left,
+      position.top_center, position.middle_center, position.bottom_center,
+     position.top_right, position.middle_right, position.bottom_right], inline="ratioAnalysisLoc", group="Ratio Analysis", tooltip=t16)
+
+ratioAnalysisSize = input.string(size.auto, "",
+ [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline="ratioAnalysisLoc", group="Ratio Analysis", tooltip=t16 + "\n\n" + t17)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Requests {
+gold_kilo       = request.security("XAUUSDK",timeframe.period,close,currency = currency)
+silver_kilo     = request.security("XAGUSDK",timeframe.period,close,currency = currency)
+platinum_kilo   = request.security("XPTUSDK",timeframe.period,close,currency = currency)
+palladium_kilo  = request.security("XPDUSDK",timeframe.period,close,currency = currency)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function {
+Symbol(s)=>
+    output = switch s
+        "GOLD"      => gold_kilo
+        "SILVER"    => silver_kilo
+        "PLATINUM"  => platinum_kilo
+        "PALLADIUM" => palladium_kilo
+
+Format(val)=>str.format("{0, number, currency}", val)
+decimals = math.max(2, int(math.round(math.abs(math.log(syminfo.mintick) / math.log(10)))))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Ratio {
+a = Symbol(symbol1)
+b = Symbol(symbol2)
+
+ratio = a/b
+
+// Ratio Highest and Lowest Bands
+max = ta.highest(ratio,length)
+min = ta.lowest(ratio,length)
+mid = math.avg(max,min)
+
+// Normalize ratio between 0 (min) and 1 (max)
+ratioNormalized = (ratio - min) / (max - min)
+limeR = 0, limeG = 255, limeB = 0
+redR  = 255, redG = 0, redB = 0
+
+// Gradient Color
+interpR = int(redR + (limeR- redR) * ratioNormalized)
+interpG = int(redG + (limeG- redG) * ratioNormalized)
+interpB = int(redB + (limeB- redB) * ratioNormalized)
+gradientColor = color.rgb(interpR, interpG, interpB)
+
+plot(ratio,"Ratio",color=color.white, linewidth = 1)
+plot(ratio,"Ratio Gradient Color",color=color.new(gradientColor,80), linewidth = 4)
+m   = plot(mid,"Mid",color(na))
+up  = plot(max,"Max",color(na))
+dn  = plot(min,"Min",color(na))
+fill(up, m, max, ta.sma(mid,20), color.new(color.green, 60),na)
+fill(dn, m, min, ta.sma(mid,20), color.new(color.red, 60),na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Quantile Ratio Bands  {
+var array<float> ratioArray = array.new_float()
+var array<float> sortedRatioArray = array.new_float()
+
+float q10 = na
+float q25 = na
+float q50 = na
+float q75 = na
+float q90 = na
+
+if bar_index >= length
+    array.push(ratioArray, ratio)
+    if array.size(ratioArray) > length
+        array.shift(ratioArray)
+
+arraySize    = ratioArray.size()
+if arraySize >= length
+    sortedRatioArray := ratioArray.copy()
+    sortedRatioArray.sort()
+
+    // Compute quantile indices
+    q10_index = int(math.floor(arraySize * 0.10))
+    q25_index = int(math.floor(arraySize * 0.25))
+    q50_index = int(math.floor(arraySize * 0.50))
+    q75_index = int(math.floor(arraySize * 0.75))
+    q90_index = int(math.floor(arraySize * 0.90))
+
+    // Assign quantiles safely
+    q10 := sortedRatioArray.get(q10_index)
+    q25 := sortedRatioArray.get(q25_index)
+    q50 := sortedRatioArray.get(q50_index)
+    q75 := sortedRatioArray.get(q75_index)
+    q90 := sortedRatioArray.get(q90_index)
+
+pQ50 = plot(q50, "Median (Q50)", color=color.orange, linewidth=1, style=plot.style_stepline)
+pQ75 = plot(q75, "Q75", color=color.green, linewidth=1, style=plot.style_stepline)
+pQ25 = plot(q25, "Q25", color=color.red, linewidth=1, style=plot.style_stepline)
+pQ90 = plot(q90, "Q90", color=color.green, linewidth=1, style=plot.style_stepline)
+pQ10 = plot(q10, "Q10", color=color.red, linewidth=1, style=plot.style_stepline)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+var tbl = table.new(tableLoc, 5, 6, frame_color=color.black, frame_width=3, border_width=2, 
+ border_color=color.new(color.white, 100), force_overlay=true)
+
+if barstate.islast
+    // Header
+    tbl.cell(0, 0, "Precious Metals Prices (" + currency + ")", bgcolor=#0d580bbf, 
+     text_halign=text.align_center, text_color=color.white, text_size=size)
+    
+    metals  = array.from("Gold", "Silver", "Platinum", "Palladium")
+    enabled = array.from("oz/" + str.lower(currency), "kg/" + str.lower(currency), "g/" + str.lower(currency),
+     "ozt/" + str.lower(currency))
+    prices  = array.from(gold_kilo, silver_kilo, platinum_kilo, palladium_kilo)
+    
+    green   = color.new(color.lime, 70)
+    red     = color.new(color.red, 70)
+    neutral = color.new(color.gray, 50)
+    
+    varip lastPrices = array.new_float(4, na)
+    bgColors         = array.new_color(4)
+    
+    for i = 0 to 3
+        price = prices.get(i)
+        lastPrice = lastPrices.get(i)
+        bgColor = na(lastPrice) ? neutral : price > lastPrice ? green : price < lastPrice ? red : neutral
+        bgColors.set(i, bgColor)
+        lastPrices.set(i, price)
+    
+    colIndex = 2
+    for i = 0 to array.size(metrics) - 1
+        if metrics.get(i)
+            tbl.cell(0, colIndex, enabled.get(i), bgcolor=color.new(color.navy, 25), 
+             text_halign=text.align_center, text_color=color.white, text_size=size)
+            colIndex += 1
+    
+    rowIndex = 1
+    for i = 0 to 3
+        if p_metals.get(i)
+            tbl.cell(rowIndex, 1, metals.get(i), bgcolor=color.new(color.navy, 25), 
+             text_halign=text.align_center, text_color=color.white, text_size=size)
+            colIndex := 2
+            for j = 0 to array.size(metrics) - 1
+                if metrics.get(j)
+                    priceValue = switch j
+                        0 => prices.get(i) / 35.27
+                        1 => prices.get(i)
+                        2 => prices.get(i) / 1000
+                        3 => prices.get(i) / 32.1507
+                    tbl.cell(rowIndex, colIndex, str.tostring(math.round(priceValue, decimals)), 
+                     bgcolor=bgColors.get(i), 
+                     text_halign=text.align_center, text_color=color.white, text_size=size)
+                    colIndex += 1
+            rowIndex += 1
+    
+    tbl.merge_cells(0, 0, rowIndex - 1, 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ User Holding Table {
+if barstate.islast and holder
+    var user_tbl = table.new(holdLoc, 2, 2, frame_color=color.black, frame_width=3, 
+     border_width=2, border_color=color.new(color.white, 100),force_overlay = true)
+     
+    holdMetal = Symbol(userMetal)
+    totalHold = holdMetal * userHold
+    convertHold = switch userMetr
+        "Grams"       => totalHold/1000
+        "Ounces"      => totalHold/35.27                                                 
+        "Troy Ounces" => totalHold/32.1507
+        => totalHold
+    convertPurity = switch purity
+        "22K" => convertHold*0.916
+        "18K" => convertHold*0.750
+        "14K" => convertHold*0.585
+        "9K"  => convertHold*0.375
+        => convertHold
+
+    user_tbl.cell(0,0,"Holding", bgcolor=color.new(color.green,50), 
+     text_halign=text.align_center, text_color=color.white, text_size=holdSize)
+    user_tbl.cell(0,1,str.tostring(userHold)+" "+userMetr+" ("+str.lower(userMetal)+")", 
+     bgcolor=color.new(color.green,50), text_halign=text.align_center, text_color=color.white, text_size=holdSize)
+    user_tbl.cell(1,0,"Value", bgcolor=color.new(color.green,50), 
+     text_halign=text.align_center, text_color=color.white, text_size=holdSize)
+    user_tbl.cell(1,1,Format(convertPurity)+" "+str.lower(currency), 
+     bgcolor=color.new(color.green,50), text_halign=text.align_center, text_color=color.white, text_size=holdSize)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}                                                                                                                                                                                       
+
+// ~~  Interpretation Table {
+var interpretation_table = table.new(ratioAnalysisLoc, 1, 2, border_width=2, frame_color=color.white)
+string interpretation = "Neutral"
+color interpColor     = color.gray
+
+if barstate.islast and ratioAnalysis
+    if ((ratio >= max) or (ratio >= max[1]))
+        interpretation := str.format("{0} is extremely strong! compared to {1}.", symbol1, symbol2)
+        interpColor := color.rgb(1, 201, 1)  // Bright Green
+
+    else if ((ratio <= min) or (ratio <= min[1]))
+        interpretation := str.format("{1} is extremely strong! compared to {0}.", symbol1, symbol2)
+        interpColor := color.rgb(255, 0, 0)  // Bright Red
+
+    else if ratio > q90
+        interpretation := str.format("{0} is significantly stronger than {1} (above 90th percentile).", symbol1, symbol2)
+        interpColor := color.rgb(0, 204, 102)  // Darker Green
+
+    else if ratio > q75
+        interpretation := str.format("{0} is outperforming {1} (above 75th percentile).", symbol1, symbol2)
+        interpColor := color.rgb(51, 170, 102)  // Soft Green with Blue Tint
+
+    else if ratio > q50
+        interpretation := str.format("{0} is stronger than {1} (above median level).", symbol1, symbol2)
+        interpColor := color.rgb(153, 204, 51)  // Yellow-Green mix
+
+    else if ratio < q10
+        interpretation := str.format("{0} is significantly weaker than {1} (below 10th percentile).", symbol1, symbol2)
+        interpColor := color.rgb(255, 68, 68)  // Softened Red
+
+    else if ratio < q25
+        interpretation := str.format("{0} is underperforming compared to {1} (below 25th percentile).", symbol1, symbol2)
+        interpColor := color.rgb(255, 136, 68)  // Orange-Red mix
+
+    else if ratio < q50
+        interpretation := str.format("{0} is weaker than {1} (below median level).", symbol1, symbol2)
+        interpColor := color.rgb(255, 170, 51)  // Orange Tone
+
+
+    table.cell(interpretation_table, 0, 0, "Ratio Analysis", bgcolor=color.navy, 
+     text_color=color.white, text_size=ratioAnalysisSize, text_halign=text.align_center)
+    table.cell(interpretation_table, 0, 1, interpretation, bgcolor=interpColor, 
+     text_color=color.white, text_size=ratioAnalysisSize, text_halign=text.align_center)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

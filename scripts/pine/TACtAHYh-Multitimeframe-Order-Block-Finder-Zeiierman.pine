@@ -1,0 +1,272 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/ 
+// © Zeiierman {
+
+//@version=6
+indicator('Multitimeframe Order Block Finder (Zeiierman)', overlay = true, max_bars_back = 5000, max_boxes_count = 500)
+
+//~~ Tooltips {
+var string t1 = "Select the timeframe for calculating Order Blocks (OBs).\n\nThis setting controls which candle data is used to identify OBs. For example, selecting '15' uses the 15-minute chart even if you’re viewing a different timeframe.\n\nA higher timeframe (e.g., 1H, 4H) can show more significant institutional zones, while a lower timeframe (e.g., 5min) can detect intraday imbalances."
+var string t2 = "Number of bars to look back to identify consecutive bullish or bearish candles.\n\nA longer period results in stronger confirmation but fewer signals."
+var string t3 = "Enable enhanced OB sensitivity using rising/falling candle logic.\n\nWhen enabled, Order Blocks require rising/falling price action via a smoothing average.\nWhen disabled, simpler consecutive candle rules are applied."
+var string t4 = "Minimum percentage move required between consecutive candles to qualify an Order Block.\n\nHelps filter out weak or non-significant moves."
+var string t5 = "Enable this to consider an OB 'mitigated' when price touches its midpoint.\n\nWhen disabled, mitigation requires full fill of the OB zone."
+var string t6 = "How far into the future each OB box should be extended.\n\nThis defines the width of the box in bars."
+var string t7 = "Toggle the visibility of the OB info table on chart.\n\nOnly visual — disabling does not affect logic."
+var string t8 = "Controls the horizontal starting position of the table display, measured in 10-bar steps from current bar."
+var string t9 = "Controls the width of the table, measured in 10-bar steps.\n\nIncrease this if you want more room per OB row."
+var string t10 = "Set the color for bullish Order Blocks.\n\nUse a strong green with transparency to blend visually."
+var string t11 = "Set the color for bearish Order Blocks.\n\nUse a noticeable red to distinguish bearish zones."
+var string t12 = "Base color of all OB boxes before price touches or interacts.\n\nNeutral color for background and borders."
+var string t13 = "Toggle the OB trendline display on or off.\n\nWhen on, a smoothed trendline is drawn based on OB direction."
+var string t14 = "Color used when the OB trendline is rising (bullish)."
+var string t15 = "Color used when the OB trendline is falling (bearish)."
+var string t16 = "Sets the ripple level (in decibels) for the low-pass filter applied to the trend line.\n\nHigher = more fluctuations.\nLower = smoother trend."
+var string t17 = "Cutoff frequency of the trend filter.\n\nHigher = more responsive to price.\nLower = slower and smoother."
+//~~}
+
+//~~ Inputs {
+tf           = input.timeframe('', title = 'Timeframe', inline = 'tf', tooltip = "")
+prd          = input.int(5, title = 'Lookback', minval = 0, inline = 'tf', tooltip = t1 + t2)
+sen          = input.bool(false, title = 'Enhanced Candle Sensitivity', inline = '', tooltip = t3)
+perc         = input.float(0.0, 'Minimum Percent move', step = 0.1, tooltip = t4)
+mit          = input.bool(true, 'Mitigated on mid', tooltip = t5)
+extendLength = input.int(100, 'Extend Boxes', tooltip = t6)
+showActive   = input.bool(false, title = 'Show OB table', tooltip = t7)
+TableLeft    = input.int(5, title = 'Table Left', minval = 0, maxval = 30, inline = 'Tab', tooltip = t8) * 10
+TableRight   = input.int(10, title = 'Right', minval = 10, maxval = 50, inline = 'Tab', tooltip = t9) * 10
+UpCol        = input.color(color.new(#00ffbb, 50), title = '', inline = 'OB', tooltip = t10)
+DnCol        = input.color(color.new(#ff1100, 50), title = '', inline = 'OB', tooltip = t11)
+Col          = input.color(color.new(color.gray, 85), title = '', inline = 'OB', tooltip = t12)
+showTrend    = input.bool(false, title = 'Show OB Trend', inline = 'Trend', tooltip = t13)
+TUpCol       = input.color(color.lime, title = '', inline = 'Trend', tooltip = t14)
+TDnCol       = input.color(color.red, title = '', inline = 'Trend', tooltip = t15)
+rp           = input.float(10.0, 'Passband Ripple (dB)', group = 'Trend', minval = 0.1, step = 0.1, tooltip = t16)
+fc           = input.float(0.005, 'Cutoff Frequency (0 to 0.5)', group = 'Trend', minval = 0.001, maxval = 0.5, step = 0.001, tooltip = t17)
+//~~}
+
+//~~ Arrays {
+type Data
+    array<box> ob
+    array<box> bv
+    array<box> sv
+    array<line> mid
+    array<bool> retested
+
+var bv = Data.new(array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(), array.new<bool>())
+var sv = Data.new(array.new<box>(), array.new<box>(), array.new<box>(), array.new<line>(), array.new<bool>())
+
+var save  = array.new<float>(0)
+var OBs   = array.new<box>()
+var TLine = array.new<float>(1, 0.0)
+//~~}
+
+//~~ Functions {
+getMTF() => [close[1], close[prd + 1], high[prd + 1], low[prd + 1], volume]
+
+getCandle() =>
+    rma  = ta.rma(close, 5)
+    bull = math.sum(close > open ? 1 : 0, prd) == prd
+    bear = math.sum(close < open ? 1 : 0, prd) == prd
+    if sen
+        bull := ta.rising(rma, prd)
+        bear := ta.falling(rma, prd)
+    [bull, bear]
+
+getBarTime(t, barsOffset) =>
+    t + (barsOffset * timeframe.in_seconds(timeframe.period) * 1000)
+
+BarsBack(val, hl) =>
+    back = time
+    for i = 0 to 4999 by 1
+        if val == hl[i]
+            back := time[i]
+            break
+    back
+
+VolumePower(v, c, l, h, ca) =>
+    ca ? math.round(math.round(v * (c - l) / (h - l)) / v * 100) :
+     math.round(math.round(v * (h - c) / (h - l)) / v * 100)
+
+method Cleaner(Data d, cond) =>
+    bool obRetested = false
+    bool obMitigated = false
+
+    if d.ob.size() > 0
+        i = d.ob.size() - 1
+        while i >= 0
+            e = d.ob.get(i)
+            top = e.get_top()
+            bot = e.get_bottom()
+            mid = math.avg(top, bot)
+
+            touched = high >= bot and low <= top
+            mitigated = mit ? (cond ? low <= mid : high >= mid) : (cond ? low <= bot : high >= top)
+
+            if touched and not d.retested.get(i)
+                obRetested := true
+                d.retested.set(i, true)
+
+            if mitigated
+                obMitigated := true
+
+                e.delete()
+                d.mid.get(i).delete()
+                d.bv.get(i).delete()
+                d.sv.get(i).delete()
+
+                d.ob.remove(i)
+                d.mid.remove(i)
+                d.bv.remove(i)
+                d.sv.remove(i)
+                d.retested.remove(i)
+
+            i -= 1
+
+    [obRetested, obMitigated]
+
+UpdateOB(Box) =>
+    if Box.size() > 0
+        for e in Box
+            date = str.format_time(e.get_left(), "yyyy-MM-dd HH:mm", syminfo.timezone)
+            b = box.new(
+                 bar_index + TableLeft,
+                 e.get_top(),
+                 bar_index + TableRight,
+                 e.get_bottom(),
+                 bgcolor = close < e.get_bottom() ? DnCol : UpCol,
+                 border_color = color(na),
+                 text = date,
+                 text_color = chart.fg_color
+             )
+            OBs.push(b)
+
+OB(c1, cback, HBack, LBack, hback, lback, green, red, buyVol, sellVol) =>
+    bool bullCreated = false
+    bool bearCreated = false
+
+    minMove = (((math.abs(cback - c1)) / cback) * 100) >= perc
+    BullOB = green and minMove
+    BearOB = red and minMove
+
+    if BullOB and not BullOB[1]
+        bullCreated := true
+
+        prev = array.get(TLine, 0)
+        array.unshift(TLine, math.avg(ohlc4, prev))
+
+        future = getBarTime(HBack, extendLength)
+        b = box.new(HBack, lback, future, hback, bgcolor = Col, border_color = Col, extend = extend.none, xloc = xloc.bar_time)
+        bv.ob.unshift(b)
+        bv.retested.unshift(false)
+
+        mid = math.avg(lback, hback)
+        m = line.new(HBack, mid, future, mid, xloc = xloc.bar_time, color = color.white, style = line.style_dashed)
+        bv.mid.unshift(m)
+
+        dist = future - HBack
+        bb = box.new(HBack, mid, int(HBack + dist * (buyVol / 100)), lback, bgcolor = UpCol, border_color = UpCol, extend = extend.none, xloc = xloc.bar_time)
+        sb = box.new(HBack, hback, int(HBack + dist * (sellVol / 100)), mid, bgcolor = DnCol, border_color = DnCol, extend = extend.none, xloc = xloc.bar_time)
+        bv.bv.unshift(bb)
+        bv.sv.unshift(sb)
+
+    if BearOB and not BearOB[1]
+        bearCreated := true
+
+        prev = array.get(TLine, 0)
+        array.unshift(TLine, math.avg(ohlc4, prev))
+
+        future = getBarTime(LBack, extendLength)
+        b = box.new(LBack, lback, future, hback, bgcolor = Col, border_color = Col, extend = extend.none, xloc = xloc.bar_time)
+        sv.ob.unshift(b)
+        sv.retested.unshift(false)
+
+        mid = math.avg(lback, hback)
+        m = line.new(LBack, mid, future, mid, xloc = xloc.bar_time, color = color.white, style = line.style_dashed)
+        sv.mid.unshift(m)
+
+        dist = future - LBack
+        bb = box.new(LBack, mid, int(LBack + dist * (buyVol / 100)), lback, bgcolor = UpCol, border_color = UpCol, extend = extend.none, xloc = xloc.bar_time)
+        sb = box.new(LBack, hback, int(LBack + dist * (sellVol / 100)), mid, bgcolor = DnCol, border_color = DnCol, extend = extend.none, xloc = xloc.bar_time)
+        sv.bv.unshift(bb)
+        sv.sv.unshift(sb)
+
+    else
+        prev = array.get(TLine, 0)
+        array.unshift(TLine, prev)
+
+    [bullCreated, bearCreated]
+//~~}
+
+//~~ Main {
+[c1, cback, hback, lback, v] = request.security(syminfo.tickerid, tf, getMTF(), lookahead = barmerge.lookahead_on)
+[green, red] = request.security(syminfo.tickerid, tf, getCandle(), lookahead = barmerge.lookahead_on)
+
+HBack = BarsBack(hback, high)
+LBack = BarsBack(lback, low)
+
+buyVol  = VolumePower(v, cback, lback, hback, true)
+sellVol = VolumePower(v, cback, lback, hback, false)
+
+[bullObRetested, bullObMitigated] = bv.Cleaner(true)
+[bearObRetested, bearObMitigated] = sv.Cleaner(false)
+
+[bullObCreated, bearObCreated] = OB(c1, cback, HBack, LBack, hback, lback, green, red, buyVol, sellVol)
+
+anyObCreated   = bullObCreated or bearObCreated
+anyObRetested  = bullObRetested or bearObRetested
+anyObMitigated = bullObMitigated or bearObMitigated
+
+if showActive
+    b = box.new(bar_index + TableLeft, ta.max(high), bar_index + TableRight, ta.min(low), bgcolor = color.new(color.gray, 100), border_color = color.gray, extend = extend.none)
+    box.delete(b[1])
+
+    for e in OBs
+        e.delete()
+
+    OBs.clear()
+    UpdateOB(bv.ob)
+    UpdateOB(sv.ob)
+//~~}
+
+//~~ Trend {
+var TCol = color.gray
+
+Trend = array.get(TLine, 0)
+TCol := Trend > Trend[1] ? TUpCol : Trend < Trend[1] ? TDnCol : TCol[1]
+
+src = Trend
+
+epsilon = math.sqrt(math.pow(10, rp / 10) - 1)
+d = math.sqrt(1 + epsilon * epsilon)
+c = 1 / math.tan(math.pi * fc)
+norm = 1 / (1 + d * c + c * c)
+
+b0 = norm
+b1 = 2 * norm
+b2 = norm
+a1 = 2 * norm * (1 - c * c)
+a2 = norm * (1 - d * c + c * c)
+
+trend = 0.0
+trend := bar_index < 2 ? src : b0 * src + b1 * src[1] + b2 * src[2] - a1 * nz(trend[1]) - a2 * nz(trend[2])
+
+Trend_ = plot(showTrend ? trend : na, color = TCol, title = "OB Trend Filter")
+visualclose = ta.ema(Trend, 10)
+visualclose_ = plot(visualclose, color = color.new(color.blue, 100), title = "visualtrend", editable = false)
+
+fill(Trend_, visualclose_, trend, visualclose, color.new(TCol, 70), na, title = "Fill")
+//~~}
+
+//~~ Alerts {
+alertcondition(bullObCreated, title = "Bullish OB Created", message = "Bullish Order Block created on {{ticker}} {{interval}}")
+alertcondition(bearObCreated, title = "Bearish OB Created", message = "Bearish Order Block created on {{ticker}} {{interval}}")
+alertcondition(anyObCreated, title = "Any OB Created", message = "Order Block created on {{ticker}} {{interval}}")
+
+alertcondition(bullObRetested, title = "Bullish OB Retested", message = "Bullish Order Block retested on {{ticker}} {{interval}}")
+alertcondition(bearObRetested, title = "Bearish OB Retested", message = "Bearish Order Block retested on {{ticker}} {{interval}}")
+alertcondition(anyObRetested, title = "Any OB Retested", message = "Order Block retested on {{ticker}} {{interval}}")
+
+alertcondition(bullObMitigated, title = "Bullish OB Mitigated", message = "Bullish Order Block mitigated on {{ticker}} {{interval}}")
+alertcondition(bearObMitigated, title = "Bearish OB Mitigated", message = "Bearish Order Block mitigated on {{ticker}} {{interval}}")
+alertcondition(anyObMitigated, title = "Any OB Mitigated", message = "Order Block mitigated on {{ticker}} {{interval}}")
+//~~}

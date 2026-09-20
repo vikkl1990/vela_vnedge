@@ -1,0 +1,77 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("Grid by Volatility (Expo)", overlay=true)
+
+// ~~ ToolTips {
+t1 = "The length of bars to calculate the Standard Deviation. A larger value will consider more bars, making it smoother but less responsive. \n\nThe second value adjusts the Standard Deviation by multiplying it with this factor."
+t2 = "The length of bars to calculate the weighted moving average for smoothing the grid lines." 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Input {
+volatilityType         = input.string("Stdev", options=["Stdev", "Atr"], title="Volatility Type")
+volatilityLength       = input.int(200, title="Volatility Length", minval = 2, inline="stdev", group="Volatility")
+squeezeAdjustment      = input.int(6, title="", minval=1, maxval=200, inline="stdev", group="Volatility", tooltip=t1)
+smoothingPeriod        = input.int(2, title="Grid Confirmation Length",minval=1, maxval=200, inline="stdev", group="Confirmation", tooltip=t2)
+VOLATILITY_ADJUSTMENT  = 2  
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to calculate standard deviation
+calculateStdev(priceSource, period) =>
+    if bar_index < period - 1
+        0.0
+    else
+        sum = 0.0
+        for i = 0 to period - 1
+            sum := sum + priceSource[i]
+        mean = sum / period
+        sumOfSquaredDifferences = 0.0
+        for i = 0 to period - 1
+            sumOfSquaredDifferences := sumOfSquaredDifferences + math.pow(priceSource[i] - mean, 2)
+        stdev = math.sqrt(sumOfSquaredDifferences / period * squeezeAdjustment)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to determine the trend direction
+calculateTrendDirection(price) =>
+    price - price[1] > 0 ? 1 : (price - price[1] < 0 ? -1 : 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate Volatility-Based Grid
+calculateVolatilityBasedGrid() =>
+    var float midLine        = na
+    var float fullVolatility = na  
+    
+    Volatility     = volatilityType=="Stdev"? calculateStdev(close, volatilityLength): ta.atr(volatilityLength) * squeezeAdjustment
+    trendDirection = calculateTrendDirection(close)
+    
+    if (na(midLine))
+        midLine := close
+
+    // Update midLine based on trend and volatility
+    priceDifference = math.abs(close - midLine)
+    midLine := priceDifference > Volatility ? midLine + trendDirection * Volatility : midLine
+    
+    // Update full volatility
+    fullVolatility := na(fullVolatility) ? Volatility : (midLine == midLine[1] ? fullVolatility : Volatility)
+    
+    [midLine + fullVolatility, midLine + fullVolatility / VOLATILITY_ADJUSTMENT, midLine, midLine - fullVolatility / VOLATILITY_ADJUSTMENT, midLine - fullVolatility]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main calculations
+[upperRange2Value, upperRange1Value, midLineValue, lowerRange1Value, lowerRange2Value] = calculateVolatilityBasedGrid()
+upperRange2 = ta.wma(upperRange2Value, smoothingPeriod)
+upperRange1 = ta.wma(upperRange1Value, smoothingPeriod)
+midLineAvg  = ta.wma(midLineValue, smoothingPeriod)
+lowerRange1 = ta.wma(lowerRange1Value, smoothingPeriod)
+lowerRange2 = ta.wma(lowerRange2Value, smoothingPeriod)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot
+OnOff = midLineAvg==midLineAvg[1]?true:false
+plot(upperRange2, title="Upper Range 2", color=OnOff?#fd3232:na)
+plot(upperRange1, title="Upper Range 1", color=OnOff?#fd3232:na)
+plot(midLineAvg, title="Average Mid Line", color=OnOff?#1441f8:na)
+plot(lowerRange1, title="Lower Range 1", color=OnOff?#2ce056:na)
+plot(lowerRange2, title="Lower Range 2", color=OnOff?#2ce056:na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

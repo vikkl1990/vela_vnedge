@@ -1,0 +1,118 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ © Zeiierman {
+//@version=5
+indicator("TrendSphere (Zeiierman)", overlay = true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ ToolTips {
+t1="Selects the method used to measure volatility. 'Atr' uses Average True Range, 'Historical Volatility' uses the standard deviation of log returns, and 'Bollinger Band Width' uses the width between the Bollinger Bands. \n\nThe second value modifies the scale of the selected volatility measure. Increasing this value will result in wider bands, highlighting larger price trends, while decreasing it will narrow the bands, emphasizing smaller price movements."
+t2="The first value adjusts the influence of the volatility measure on the bands. A higher value increases the sensitivity of the bands to volatility, making them wider, while a lower value decreases sensitivity, making the bands narrower. \n\nThe second value defines the number of periods used in calculating the selected volatility measure. A higher value makes the bands more stable but less responsive to recent price changes, while a lower value makes them more responsive but also more prone to fluctuations."
+t3="Adjusts the sensitivity of the trend component. Increasing this value will make the trend component react more slowly to price changes, potentially smoothing out noise, while decreasing it will make it react more quickly, potentially highlighting shorter-term trends."
+t4="The 'Scaling' input adjusts the granularity and the resolution of the calculated values within the indicator. When you adjust this input, you're effectively changing the weight or emphasis of certain calculations, ensuring that they remain relevant and readable in different market contexts. \n\nIncreasing the value results in the magnification of the indicator's results, emphasizing even minor changes in price trends. Conversely, decreasing the value may smooth out minor fluctuations and emphasize more significant, long-term movements. \n\nAdjusting this value can be particularly necessary when you're dealing with assets with a broad range of prices, from those with very high values to those that are priced in fractions. By tailoring the scaling, you can ensure that the indicator remains responsive and relevant across various asset prices and market conditions."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+vo                      = input.string("Atr", options = ["Atr","Historical Volatility","Bollinger Band Width"], title="Select Volatility   ", inline="vo", group="Volatility")
+volatilityScalingFactor = input.float(5.0, step=0.1, title="", minval = 0.1, inline="vo", group="Volatility", tooltip=t1)
+volatilityStrength      = input.float(0.8, "volatility Strength", step=0.1, minval = 0, maxval = 1, inline="Volatility", group="Volatility")
+length                  = input.int(200, title="", step=2, minval=1,maxval=3000, inline="Volatility", group="Volatility", tooltip=t2)
+trendSensitivity        = input.float(15, "Trend Sensitivity", minval = 0, inline="Trend", group="Trend", tooltip=t3)
+
+color_up    = input.color(color.navy, title="Line   ", inline="Line", group="Style")
+color_dn    = input.color(color.maroon, title="", inline="Line", group="Style")
+color_upper = input.color(color.new(#862458, 10), title="Cloud ", inline="Cloud", group="Style")
+color_lower = input.color(color.new(#493893, 10),title="", inline="Cloud", group="Style")
+
+scale = input.int(1, step=2, minval=1, title="Scaling", group="Scaling for Relevance", tooltip=t4)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Var {
+var float trend        = 0.0
+var int trendDirection = 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to determine the trend direction {
+trendDirectionFunction(dir) =>
+    dir - dir[1] > 0 ? 1 : (dir - dir[1] < 0 ? -1 : 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to calculate scaling factor
+getScalingFactor(_price) =>
+    scalingFactor = 1.0
+    if _price >= 10
+        scalingFactor := 1
+    else
+        while (_price * scalingFactor < 100)
+            scalingFactor := scalingFactor * 10
+    scalingFactor
+
+countLeftDigits(_price) =>
+    absPrice = math.abs(_price) 
+    count = 0
+    while absPrice >= 1
+        count := count + 1
+        absPrice := absPrice / 10
+    count
+
+scaling = getScalingFactor(close)
+digits  = countLeftDigits(close)
+
+getScale2(digits) =>
+    switch digits
+        1 => 1
+        2 => 1
+        3 => 10
+        4 => 100
+        5 => 1000
+scale2 = getScale2(digits) + scale
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Volatility Measures {
+// Historical Volatility
+logRet  = math.log(close / close[1])
+histVol = scaling==1?(ta.stdev(logRet, length) * math.sqrt(252))* scale2 : (ta.stdev(logRet, length) * math.sqrt(252)) / scaling * (10+scale) // Annualized based on 252 trading days
+
+// Bollinger Band Width
+basis = ta.sma(close, length)
+upperBand = basis + (volatilityScalingFactor * ta.stdev(close, length))
+lowerBand = basis - (volatilityScalingFactor * ta.stdev(close, length))
+bandWidth = scaling==1?(upperBand - lowerBand) / basis * scale2 :((upperBand - lowerBand) / basis) / scaling* (10+scale)  
+
+scaledStdDev = switch vo
+    "Atr"                           => (nz(ta.atr(length))*volatilityScalingFactor)*volatilityStrength
+    "Historical Volatility"         => (nz(histVol)*volatilityScalingFactor)*volatilityStrength 
+    "Bollinger Band Width"          => (nz(bandWidth))*volatilityStrength 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Call Trend Direction {
+trendDirection := trendDirectionFunction(trend[1])
+priceTrend      = close - trend > 0 ? close - trend : trend - close
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate the Trend {
+trendAdjustment = priceTrend>scaledStdDev?math.avg(close,trend):trendDirection * (scaledStdDev * (1/volatilityScalingFactor) * (1/trendSensitivity)) + trend
+trend          := trendAdjustment
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Get Upper and Lower Bands {
+upper1 = trend + scaledStdDev
+lower1 = trend - scaledStdDev
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot {
+trueTrend = trendDirection == trendDirection[2]
+color_    = trendDirection == 1 ? color_up : color_dn
+trend_ = plot(trueTrend?trend:na, title="Trend Line", color=color_)
+upper_ = plot(trueTrend?upper1:na, title="Upper Line", color = color.new(color.black,100))
+lower_ = plot(trueTrend?lower1:na, title="Lower Line", color = color.new(color.black,100))
+fill(upper_, trend_, top_color = color_lower, bottom_color =color.new(na,100), top_value = upper1, bottom_value = trend, title="Bg Upper")
+fill(trend_, lower_, top_color = color.new(na,100), bottom_color = color_upper, top_value = trend, bottom_value = lower1, title="Bg Lower")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Debug {
+//debug1 = label.new(x=bar_index, y=close, text="Scaling Factor: " + str.tostring(scaling), style=label.style_label_down, color=color.blue, size=size.small, textcolor=color.white, yloc=yloc.abovebar)
+//debug2 = label.new(x=bar_index, y=close, text="Scaling Factor: " + str.tostring(digits), style=label.style_label_up, color=color.blue, size=size.small, textcolor=color.white, yloc=yloc.belowbar)
+//label.delete(debug1[1])
+//label.delete(debug2[1])
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,835 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+indicator("MTF Liquidity Stack (Zeiierman)", overlay=true, max_lines_count=500, max_labels_count=500)
+//}
+
+// ~~ Tooltips {
+var string t1 ="Automatically promotes enabled sources at or below the chart timeframe to a meaningful higher timeframe. Explicit higher-timeframe sources take priority if duplicates occur."
+var string t2 ="Number of recent unmitigated swing highs and lows kept for each active timeframe."
+var string t3 ="Enable or disable this timeframe liquidity source."
+var string t4 ="Full tracks complete regional sessions. AM switches Asia, London and New York together to their AM liquidity windows."
+var string t5 ="UTC offset used for all sessions and daily calculations. Session times are defined from UTC+0 and shifted automatically."
+var string t6 ="Session window in UTC+0. The active Full or AM window is selected automatically by Session Mode."
+var string t7 ="Clears all swept and unswept liquidity levels when a new calendar day begins."
+var string t8 ="Tracks the previous day's high and low as liquidity levels."
+var string t9 ="Text size used for liquidity origin markers and mitigated level labels."
+var string t10="Text size used only for active right-side liquidity tags."
+var string t11="Keep previous mitigated liquidity visible. Off keeps only the newest mitigated level."
+var string t12="Color used for unmitigated swing-high liquidity."
+var string t13="Color used for unmitigated swing-low liquidity."
+var string t14="Color, width and style used for mitigated liquidity unless a session color overrides it."
+var string t15="Alert when a brand-new liquidity price is confirmed. Additional tags merging into the same price do not trigger another New alert."
+var string t16="Alert when price trades through an active liquidity level and the level becomes mitigated."
+var string t17="Choose whether High or Low liquidity is allowed to trigger alerts."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+gM="1. Timeframes"
+gS="2. Sessions"
+gR="3. Daily Levels"
+gV="4. Style"
+gA="5. Alerts"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+au=input.bool(true,"Auto",inline="mtf",group=gM,tooltip=t1)
+nl=input.int(5,"Levels",1,20,inline="mtf",group=gM,tooltip=t2)
+
+e1=input.bool(true,"TF 1",inline="tf1",group=gM,tooltip=t3)
+tf1=input.timeframe("60","",inline="tf1",group=gM)
+e2=input.bool(true,"TF 2",inline="tf2",group=gM,tooltip=t3)
+tf2=input.timeframe("240","",inline="tf2",group=gM)
+e3=input.bool(true,"TF 3",inline="tf3",group=gM,tooltip=t3)
+tf3=input.timeframe("D","",inline="tf3",group=gM)
+e4=input.bool(false,"TF 4",inline="tf4",group=gM,tooltip=t3)
+tf4=input.timeframe("W","",inline="tf4",group=gM)
+e5=input.bool(false,"TF 5",inline="tf5",group=gM,tooltip=t3)
+tf5=input.timeframe("M","",inline="tf5",group=gM)
+
+sm=input.string("Full","Mode",["Full","AM"],inline="sess",group=gS,tooltip=t4)
+utc=input.string("UTC+0","UTC",["UTC-12","UTC-11","UTC-10","UTC-9","UTC-8","UTC-7","UTC-6","UTC-5","UTC-4","UTC-3","UTC-2","UTC-1","UTC+0","UTC+1","UTC+2","UTC+3","UTC+4","UTC+5","UTC+6","UTC+7","UTC+8","UTC+9","UTC+10","UTC+11","UTC+12","UTC+13","UTC+14"],inline="sess",group=gS,tooltip=t5)
+
+aOn=input.bool(true,"",inline="as",group=gS)
+aNm=input.string("Asia","",inline="as",group=gS)
+aFull=input.session("2200-0700","Full",inline="as",group=gS,tooltip=t6,active=sm=="Full")
+aAm=input.session("0000-0400","AM",inline="as",group=gS,tooltip=t6,active=sm=="AM")
+aCol=input.color(#55ff96,"",inline="as",group=gS)
+
+lOn=input.bool(true,"",inline="lo",group=gS)
+lNm=input.string("London","",inline="lo",group=gS)
+lFull=input.session("0700-1530","Full",inline="lo",group=gS,tooltip=t6,active=sm=="Full")
+lAm=input.session("0600-0900","AM",inline="lo",group=gS,tooltip=t6,active=sm=="AM")
+lCol=input.color(#ff4040,"",inline="lo",group=gS)
+
+nOn=input.bool(true,"",inline="ny",group=gS)
+nNm=input.string("New York","",inline="ny",group=gS)
+nFull=input.session("1330-2000","Full",inline="ny",group=gS,tooltip=t6,active=sm=="Full")
+nAm=input.session("1330-1500","AM",inline="ny",group=gS,tooltip=t6,active=sm=="AM")
+nCol=input.color(#4d9dff,"",inline="ny",group=gS)
+
+rst=input.bool(false,"Daily Reset",inline="day",group=gR,tooltip=t7)
+pd=input.bool(true,"PDH / PDL",inline="day",group=gR,tooltip=t8)
+
+lsz=input.string("Tiny","Labels",["Tiny","Small","Normal"],inline="view",group=gV,tooltip=t9)
+rtsz=input.string("Tiny","Live Tags",["Tiny","Small","Normal"],inline="view",group=gV,tooltip=t10)
+hist=input.bool(true,"History",group=gV,tooltip=t11)
+hc=input.color(#ff4040,"High",inline="p",group=gV,tooltip=t12)
+lc=input.color(#55ff96,"Low",inline="p",group=gV,tooltip=t13)
+sc=input.color(#6d6d6d,"Sweep",inline="s",group=gV,tooltip=t14)
+sw=input.int(1,"",1,4,inline="s",group=gV,tooltip=t14)
+ss=input.string("Solid","",["Solid","Dashed","Dotted"],inline="s",group=gV,tooltip=t14)
+
+alNew=input.bool(false,"New",inline="al",group=gA,tooltip=t15)
+alMit=input.bool(true,"Mitigated",inline="al",group=gA,tooltip=t16)
+alHi=input.bool(true,"High",inline="side",group=gA,tooltip=t17)
+alLo=input.bool(true,"Low",inline="side",group=gA,tooltip=t17)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Constants {
+const int MAX_SWEEPS=220
+const int MAX_SCAN=5000
+const int WICK_CACHE=8
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type Level
+    float p
+    bool hi
+    int x
+    int born
+    string tags
+    bool swept
+    int sx
+    label mark
+    label rt
+    line ln
+    label txt
+
+type Sess
+    float h
+    float l
+    int hx
+    int lx
+
+type Track
+    int op
+    float h
+    float l
+    int hx
+    int lx
+    array<int> ops
+    array<int> hxs
+    array<int> lxs
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ State {
+// Live and swept levels are kept separately so realtime mitigation only scans live pools.
+var array<Level> live=array.new<Level>()
+var array<Level> done=array.new<Level>()
+var array<string> aQ=array.new_string()
+var array<bool> aSig=array.from(false,false,false,false)
+var int day0=na
+
+var array<Sess> ses=array.from(
+ Sess.new(na,na,na,na),
+ Sess.new(na,na,na,na),
+ Sess.new(na,na,na,na))
+
+var array<Track> tr=array.from(
+ Track.new(na,na,na,na,na,array.new_int(),array.new_int(),array.new_int()),
+ Track.new(na,na,na,na,na,array.new_int(),array.new_int(),array.new_int()),
+ Track.new(na,na,na,na,na,array.new_int(),array.new_int(),array.new_int()),
+ Track.new(na,na,na,na,na,array.new_int(),array.new_int(),array.new_int()),
+ Track.new(na,na,na,na,na,array.new_int(),array.new_int(),array.new_int()))
+
+var array<string> sNames=array.from(aNm,lNm,nNm)
+var array<color> sCols=array.from(aCol,lCol,nCol)
+var array<string> tfs=array.from(tf1,tf2,tf3,tf4,tf5)
+var array<bool> src=array.from(e1,e2,e3,e4,e5)
+
+var array<string> useTf=array.new_string(5,"")
+var array<bool> useSrc=array.new_bool(5,false)
+var array<bool> movedTf=array.new_bool(5,false)
+
+var string aSess=na
+var string lSess=na
+var string nSess=na
+
+// Kept as a safety fallback for rare cache misses and lower/equal TF sources with Auto off.
+max_bars_back(time,MAX_SCAN)
+max_bars_back(high,MAX_SCAN)
+max_bars_back(low,MAX_SCAN)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+lblSize()=>lsz=="Small"?size.small:lsz=="Normal"?size.normal:size.tiny
+rtSize()=>rtsz=="Small"?size.small:rtsz=="Normal"?size.normal:size.tiny
+lnStyle()=>ss=="Dashed"?line.style_dashed:ss=="Dotted"?line.style_dotted:line.style_solid
+
+tfSec(string tf)=>timeframe.in_seconds(tf)
+
+nextHTF()=>
+    cs=timeframe.in_seconds()
+    d=timeframe.in_seconds("D")
+    w=timeframe.in_seconds("W")
+    m=timeframe.in_seconds("M")
+    out="12M"
+    if cs<=60
+        out:="5"
+    else if cs<=5*60
+        out:="15"
+    else if cs<=15*60
+        out:="60"
+    else if cs<=30*60
+        out:="120"
+    else if cs<=45*60
+        out:="180"
+    else if cs<=60*60
+        out:="240"
+    else if cs<=90*60
+        out:="360"
+    else if cs<=120*60
+        out:="480"
+    else if cs<=180*60
+        out:="720"
+    else if cs<=240*60
+        out:="D"
+    else if cs<=480*60
+        out:="D"
+    else if cs<=720*60
+        out:="2D"
+    else if cs<=3*d
+        out:="W"
+    else if cs<=6*d
+        out:="2W"
+    else if cs<=2*w
+        out:="M"
+    else if cs<=m
+        out:="3M"
+    else if cs<=3*m
+        out:="12M"
+    else if cs<=6*m
+        out:="12M"
+    out
+
+autoTF(string tf)=>au and tfSec(tf)<=timeframe.in_seconds()?nextHTF():tf
+sameTF(string a,string b)=>tfSec(a)==tfSec(b)
+
+hasTF(array<string> a,string tf)=>
+    hit=false
+    if a.size()>0
+        for i=0 to a.size()-1
+            if sameTF(a.get(i),tf)
+                hit:=true
+                break
+    hit
+
+resolveSources()=>
+    used=array.new_string()
+    cs=timeframe.in_seconds()
+
+    for i=0 to tfs.size()-1
+        base=tfs.get(i)
+        on=src.get(i)
+        rt=autoTF(base)
+        mv=au and on and tfSec(base)<=cs
+        useTf.set(i,rt)
+        movedTf.set(i,mv)
+        useSrc.set(i,false)
+
+    if not au
+        for i=0 to src.size()-1
+            useSrc.set(i,src.get(i))
+    else
+        // Explicit higher timeframes win duplicate conflicts.
+        for i=0 to src.size()-1
+            if src.get(i) and not movedTf.get(i)
+                rt=useTf.get(i)
+                if not hasTF(used,rt)
+                    useSrc.set(i,true)
+                    used.push(rt)
+
+        // Auto-promoted sources are kept only if their effective TF is unique.
+        for i=0 to src.size()-1
+            if src.get(i) and movedTf.get(i)
+                rt=useTf.get(i)
+                valid=tfSec(rt)>cs
+                if valid and not hasTF(used,rt)
+                    useSrc.set(i,true)
+                    used.push(rt)
+
+    // Ignored/off request slots use the chart TF. The returned data is unused,
+    // but this keeps all request sites stable while making inactive calls inexpensive.
+    for i=0 to useSrc.size()-1
+        if not useSrc.get(i)
+            useTf.set(i,timeframe.period)
+    0
+
+tfText(string tf)=>
+    out=tf
+    n=str.tonumber(tf)
+    if tf=="M" or tf=="1M"
+        out:="1M"
+    else if tf=="W" or tf=="1W"
+        out:="1W"
+    else if tf=="D" or tf=="1D"
+        out:="1D"
+    else if not na(n)
+        m=int(n)
+        if m<60
+            out:=str.tostring(m)+"m"
+        else if m<1440 and m%60==0
+            out:=str.tostring(int(m/60))+"h"
+        else if m>=10080 and m%10080==0
+            out:=str.tostring(int(m/10080))+"W"
+        else if m>=1440 and m%1440==0
+            out:=str.tostring(int(m/1440))+"D"
+        else
+            out:=str.tostring(m)+"m"
+    out
+
+utcMin(string z)=>
+    s=str.replace_all(z,"UTC","")
+    s:=str.replace_all(s,"+","")
+    h=str.tonumber(s)
+    int(math.round(nz(h,0.0)*60.0))
+
+pad(int v)=>(v<10?"0":"")+str.tostring(v)
+
+shiftSession(string s,int off)=>
+    a=str.substring(s,0,4)
+    b=str.substring(s,5,9)
+    ah=int(nz(str.tonumber(str.substring(a,0,2)),0))
+    am=int(nz(str.tonumber(str.substring(a,2,4)),0))
+    bh=int(nz(str.tonumber(str.substring(b,0,2)),0))
+    bm=int(nz(str.tonumber(str.substring(b,2,4)),0))
+    x=(ah*60+am+off)%1440
+    y=(bh*60+bm+off)%1440
+    x:=x<0?x+1440:x
+    y:=y<0?y+1440:y
+    pad(int(math.floor(x/60)))+pad(x%60)+"-"+pad(int(math.floor(y/60)))+pad(y%60)
+
+dayKey(int t)=>year(t,utc)*10000+month(t,utc)*100+dayofmonth(t,utc)
+
+hasTag(string tags,string tag)=>str.contains("|"+tags+"|","|"+tag+"|")
+addTag(string tags,string tag)=>hasTag(tags,tag)?tags:str.length(tags)==0?tag:tags+"|"+tag
+
+delTag(string tags,string tag)=>
+    s=str.replace_all("|"+tags+"|","|"+tag+"|","|")
+    str.length(s)<=2?"":str.substring(s,1,str.length(s)-1)
+
+tagText(string tags)=>str.replace_all(tags,"|","+")
+
+alertMsg(string ev,Level x)=>
+    side=x.hi?"HIGH":"LOW"
+    ev+" | "+syminfo.ticker+" | "+side+" | "+tagText(x.tags)+" | "+str.tostring(x.p,format.mintick)+" | TF "+timeframe.period
+
+pushAlert(string ev,Level x)=>
+    eventOn=ev=="NEW"?alNew:alMit
+    sideOn=x.hi?alHi:alLo
+    if eventOn and sideOn
+        aQ.push(alertMsg(ev,x))
+        id=ev=="NEW"?(x.hi?0:1):(x.hi?2:3)
+        aSig.set(id,true)
+    0
+
+sendAlerts()=>
+    if barstate.isconfirmed and aQ.size()>0
+        msg=aQ.get(0)
+        if aQ.size()>1
+            for i=1 to aQ.size()-1
+                msg+="\n"+aQ.get(i)
+        alert(msg,alert.freq_once_per_bar_close)
+    0
+
+lvlColor(Level x)=>
+    c=x.swept?sc:x.hi?hc:lc
+    for i=0 to sNames.size()-1
+        if hasTag(x.tags,sNames.get(i))
+            c:=sCols.get(i)
+    c
+
+markText(Level x)=>
+    s=tagText(x.tags)
+    x.hi?s+"\n⊙\n ":" \n⊙\n"+s
+
+// Slow fallback preserves the original anchoring behavior if the fast cache
+// does not contain the requested HTF candle.
+anchorSlow(float p,bool hi,int op,int cl)=>
+    out=op
+    if not na(p) and not na(op) and not na(cl)
+        lim=math.min(bar_index,MAX_SCAN-1)
+        i=0
+        while i<=lim
+            bt=time[i]
+            if bt<op
+                break
+            if bt>=op and bt<cl
+                bp=hi?high[i]:low[i]
+                if math.abs(bp-p)<=syminfo.mintick*0.5
+                    out:=bt
+                    break
+            i+=1
+    out
+
+method archive(Track x)=>
+    if not na(x.op)
+        x.ops.unshift(x.op)
+        x.hxs.unshift(x.hx)
+        x.lxs.unshift(x.lx)
+        if x.ops.size()>WICK_CACHE
+            x.ops.pop()
+            x.hxs.pop()
+            x.lxs.pop()
+    0
+
+// Tracks the exact chart bar that produced each HTF candle high/low.
+// >= and <= intentionally keep the LAST equal extreme, matching the old
+// newest-to-oldest anchor scan.
+method trackWick(Track x,int op)=>
+    if not na(op)
+        if na(x.op)
+            x.op:=op
+            x.h:=high
+            x.l:=low
+            x.hx:=time
+            x.lx:=time
+        else if op!=x.op
+            x.archive()
+            x.op:=op
+            x.h:=high
+            x.l:=low
+            x.hx:=time
+            x.lx:=time
+        else
+            if high>=x.h
+                x.h:=high
+                x.hx:=time
+            if low<=x.l
+                x.l:=low
+                x.lx:=time
+    0
+
+method wick(Track x,int op,bool hi)=>
+    int out=na
+    if not na(op) and x.ops.size()>0
+        for i=0 to x.ops.size()-1
+            if x.ops.get(i)==op
+                out:=hi?x.hxs.get(i):x.lxs.get(i)
+                break
+    out
+
+anchor(int id,float p,bool hi,int op,int cl,string tf)=>
+    int out=na
+    // The cache is exact when the requested source is above the chart TF.
+    if tfSec(tf)>timeframe.in_seconds()
+        out:=tr.get(id).wick(op,hi)
+    na(out)?anchorSlow(p,hi,op,cl):out
+
+method draw(Level x)=>
+    c=lvlColor(x)
+    if not x.swept
+        if not na(x.mark)
+            label.set_x(x.mark,x.x)
+            label.set_y(x.mark,x.p)
+            label.set_text(x.mark,markText(x))
+            label.set_textcolor(x.mark,c)
+        if not na(x.rt)
+            label.set_x(x.rt,bar_index+3)
+            label.set_y(x.rt,x.p)
+            label.set_text(x.rt,tagText(x.tags))
+            label.set_textcolor(x.rt,c)
+            label.set_color(x.rt,color.new(c,100))
+            label.set_size(x.rt,rtSize())
+        if not na(x.ln)
+            line.set_xy1(x.ln,x.x,x.p)
+            line.set_xy2(x.ln,time,x.p)
+            line.set_color(x.ln,c)
+            line.set_width(x.ln,sw)
+            line.set_style(x.ln,lnStyle())
+    else
+        if not na(x.ln)
+            line.set_xy1(x.ln,x.x,x.p)
+            line.set_xy2(x.ln,x.sx,x.p)
+            line.set_color(x.ln,c)
+            line.set_width(x.ln,sw)
+            line.set_style(x.ln,lnStyle())
+        if not na(x.txt)
+            mx=x.x+int((x.sx-x.x)/2)
+            label.set_x(x.txt,mx)
+            label.set_y(x.txt,x.p)
+            label.set_text(x.txt,tagText(x.tags))
+            label.set_textcolor(x.txt,c)
+    0
+
+method destroy(Level x)=>
+    if not na(x.mark)
+        label.delete(x.mark)
+    if not na(x.rt)
+        label.delete(x.rt)
+    if not na(x.ln)
+        line.delete(x.ln)
+    if not na(x.txt)
+        label.delete(x.txt)
+    0
+
+removeLive(int id)=>
+    x=live.get(id)
+    x.destroy()
+    live.remove(id)
+    0
+
+removeDone(int id)=>
+    x=done.get(id)
+    x.destroy()
+    done.remove(id)
+    0
+
+removeTagAt(int id,string tag)=>
+    x=live.get(id)
+    x.tags:=delTag(x.tags,tag)
+    if str.length(x.tags)==0
+        removeLive(id)
+    else
+        live.set(id,x)
+        x.draw()
+    0
+
+clearTag(string tag)=>
+    i=live.size()-1
+    while i>=0
+        x=live.get(i)
+        if hasTag(x.tags,tag)
+            removeTagAt(i,tag)
+        i-=1
+    0
+
+clearLevels()=>
+    i=live.size()-1
+    while i>=0
+        removeLive(i)
+        i-=1
+    i:=done.size()-1
+    while i>=0
+        removeDone(i)
+        i-=1
+    0
+
+hideSweeps(int keep)=>
+    if done.size()>0
+        for i=0 to done.size()-1
+            if i!=keep
+                x=done.get(i)
+                if not na(x.ln)
+                    line.delete(x.ln)
+                    x.ln:=na
+                if not na(x.txt)
+                    label.delete(x.txt)
+                    x.txt:=na
+                done.set(i,x)
+    0
+
+// Swept levels are appended in sweep-time order, so the oldest is always index 0.
+prune()=>
+    while done.size()>MAX_SWEEPS
+        removeDone(0)
+    0
+
+addLevel(float raw,bool hi,int ox,string tag,bool mergeSwept)=>
+    if not na(raw) and not na(ox) and str.length(tag)>0
+        p=math.round_to_mintick(raw)
+        id=-1
+        i=0
+
+        // Pending merge search touches live levels only.
+        while i<live.size() and id==-1
+            x=live.get(i)
+            if x.hi==hi and x.p==p
+                id:=i
+            i+=1
+
+        if id>=0
+            x=live.get(id)
+            x.tags:=addTag(x.tags,tag)
+            x.x:=math.min(x.x,ox)
+            live.set(id,x)
+            x.draw()
+        else
+            // Session liquidity can merge into the newest same-day swept level.
+            did=-1
+            if mergeSwept and done.size()>0
+                j=done.size()-1
+                while j>=0 and did==-1
+                    x=done.get(j)
+                    same=na(day0) or x.sx>=day0
+                    if same and x.hi==hi and x.p==p
+                        did:=j
+                    j-=1
+
+            if did>=0
+                x=done.get(did)
+                x.tags:=addTag(x.tags,tag)
+                x.x:=math.min(x.x,ox)
+                done.set(did,x)
+                x.draw()
+            else
+                x=Level.new(p,hi,ox,bar_index,tag,false,na,na,na,na,na)
+                c=lvlColor(x)
+                mk=label.new(ox,p,markText(x),xloc=xloc.bar_time,yloc=yloc.price,style=label.style_none,textcolor=c,size=lblSize(),textalign=text.align_center)
+                rt=label.new(bar_index+3,p,tagText(x.tags),xloc=xloc.bar_index,yloc=yloc.price,style=label.style_label_left,color=color.new(c,100),textcolor=c,size=rtSize(),textalign=text.align_left)
+                ln=line.new(ox,p,time,p,xloc=xloc.bar_time,extend=extend.none,color=c,width=sw,style=lnStyle())
+                x.mark:=mk
+                x.rt:=rt
+                x.ln:=ln
+                live.push(x)
+                pushAlert("NEW",x)
+    0
+
+pending(string tag,bool hi)=>
+    n=0
+    if live.size()>0
+        for i=0 to live.size()-1
+            x=live.get(i)
+            if x.hi==hi and hasTag(x.tags,tag)
+                n+=1
+    n
+
+trim(string tag,bool hi,int keep)=>
+    n=pending(tag,hi)
+    while n>keep
+        id=-1
+        int ot=na
+        if live.size()>0
+            for i=0 to live.size()-1
+                x=live.get(i)
+                if x.hi==hi and hasTag(x.tags,tag)
+                    if id==-1 or x.x<ot
+                        id:=i
+                        ot:=x.x
+        if id>=0
+            removeTagAt(id,tag)
+            n-=1
+        else
+            break
+    0
+
+processPivot(int id,bool on,float ph,int pht,int phc,float pl,int plt,int plc,string tag,string tf)=>
+    if on
+        nh=not na(pht) and (na(pht[1]) or pht!=pht[1])
+        nlw=not na(plt) and (na(plt[1]) or plt!=plt[1])
+        if nh
+            hx=anchor(id,ph,true,pht,phc,tf)
+            ok=not rst or dayKey(hx)==dayKey(time)
+            if ok
+                addLevel(ph,true,hx,tag,false)
+                trim(tag,true,nl)
+        if nlw
+            lx=anchor(id,pl,false,plt,plc,tf)
+            ok=not rst or dayKey(lx)==dayKey(time)
+            if ok
+                addLevel(pl,false,lx,tag,false)
+                trim(tag,false,nl)
+    0
+
+// Only pending liquidity is touched on every bar. Historical sweeps are not scanned.
+sweep()=>
+    i=0
+    while i<live.size()
+        x=live.get(i)
+
+        // Live objects only move horizontally. Static text, price, color and style
+        // are updated only when the level is created or its tags change.
+        if not na(x.ln)
+            line.set_x2(x.ln,time)
+        if not na(x.rt)
+            label.set_x(x.rt,bar_index+3)
+
+        hit=bar_index>x.born and time>x.x and (x.hi?high>x.p:low<x.p)
+        if hit
+            if not na(x.mark)
+                label.delete(x.mark)
+            if not na(x.rt)
+                label.delete(x.rt)
+            x.mark:=na
+            x.rt:=na
+            x.swept:=true
+            x.sx:=time
+            c=lvlColor(x)
+
+            if not na(x.ln)
+                line.set_xy1(x.ln,x.x,x.p)
+                line.set_xy2(x.ln,x.sx,x.p)
+                line.set_color(x.ln,c)
+                line.set_width(x.ln,sw)
+                line.set_style(x.ln,lnStyle())
+
+            mx=x.x+int((x.sx-x.x)/2)
+            x.txt:=label.new(mx,x.p,tagText(x.tags),xloc=xloc.bar_time,yloc=yloc.price,style=label.style_none,textcolor=c,size=lblSize(),textalign=text.align_center)
+
+            live.remove(i)
+            done.push(x)
+            pushAlert("MITIGATED",x)
+
+            if not hist
+                hideSweeps(done.size()-1)
+            prune()
+        else
+            i+=1
+    0
+
+pivots()=>
+    ph=ta.pivothigh(high,1,1)
+    pl=ta.pivotlow(low,1,1)
+    pht=not na(ph)?time[1]:na
+    phc=not na(ph)?time_close[1]:na
+    plt=not na(pl)?time[1]:na
+    plc=not na(pl)?time_close[1]:na
+    [ph,pht,phc,pl,plt,plc]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Session Engine {
+method runSession(Sess s,bool inside,bool st,bool ed,string tag)=>
+    if st
+        s.h:=high
+        s.l:=low
+        s.hx:=time
+        s.lx:=time
+    if inside
+        if na(s.h) or high>s.h
+            s.h:=high
+            s.hx:=time
+        if na(s.l) or low<s.l
+            s.l:=low
+            s.lx:=time
+    if ed
+        addLevel(s.h,true,s.hx,tag,true)
+        addLevel(s.l,false,s.lx,tag,true)
+        s.h:=na
+        s.l:=na
+        s.hx:=na
+        s.lx:=na
+    0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Static Setup {
+// Inputs and chart timeframe changes restart the script, so these values only
+// need to be resolved once per execution.
+if barstate.isfirst
+    resolveSources()
+    off=utcMin(utc)
+    aSess:=shiftSession(sm=="Full"?aFull:aAm,off)
+    lSess:=shiftSession(sm=="Full"?lFull:lAm,off)
+    nSess:=shiftSession(sm=="Full"?nFull:nAm,off)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MTF Data {
+[ph1,pht1,phc1,pl1,plt1,plc1]=request.security(syminfo.tickerid,useTf.get(0),pivots(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_off)
+[ph2,pht2,phc2,pl2,plt2,plc2]=request.security(syminfo.tickerid,useTf.get(1),pivots(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_off)
+[ph3,pht3,phc3,pl3,plt3,plc3]=request.security(syminfo.tickerid,useTf.get(2),pivots(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_off)
+[ph4,pht4,phc4,pl4,plt4,plc4]=request.security(syminfo.tickerid,useTf.get(3),pivots(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_off)
+[ph5,pht5,phc5,pl5,plt5,plc5]=request.security(syminfo.tickerid,useTf.get(4),pivots(),gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_off)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Exact Wick Cache {
+// time(tf) identifies the HTF candle from its first chart bar, while the
+// existing request.security calls remain unchanged for pivot confirmation.
+cs=timeframe.in_seconds()
+if useSrc.get(0) and tfSec(useTf.get(0))>cs
+    tr.get(0).trackWick(time(useTf.get(0)))
+if useSrc.get(1) and tfSec(useTf.get(1))>cs
+    tr.get(1).trackWick(time(useTf.get(1)))
+if useSrc.get(2) and tfSec(useTf.get(2))>cs
+    tr.get(2).trackWick(time(useTf.get(2)))
+if useSrc.get(3) and tfSec(useTf.get(3))>cs
+    tr.get(3).trackWick(time(useTf.get(3)))
+if useSrc.get(4) and tfSec(useTf.get(4))>cs
+    tr.get(4).trackWick(time(useTf.get(4)))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert State {
+aQ.clear()
+for i=0 to aSig.size()-1
+    aSig.set(i,false)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Day State {
+dk=dayKey(time)
+newDay=not barstate.isfirst and dk!=dayKey(time[1])
+
+var float dh=na
+var float dl=na
+var int dhx=na
+var int dlx=na
+
+if barstate.isfirst
+    day0:=time
+    dh:=high
+    dl:=low
+    dhx:=time
+    dlx:=time
+else if newDay
+    phd=dh
+    pld=dl
+    phx=dhx
+    plx=dlx
+
+    if rst
+        clearLevels()
+    else
+        for i=0 to sNames.size()-1
+            clearTag(sNames.get(i))
+        clearTag("PDH")
+        clearTag("PDL")
+
+    day0:=time
+    dh:=high
+    dl:=low
+    dhx:=time
+    dlx:=time
+
+    if pd
+        addLevel(phd,true,phx,"PDH",false)
+        addLevel(pld,false,plx,"PDL",false)
+else
+    if na(dh) or high>dh
+        dh:=high
+        dhx:=time
+    if na(dl) or low<dl
+        dl:=low
+        dlx:=time
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Sessions {
+ai=aOn and not na(time(timeframe.period,aSess,utc))
+li=lOn and not na(time(timeframe.period,lSess,utc))
+ni=nOn and not na(time(timeframe.period,nSess,utc))
+
+s0=ses.get(0)
+s0.runSession(ai,ai and not ai[1],not ai and ai[1],sNames.get(0))
+s1=ses.get(1)
+s1.runSession(li,li and not li[1],not li and li[1],sNames.get(1))
+s2=ses.get(2)
+s2.runSession(ni,ni and not ni[1],not ni and ni[1],sNames.get(2))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MTF Levels {
+processPivot(0,useSrc.get(0),ph1,pht1,phc1,pl1,plt1,plc1,tfText(useTf.get(0)),useTf.get(0))
+processPivot(1,useSrc.get(1),ph2,pht2,phc2,pl2,plt2,plc2,tfText(useTf.get(1)),useTf.get(1))
+processPivot(2,useSrc.get(2),ph3,pht3,phc3,pl3,plt3,plc3,tfText(useTf.get(2)),useTf.get(2))
+processPivot(3,useSrc.get(3),ph4,pht4,phc4,pl4,plt4,plc4,tfText(useTf.get(3)),useTf.get(3))
+processPivot(4,useSrc.get(4),ph5,pht5,phc5,pl5,plt5,plc5,tfText(useTf.get(4)),useTf.get(4))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Mitigation {
+sweep()
+sendAlerts()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Conditions {
+alertcondition(aSig.get(0),"New High Liquidity","{{ticker}} | NEW HIGH LIQUIDITY | TF {{interval}}")
+alertcondition(aSig.get(1),"New Low Liquidity","{{ticker}} | NEW LOW LIQUIDITY | TF {{interval}}")
+alertcondition(aSig.get(2),"High Liquidity Mitigated","{{ticker}} | HIGH LIQUIDITY MITIGATED | TF {{interval}}")
+alertcondition(aSig.get(3),"Low Liquidity Mitigated","{{ticker}} | LOW LIQUIDITY MITIGATED | TF {{interval}}")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

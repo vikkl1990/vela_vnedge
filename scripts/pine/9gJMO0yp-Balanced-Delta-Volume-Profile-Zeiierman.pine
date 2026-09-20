@@ -1,0 +1,249 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Balanced Delta Volume Profile (Zeiierman)", overlay = true, max_boxes_count = 500)
+//~~}
+
+// ~~ Tooltips {
+var string t1  = "History Length\n" +
+ "What it does: Sets how many bars back the profile scans and aggregates.\n" +
+ "Impact: Higher values = broader context and more stable levels; lower values = more reactive and session-local levels.\n" +
+ "Tips: • Day trading: 150–300 bars. • Swing: 300–1000+. Increase if levels feel noisy; decrease if the profile lags new regimes."
+
+var string t2  = "Bin Count\n" +
+ "What it does: Number of price bins used to build the vertical volume profile between the session’s min and max price.\n" +
+ "Impact: More bins = finer price resolution but thinner data per bin; fewer bins = smoother, thicker bins with less granularity.\n" +
+ "Tips: Start ~25. Raise to 40–60 for high ADR symbols; lower to 10–20 if data is sparse or chart timeframe is small."
+
+var string t3  = "Display Shift\n" +
+ "What it does: Horizontal offset (in bars) that shifts the entire profile away from the latest candle.\n" +
+ "Impact: Purely visual spacing so the boxes/labels don’t overlap current candles.\n" +
+ "Tips: Increase if labels collide with price; decrease for tighter layouts or smaller screens."
+
+var string t4  = "Average Mode (Vol/Hit)\n" +
+ "What it does: Toggles between Average Volume per Hit (ON) vs. Total Volume (OFF) for bar lengths.\n" +
+ "Impact: ON emphasizes ‘quality’ of a level (how much volume when visited); OFF emphasizes absolute participation.\n" +
+ "Tips: Use ON to compare bins fairly when hit counts vary; use OFF to mirror classic volume profile behavior."
+
+var string t5  = "Volume Momentum Weight\n" +
+ "What it does: Weights the score toward lower delta momentum (balanced buying/selling) by down-weighting bins with large pos/neg deltas.\n" +
+ "Impact: Higher = highlight balance/acceptance zones; Lower = allow more influence from aggressive one-sided flow.\n" +
+ "Tips: 0.8–1.4 typical. Raise if you want stable, neutral ‘fair value’ areas; lower to surface breakout/imbalance areas."
+
+var string t6  = "Price Momentum Weight\n" +
+ "What it does: Weights the score toward lower price momentum (narrow average bar range within the bin).\n" +
+ "Impact: Higher = favors compression/rotation areas; Lower = allows wider-range, trending bars to count more.\n" +
+ "Tips: 0.8–1.4 typical. Increase to find coiling levels; decrease to keep trend participation visible."
+
+var string t7  = "Hits Weight\n" +
+ "What it does: Weights bins by how often price visited them (hit count), raising (hits/maxHits)^weight.\n" +
+ "Impact: Higher = prioritizes frequently revisited ‘accepted’ prices; Lower = reduces hit-count bias.\n" +
+ "Tips: 0.8–1.4 typical. Raise to reward durability of a level; lower if you want to surface newer levels faster."
+
+var string t8  = "Min Hits Filter\n" +
+  "What it does: Discards bins with fewer hits than this threshold from the balance score (they can still have volume).\n" +
+  "Impact: Prevents noisy, single-touch bins from dominating scores.\n" +
+  "Tips: Start at 1–3. Increase if thin markets create spurious peaks; decrease if you need early discovery of fresh levels."
+
+var string t9  = "Show Heat Spectrum\n" +
+ "What it does: Renders a background spectrum behind bars, shading by normalized bar length and balance hue.\n" +
+ "Impact: Aids fast visual parsing of where participation and balance cluster.\n" +
+ "Tips: Turn OFF for minimalist charts or when exporting clean screenshots."
+
+var string t10 = "Highlight Max Volume Bin\n" +
+ "What it does: Draws an outline (and prints raw volume) for any bin that reaches 100% normalized length.\n" +
+ "Impact: Quickly identifies the most dominant price level in the selected history window.\n" +
+ "Tips: Keep ON for at-a-glance POC-style reference; turn OFF if you prefer a uniform look."
+
+var string t11 = "Max Volume Color\n" +
+ "What it does: Color used to outline the highest (100%) normalized volume bin and its label.\n" +
+ "Impact: Improves contrast/visibility of the POC-like level.\n" +
+ "Tips: Pick a high-contrast color against your chart theme to avoid ambiguity."
+
+var string t12 = "Balance Low/High Colors\n" +
+ "What it does: Gradient endpoints for balance hue. ‘Low’ color = weak balance, ‘High’ color = strong balance.\n" +
+ "Impact: The main bars and spectrum interpolate between these colors based on normalized balance score.\n" +
+ "Tips: Choose distinct endpoints (e.g., green→cyan or amber→teal). Keep alpha handled by script; use solid colors here."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs Section
+histLength   = input.int(200, "History Length",   tooltip = t1)
+numBins      = input.int(25,  "Bin Count", minval = 10, maxval = 100, tooltip = t2)
+shiftOffset  = input.int(10,  "Display Shift",    tooltip = t3)
+
+avgMode         = input.bool(false,  "Average Mode (Vol/Hit)", group = "Display Options", tooltip = t4)
+momWeight       = input.float(1.0,  "Volume Momentum Weight", 0, 2, step = 0.1, group = "Display Options", tooltip = t5)
+priceMomWeight  = input.float(1.0,  "Price Momentum Weight",  0, 2, step = 0.1, group = "Display Options", tooltip = t6)
+hitsWeight      = input.float(1.0,  "Hits Weight",            0, 2, step = 0.1, group = "Display Options", tooltip = t7)
+minHits         = input.int(1,      "Min Hits Filter",        1,             group = "Display Options", tooltip = t8)
+
+showHeat     = input.bool(true, "Show Heat Spectrum", group = "Display Options", tooltip = t9)
+showMaxVol   = input.bool(true, "Highlight Max Volume Bin", inline = "maxvol", group = "Display Options", tooltip = t10)
+maxVolColor  = input.color(color.rgb(0, 255, 38), "Max Volume Color", inline = "maxvol", group = "Display Options", tooltip = t11)
+
+balLowColor  = input.color(color.rgb(0, 255, 38), "Balance Low/High Colors", inline = "balcolors", tooltip = t12)
+balHighColor = input.color(color.rgb(0, 203, 230), "", inline = "balcolors", tooltip = t12)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Data Structures
+type ProfileData
+    array<float> totalVolume
+    array<float> negVolume
+    array<float> posVolume
+    array<float> priceHits
+    array<float> totalPriceRange
+
+profData = ProfileData.new(
+ array.new<float>(numBins, 0.),
+ array.new<float>(numBins, 0.),
+ array.new<float>(numBins, 0.),
+ array.new<float>(numBins, 0.),
+ array.new<float>(numBins, 0.)
+ )
+
+priceExtremes = array.new<float>()
+var displayContainers = array.new<box>()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Core Computations
+if barstate.islast
+    if array.size(displayContainers) > 0
+        for cont in displayContainers
+            box.delete(cont)
+    array.clear(displayContainers)
+
+    for barIdx = 0 to histLength
+        array.push(priceExtremes, high[barIdx])
+        array.push(priceExtremes, low[barIdx])
+
+    maxPrice = array.max(priceExtremes)
+    minPrice = array.min(priceExtremes)
+    binStep  = (maxPrice - minPrice) / numBins
+
+    for barIdx = 0 to histLength
+        barVol    = volume[barIdx]
+        barOpen   = open[barIdx]
+        barClose  = close[barIdx]
+        barHigh   = high[barIdx]
+        barLow    = low[barIdx]
+        isNegBar  = barClose < barOpen
+        barRange  = barHigh - barLow
+
+        if barRange <= 0
+            midPrice = (barHigh + barLow) / 2
+            binIdx   = math.floor((midPrice - minPrice) / binStep)
+            if binIdx >= 0 and binIdx < numBins
+                array.set(profData.totalVolume, binIdx, array.get(profData.totalVolume, binIdx) + barVol)
+                if isNegBar
+                    array.set(profData.negVolume, binIdx, array.get(profData.negVolume, binIdx) + barVol)
+                else
+                    array.set(profData.posVolume, binIdx, array.get(profData.posVolume, binIdx) + barVol)
+                array.set(profData.priceHits, binIdx, array.get(profData.priceHits, binIdx) + 1)
+                array.set(profData.totalPriceRange, binIdx, array.get(profData.totalPriceRange, binIdx) + barRange)
+        else
+            binStart = math.floor((barLow - minPrice) / binStep)
+            binEnd   = math.floor((barHigh - minPrice) / binStep)
+            binStart := math.max(0, binStart)
+            binEnd   := math.min(numBins - 1, binEnd)
+            for binIdx = binStart to binEnd
+                binLow    = minPrice + binStep * binIdx
+                binHigh   = binLow + binStep
+                overlapLow  = math.max(barLow, binLow)
+                overlapHigh = math.min(barHigh, binHigh)
+                overlapSize = overlapHigh - overlapLow
+                if overlapSize > 0
+                    frac = overlapSize / barRange
+                    addVol = barVol * frac
+                    addRange = barRange * frac
+                    array.set(profData.totalVolume, binIdx, array.get(profData.totalVolume, binIdx) + addVol)
+                    if isNegBar
+                        array.set(profData.negVolume, binIdx, array.get(profData.negVolume, binIdx) + addVol)
+                    else
+                        array.set(profData.posVolume, binIdx, array.get(profData.posVolume, binIdx) + addVol)
+                    array.set(profData.priceHits, binIdx, array.get(profData.priceHits, binIdx) + 1)
+                    array.set(profData.totalPriceRange, binIdx, array.get(profData.totalPriceRange, binIdx) + addRange)
+
+    // ---- Aggregate Maxima and Normalized Displays
+    maxTotalVol = array.max(profData.totalVolume)
+    maxHits     = array.max(profData.priceHits)
+    maxPriceRange = 0.
+    for j = 0 to numBins - 1
+        hits = array.get(profData.priceHits, j)
+        avgRange = hits > 0 ? array.get(profData.totalPriceRange, j) / hits : 0
+        maxPriceRange := math.max(maxPriceRange, avgRange)
+
+    var float maxNorm = 0.
+    var float maxBal = 0.
+    dispTotal = array.new<float>(numBins, 0.)
+    balScores = array.new<float>(numBins, 0.)
+    for binIdx = 0 to numBins - 1
+        hits     = array.get(profData.priceHits, binIdx)
+        totVol   = array.get(profData.totalVolume, binIdx)
+        posVol   = array.get(profData.posVolume, binIdx)
+        negVol   = array.get(profData.negVolume, binIdx)
+        volDelta = posVol - negVol
+        momStrength = totVol > 0 ? math.abs(volDelta) / totVol : 0
+        avgRange = hits > 0 ? array.get(profData.totalPriceRange, binIdx) / hits : 0
+        normPriceMom = maxPriceRange > 0 ? avgRange / maxPriceRange : 0
+        weightedVolMom = math.pow(1 - momStrength, momWeight)
+        weightedPriceMom = math.pow(1 - normPriceMom, priceMomWeight)
+        weightedHits = math.pow(maxHits > 0 ? hits / maxHits : 0, hitsWeight)
+        balScore = hits >= minHits ? weightedVolMom * weightedPriceMom * weightedHits : 0
+        array.set(balScores, binIdx, balScore)
+        maxBal := math.max(maxBal, balScore)
+        avgTot   = hits > 0 ? totVol / hits : 0.
+        dispVol  = avgMode ? avgTot : totVol
+        weighted = true ? dispVol * balScore : dispVol
+        array.set(dispTotal, binIdx, weighted)
+        maxNorm := math.max(maxNorm, weighted)
+    maxNorm := maxNorm == 0 ? 1. : maxNorm
+
+    // ---- Visualization
+    for binIdx = 0 to numBins - 1
+        basePos = bar_index + 120 + shiftOffset
+
+        rawVolVal = array.get(profData.totalVolume, binIdx)
+
+        binLow  = minPrice + binStep * binIdx
+        binHigh = binLow + binStep
+        binMid  = binLow + binStep / 2
+
+        normTot  = math.floor(array.get(dispTotal, binIdx) / maxNorm * 100)
+
+        // Balance Assessment (recomputed for display)
+        balScore    = array.get(balScores, binIdx)
+        normBalScore = maxBal > 0 ? balScore / maxBal : balScore
+        balPct      = math.round(normBalScore * 100)
+        mainHue     = color.from_gradient(normBalScore, 0, 1, balLowColor, balHighColor)
+        isHighBal   = normBalScore > 0.6
+        balBorder   = isHighBal ? maxVolColor : chart.bg_color
+
+        var box maxVolBox   = na
+        var box spectrumBox = na
+        var box mainBar     = na
+        var box balLabel    = na
+
+        if showHeat
+            spectrumBox := box.new(basePos - histLength - 60 - normTot, binHigh, basePos, binLow,
+                                   border_color = chart.bg_color, border_width = 0,
+                                   bgcolor = color.from_gradient(normTot, 0, 100, color.new(mainHue, 100), color.new(mainHue, 70)))
+
+        if normTot == 100 and showMaxVol
+            maxVolBox := box.new(basePos - histLength - 60 - normTot, binHigh, basePos, binLow,
+                                 border_color = maxVolColor, border_width = 1, bgcolor = na,
+                                 text = str.tostring(rawVolVal, format.volume), text_color = chart.fg_color)
+
+        mainBar := box.new(basePos - normTot, binHigh, basePos, binLow,
+                         border_color = balBorder, border_width = 1, bgcolor = color.new(mainHue, 50))
+
+        balLabel := box.new(basePos + 15, binHigh, basePos, binLow,
+                         border_color = chart.bg_color, border_width = 1,
+                         bgcolor = color.new(mainHue, 80),
+                         text = "Balance: " + str.tostring(balPct, "#") + "%", text_color = mainHue)
+
+        array.push(displayContainers, maxVolBox)
+        array.push(displayContainers, spectrumBox)
+        array.push(displayContainers, mainBar)
+        array.push(displayContainers, balLabel)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

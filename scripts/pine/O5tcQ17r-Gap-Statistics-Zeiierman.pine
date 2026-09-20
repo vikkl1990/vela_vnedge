@@ -1,0 +1,187 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+// © Zeiierman {
+
+//@version=6
+indicator('Gap Statistics (Zeiierman)', overlay = true, max_boxes_count = 500)
+//~~}
+
+// ~~ Inputs {
+var t1 = 'All Gaps displays all the gaps that have been identified in historical data. Active Gaps highlights only currently active gaps. Selecting None hides all gaps.'
+var t2 = 'Displays a label indicating the size of the gap, with customizable text color.'
+
+showGaps = input.string('Active Gaps', 'Display Gaps', ['None', 'Active Gaps', 'All Gaps'], t1, group = 'Gaps')
+gapFilter = input.string('All', 'Show Gap Size', ['All', '<0.1%', '0.1-0.25%', '0.25-0.50%', '0.50-0.75%', '0.75-1%', '>1%'], group = 'Gaps')
+
+showSize = input.bool(true, 'Show Gap Size Label', inline = 'gap', group = 'Gaps')
+txtsize = input.string(size.small, '', [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline = 'gap', group = 'Gaps')
+gaptxt = input.color(color.white, '', t2, inline = 'gap', group = 'Gaps')
+
+bullcol = input.color(color.new(#48834a, 80), 'Bull Gap', inline = 'col', group = 'Gaps')
+bearcol = input.color(color.new(#cc2727, 80), 'Bear Gap', inline = 'col', group = 'Gaps')
+
+pos = input.string(position.top_right, title = 'Position', options = [position.top_right, position.top_center, position.top_left, position.bottom_right, position.bottom_center, position.bottom_left, position.middle_right, position.middle_left], inline = 'tbl', group = 'Table')
+TblSize = input.string(size.normal, title = '', options = [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], inline = 'tbl', group = 'Table')
+frame = input.color(color.rgb(0, 0, 0), 'Frame', inline = 'table', group = 'Table')
+bullbackgr = input.color(color.green, 'Bull BG', inline = 'table', group = 'Table')
+bearbackgr = input.color(color.red, 'Bear BG', inline = 'table', group = 'Table')
+textcol = input.color(color.white, 'Text', inline = 'table', group = 'Table')
+//~~}
+
+// ~~ Variables {
+b = bar_index
+
+type Gaps
+    array<box> bull
+    array<box> bear
+    array<int> bullt
+    array<int> beart
+    array<int> bullbars
+    array<int> bearbars
+    array<int> bullfill
+    array<int> bearfill
+    int bulltot = 0
+    int beartot = 0
+
+var g0 = Gaps.new(array.new<box>(), array.new<box>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>())
+var g1 = Gaps.new(array.new<box>(), array.new<box>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>())
+var g2 = Gaps.new(array.new<box>(), array.new<box>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>())
+var g3 = Gaps.new(array.new<box>(), array.new<box>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>())
+var g4 = Gaps.new(array.new<box>(), array.new<box>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>())
+var g5 = Gaps.new(array.new<box>(), array.new<box>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>(), array.new<int>())
+
+var gap = array.from(g0, g1, g2, g3, g4, g5)
+//~~}
+
+// ~~ Functions {
+f_showGap(idx) =>
+    gapFilter == 'All' or
+     gapFilter == '<0.1%' and idx == 0 or
+     gapFilter == '0.1-0.25%' and idx == 1 or
+     gapFilter == '0.25-0.50%' and idx == 2 or
+     gapFilter == '0.50-0.75%' and idx == 3 or
+     gapFilter == '0.75-1%' and idx == 4 or
+     gapFilter == '>1%' and idx == 5
+
+f_pct(total, filled) =>
+    total > 0 ? filled / total * 100 : na
+
+method NewBull(Gaps g, dist, idx) =>
+    showThisGap = showGaps != 'None' and f_showGap(idx)
+    g.bulltot += 1
+    g.bull.unshift(box.new(b - 1, open, b, close[1], showThisGap ? bullcol : na, bgcolor = showThisGap ? bullcol : na, extend = extend.none, text = str.tostring(dist, format.percent), text_color = showThisGap and showSize ? gaptxt : na, text_size = txtsize, text_halign = text.align_left))
+    g.bullt.unshift(b)
+
+method NewBear(Gaps g, dist, idx) =>
+    showThisGap = showGaps != 'None' and f_showGap(idx)
+    g.beartot += 1
+    g.bear.unshift(box.new(b - 1, close[1], b, open, showThisGap ? bearcol : na, bgcolor = showThisGap ? bearcol : na, extend = extend.none, text = str.tostring(dist, format.percent), text_color = showThisGap and showSize ? gaptxt : na, text_size = txtsize, text_halign = text.align_left))
+    g.beart.unshift(b)
+//~~}
+
+// ~~ Main {
+if not na(close[1]) and close[1] != open
+    gapSize = math.abs(open - close[1]) / close[1] * 100
+    isBullGap = open > close[1]
+    idx = gapSize < 0.1 ? 0 : gapSize < 0.25 ? 1 : gapSize < 0.5 ? 2 : gapSize < 0.75 ? 3 : gapSize < 1 ? 4 : 5
+    x = gap.get(idx)
+
+    if isBullGap
+        x.NewBull(gapSize, idx)
+    else
+        x.NewBear(gapSize, idx)
+
+    filled = isBullGap ? f_pct(x.bulltot, x.bullfill.sum()) : f_pct(x.beartot, x.bearfill.sum())
+    fillavg = isBullGap ? x.bullbars.avg() : x.bearbars.avg()
+
+    alert('New ' + (isBullGap ? 'Bull gap (' : 'Bear gap (') + str.tostring(gapSize, format.percent) + ') on ' + str.tostring(syminfo.ticker) + ', Filled: ' + str.tostring(filled, format.percent) + ' of the time on average: ' + str.tostring(math.round(fillavg)) + ' bars.', alert.freq_once_per_bar)
+
+// ~~ Check Gaps {
+for i = 0 to 5
+    gaps = gap.get(i)
+
+    bullCount = gaps.bull.size()
+    if bullCount > 0
+        for j = bullCount - 1 to 0
+            bull = gaps.bull.get(j)
+            showThisGap = showGaps != 'None' and f_showGap(i)
+
+            bull.set_right(b)
+            bull.set_border_color(showThisGap ? bullcol : na)
+            bull.set_bgcolor(showThisGap ? bullcol : na)
+            bull.set_text_color(showThisGap and showSize ? gaptxt : na)
+
+            bullFillPrice = bull.get_bottom()
+            if low <= bullFillPrice
+                alert('Bull gap filled!', alert.freq_once_per_bar)
+
+                if showGaps == 'Active Gaps'
+                    bull.delete()
+                else
+                    bull.set_right(b)
+                    bull.set_extend(extend.none)
+
+                getBar = gaps.bullt.get(j)
+                gaps.bullbars.unshift(b - getBar)
+                gaps.bullfill.push(1)
+                gaps.bull.remove(j)
+                gaps.bullt.remove(j)
+
+    bearCount = gaps.bear.size()
+    if bearCount > 0
+        for j = bearCount - 1 to 0
+            bear = gaps.bear.get(j)
+            showThisGap = showGaps != 'None' and f_showGap(i)
+
+            bear.set_right(b)
+            bear.set_border_color(showThisGap ? bearcol : na)
+            bear.set_bgcolor(showThisGap ? bearcol : na)
+            bear.set_text_color(showThisGap and showSize ? gaptxt : na)
+
+            bearFillPrice = bear.get_top()
+            if high >= bearFillPrice
+                alert('Bear gap filled!', alert.freq_once_per_bar)
+
+                if showGaps == 'Active Gaps'
+                    bear.delete()
+                else
+                    bear.set_right(b)
+                    bear.set_extend(extend.none)
+
+                getBar = gaps.beart.get(j)
+                gaps.bearbars.unshift(b - getBar)
+                gaps.bearfill.push(1)
+                gaps.bear.remove(j)
+                gaps.beart.remove(j)
+//~~}
+
+// ~~ Table {
+if barstate.islast
+    var tbl = table.new(pos, 9, 7, color.gray, frame, 3, frame, 2)
+
+    txt = array.from('<0.1%', '0.1-0.25%', '0.25-0.50%', '0.50-0.75%', '0.75-1%', '>1%')
+    head = array.from('', 'Bull Total', 'Bull Filled', 'Filled %', 'Bars', 'Bear Total', 'Bear Filled', 'Filled %', 'Bars')
+
+    for [i, h] in head
+        tbl.cell(i, 0, h, text_color = color.white, text_size = TblSize, bgcolor = color.rgb(56, 80, 255))
+
+    for [i, gaps] in gap
+        tbl.cell(0, i + 1, txt.get(i), text_color = color.white, text_size = TblSize, bgcolor = color.rgb(56, 80, 255))
+
+        bulltot = gaps.bulltot
+        bullfill = gaps.bullfill.sum()
+        bullFilledPct = f_pct(bulltot, bullfill)
+
+        tbl.cell(1, i + 1, str.tostring(bulltot), text_color = textcol, text_size = TblSize, bgcolor = color.new(bullbackgr, 0))
+        tbl.cell(2, i + 1, str.tostring(bullfill), text_color = textcol, text_size = TblSize, bgcolor = color.new(bullbackgr, 0))
+        tbl.cell(3, i + 1, str.tostring(bullFilledPct, format.percent), text_size = TblSize, text_color = textcol, bgcolor = color.new(#4ad44f, 0))
+        tbl.cell(4, i + 1, str.tostring(math.round(gaps.bullbars.avg())), text_color = textcol, text_size = TblSize, bgcolor = color.new(bullbackgr, 0))
+
+        beartot = gaps.beartot
+        bearfill = gaps.bearfill.sum()
+        bearFilledPct = f_pct(beartot, bearfill)
+
+        tbl.cell(5, i + 1, str.tostring(beartot), text_color = textcol, text_size = TblSize, bgcolor = color.new(bearbackgr, 0))
+        tbl.cell(6, i + 1, str.tostring(bearfill), text_color = textcol, text_size = TblSize, bgcolor = color.new(bearbackgr, 0))
+        tbl.cell(7, i + 1, str.tostring(bearFilledPct, format.percent), text_size = TblSize, text_color = textcol, bgcolor = color.new(#fc6262, 0))
+        tbl.cell(8, i + 1, str.tostring(math.round(gaps.bearbars.avg())), text_color = textcol, text_size = TblSize, bgcolor = color.new(bearbackgr, 0))
+//~~}

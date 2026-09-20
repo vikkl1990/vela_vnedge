@@ -1,0 +1,264 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Spring & Upthrust Trap (Zeiierman)", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=200)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Controls how swing pivots are detected. Higher = fewer pivots (smoother), lower = more pivots (more signals)."
+var string t2  = "Select which pattern(s) to detect: Spring (bull), Upthrust (bear), or both."
+var string t3  = "Minimum required sweep size beyond the range boundary. Smaller = more signals, but more noise."
+var string t4  = "Maximum allowed sweep size beyond the range boundary. Higher = allows deeper sweeps."
+var string t5  = "Extra confirmation distance beyond point A required at point C (as a fraction of |A-X|). 0 = no extra confirmation."
+
+var string t6  = "Background fill color for bullish (Spring) ranges."
+var string t7  = "Background fill color for bearish (Upthrust) ranges."
+var string t8  = "Line/leg color for bullish (Spring) patterns."
+var string t9  = "Line/leg color for bearish (Upthrust) patterns."
+var string t10 = "Thickness of the diagonal pattern legs (X→A→B→C)."
+var string t11 = "Style of the diagonal pattern legs (X→A→B→C)."
+
+var string t12 = "Thickness of the horizontal range boundary lines."
+var string t13 = "How far the horizontal range boundary lines extend to the right (in bars)."
+
+var string t14 = "If a new pattern appears before prior boundary lines have finished extending, the prior lines will be cut off early to prevent overlapping."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Enums {
+enum PatternTypes
+    None     = "None"
+    All      = "All"
+    Spring   = "Spring (Bull)"
+    Upthrust = "Upthrust (Bear)"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+ZigzagLength = input.int(12, "ZigZag Length", step=1, minval=1, group="ZigZag", tooltip=t1)
+
+ShowPattern  = input.enum(PatternTypes.All, "Show Patterns", group="Rules", tooltip=t2)
+minSweep     = input.float(0.05, "Min Sweep (|B-X| / |A-X|)", minval=0.0, maxval=1.0, step=0.01, group="Rules", tooltip=t3)
+maxSweep     = input.float(0.35, "Max Sweep (|B-X| / |A-X|)", minval=0.01, maxval=1.5, step=0.01, group="Rules", tooltip=t4)
+confirmPad   = input.float(0.00, "Confirm Pad (fraction of |A-X|)", minval=0.0, maxval=0.5, step=0.01, group="Rules", tooltip=t5)
+
+bullFill     = input.color(color.new(color.lime, 85), "Bull Fill", group="Style", tooltip=t6, inline="fill")
+bearFill     = input.color(color.new(color.red, 85),  "Bear Fill", group="Style", tooltip=t6 + "\n\n" + t7, inline="fill")
+
+bullLineCol  = input.color(color.new(color.lime, 0),  "Bull Lines", group="Style", tooltip=t8, inline="line")
+bearLineCol  = input.color(color.new(color.red, 0),   "Bear Lines", group="Style", tooltip=t8 + "\n\n" + t9, inline="line")
+
+legStyleIn   = input.string("Solid", "Leg Style", options=["Solid","Dashed","Dotted"], group="Style", tooltip=t11, inline="c")
+legW         = input.int(2, "Leg Width", minval=1, maxval=4, group="Style", tooltip=t9 + "\n\n" + t10, inline="c")
+
+lvlW         = input.int(2, "Level Width", minval=1, maxval=4, group="Style", tooltip=t12, inline="l")
+extendBars   = input.int(120, "Extend Levels (bars)", minval=1, maxval=500, group="Style", tooltip=t12 + "\n\n" + t13, inline="l")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type ZigZagPivotPoint
+    float Price
+    int   BarIndex
+    int   Direction
+
+type TrapPattern
+    line  l1
+    line  l2
+    line  l3
+    box   bx
+    line  topLine
+    line  botLine
+    int   startBar
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Globals {
+var ZigZagPivotPoint[] pivs = array.new<ZigZagPivotPoint>()
+var TrapPattern[] patterns  = array.new<TrapPattern>()
+const int MAX_PIVS = 6
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+LineStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+Pivots(int length) =>
+    float ph = ta.highestbars(high, length) == 0 ? high : na
+    float pl = ta.lowestbars(low, length) == 0 ? low  : na
+
+    int dir = na
+    dir := if not na(ph) and na(pl)
+        1
+    else if not na(pl) and na(ph)
+        -1
+    else
+        dir[1]
+
+    [dir, ph, pl]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Build pivots (newest at index 0) {
+method FindPivotPoint(ZigZagPivotPoint[] this, int length) =>
+    [dir, ph, pl] = Pivots(length)
+    bool dirChanged = bool(ta.change(dir))
+
+    if not na(ph) or not na(pl)
+        float newPx = dir == 1 ? ph : pl
+        int   bidx  = bar_index
+        int   ndir  = dir
+
+        if not dirChanged and array.size(this) >= 1
+            ZigZagPivotPoint last = array.shift(this)
+            float lastPx = last.Price
+            int   lastBi = last.BarIndex
+            int   lastDi = last.Direction
+
+            bool useOld = newPx * lastDi < lastPx * lastDi
+            newPx := useOld ? lastPx : newPx
+            bidx  := useOld ? lastBi : bidx
+
+        if array.size(this) >= 2
+            float prevPx = array.get(this, 1).Price
+            ndir := dir * newPx > dir * prevPx ? dir * 2 : dir
+
+        array.unshift(this, ZigZagPivotPoint.new(newPx, bidx, ndir))
+
+        if array.size(this) > MAX_PIVS
+            array.pop(this)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Cleanup utility {
+method DeletePattern(TrapPattern p) =>
+    line.delete(p.l1)
+    line.delete(p.l2)
+    line.delete(p.l3)
+    box.delete(p.bx)
+    line.delete(p.topLine)
+    line.delete(p.botLine)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Cut old lines to prevent overlay when a new pattern appears inside the extension window {
+method CutOverlappingLevels(TrapPattern[] this, int newLeftBar) =>
+    int n = array.size(this)
+    if n > 0
+        TrapPattern last = array.get(this, n - 1)
+
+        // If the previous lines still extend beyond the new pattern start,
+        // cut them to end exactly one bar before the new pattern starts.
+        // This prevents overlay of boundary lines.
+        if not na(last.topLine) and line.get_x2(last.topLine) >= newLeftBar
+            int cutX = math.max(newLeftBar - 1, line.get_x1(last.topLine))
+            line.set_x2(last.topLine, cutX)
+        if not na(last.botLine) and line.get_x2(last.botLine) >= newLeftBar
+            int cutX = math.max(newLeftBar - 1, line.get_x1(last.botLine))
+            line.set_x2(last.botLine, cutX)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Detection {
+method FindTrapPattern(ZigZagPivotPoint[] this) =>
+    bool found = false
+    int  ptype = 0
+
+    float X = na
+    float A = na
+    float B = na
+    float C = na
+
+    int Xb = na
+    int Ab = na
+    int Bb = na
+    int Cb = na
+
+    if array.size(this) >= 4 and ShowPattern != PatternTypes.None
+        C  := array.get(this, 0).Price
+        Cb := array.get(this, 0).BarIndex
+
+        B  := array.get(this, 1).Price
+        Bb := array.get(this, 1).BarIndex
+
+        A  := array.get(this, 2).Price
+        Ab := array.get(this, 2).BarIndex
+
+        X  := array.get(this, 3).Price
+        Xb := array.get(this, 3).BarIndex
+
+        float XA = math.abs(A - X)
+        if XA > 0
+            float sweepFrac = math.abs(B - X) / XA
+            float pad = confirmPad * XA
+
+            bool springMode   = A > X
+            bool upthrustMode = A < X
+
+            bool springShape    = springMode and (B < X) and (C > A + pad)
+            bool upthrustShape  = upthrustMode and (B > X) and (C < A - pad)
+
+            bool sweepOk = sweepFrac >= minSweep and sweepFrac <= maxSweep
+
+            bool allowSpring = ShowPattern == PatternTypes.All or ShowPattern == PatternTypes.Spring
+            bool allowUp     = ShowPattern == PatternTypes.All or ShowPattern == PatternTypes.Upthrust
+
+            if (springShape and sweepOk and allowSpring) or (upthrustShape and sweepOk and allowUp)
+                found := true
+                ptype := springShape ? 1 : -1
+
+    [found, ptype, X, Xb, A, Ab, B, Bb, C, Cb]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main {
+pivs.FindPivotPoint(ZigzagLength)
+[patFound, ptype, X, Xb, A, Ab, B, Bb, C, Cb] = pivs.FindTrapPattern()
+bool newPat = patFound and not patFound[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing {
+if newPat
+    patterns.CutOverlappingLevels(Xb)
+
+    color pFill = ptype == 1 ? bullFill : bearFill
+    color pLine = ptype == 1 ? bullLineCol : bearLineCol
+    color pLvl  = pLine
+
+    // Legs X-A-B-C
+    line l1 = line.new(x1=Xb, y1=X, x2=Ab, y2=A, color=pLine, width=legW, style=LineStyle(legStyleIn))
+    line l2 = line.new(x1=Ab, y1=A, x2=Bb, y2=B, color=pLine, width=legW, style=LineStyle(legStyleIn))
+    line l3 = line.new(x1=Bb, y1=B, x2=Cb, y2=C, color=pLine, width=legW, style=LineStyle(legStyleIn))
+
+    float topLvl = ptype == 1 ? A : X
+    float botLvl = ptype == 1 ? X : A
+
+    float boxTop = math.max(topLvl, botLvl)
+    float boxBot = math.min(topLvl, botLvl)
+
+    int boxRight  = math.max(Bb - 1, Xb)
+    int lineRight = Cb + extendBars
+
+    box bx = box.new(
+         left = Xb,
+         top = boxTop,
+         right = boxRight,
+         bottom = boxBot,
+         bgcolor = pFill,
+         border_color = color.new(pLine, 80)
+    )
+
+    line topLine = line.new(x1=Xb, y1=topLvl, x2=lineRight, y2=topLvl, color=pLvl, width=lvlW, style=line.style_dotted)
+    line botLine = line.new(x1=Xb, y1=botLvl, x2=lineRight, y2=botLvl, color=pLvl, width=lvlW, style=line.style_dotted)
+
+    TrapPattern p = TrapPattern.new(l1, l2, l3, bx, topLine, botLine, Xb)
+    array.push(patterns, p)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plotshape(newPat and ptype == 1 ? low : na, title="Spring", style=shape.triangleup, location=location.absolute, size=size.tiny, color=bullLineCol)
+plotshape(newPat and ptype == -1 ? high : na, title="Upthrust", style=shape.triangledown, location=location.absolute, size=size.tiny, color=bearLineCol)
+plotshape(newPat and ptype == 1 ? low : na, title="Spring (soft)", style=shape.triangleup, location=location.absolute, size=size.small, color=color.new(bullLineCol, 50))
+plotshape(newPat and ptype == -1 ? high : na, title="Upthrust (soft)", style=shape.triangledown, location=location.absolute, size=size.small, color=color.new(bearLineCol, 50))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(newPat and ptype == 1, title="Spring", message="Spring detected on {{ticker}}")
+alertcondition(newPat and ptype == -1, title="Upthrust", message="Upthrust detected on {{ticker}}")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

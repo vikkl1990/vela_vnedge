@@ -1,0 +1,45 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// ~~ © Zeiierman {
+//@version=5
+indicator('High & Low Of Custom Session - OpeningRange Breakout (Zeiierman)', shorttitle='High/Low Of Custom Session (Zeiierman)', overlay=true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+session = input.session("0900-1000", "Session", inline="sess", group="Session")
+utc     = input.string("UTC+1","",inline="sess", group="Session")
+hilo    = input.bool(true,"Session Range",inline="range", group="Session")
+up      = input.color(color.new(color.red,0),"",inline="range", group="Session")
+dn      = input.color(color.new(color.lime,0),"",inline="range", group="Session")
+bgcol   = input.color(color.new(color.blue,0),"",inline="range", group="Session")
+
+// ~~ Variables {
+b        = bar_index
+sess     = not na(time(timeframe.period, session, utc))
+var hi   = float(na)
+var lo   = float(na)
+var box openingBox = na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Session {
+if sess and not sess[1]
+    hi := high
+    lo := low
+    openingBox := box.new(left=bar_index, top=hi, right=bar_index + 1, bottom=lo, bgcolor=color.new(bgcol, 85), border_color=bgcol, border_width=1)    
+if sess
+    hi := math.max(hi, high)
+    lo := math.min(lo, low)
+    box.set_right(openingBox, bar_index + 1)
+    box.set_top(openingBox, hi)
+    box.set_bottom(openingBox, lo)    
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+nosess = not sess
+p1 = plot(hilo?hi:na,"Range High",color=nosess?up:na, offset=+1)
+p2 = plot(hilo?lo:na,"Range Low",color=nosess?dn:na, offset=+1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(sess and not sess[1],"Session Start","Session has started!")
+alertcondition(sess[1] and not sess,"Session End","Session has ended!")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

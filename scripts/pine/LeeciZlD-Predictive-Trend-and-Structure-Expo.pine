@@ -1,0 +1,73 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+//@version=5
+indicator("Predictive Trend and Structure (Expo)", overlay = true)
+
+// ~~ Tooltip {
+t1 = "Determines the number of periods used for the standard deviation calculation. Increasing the value makes the indicator less sensitive to price changes, possibly identifying longer-term trends, while decreasing the value makes the indicator more sensitive, possibly identifying shorter-term trends."
+t2 = "Scales the computed standard deviation. Increasing this value may result in larger deviations being needed to confirm trends, potentially filtering out minor price fluctuations and focusing on significant trend changes, while decreasing this value may allow smaller deviations to confirm trends, possibly detecting more frequent changes."
+t3 = "Enables or disables the predictive structure setting. Enabling it may emphasize the prediction of market structures, such as potential levels of structure breaks/trend continuation breaks."
+t4 = "Activates or deactivates BTC Scalping Mode. When activated, the indicator’s parameters adjust to optimize for shorter time frames and quicker trades, potentially beneficial for scalping strategies in BTC markets."
+t5 = "Adjusts the scaling divisor when in BTC Scalping Mode. Modifying this value impacts the volatility and trend sensitivity during scalping. A higher value might result in less sensitivity to price fluctuations, focusing on more substantial trend changes, while a lower value might increase sensitivity, detecting minor trend changes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+period             = input.int(20, title="Period for Std Dev", minval = 1, maxval=200, inline="", group="", tooltip=t1)
+stdDevScaler       = input.int(5, title="Standard Deviation Scaler", minval = 1, maxval=200, inline="", group="", tooltip=t2)
+structure          = input.bool(false, title="Predictive Structure", inline = "s", group = "", tooltip=t3)
+s_col              = input.color(color.rgb(70, 40, 204), title="", inline = "s", group = "")
+
+isScalpingModeEnabled = false //input.bool(false, title="BTC Scalping Mode", inline="scalp", group="BTC Scalping", tooltip=t4)
+scalpingDivisor       = isScalpingModeEnabled==true ? input.int(1, title="", minval = 0, maxval=200, inline="scalp", group="BTC Scalping", tooltip=t5) : 1
+
+bullish_col        = structure?s_col :input.color(color.lime, title="Bullish Trend Color", inline = "Trend", group = "Color")
+bearish_col        = structure?s_col :input.color(color.red, title="Bearish Trend Color", inline  = "Trend", group = "Color")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Initialize Variables {
+var float trend        = 0
+var int trendDirection = 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+ 
+// ~~ Function to determine the trend direction {
+trendDirectionFunction(dir) =>
+    dir - dir[1] > 0 ? 1 : (dir - dir[1] < 0 ? -1 : 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}    
+
+// ~~ Function to check if the trend direction has changed {
+trendDirectionChanged(trendDirection) =>
+    trendDirection != trendDirection[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to calculate standard deviation {
+stddev_function(src_, p) =>
+    if bar_index < p - 1
+        0.0
+    else
+        sum = 0.0
+        for i = 0 to p - 1
+            sum := sum + src_[i]
+        mean = sum / p
+        sum_diff_sq = 0.0
+        for i = 0 to p - 1
+            sum_diff_sq := sum_diff_sq + math.pow(src_[i] - mean, 2)
+        stdev = isScalpingModeEnabled ? math.sqrt(sum_diff_sq / close * p * scalpingDivisor) : math.sqrt(sum_diff_sq / p * scalpingDivisor)
+        stdev
+
+scaledStdDev          = stdDevScaler  * stddev_function(trend, period) 
+priceDifference       = close - trend > 0 ? close - trend : trend - close
+rateOfChangeFactor    = float(100)
+div                   = structure? float(int(1) / int(100)): 1 / rateOfChangeFactor
+reciprocal_factors    = (1 / stdDevScaler) * div
+trend := priceDifference > scaledStdDev ? math.avg(close, trend):
+  trendDirection * (trendDirectionChanged(trendDirection) ? 
+  scaledStdDev : reciprocal_factors * scaledStdDev) +
+  trend
+
+trendDirection := trendDirectionFunction(trend)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot {
+color = trendDirection == 1 ? bullish_col : bearish_col
+plot(trend, title="Trend", color=trendDirectionChanged(trendDirection) ? na : color)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

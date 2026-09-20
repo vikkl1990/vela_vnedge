@@ -1,0 +1,214 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ © Zeiierman {
+//@version=5
+indicator("Day/Week/Month Metrics (Zeiierman)",overlay=true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~ Run on Daily {
+if not timeframe.isdaily
+    runtime.error("Go to Daily Timeframe for more accurate data")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~ Inputs {
+DayinMonth  = input(true, title="Include Statistics for Each Day of the Month", group="Key Statistics", inline="", tooltip="Toggle to include or exclude daily statistics in the month.")
+Month       = input(true, title="Include Monthly Statistics", group="Key Statistics", inline="",  tooltip="Toggle to display overall monthly performance statistics.")
+DayinWeek   = input(true, title="Include Statistics for Each Day of the Week", group="Key Statistics", inline="",  tooltip="Toggle to include or exclude statistics for individual weekdays.")
+WeekinMonth = input(true, title="Include Statistics for Each Week of the Month", group="Key Statistics" , inline="", tooltip="Toggle to display performance statistics for each week within the month.")
+
+tblSize = input.string("Small","Table Size",["Tiny","Small","Normal","Large","Huge","Auto"], group="Style", inline="Style", tooltip="")
+pos     = input.string(position.top_right, title="Position",options =[position.top_right,position.top_center,
+ position.top_left,position.bottom_right,position.bottom_center,position.bottom_left,position.middle_right,position.middle_left], group="Style", inline="Style", tooltip="")
+
+ts = switch tblSize
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    "Huge"   => size.huge
+    "Auto"   => size.auto
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~ Summarized Function {
+Sum(arr1,arr2)=>
+    output = array.new<float>()
+    for [i,d] in arr1
+        output.push(d/arr2.get(i))
+    output
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~ Calculations {
+//Day Edge
+var days  = array.new<float>(31,0.0)
+var tdays = array.new<int>(31,0)
+var bdays = array.new<int>(62,0)
+var dayss = matrix.new<float>(31,1,0.0)
+
+days.set(dayofmonth-1,days.get(dayofmonth-1)+((close-open)/open)*100)
+tdays.set(dayofmonth-1,tdays.get(dayofmonth-1)+1)
+
+if close>open
+    bdays.set(dayofmonth-1,bdays.get(dayofmonth-1)+1)
+if close<open
+    bdays.set(31+dayofmonth-1,bdays.get(31+dayofmonth-1)+1)
+
+if dayss.get(dayofmonth-1,dayss.columns()-1)!=0.0
+    dayss.add_col()
+    dayss.set(dayofmonth-1,dayss.columns()-1,((close-open)/open)*100)
+else
+    dayss.set(dayofmonth-1,dayss.columns()-1,((close-open)/open)*100)
+
+//Day in week Edge
+var dayWeek = array.new<float>(7,0.0)
+var tdayWeek = array.new<int>(7,0)
+
+if dayofweek==dayofweek.monday
+    dayWeek.set(0,dayWeek.get(0)+((close-open)/open)*100)
+    tdayWeek.set(0,tdayWeek.get(0)+1)
+else if dayofweek==dayofweek.tuesday
+    dayWeek.set(1,dayWeek.get(1)+((close-open)/open)*100)
+    tdayWeek.set(1,tdayWeek.get(1)+1)
+else if dayofweek==dayofweek.wednesday
+    dayWeek.set(2,dayWeek.get(2)+((close-open)/open)*100)
+    tdayWeek.set(2,tdayWeek.get(2)+1)
+else if dayofweek==dayofweek.thursday
+    dayWeek.set(3,dayWeek.get(3)+((close-open)/open)*100)
+    tdayWeek.set(3,tdayWeek.get(3)+1)
+else if dayofweek==dayofweek.friday
+    dayWeek.set(4,dayWeek.get(4)+((close-open)/open)*100)
+    tdayWeek.set(4,tdayWeek.get(4)+1)
+else if dayofweek==dayofweek.saturday
+    dayWeek.set(5,dayWeek.get(5)+((close-open)/open)*100)
+    tdayWeek.set(5,tdayWeek.get(5)+1)
+else if dayofweek==dayofweek.sunday
+    dayWeek.set(6,dayWeek.get(6)+((close-open)/open)*100)
+    tdayWeek.set(6,tdayWeek.get(6)+1)
+
+//Week Edge
+var week = array.new<float>(4,0.0)
+var tweek = array.new<int>(4,0)
+var weekCount = 0
+var weekStart = float(na)
+
+if weekofyear!=weekofyear[1]
+    gain = na(weekStart)?0.0 : ((close[1]-weekStart)/weekStart)*100
+    week.set(weekCount,week.get(weekCount)+gain)
+    tweek.set(weekCount,tweek.get(weekCount)+(na(weekStart)?0:1))
+    weekCount := weekCount==3?0:weekCount+1
+    weekStart := open
+
+//Month Edge
+var mon = array.new<float>(12,0.0)
+var tmon = array.new<int>(12,0)
+var monStart = float(na)
+
+if month!=month[1]
+    gain = na(monStart)?0.0 : ((close[1]-monStart)/monStart)*100
+    mon.set(month-1,mon.get(month-1)+gain)
+    tmon.set(month-1,tmon.get(month-1)+(na(monStart)?0:1))
+    monStart := open
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+var tbl = table.new(pos,11,32,chart.bg_color,chart.bg_color,2,chart.bg_color,2)
+
+if barstate.islast
+    //Headers
+    if DayinMonth
+        tbl.cell(0,0,"Day in month",  text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(1,0,"Change %",        text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(2,0,"% Edge",        text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(3,0,"Bull Edge",     text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(4,0,"Bear Edge",     text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+    if Month    
+        tbl.cell(5,0,"Month",         text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(6,0,"Gain",          text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+    if DayinWeek    
+        tbl.cell(7,0,"Day in week",   text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(8,0,"Change %",        text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+    if WeekinMonth    
+        tbl.cell(9,0,"Week in month", text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+        tbl.cell(10,0,"Gain",         text_color=chart.fg_color,text_size=ts,bgcolor=color.new(color.blue,50))
+    
+
+    //Summarized Arrays
+    sumDays  = Sum(days,tdays)
+    sumdWeek = Sum(dayWeek,tdayWeek)
+    sumWeek  = Sum(week,tweek)
+    sumMonth = Sum(mon,tmon)
+    sumBull  = Sum(bdays.slice(0,31),tdays)
+    sumBear  = Sum(bdays.slice(31,61),tdays)
+
+    //Edge Calc
+    sumDaysEdge = array.new<float>()
+    for i=0 to dayss.rows()-1
+        edge = 0
+        for j=0 to dayss.columns()-1
+            if sumDays.get(i)>0
+                edge += dayss.get(i,j)>sumDays.get(i)?1:0
+            if sumDays.get(i)<0
+                edge += dayss.get(i,j)<sumDays.get(i)?1:0
+        sumDaysEdge.push((edge/(dayss.columns()-1))*100)
+
+    textDays  = array.from("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+    textMonth = array.from("January","February","March","April","May","June","July","August","September","October","November","December")
+
+    //Plot in table
+    if DayinMonth
+        for [i,d] in sumDays
+            tbl.cell(0,i+1,str.tostring(i+1),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(d,sumDays.min(),sumDays.max(),color.new(color.red,50),color.new(color.lime,50)))
+
+            tbl.cell(1,i+1,str.tostring(d,format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(d,sumDays.min(),sumDays.max(),color.new(color.red,50),color.new(color.lime,50)))
+
+            tbl.cell(2,i+1,str.tostring(sumDaysEdge.get(i),format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumDaysEdge.get(i),sumDaysEdge.min(),sumDaysEdge.max(),color.new(color.red,50),color.new(color.lime,50)))
+
+            tbl.cell(3,i+1,str.tostring((bdays.get(i)/tdays.get(i))*100,format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(bdays.get(i)/tdays.get(i),sumBull.min(),sumBull.max(),color.new(color.red,50),color.new(color.lime,50)))
+
+            tbl.cell(4,i+1,str.tostring((bdays.get(31+i)/tdays.get(i))*100,format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(bdays.get(31+i)/tdays.get(i),sumBear.min(),sumBear.max(),color.new(color.red,50),color.new(color.lime,50)))
+    if Month
+        for [i,m] in textMonth
+            tbl.cell(5,i+1,m,
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumMonth.get(i),sumMonth.min(),sumMonth.max(),color.new(color.red,50),color.new(color.lime,50)))
+            tbl.cell(6,i+1,str.tostring(sumMonth.get(i),format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumMonth.get(i),sumMonth.min(),sumMonth.max(),color.new(color.red,50),color.new(color.lime,50)))
+    if DayinWeek
+        for [i,d] in textDays
+            tbl.cell(7,i+1,d,
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumdWeek.get(i),sumdWeek.min(),sumdWeek.max(),color.new(color.red,50),color.new(color.lime,50)))
+
+            tbl.cell(8,i+1,str.tostring(sumdWeek.get(i),format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumdWeek.get(i),sumdWeek.min(),sumdWeek.max(),color.new(color.red,50),color.new(color.lime,50)))
+    if WeekinMonth
+        for [i,w] in sumWeek
+            tbl.cell(9,i+1,str.tostring(i+1),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumWeek.get(i),sumWeek.min(),sumWeek.max(),color.new(color.red,50),color.new(color.lime,50)))
+            tbl.cell(10,i+1,str.tostring(w,format.percent),
+             text_color=chart.fg_color,
+             text_size=ts,
+             bgcolor=color.from_gradient(sumWeek.get(i),sumWeek.min(),sumWeek.max(),color.new(color.red,50),color.new(color.lime,50)))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,471 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator("Smart NR2–NR20 + Inside Bar (Zeiierman)", overlay=true,  max_lines_count=500, max_labels_count=500, max_boxes_count=300)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Enable/disable Inside Bar detection.\nInside Bar = current high < prior high AND current low > prior low."
+var string t2  = "Look Back window used to compare current range against prior ranges.\nBigger = rarer/stricter setups; smaller = more frequent.\nUsed by NR detection + Smart NR ranking + adaptive modes."
+
+var string t3  = "Enable Trend Filter.\nWhen ON:\n• Long triggers require price ABOVE the Trend MA\n• Short triggers require price BELOW the Trend MA."
+var string t4  = "Show Trend MA on chart."
+var string t5  = "Trend MA Mode.\nStatic = fixed MA length.\nNR-Adaptive = MA length dynamically follows the effective Look Back."
+var string t6  = "MA Type used for the Trend Filter."
+var string t7  = "Multiplier applied to the effective Look Back.\nMA Length = LookBack × Multiplier (clamped by internal limits)."
+var string t8  = "Static MA Length used when Trend MA Mode is Static."
+var string t9  = "Trend MA Up Color.\nUsed when the Trend MA is rising (MA >= MA[1])."
+var string t10 = "Trend MA Down Color.\nUsed when the Trend MA is falling (MA < MA[1])."
+
+var string t11 = "Select how Look Back is chosen:\n• Static = use Look Back as-is\n• ADX Adaptive = trend-strength-based"
+var string t12 = "ADX Length used to compute trend strength (custom ADX).\nHigher ADX ⇒ stronger trend ⇒ shorter Look Back."
+var string t13 = "ADX Low defines the 'range/chop' zone.\nAt/below this, Look Back leans toward LB Max (more selective)."
+var string t14 = "ADX High defines the 'strong trend' zone.\nAt/above this, Look Back leans toward LB Min (more responsive)."
+var string t15 = "LB Min = minimum Look Back allowed in ADX Adaptive mode.\nLower LB = easier to trigger (more setups)."
+var string t16 = "LB Max = maximum Look Back allowed in ADX Adaptive mode.\nHigher LB = stricter filter (fewer setups)."
+
+var string t17 = "Enable exit markers (indicator-only).\nPrints TP/SL/T labels when enabled exit rules are hit after a trigger."
+var string t18 = "Condition Based TP.\nMarks TP when price reaches the calculated target (Target R × box height)."
+var string t19 = "Time Based Exit.\nMarks T when the pattern has been active for Time Exit Bars without earlier exit."
+var string t20 = "Stop Loss.\nMarks SL when price reaches the opposite side of the box."
+var string t21 = "Target R multiple.\nRisk is the box height (High-Low).\nLong target = breakout + R*(box height).\nShort target = breakout - R*(box height)."
+var string t22 = "Time Exit Bars.\nNumber of bars after trigger before a time-based exit can occur."
+var string t23 = "TP Label Color.\nControls the background color used for TP exit markers."
+var string t24 = "SL Label Color.\nControls the background color used for SL exit markers."
+var string t25 = "Time Exit Label Color.\nControls the background color used for T exit markers."
+
+var string t26 = "Extend Levels forward this many bars.\nControls how long the horizontal levels project into the future."
+
+var string t27 = "Bull Color (NR Long) used for bullish triggered patterns:\nbox fill/border, levels, and bull label background."
+var string t28 = "Bear Color (NR Short) used for bearish triggered patterns:\nbox fill/border, levels, and bear label background."
+var string t29 = "Box Fill Transparency (0–100).\n0 = opaque fill, 100 = fully transparent fill."
+var string t30 = "Box Border Transparency (0–100).\n0 = opaque border, 100 = fully transparent border."
+var string t31 = "Level Width (line thickness) for the projected high/low levels."
+var string t32 = "Level Style for the projected high/low levels:\nSolid / Dashed / Dotted."
+var string t33 = "Show trigger icon/label on breakout.\nCreates separate bull (▲) and bear (▼) labels on trigger."
+var string t34 = "Max Patterns Kept.\nOldest drawings are deleted when this limit is exceeded."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+grp = "Detection"
+nrLen        = 2//input.int(2, "NR Length (2..20)", minval=2, maxval=20, group=grp,inline="nr", active = useNR and not useSmartNR, tooltip=t3)
+useInsideBar = input.bool(false, "Enable Inside Bar", group=grp, inline="nr", active=true, tooltip=t1)
+lookBack     = 20//input.int(20, "Look Back (compare window)", minval=2, group=grp, active=true, tooltip=t2) 
+
+grpTrend = "Trend Filter"
+useTrendFilter = input.bool(true, "Enable Trend Filter", group=grpTrend, inline="ma", tooltip=t3)
+showTrendMA    = input.bool(false, "Show Trend MA", group=grpTrend, inline="ma", tooltip=t4)
+
+trendMode = input.string("Static", "Trend MA Mode", options=["Static","NR-Adaptive"], group=grpTrend, active = useTrendFilter, inline="typema", tooltip=t5)
+trendMaType = input.string("EMA", "", options=["EMA","RMA"], group=grpTrend, active = useTrendFilter, inline="ma", tooltip=t3+ "\n\n" +t4+ "\n\n" +t6)
+trendMul   = input.float(2.0, "NR → MA Multiplier", minval=0.25, maxval=10.0, step=0.25, group=grpTrend, active = useTrendFilter and trendMode=="NR-Adaptive", tooltip=t7)
+trendMaLen = input.int(200, "Static MA Length", minval=1, maxval=2000, group=grpTrend, active = useTrendFilter and trendMode=="Static", tooltip=t8)
+
+maColup = input.color(color.new(color.blue, 0), "MA Up", group=grpTrend, inline="macol", active = showTrendMA, tooltip=t9)
+maColdn = input.color(color.new(color.red, 0), "MA Dn", group=grpTrend, inline="macol", active = showTrendMA, tooltip=t9+ "\n\n" +t10)
+
+grpLB = "Adaptive Look Back"
+lbMode   = input.string("Static", "Look Back Mode", options=["Static","ADX Adaptive"], group=grpLB, inline="lookback", tooltip=t11)
+b_adxLen = input.int(14, "ADX Length", minval=2, maxval=200, group=grpLB, inline="Adx", active = lbMode=="ADX Adaptive", tooltip=t12)
+b_adxLo  = input.float(10, "ADX Low", minval=1.0, maxval=50.0, step=0.5, group=grpLB, inline="l", active = lbMode=="ADX Adaptive", tooltip=t13)
+b_adxHi  = input.float(35, "ADX High", minval=1.0, maxval=80.0, step=0.5, group=grpLB, inline="l", active = lbMode=="ADX Adaptive", tooltip=t13+ "\n\n" +t14)
+lbMin    = input.int(20, "LB Min", minval=5, maxval=500, group=grpLB, inline="minmax", active = lbMode=="ADX Adaptive", tooltip=t15)
+lbMax    = input.int(120, "LB Max", minval=10, maxval=500, group=grpLB, inline="minmax", active = lbMode=="ADX Adaptive", tooltip=t15+ "\n\n" +t16)
+
+grpExit = "Exits (X markers)"
+showExitX   = input.bool(true, "Show Exit markers", group=grpExit, tooltip=t17)
+useCondTP   = input.bool(true, "Condition Based TP", group=grpExit, active = showExitX, tooltip=t18)
+useTimeExit = input.bool(false, "Time Based Exit", group=grpExit, active = showExitX, tooltip=t19)
+useSL       = input.bool(true, "SL", group=grpExit, active = showExitX, tooltip=t20)
+
+exitR    = input.float(2.0, "Target R", minval=0.25, maxval=20.0, step=0.25, group=grpExit, active = showExitX and useCondTP, tooltip=t21)
+exitBars = input.int(50, "Time Exit Bars", minval=1, maxval=2000, group=grpExit, active = showExitX and useTimeExit, tooltip=t22)
+
+tpExitCol   = input.color(color.new(color.lime, 0), "TP Label Color", group=grpExit, active = showExitX, tooltip=t23)
+slExitCol   = input.color(color.new(color.red, 0), "SL Label Color", group=grpExit, active = showExitX, tooltip=t24)
+timeExitCol = input.color(color.new(color.blue, 0), "Time Label Color", group=grpExit, active = showExitX, tooltip=t25)
+
+grpLevels = "Levels"
+extendFwd = input.int(50, "Extend Levels (bars)", minval=1, maxval=500, group=grpLevels, tooltip=t26)
+
+grpStyle = "Smart NR Style"
+bullCol = input.color(color.new(color.blue, 0), "Bull Color (NR Long)", group=grpStyle, tooltip=t27)
+bearCol = input.color(color.new(color.red, 0), "Bear Color (NR Short)", group=grpStyle, tooltip=t28)
+
+boxFillAlpha = input.int(86, "Box Fill Transparency", minval=0, maxval=100, group=grpStyle, tooltip=t29)
+boxEdgeAlpha = input.int(35, "Box Border Transparency", minval=0, maxval=100, group=grpStyle, tooltip=t30)
+
+lvlW     = input.int(2, "Level Width", minval=1, maxval=4, group=grpStyle, tooltip=t31)
+lvlStyle = input.string("Dotted", "Level Style", options=["Solid","Dashed","Dotted"], group=grpStyle, tooltip=t32)
+
+showTriggerIcon = input.bool(true, "Show trigger icon", group=grpStyle, tooltip=t33)
+maxKeep         = input.int(120, "Max Patterns Kept", minval=1, maxval=300, group=grpStyle, tooltip=t34)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+ls(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_dotted
+
+clampFloat(float x, float lo, float hi) =>
+    na(x) ? lo : x < lo ? lo : x > hi ? hi : x
+
+clampInt(int x, int lo, int hi) =>
+    x < lo ? lo : x > hi ? hi : x
+
+safeDiv(float num, float den, float fallback) =>
+    (na(num) or na(den) or den == 0.0) ? fallback : (num / den)
+    
+ma_dyn(src, len, typ) =>
+    float result = na
+    if typ == "EMA"
+        float alpha = 2.0 / (len + 1.0)
+        result := na(result[1])
+         ? src
+         : alpha * src + (1 - alpha) * result[1]
+    else if typ == "RMA"
+        float alpha = 1.0 / len
+        result := na(result[1])
+         ? src
+         : alpha * src + (1 - alpha) * result[1]
+    result
+
+// True Range
+tr() =>
+    float pc = close[1]
+    float r1 = high - low
+    float r2 = math.abs(high - pc)
+    float r3 = math.abs(low  - pc)
+    math.max(r1, math.max(r2, r3))
+
+// ADX
+adx(int len) =>
+    float upMove   = high - high[1]
+    float downMove = low[1] - low
+
+    float plusDM  = (upMove > downMove and upMove > 0) ? upMove : 0.0
+    float minusDM = (downMove > upMove and downMove > 0) ? downMove : 0.0
+
+    float tr = tr()
+
+    float atrRma   = ta.rma(tr, len)
+    float plusRma  = ta.rma(plusDM, len)
+    float minusRma = ta.rma(minusDM, len)
+
+    float plusDI  = 100.0 * safeDiv(plusRma,  atrRma, 0.0)
+    float minusDI = 100.0 * safeDiv(minusRma, atrRma, 0.0)
+
+    float sumDI = plusDI + minusDI
+    float dx    = 100.0 * safeDiv(math.abs(plusDI - minusDI), sumDI, 0.0)
+    ta.rma(dx, len)
+
+// Current N-bar range
+rangeN(int n) =>
+    ta.highest(high, n) - ta.lowest(low, n)
+
+// Determine if current bar forms an NR(n)
+isNR(int n, int lb) =>
+    int L = math.max(lb, 1)
+    r  = rangeN(n)
+    mn = ta.lowest(r[1], L)
+    not na(mn) and r < mn
+
+// "How extreme" is the current range vs history?
+rankTightness(int n, int lb) =>
+    int L = math.max(lb, 1)
+    r   = rangeN(n)
+    cnt = math.sum((rangeN(n)[1] <= r ? 1.0 : 0.0), L)
+    not na(cnt) ? (cnt / L) : na
+
+// Inside Bar 
+isInsideBar = high < high[1] and low > low[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Pattern label {
+patName(bool isNRMode, int n) =>
+    isNRMode ? (true ? "S NR" : ("NR" + str.tostring(n))) : "Inside"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Adaptive Look Back calculations {
+int _lbMin = math.min(lbMin, lbMax)
+int _lbMax = math.max(lbMin, lbMax)
+
+// ADX adaptive
+float adxVal = adx(b_adxLen)
+float bLo = math.min(b_adxLo, b_adxHi)
+float bHi = math.max(b_adxLo, b_adxHi)
+float tB  = clampFloat(safeDiv((adxVal - bLo), (bHi - bLo), 0.0), 0.0, 1.0)
+int   lbB = int(math.round(_lbMax - tB * (_lbMax - _lbMin)))
+
+int lb =
+     lbMode == "ADX Adaptive" ? lbB :
+                             lookBack
+
+lb := na(lb) ? lookBack : lb
+lb := clampInt(lb, 2, 500)
+
+int trendLenEff =
+     trendMode == "NR-Adaptive"
+     ? clampInt(int(math.round(lb * trendMul)), 20, 200)
+     : trendMaLen
+
+trendMA = ma_dyn(close, int(trendLenEff), trendMaType)
+allowLong  = not useTrendFilter or close > trendMA
+allowShort = not useTrendFilter or close < trendMA
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern selection {
+bool setupNow  = false
+bool setupIsNR = false
+int  setupLen  = na
+
+float smartRank  = na
+int   smartLen   = na
+bool  smartFound = false
+
+for n = 2 to 20
+    if isNR(n, lb)
+        smartFound := true
+        float rk = rankTightness(n, lb)
+
+        bool take =
+             (na(smartRank) and not na(rk)) ? true :
+             (not na(rk) and not na(smartRank) and rk < smartRank) ? true :
+             (not na(rk) and not na(smartRank) and rk == smartRank and n < smartLen) ? true :
+             (na(rk) and na(smartRank) and (na(smartLen) or n < smartLen)) ? true :
+             false
+        if take
+            smartRank := rk
+            smartLen  := n
+
+if smartFound and not na(smartLen)
+    setupNow  := true
+    setupIsNR := true
+    setupLen  := smartLen
+
+if not setupNow and useInsideBar and isInsideBar
+    setupNow  := true
+    setupIsNR := false
+    setupLen  := 1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trigger only on first appearance {
+newSetup = setupNow and not setupNow[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern bounds for the setup window ending on current bar {
+patHi = setupNow ? ta.highest(high, setupIsNR ? setupLen : 1) : na
+patLo = setupNow ? ta.lowest(low,  setupIsNR ? setupLen : 1) : na
+
+patLeft  = setupNow ? (bar_index - (setupIsNR ? (setupLen - 1) : 0)) : na
+patRight = setupNow ? bar_index : na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pending pattern {
+var bool   pend      = false
+var int    pendLeft  = na
+var int    pendRight = na
+var float  pendHi    = na
+var float  pendLo    = na
+var string pendName  = ""
+
+if newSetup
+    pend      := true
+    pendLeft  := patLeft
+    pendRight := patRight
+    pendHi    := patHi
+    pendLo    := patLo
+    pendName  := patName(setupIsNR, setupLen)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trigger logic: first touch decides direction {
+bullTrig = pend and high >= pendHi and allowLong
+bearTrig = pend and low  <= pendLo and allowShort
+trigNow  = bullTrig or bearTrig
+
+dir = bullTrig and bearTrig ?
+     ((math.abs(open - pendHi) <= math.abs(open - pendLo)) ? +1 : -1) :
+     bullTrig ? +1 :
+     bearTrig ? -1 : 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Storage {
+type Pat
+    box   bx
+    line  hiLine
+    line  loLine
+    label tg
+    label ex
+    int   leftBar
+    int   endBar
+    int   dir
+    int   trigBar
+    float entry
+    float stop
+    float tgt
+    bool  exited
+
+var Pat[] pats = array.new<Pat>()
+
+method Delete(Pat p) =>
+    if not na(p.hiLine)
+        line.delete(p.hiLine)
+    if not na(p.loLine)
+        line.delete(p.loLine)
+    if not na(p.bx)
+        box.delete(p.bx)
+    if not na(p.tg)
+        label.delete(p.tg)
+    if not na(p.ex)
+        label.delete(p.ex)
+
+overlapsExisting(int newLeft) =>
+    if array.size(pats) == 0
+        false
+    else
+        Pat last = array.get(pats, array.size(pats) - 1)
+        newLeft <= last.endBar
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ On Trigger {
+if trigNow and dir != 0
+    bool overlaps = overlapsExisting(pendLeft)
+
+    if not overlaps
+        color base  = dir == +1 ? bullCol : bearCol
+        color bFill = color.new(base, boxFillAlpha)
+        color bEdge = color.new(base, boxEdgeAlpha)
+
+        int x1 = pendLeft
+        int xR = pendRight
+        int x2 = bar_index + extendFwd
+
+        box bx = box.new(left=x1, right=xR, top=pendHi, bottom=pendLo, bgcolor=bFill, border_color=bEdge)
+        line hiL = line.new(x1=xR, y1=pendHi, x2=x2, y2=pendHi, color=base, width=lvlW, style=ls(lvlStyle))
+        line loL = line.new(x1=xR, y1=pendLo, x2=x2, y2=pendLo, color=base, width=lvlW, style=ls(lvlStyle))
+
+        // Trigger labels
+        label tg = na
+        if showTriggerIcon
+            if dir == +1
+                tg := label.new(xR, pendLo, pendName + " ▲",
+                    textcolor=color.white, color=color.new(bullCol, 0),
+                    style=label.style_label_up, size=size.small)
+
+            if dir == -1
+                tg := label.new(xR, pendHi, pendName + " ▼",
+                    textcolor=color.white, color=color.new(bearCol, 0),
+                    style=label.style_label_down, size=size.small)
+
+        // Exit levels
+        float rng   = math.max(pendHi - pendLo, syminfo.mintick)
+        float entry = dir == +1 ? pendHi : pendLo
+        float stop  = dir == +1 ? pendLo : pendHi
+        float tgt   = dir == +1 ? (entry + exitR * rng) : (entry - exitR * rng)
+
+        array.push(pats, Pat.new(bx, hiL, loL, tg, na, x1, x2, dir, bar_index, entry, stop, tgt, false))
+
+        if array.size(pats) > maxKeep
+            Pat old = array.shift(pats)
+            old.Delete()
+
+    // lear pending after trigger
+    pend := false
+    pendLeft := na
+    pendRight := na
+    pendHi := na
+    pendLo := na
+    pendName := ""
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Exit marker {
+if showExitX and array.size(pats) > 0
+    for i = 0 to array.size(pats) - 1
+        Pat p = array.get(pats, i)
+
+        if not p.exited
+            bool inWindow = useTimeExit ? (bar_index >= p.trigBar and bar_index <= (p.trigBar + exitBars)) : (bar_index >= p.trigBar)
+            bool hitSL = false
+            bool hitTP = false
+
+            if inWindow
+                if p.dir == +1
+                    hitSL := useSL     and close  <= p.stop
+                    hitTP := useCondTP and high >= p.tgt
+                else
+                    hitSL := useSL     and close >= p.stop
+                    hitTP := useCondTP and low  <= p.tgt
+
+            int exitKind  = 0   // 1=TP, -1=SL, 2=Time
+            float exPrice = na
+
+            if hitTP or hitSL
+                if hitTP and hitSL
+                    float dTP = math.abs(open - p.tgt)
+                    float dSL = math.abs(open - p.stop)
+                    if dTP <= dSL
+                        exitKind := 1
+                        exPrice := p.tgt
+                    else
+                        exitKind := -1
+                        exPrice := p.stop
+                else if hitTP
+                    exitKind := 1
+                    exPrice := p.tgt
+                else
+                    exitKind := -1
+                    exPrice := p.stop
+
+            if exitKind == 0 and useTimeExit
+                bool timeDue = (bar_index >= p.trigBar + exitBars)
+                if timeDue
+                    exitKind := 2
+                    exPrice := close
+
+            if exitKind != 0 and not na(exPrice)
+                label ex = na
+
+                // TP
+                if exitKind == 1 and p.dir == +1
+                    ex := label.new(bar_index, high,  "TP",
+                        textcolor=color.white, color=tpExitCol,
+                        style=label.style_label_down, size=size.small)
+
+                if exitKind == 1 and p.dir == -1
+                    ex := label.new(bar_index, low,  "TP",
+                        textcolor=color.white, color=tpExitCol,
+                        style=label.style_label_up, size=size.small)
+
+                // SL
+                if exitKind == -1 and p.dir == +1
+                    ex := label.new(bar_index, low, "SL",
+                        textcolor=color.white, color=slExitCol,
+                        style=label.style_label_up, size=size.small)
+
+                if exitKind == -1 and p.dir == -1
+                    ex := label.new(bar_index, high, "SL",
+                        textcolor=color.white, color=slExitCol,
+                        style=label.style_label_down, size=size.small)
+
+                // Time exit
+                if exitKind == 2 and p.dir == +1
+                    ex := label.new(bar_index, high,  "T",
+                        textcolor=color.white, color=timeExitCol,
+                        style=label.style_label_down, size=size.small)
+
+                if exitKind == 2 and p.dir == -1
+                    ex := label.new(bar_index, low,  "T",
+                        textcolor=color.white, color=timeExitCol,
+                        style=label.style_label_up, size=size.small)
+
+                p.exited := true
+                p.ex := ex
+                array.set(pats, i, p)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}   
+macolo =trendMA>=trendMA[1]?maColup:maColdn
+plot(showTrendMA?trendMA:na, title="Trend MA", color=macolo,linewidth=1)

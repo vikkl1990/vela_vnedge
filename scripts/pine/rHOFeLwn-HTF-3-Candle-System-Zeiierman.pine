@@ -1,0 +1,787 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+indicator("HTF 3-Candle System (Zeiierman)",overlay=true,max_boxes_count=500,max_lines_count=500,max_labels_count=500,max_bars_back=5000)
+//}
+
+// ~~ Tooltips {
+var string tt1 ="Higher timeframe used to build the three-candle structure. C1 is two completed HTF candles back, C2 is the previous completed HTF candle, and C3 is the current live HTF candle. The selected timeframe must be higher than the chart timeframe."
+var string tt2 ="Minimum quality score required for the highest-ranked pattern to be classified as a strong match. This threshold also controls the New Strong 3-Candle Match alert."
+var string tt3 ="Show the reconstructed C1, C2 and live C3 higher-timeframe candles to the right of current price. Pattern levels are also anchored to this projected candle structure."
+var string tt4 ="Horizontal distance in chart bars between the current bar and the center of the projected C1 candle."
+var string tt5 ="Horizontal spacing in chart bars between the centers of projected C1, C2 and C3."
+var string tt6 ="Half-width of each projected candle body in chart bars. Higher values create wider reconstructed candle bodies."
+var string tt7 ="Master switch for the higher-timeframe chart mapping. Disabling this hides mapped HTF candle boxes, the 3-candle window, HTF boundaries, chart candle labels and H/L dots."
+var string tt8 ="Show pattern-specific price levels beside the reconstructed HTF candles. Levels depend on whichever 3-candle pattern is currently ranked first."
+var string tt9 ="Show descriptive text and price labels for projected pattern levels."
+var string tt10="Maximum distance between pattern levels before they are combined into one merged level, measured as a fraction of ATR."
+var string tt11="Horizontal spacing in chart bars between consecutive pattern level labels."
+var string tt12="Transparency of the background behind pattern level text labels. 0 is opaque and 100 is fully transparent."
+var string tt13="Shared bullish color used by bullish projected candles, bullish mapped HTF boxes, bullish chart labels and bullish System table states."
+var string tt14="Shared bearish color used by bearish projected candles, bearish mapped HTF boxes, bearish chart labels and bearish System table states."
+var string tt15="Shared neutral color used when candle direction is neutral or when the highest-ranked pattern does not meet the strong-match threshold."
+var string tt16="Transparency of projected HTF candle bodies. The projected candle wick and border remain solid with a fixed width of 1."
+var string tt17="Text size of the C1, C2 and C3 labels displayed inside the reconstructed projected candle bodies."
+var string tt18="Text color of the C1, C2 and C3 labels displayed inside the reconstructed projected candle bodies."
+var string tt19="Show the C1, C2 and C3 LIVE identifiers above their mapped higher-timeframe candle regions on the chart."
+var string tt20="Text size of the C1, C2 and C3 LIVE labels displayed above the mapped HTF candle regions."
+var string tt21="Show circular markers on the exact lower-timeframe bars that produced the highs and lows of C1, C2 and live C3."
+var string tt22="Size of all C1, C2 and C3 high/low dot labels. Every H/L marker uses the same label-circle object type and size."
+var string tt23="Color used for completed C1 and C2 high/low levels that have not yet been mitigated by a later candle."
+var string tt24="Color used for completed C1 and C2 high/low levels after a later candle has traded through that level."
+var string tt25="Color used for the current live C3 high and low dots. These markers relocate as new C3 extremes are created."
+var string tt26="Shared color used for all projected pattern level lines and their text labels."
+var string tt27="Shared text size used for all projected pattern level labels."
+var string tt28="Shared line style used for all projected pattern levels."
+var string tt29="Shared line width used for all projected pattern levels."
+var string tt30="Border style of the individual mapped C1, C2 and C3 higher-timeframe candle boxes."
+var string tt31="Border width of the individual mapped C1, C2 and C3 higher-timeframe candle boxes."
+var string tt32="Fill transparency of the individual mapped C1, C2 and live C3 higher-timeframe candle boxes."
+var string tt33="Show the background fill spanning the complete C1 through C3 higher-timeframe window. This window intentionally has no outer border."
+var string tt34="Fill color of the complete 3-candle mapping window behind C1, C2 and C3."
+var string tt35="Transparency of the complete 3-candle window fill. The window has no outer border."
+var string tt36="Show the four vertical higher-timeframe boundaries at the start of C1, start of C2, start of C3 and scheduled end of C3."
+var string tt37="Color of the four vertical HTF boundary lines."
+var string tt38="Line style of the four vertical HTF boundary lines."
+var string tt39="Line width of the four vertical HTF boundary lines."
+var string tt40="Show the 3-CANDLE SYSTEM table containing the three highest-ranked pattern matches, their scores and the current top-pattern state."
+var string tt41="Text size used throughout the 3-CANDLE SYSTEM table."
+var string tt42="Controls the line width of the projected C1, C2 and C3 candle wicks."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+gHTF="Higher Timeframe"
+gSYS="Pattern System"
+gPROJ="Projected Candles"
+gCND="Candle Style"
+gPCL="Projected Candle Labels"
+gPL="Pattern Levels"
+gPLS="Pattern Level Style"
+gMAP="Chart Mapping"
+gMS="Mapping Style"
+gCL="Chart Candle Labels"
+gDOT="H/L Dot Style"
+gTAB="System Table"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+tf=input.timeframe("60","Higher Timeframe",group=gHTF,inline="htf",tooltip=tt1)
+
+strongScore=input.float(70.0,"Strong Match Threshold",minval=0,maxval=100,step=1,group=gSYS,inline="score",tooltip=tt2)
+
+showProj=input.bool(true,"Show Projected HTF Candles",group=gPROJ,tooltip=tt3)
+off=input.int(10,"Offset",minval=5,maxval=100,group=gPROJ,inline="geo",active=showProj,tooltip=tt4)
+space=input.int(10,"Candle Spacing",minval=3,maxval=20,group=gPROJ,inline="geo",active=showProj,tooltip=tt5)
+bodyW=input.int(4,"Width",minval=1,maxval=4,group=gPROJ,inline="geo",active=showProj,tooltip=tt6)
+
+bullCol=input.color(color.rgb(18,191,156),"Bull Candle",group=gCND,inline="candle",tooltip=tt13)
+bearCol=input.color(color.rgb(230,75,80),"Bear Candle",group=gCND,inline="candle",tooltip=tt14)
+neutralCol=input.color(color.rgb(130,135,155),"Neutral Candle",group=gCND,inline="candle",tooltip=tt15)
+projBodyAlpha=input.int(20,"Transparency",minval=0,maxval=100,group=gCND,inline="t",active=showProj,tooltip=tt16)
+wickWidth=input.int(1,"Wick Width",minval=1,maxval=4,group=gCND,inline="t",active=showProj,tooltip=tt42)
+
+projLabelSize=input.string("Tiny","Text Size",options=["Tiny","Small","Normal","Large","Huge"],group=gPCL,inline="proj",active=showProj,tooltip=tt17)
+projLabelCol=input.color(color.white,"Color",group=gPCL,inline="proj",active=showProj,tooltip=tt18)
+
+showPatternLvls=input.bool(true,"Show Pattern Levels",group=gPL,inline="levels",active=showProj,tooltip=tt8)
+showLevelText=input.bool(true,"Level Labels",group=gPL,inline="levels",active=showProj and showPatternLvls,tooltip=tt9)
+mergeAtr=input.float(0.05,"Merge",minval=0,maxval=1,step=0.01,group=gPL,inline="levels",active=showProj and showPatternLvls,tooltip=tt10)
+labelStep=input.int(5,"Spacing",minval=2,maxval=20,group=gPL,inline="step",active=showProj and showPatternLvls and showLevelText,tooltip=tt11)
+labelBgAlpha=input.int(72,"Transparency",minval=0,maxval=100,group=gPL,inline="step",active=showProj and showPatternLvls and showLevelText,tooltip=tt12)
+
+patternCol=input.color(color.rgb(130,135,155),"Color",group=gPLS,inline="style1",active=showProj and showPatternLvls,tooltip=tt26)
+patternSize=input.string("Small","Text Size",options=["Tiny","Small","Normal","Large","Huge"],group=gPLS,inline="style1",active=showProj and showPatternLvls and showLevelText,tooltip=tt27)
+patternStyle=input.string("Dotted","Line Style",options=["Solid","Dashed","Dotted"],group=gPLS,inline="style2",active=showProj and showPatternLvls,tooltip=tt28)
+patternWidth=input.int(2,"Width",minval=1,maxval=4,group=gPLS,inline="style2",active=showProj and showPatternLvls,tooltip=tt29)
+
+showMap=input.bool(true,"Show HTF Mapping",group=gMAP,tooltip=tt7)
+
+mapBoxStyle=input.string("Solid","HTF Box Border Style",options=["Solid","Dashed","Dotted"],group=gMS,inline="box",active=showMap,tooltip=tt30)
+mapBoxWidth=input.int(1,"Width",minval=1,maxval=4,group=gMS,inline="box",active=showMap,tooltip=tt31)
+boxAlpha=input.int(94,"Transparency",minval=0,maxval=100,group=gMS,inline="box",active=showMap,tooltip=tt32)
+
+showWindow=input.bool(true,"Show 3-Candle Window",group=gMS,inline="window",active=showMap,tooltip=tt33)
+windowFillCol=input.color(color.rgb(130,135,155),"Fill",group=gMS,inline="window",active=showMap and showWindow,tooltip=tt34)
+windowAlpha=input.int(98,"Transparency",minval=0,maxval=100,group=gMS,inline="window",active=showMap and showWindow,tooltip=tt35)
+
+showSep=input.bool(true,"Show HTF Boundaries",group=gMS,inline="sep1",active=showMap,tooltip=tt36)
+sepCol=input.color(color.rgb(130,135,155),"Color",group=gMS,inline="sep1",active=showMap and showSep,tooltip=tt37)
+sepStyle=input.string("Dotted","Style",options=["Solid","Dashed","Dotted"],group=gMS,inline="sep2",active=showMap and showSep,tooltip=tt38)
+sepWidth=input.int(1,"Width",minval=1,maxval=4,group=gMS,inline="sep2",active=showMap and showSep,tooltip=tt39)
+
+showTags=input.bool(true,"Show C1 / C2 / C3 Labels",group=gCL,inline="labels",active=showMap,tooltip=tt19)
+chartLabelSize=input.string("Normal","Text Size",options=["Tiny","Small","Normal","Large","Huge"],group=gCL,inline="labels",active=showMap and showTags,tooltip=tt20)
+
+showMapRefs=input.bool(true,"Show H/L Dots",group=gDOT,inline="dot",active=showMap,tooltip=tt21)
+dotSize=input.string("Tiny","Dot Size",options=["Tiny","Small","Normal","Large","Huge"],group=gDOT,inline="dot",active=showMap and showMapRefs,tooltip=tt22)
+dotActiveCol=input.color(color.white,"Active H/L",group=gDOT,inline="dotcol",active=showMap and showMapRefs,tooltip=tt23)
+dotMitCol=input.color(color.rgb(130,135,155),"Mitigated H/L",group=gDOT,inline="dotcol",active=showMap and showMapRefs,tooltip=tt24)
+dotLiveCol=input.color(color.blue,"Live C3 H/L",group=gDOT,inline="dotcol",active=showMap and showMapRefs,tooltip=tt25)
+
+showRanks=input.bool(true,"Show Top 3 Matches",group=gTAB,inline="table",tooltip=tt40)
+tableSize=input.string("Normal","Table Size",options=["Tiny","Small","Normal","Large","Huge"],group=gTAB,inline="table",active=showRanks,tooltip=tt41)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Validation {
+if barstate.isfirst and timeframe.in_seconds(tf)<=timeframe.in_seconds(timeframe.period)
+    runtime.error("Selected timeframe must be higher than the chart timeframe.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type Pattern
+    int id
+    string name
+    string family
+    int direction
+    float qualityScore
+    string state
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HTF Data {
+[o1,h1,l1,c1,t1,tc1,o2,h2,l2,c2,t2,tc2,o3,h3,l3,c3,t3,tc3,atr]=request.security(syminfo.tickerid,tf,[open[2],high[2],
+ low[2],close[2],time[2],time_close[2],open[1],high[1],low[1],close[1],time[1],time_close[1],open,high,low,close,time,
+ time_close,ta.atr(14)],gaps=barmerge.gaps_off,lookahead=barmerge.lookahead_off)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+clip(float x)=>math.max(0.0,math.min(1.0,x))
+pts(bool c,float p)=>c?p:0.0
+rng(float h,float l)=>math.max(h-l,syminfo.mintick)
+body(float o,float c)=>math.abs(c-o)
+br(float o,float h,float l,float c)=>body(o,c)/rng(h,l)
+cp(float h,float l,float c)=>(c-l)/rng(h,l)
+near(float x,float lvl,float scale)=>1.0-math.min(math.abs(x-lvl)/math.max(scale,syminfo.mintick),1.0)
+col(float o,float c)=>c>o?bullCol:c<o?bearCol:neutralCol
+size(string s)=>s=="Tiny"?size.tiny:s=="Small"?size.small:s=="Normal"?size.normal:s=="Large"?size.large:size.huge
+lstyle(string s)=>s=="Solid"?line.style_solid:s=="Dashed"?line.style_dashed:line.style_dotted
+has_tag(string tags,string tag)=>str.contains("|"+tags+"|","|"+tag+"|")
+add_tag(string tags,string tag)=>has_tag(tags,tag)?tags:str.length(tags)==0?tag:tags+"|"+tag
+tag_text(string tags)=>str.replace_all(tags,"|"," + ")
+level_col(int k)=>patternCol
+level_size(int k)=>size(patternSize)
+level_style(int k)=>lstyle(patternStyle)
+level_width(int k)=>patternWidth
+ 
+clear_boxes(array<box> a)=>
+    while a.size()>0
+        box.delete(a.pop())
+
+clear_lines(array<line> a)=>
+    while a.size()>0
+        line.delete(a.pop())
+
+clear_labels(array<label> a)=>
+    while a.size()>0
+        label.delete(a.pop())
+
+candle(int x,float o,float h,float l,float c,array<box> bx,array<line> ln)=>
+    color cl=col(o,c)
+    float bt=math.max(o,c)
+    float bb=math.min(o,c)
+    if bt==bb
+        bt+=syminfo.mintick
+        bb-=syminfo.mintick
+    ln.push(line.new(x1=x,y1=l,x2=x,y2=h,xloc=xloc.bar_index,color=cl,width=wickWidth,style=line.style_solid))
+    bx.push(box.new(left=x-bodyW,top=bt,right=x+bodyW,bottom=bb,xloc=xloc.bar_index,border_color=cl,border_width=1,
+     border_style=line.style_solid,bgcolor=color.new(cl,projBodyAlpha)))
+
+state(int id,bool inside,float c1Mid)=>
+    string st="DEVELOPING"
+    if id==0
+        st:=l2>=l1?"WATCHING C1 LOW":c2<=l1?"LOW SWEPT - NEED RECLAIM":c3<=h2?"AWAITING C3 CLOSE > C2 HIGH":"CONFIRMING LIVE"
+    else if id==1
+        st:=h2<=h1?"WATCHING C1 HIGH":c2>=h1?"HIGH SWEPT - NEED RECLAIM":c3>=l2?"AWAITING C3 CLOSE < C2 LOW":"CONFIRMING LIVE"
+    else if id==2
+        st:=l3>h1?"BULLISH FVG LIVE":"C3 LOW MUST HOLD ABOVE C1 HIGH"
+    else if id==3
+        st:=h3<l1?"BEARISH FVG LIVE":"C3 HIGH MUST HOLD BELOW C1 LOW"
+    else if id==4
+        st:=l2>=l1?"WATCHING MANIPULATION LOW":c3<=h1?"AWAITING DISTRIBUTION ABOVE C1 HIGH":"PO3 DISTRIBUTION LIVE"
+    else if id==5
+        st:=h2<=h1?"WATCHING MANIPULATION HIGH":c3>=l1?"AWAITING DISTRIBUTION BELOW C1 LOW":"PO3 DISTRIBUTION LIVE"
+    else if id==6
+        st:=c3>h2?"BULLISH EXPANSION LIVE":"AWAITING BREAKOUT ABOVE C2 HIGH"
+    else if id==7
+        st:=c3<l2?"BEARISH EXPANSION LIVE":"AWAITING BREAKDOWN BELOW C2 LOW"
+    else if id==8
+        st:=not inside?"WAITING FOR COMPRESSION":c3>h1?"BULLISH BREAKOUT LIVE":"COMPRESSION - WATCH RANGE HIGH"
+    else if id==9
+        st:=not inside?"WAITING FOR COMPRESSION":c3<l1?"BEARISH BREAKOUT LIVE":"COMPRESSION - WATCH RANGE LOW"
+    else if id==10
+        st:=c3>c1Mid?"BULLISH REVERSAL LIVE":"AWAITING RECOVERY ABOVE C1 MID"
+    else
+        st:=c3<c1Mid?"BEARISH REVERSAL LIVE":"AWAITING REJECTION BELOW C1 MID"
+    st
+
+extreme_bars(int startT,int endT,float targetHi,float targetLo,int scan)=>
+    int hiX=na
+    int loX=na
+    float tol=math.max(syminfo.mintick*0.25,1e-10)
+    for i=0 to scan
+        bool inWin=not na(time[i]) and time[i]>=startT and time[i]<endT
+        if inWin
+            if na(hiX) and math.abs(high[i]-targetHi)<=tol
+                hiX:=bar_index-i
+            if na(loX) and math.abs(low[i]-targetLo)<=tol
+                loX:=bar_index-i
+    [hiX,loX]
+
+merge_level(array<float> ps,array<string> ts,array<int> ks,array<int> ax,float p,string tag,int kind,int src,float tol)=>
+    if not na(p) and not na(src) and str.length(tag)>0
+        int id=-1
+        if ps.size()>0
+            for i=0 to ps.size()-1
+                if math.abs(ps.get(i)-p)<=tol
+                    id:=i
+                    break
+        if id>=0
+            ts.set(id,add_tag(ts.get(id),tag))
+            ks.set(id,8)
+        else
+            ps.push(p)
+            ts.push(tag)
+            ks.push(kind)
+            ax.push(src)
+    0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Mapping State {
+chartSec=timeframe.in_seconds(timeframe.period)
+htfSec=timeframe.in_seconds(tf)
+barsPerHTF=int(math.ceil(htfSec/chartSec))
+scanBars=math.min(barsPerHTF*4+20,4999)
+
+newHTF=timeframe.change(tf)
+barsIntoHTF=ta.barssince(newHTF)
+c3StartIdx=bar_index-nz(barsIntoHTF,0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Metrics {
+r1=rng(h1,l1)
+r2=rng(h2,l2)
+r3=rng(h3,l3)
+
+b1=body(o1,c1)
+b2=body(o2,c2)
+b3=body(o3,c3)
+
+br1=br(o1,h1,l1,c1)
+br2=br(o2,h2,l2,c2)
+br3=br(o3,h3,l3,c3)
+
+cp1=cp(h1,l1,c1)
+cp2=cp(h2,l2,c2)
+cp3=cp(h3,l3,c3)
+
+c1Bull=c1>o1
+c1Bear=c1<o1
+c2Bull=c2>o2
+c2Bear=c2<o2
+c3Bull=c3>o3
+c3Bear=c3<o3
+
+atrSafe=math.max(atr,syminfo.mintick)
+c1Mid=(o1+c1)/2.0
+inside=h2<h1 and l2>l1
+smallC2=clip((0.50-br2)/0.35)
+
+c1HiMit=h2>=h1 or h3>=h1
+c1LoMit=l2<=l1 or l3<=l1
+c2HiMit=h3>=h2
+c2LoMit=l3<=l2
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern Scores {
+s0=pts(c1Bear,10)+pts(l2<l1,25)+(l2>=l1?10*near(l2,l1,atrSafe*0.5):0)+pts(c2>l1,20)+(c2<=l1?10*
+ near(c2,l1,atrSafe*0.5):0)+pts(c2Bull,10)+pts(c3Bull,10)+20*(c3>h2?1:near(c3,h2,atrSafe))+5*br1
+s1=pts(c1Bull,10)+pts(h2>h1,25)+(h2<=h1?10*near(h2,h1,atrSafe*0.5):0)+pts(c2<h1,20)+(c2>=h1?10*
+ near(c2,h1,atrSafe*0.5):0)+pts(c2Bear,10)+pts(c3Bear,10)+20*(c3<l2?1:near(c3,l2,atrSafe))+5*br1
+s2=(pts(c2Bull,15)+20*clip(br2/0.65)+15*clip(r2/atrSafe)+25*(l3>h1?1:0.5*near(l3,h1,atrSafe*0.5))+
+ pts(c3Bull,10)+15*(c3>c2?1:near(c3,c2,atrSafe)))
+s3=(pts(c2Bear,15)+20*clip(br2/0.65)+15*clip(r2/atrSafe)+25*(h3<l1?1:0.5*near(h3,l1,atrSafe*0.5))+
+ pts(c3Bear,10)+15*(c3<c2?1:near(c3,c2,atrSafe)))
+s4=20*clip((1.25-r1/atrSafe)/0.75)+pts(l2<l1,25)+pts(c2>l1,15)+25*(c3>h1?1:near(c3,h1,atrSafe))+pts(c3Bull,15)
+s5=20*clip((1.25-r1/atrSafe)/0.75)+pts(h2>h1,25)+pts(c2<h1,15)+25*(c3<l1?1:near(c3,l1,atrSafe))+pts(c3Bear,15)
+s6=pts(c1Bull,15)+pts(c2Bull,15)+pts(c3Bull,15)+pts(c2>c1,10)+pts(c3>c2,10)+pts(b2>=b1,15)+pts(b3>=b2,10)+pts(h3>h2,10)
+s7=pts(c1Bear,15)+pts(c2Bear,15)+pts(c3Bear,15)+pts(c2<c1,10)+pts(c3<c2,10)+pts(b2>=b1,15)+pts(b3>=b2,10)+pts(l3<l2,10)
+s8=pts(inside,35)+pts(c3Bull,15)+30*(c3>h1?1:near(c3,h1,atrSafe))+10*clip(br3/0.60)+10*clip((cp3-0.50)/0.30)
+s9=pts(inside,35)+pts(c3Bear,15)+30*(c3<l1?1:near(c3,l1,atrSafe))+10*clip(br3/0.60)+10*clip((0.50-cp3)/0.30)
+s10=pts(c1Bear,20)+15*clip(br1/0.60)+20*smallC2+pts(c3Bull,20)+20*(c3>c1Mid?1:near(c3,c1Mid,atrSafe))+pts(c3>o1,5)
+s11=pts(c1Bull,20)+15*clip(br1/0.60)+20*smallC2+pts(c3Bear,20)+20*(c3<c1Mid?1:near(c3,c1Mid,atrSafe))+pts(c3<o1,5)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern Ranking {
+var array<Pattern> patterns=array.new<Pattern>()
+
+patterns.clear()
+patterns.push(Pattern.new(0,"Bullish Sweep Reversal","Liquidity",1,s0,state(0,inside,c1Mid)))
+patterns.push(Pattern.new(1,"Bearish Sweep Reversal","Liquidity",-1,s1,state(1,inside,c1Mid)))
+patterns.push(Pattern.new(2,"Bullish FVG Displacement","Imbalance",1,s2,state(2,inside,c1Mid)))
+patterns.push(Pattern.new(3,"Bearish FVG Displacement","Imbalance",-1,s3,state(3,inside,c1Mid)))
+patterns.push(Pattern.new(4,"Bullish PO3 Sequence","PO3",1,s4,state(4,inside,c1Mid)))
+patterns.push(Pattern.new(5,"Bearish PO3 Sequence","PO3",-1,s5,state(5,inside,c1Mid)))
+patterns.push(Pattern.new(6,"Bullish Expansion","Continuation",1,s6,state(6,inside,c1Mid)))
+patterns.push(Pattern.new(7,"Bearish Expansion","Continuation",-1,s7,state(7,inside,c1Mid)))
+patterns.push(Pattern.new(8,"Bullish Compression Break","Compression",1,s8,state(8,inside,c1Mid)))
+patterns.push(Pattern.new(9,"Bearish Compression Break","Compression",-1,s9,state(9,inside,c1Mid)))
+patterns.push(Pattern.new(10,"Morning Star Reversal","Reversal",1,s10,state(10,inside,c1Mid)))
+patterns.push(Pattern.new(11,"Evening Star Reversal","Reversal",-1,s11,state(11,inside,c1Mid)))
+patterns.sort(order.descending,sort_field="qualityScore")
+
+Pattern p1=patterns.get(0)
+Pattern p2=patterns.get(1)
+Pattern p3=patterns.get(2)
+
+best=p1.qualityScore
+bestId=p1.id
+bestFamily=p1.family
+bestBull=p1.direction==1
+bestCol=best>=strongScore?(bestBull?bullCol:bearCol):neutralCol
+state=p1.state
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern Levels {
+float lv1=na
+float lv2=na
+float lv3=na
+float lv4=na
+
+string tx1=""
+string tx2=""
+string tx3=""
+string tx4=""
+
+int kind1=na
+int kind2=na
+int kind3=na
+int kind4=na
+
+int src1=na
+int src2=na
+int src3=na
+int src4=na
+
+if bestId==0
+    lv1:=l1
+    tx1:="Sweep Low"
+    kind1:=1
+    src1:=1
+
+    lv2:=h2
+    tx2:="C3 Close >"
+    kind2:=2
+    src2:=2
+
+    lv3:=math.min(l1,l2)
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=l1<=l2?1:2
+
+else if bestId==1
+    lv1:=h1
+    tx1:="Sweep High"
+    kind1:=1
+    src1:=1
+
+    lv2:=l2
+    tx2:="C3 Close <"
+    kind2:=2
+    src2:=2
+
+    lv3:=math.max(h1,h2)
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=h1>=h2?1:2
+
+else if bestId==2
+    lv1:=h1
+    tx1:="FVG Lower"
+    kind1:=3
+    src1:=1
+
+    lv2:=l3
+    tx2:="C3 Low"
+    kind2:=3
+    src2:=3
+
+    lv3:=(h1+l3)/2.0
+    tx3:="CE 50%"
+    kind3:=4
+    src3:=2
+
+    lv4:=l2
+    tx4:="Invalidation"
+    kind4:=5
+    src4:=2
+
+else if bestId==3
+    lv1:=l1
+    tx1:="FVG Upper"
+    kind1:=3
+    src1:=1
+
+    lv2:=h3
+    tx2:="C3 High"
+    kind2:=3
+    src2:=3
+
+    lv3:=(l1+h3)/2.0
+    tx3:="CE 50%"
+    kind3:=4
+    src3:=2
+
+    lv4:=h2
+    tx4:="Invalidation"
+    kind4:=5
+    src4:=2
+
+else if bestId==4
+    lv1:=l1
+    tx1:="Manipulation Low"
+    kind1:=1
+    src1:=1
+
+    lv2:=h1
+    tx2:="Distribution >"
+    kind2:=2
+    src2:=1
+
+    lv3:=l2
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=2
+
+else if bestId==5
+    lv1:=h1
+    tx1:="Manipulation High"
+    kind1:=1
+    src1:=1
+
+    lv2:=l1
+    tx2:="Distribution <"
+    kind2:=2
+    src2:=1
+
+    lv3:=h2
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=2
+
+else if bestId==6
+    lv1:=h2
+    tx1:="Breakout >"
+    kind1:=2
+    src1:=2
+
+    lv2:=c2
+    tx2:="Hold Above"
+    kind2:=4
+    src2:=2
+
+    lv3:=l2
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=2
+
+else if bestId==7
+    lv1:=l2
+    tx1:="Breakdown <"
+    kind1:=2
+    src1:=2
+
+    lv2:=c2
+    tx2:="Hold Below"
+    kind2:=4
+    src2:=2
+
+    lv3:=h2
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=2
+
+else if bestId==8
+    lv1:=h1
+    tx1:="Range High / Breakout"
+    kind1:=6
+    src1:=1
+
+    lv2:=l1
+    tx2:="Range Low"
+    kind2:=6
+    src2:=1
+
+    lv3:=(h1+l1)/2.0
+    tx3:="Equilibrium"
+    kind3:=4
+    src3:=1
+
+else if bestId==9
+    lv1:=l1
+    tx1:="Range Low / Breakdown"
+    kind1:=6
+    src1:=1
+
+    lv2:=h1
+    tx2:="Range High"
+    kind2:=6
+    src2:=1
+
+    lv3:=(h1+l1)/2.0
+    tx3:="Equilibrium"
+    kind3:=4
+    src3:=1
+
+else if bestId==10
+    lv1:=c1Mid
+    tx1:="50% Recovery"
+    kind1:=7
+    src1:=1
+
+    lv2:=o1
+    tx2:="Full Recovery >"
+    kind2:=7
+    src2:=1
+
+    lv3:=math.min(l1,math.min(l2,l3))
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=l1<=l2 and l1<=l3?1:l2<=l3?2:3
+
+else
+    lv1:=c1Mid
+    tx1:="50% Rejection"
+    kind1:=7
+    src1:=1
+
+    lv2:=o1
+    tx2:="Full Rejection <"
+    kind2:=7
+    src2:=1
+
+    lv3:=math.max(h1,math.max(h2,h3))
+    tx3:="Invalidation"
+    kind3:=5
+    src3:=h1>=h2 and h1>=h3?1:h2>=h3?2:3
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Level Merge {
+var array<float> mlP=array.new_float()
+var array<string> mlT=array.new_string()
+var array<int> mlK=array.new_int()
+var array<int> mlA=array.new_int()
+
+mlP.clear()
+mlT.clear()
+mlK.clear()
+mlA.clear()
+
+mergeTol=math.max(syminfo.mintick,atrSafe*mergeAtr)
+
+merge_level(mlP,mlT,mlK,mlA,lv1,tx1,kind1,src1,mergeTol)
+merge_level(mlP,mlT,mlK,mlA,lv2,tx2,kind2,src2,mergeTol)
+merge_level(mlP,mlT,mlK,mlA,lv3,tx3,kind3,src3,mergeTol)
+merge_level(mlP,mlT,mlK,mlA,lv4,tx4,kind4,src4,mergeTol)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Objects {
+var array<box> pBx=array.new_box()
+var array<line> pLn=array.new_line()
+var array<label> pLb=array.new_label()
+
+var array<box> mBx=array.new_box()
+var array<line> mLn=array.new_line()
+var array<label> mLb=array.new_label()
+
+var table hud=table.new(position.top_right,2,5,border_width=1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ System Table {
+if barstate.islast
+    if showRanks
+        color rank2Col=p2.direction==1?bullCol:bearCol
+        color rank3Col=p3.direction==1?bullCol:bearCol
+        string ts=size(tableSize)
+
+        // Subtle theme-aware cell backgrounds
+        color bgTitle=color.new(chart.fg_color,88)
+        color bg1=color.new(chart.fg_color,94)
+        color bg2=color.new(chart.fg_color,97)
+        color bg3=color.new(chart.fg_color,94)
+        color bgState=color.new(chart.fg_color,91)
+
+        // Title
+        table.cell(hud,0,0,"3-CANDLE SYSTEM",text_color=color.white,bgcolor=bgTitle,text_size=ts)
+        table.cell(hud,1,0,tf,text_color=color.white,bgcolor=bgTitle,text_size=ts)
+
+        // Rank 1
+        table.cell(hud,0,1,p1.name,text_color=bestCol,bgcolor=bg1,text_size=ts)
+        table.cell(hud,1,1,str.tostring(p1.qualityScore,"#.0")+"%",text_color=bestCol,bgcolor=bg1,text_size=ts)
+
+        // Rank 2
+        table.cell(hud,0,2,p2.name,text_color=color.new(rank2Col,25),bgcolor=bg2,text_size=ts)
+        table.cell(hud,1,2,str.tostring(p2.qualityScore,"#.0")+"%",text_color=color.new(rank2Col,25),bgcolor=bg2,text_size=ts)
+
+        // Rank 3
+        table.cell(hud,0,3,p3.name,text_color=color.new(rank3Col,45),bgcolor=bg3,text_size=ts)
+        table.cell(hud,1,3,str.tostring(p3.qualityScore,"#.0")+"%",text_color=color.new(rank3Col,45),bgcolor=bg3,text_size=ts)
+
+        // State / Family
+        table.cell(hud,0,4,state,text_color=bestCol,bgcolor=bgState,text_size=ts)
+        table.cell(hud,1,4,bestFamily,text_color=bestCol,bgcolor=bgState,text_size=ts)
+
+    else
+        for c=0 to 1
+            for r=0 to 4
+                table.cell(hud,c,r,"")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing {
+if barstate.islast
+    clear_boxes(pBx)
+    clear_lines(pLn)
+    clear_labels(pLb)
+
+    clear_boxes(mBx)
+    clear_lines(mLn)
+    clear_labels(mLb)
+
+    [c1HiX,c1LoX]=extreme_bars(t1,tc1,h1,l1,scanBars)
+    [c2HiX,c2LoX]=extreme_bars(t2,tc2,h2,l2,scanBars)
+    [c3HiX,c3LoX]=extreme_bars(t3,tc3,h3,l3,scanBars)
+
+    float hi=math.max(h1,math.max(h2,h3))
+    float lo=math.min(l1,math.min(l2,l3))
+    float rr=math.max(hi-lo,syminfo.mintick*20)
+    float pd=rr*0.12
+
+    float winHi=hi+pd*0.15
+    float winLo=lo-pd*0.15
+    float mapTagY=hi+pd*0.48
+
+    // ~~ Projected Candles {
+    if showProj
+        int x1=bar_index+off
+        int x2=x1+space
+        int x3=x2+space
+        int levelBase=x3+space+2
+
+        candle(x1,o1,h1,l1,c1,pBx,pLn)
+        candle(x2,o2,h2,l2,c2,pBx,pLn)
+        candle(x3,o3,h3,l3,c3,pBx,pLn)
+
+        string pls=size(projLabelSize)
+
+        pLb.push(label.new(x=x1,y=(o1+c1)/2.0,text="C1",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_none,
+         textcolor=projLabelCol,size=pls))
+        pLb.push(label.new(x=x2,y=(o2+c2)/2.0,text="C2",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_none,
+         textcolor=projLabelCol,size=pls))
+        pLb.push(label.new(x=x3,y=(o3+c3)/2.0,text="C3",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_none,
+         textcolor=projLabelCol,size=pls))
+
+        if showPatternLvls and mlP.size()>0
+            for i=0 to mlP.size()-1
+                float lp=mlP.get(i)
+                string tags=mlT.get(i)
+                int kind=mlK.get(i)
+                int src=mlA.get(i)
+
+                int sx=src==1?x1:src==2?x2:x3
+                int lx=levelBase+labelStep*(i+1)
+
+                color lc=level_col(kind)
+
+                pLn.push(line.new(x1=sx,y1=lp,x2=lx-1,y2=lp,xloc=xloc.bar_index,color=lc,width=level_width(kind),style=level_style(kind)))
+
+                if showLevelText
+                    string lbl=tag_text(tags)+"  "+str.tostring(lp,format.mintick)
+                    pLb.push(label.new(x=lx,y=lp,text=lbl,xloc=xloc.bar_index,yloc=yloc.price,style=label.style_label_left,
+                     color=color.new(lc,labelBgAlpha),textcolor=lc,size=level_size(kind)))
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+    // ~~ HTF Mapping {
+    if showMap
+        color c1Box=col(o1,c1)
+        color c2Box=col(o2,c2)
+        color c3Box=col(o3,c3)
+
+        // 3-Candle Window
+        if showWindow
+            mBx.push(box.new(left=t1,top=winHi,right=tc3,bottom=winLo,xloc=xloc.bar_time,border_color=na,bgcolor=color.new(windowFillCol,windowAlpha)))
+
+        // Individual HTF Candle Boxes
+        mBx.push(box.new(left=t1,top=h1,right=tc1,bottom=l1,xloc=xloc.bar_time,border_color=color.new(c1Box,50),
+         border_width=mapBoxWidth,border_style=lstyle(mapBoxStyle),bgcolor=color.new(c1Box,boxAlpha)))
+        mBx.push(box.new(left=t2,top=h2,right=tc2,bottom=l2,xloc=xloc.bar_time,border_color=color.new(c2Box,50),
+         border_width=mapBoxWidth,border_style=lstyle(mapBoxStyle),bgcolor=color.new(c2Box,boxAlpha)))
+        mBx.push(box.new(left=c3StartIdx,top=h3,right=bar_index+1,bottom=l3,xloc=xloc.bar_index,border_color=color.new(c3Box,30),
+         border_width=mapBoxWidth,border_style=lstyle(mapBoxStyle),bgcolor=color.new(c3Box,boxAlpha)))
+
+        int midT1=t1+int((tc1-t1)*0.5)
+        int midT2=t2+int((tc2-t2)*0.5)
+        int midT3=t3+int((tc3-t3)*0.5)
+
+        // Chart Candle Labels
+        if showTags
+            string cls=size(chartLabelSize)
+
+            mLb.push(label.new(x=midT1,y=mapTagY,text="C1",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_none,textcolor=col(o1,c1),size=cls))
+            mLb.push(label.new(x=midT2,y=mapTagY,text="C2",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_none,textcolor=col(o2,c2),size=cls))
+            mLb.push(label.new(x=midT3,y=mapTagY,text="C3 LIVE",xloc=xloc.bar_time,yloc=yloc.price,style=label.style_none,textcolor=col(o3,c3),size=cls))
+
+        // Exact H/L Dots
+        if showMapRefs
+            color c1HiDot=c1HiMit?dotMitCol:dotActiveCol
+            color c1LoDot=c1LoMit?dotMitCol:dotActiveCol
+            color c2HiDot=c2HiMit?dotMitCol:dotActiveCol
+            color c2LoDot=c2LoMit?dotMitCol:dotActiveCol
+            string ds=size(dotSize)
+
+            if not na(c1HiX)
+                mLb.push(label.new(x=c1HiX,y=h1,text="",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_circle,
+                 color=c1HiDot,textcolor=c1HiDot,size=ds))
+
+            if not na(c1LoX)
+                mLb.push(label.new(x=c1LoX,y=l1,text="",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_circle,
+                 color=c1LoDot,textcolor=c1LoDot,size=ds))
+
+            if not na(c2HiX)
+                mLb.push(label.new(x=c2HiX,y=h2,text="",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_circle,
+                 color=c2HiDot,textcolor=c2HiDot,size=ds))
+
+            if not na(c2LoX)
+                mLb.push(label.new(x=c2LoX,y=l2,text="",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_circle,
+                 color=c2LoDot,textcolor=c2LoDot,size=ds))
+
+            if not na(c3HiX)
+                mLb.push(label.new(x=c3HiX,y=h3,text="",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_circle,
+                 color=dotLiveCol,textcolor=dotLiveCol,size=ds))
+
+            if not na(c3LoX)
+                mLb.push(label.new(x=c3LoX,y=l3,text="",xloc=xloc.bar_index,yloc=yloc.price,style=label.style_circle,
+                 color=dotLiveCol,textcolor=dotLiveCol,size=ds))
+
+        // HTF Boundaries
+        if showSep
+            mLn.push(line.new(x1=t1,y1=winLo,x2=t1,y2=winHi,xloc=xloc.bar_time,color=sepCol,width=sepWidth,style=lstyle(sepStyle)))
+            mLn.push(line.new(x1=t2,y1=winLo,x2=t2,y2=winHi,xloc=xloc.bar_time,color=sepCol,width=sepWidth,style=lstyle(sepStyle)))
+            mLn.push(line.new(x1=t3,y1=winLo,x2=t3,y2=winHi,xloc=xloc.bar_time,color=sepCol,width=sepWidth,style=lstyle(sepStyle)))
+            mLn.push(line.new(x1=tc3,y1=winLo,x2=tc3,y2=winHi,xloc=xloc.bar_time,color=sepCol,width=sepWidth,style=lstyle(sepStyle)))
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+topId=p1.id
+topChanged=topId!=topId[1]
+
+strongMatch=best>=strongScore
+newStrong=strongMatch and not strongMatch[1]
+
+alertcondition(topChanged,"New Top-Ranked Pattern","A different 3-candle structure has become the highest-ranked pattern.")
+alertcondition(newStrong,"New Strong 3-Candle Match","A new strong 3-candle pattern match has developed.")
+
+alertcondition(bestId==0 and l2<l1,"Bullish Sweep Candidate","C2 has swept the C1 low.")
+alertcondition(bestId==1 and h2>h1,"Bearish Sweep Candidate","C2 has swept the C1 high.")
+alertcondition(bestId==2 and l3>h1,"Bullish FVG Live","A bullish 3-candle FVG is currently present.")
+alertcondition(bestId==3 and h3<l1,"Bearish FVG Live","A bearish 3-candle FVG is currently present.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

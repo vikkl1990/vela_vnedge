@@ -1,0 +1,347 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("High Volume Absorption Pivot Levels (Zeiierman)", overlay = true, max_lines_count = 500, max_labels_count = 500)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Number of bars to the left required to confirm a pivot."
+var string t2  = "Number of bars to the right required to confirm a pivot."
+var string t3  = "Maximum number of active pivot levels kept on the chart."
+var string t4  = "Number of bars around the pivot candle used to search for absorption candles."
+var string t5  = "Maximum candle body size as a percentage of the full candle range."
+var string t6  = "Absorption candle volume must be above the volume average multiplied by this value."
+var string t7  = "When enabled, the absorption candle must be the exact same candle as the pivot."
+var string t8  = "Volume moving average length."
+var string t9  = "Pivot candle volume must be above the volume average multiplied by this value."
+var string t10 = "Fade the level once price mitigates it."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+int lLen      = input.int(10, "Pivot Left Length", minval = 1, group = "Pivot Detection", tooltip = t1)
+int rLen      = input.int(2, "Pivot Right Length", minval = 1, group = "Pivot Detection", tooltip = t2)
+int maxLvls   = input.int(80, "Max Active Levels", minval = 1, maxval = 200, group = "Pivot Detection", tooltip = t3)
+
+int aBars     = input.int(2, "Absorption Search Bars Around Pivot", minval = 1, group = "Absorption Candle Filter", tooltip = t4)
+float aPct    = input.float(25.0, "Absorption Body %", minval = 1, maxval = 100, step = 1, group = "Absorption Candle Filter", tooltip = t5)
+float aVol    = input.float(1.2, "Absorption Volume Multiplier", minval = 0.1, step = 0.1, group = "Absorption Candle Filter", tooltip = t6)
+bool exactAbs = input.bool(false, "Require Absorption On Pivot Candle", group = "Absorption Candle Filter", tooltip = t7)
+
+int vLen      = input.int(50, "Volume MA Length", minval = 1, group = "Volume Filter", tooltip = t8)
+float vMult   = input.float(1.5, "Pivot Volume Multiplier", minval = 0.1, step = 0.1, group = "Volume Filter", tooltip = t9)
+
+color hiCol   = input.color(#e94a58, "Pivot High Level", group = "Visuals", inline = "l")
+color loCol   = input.color(#1dd1b3, "Pivot Low Level", group = "Visuals", inline = "l")
+int lWidth    = input.int(1, "Width", minval = 1, maxval = 4, group = "Visuals", inline = "l")
+
+bool showLbl  = input.bool(true, "Show Labels", group = "Visuals", inline = "s")
+bool showVol  = input.bool(true, "Show Volume In Label", group = "Visuals", inline = "s")
+string lblSize = input.string("Small", "", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = "Visuals", inline = "s")
+
+bool showBub  = input.bool(true, "Show Pivot Bubbles", group = "Visuals", inline = "t")
+int bubTrans  = input.int(10, "- Transparency", minval = 0, maxval = 100, group = "Visuals", inline = "t")
+string bubSize = input.string("Normal", "", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = "Visuals", inline = "t")
+
+bool showAbs  = input.bool(true, "Show Absorption Candles Around Valid Pivots", group = "Visuals", inline = "a")
+color absCol  = input.color(#ffb74d, "", group = "Visuals", inline = "a")
+string absSize = input.string("Tiny", "", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = "Visuals", inline = "a")
+
+bool fade     = input.bool(true, "Fade Level After Sweep", group = "Visuals", tooltip = t10)
+
+bool alertPivots = input.bool(true, "Alert On New Pivots", group = "Alerts")
+bool alertAbs    = input.bool(true, "Alert On Absorption Candles", group = "Alerts")
+bool alertSweep  = input.bool(true, "Alert On Level Mitigation", group = "Alerts")
+bool alertRetest = input.bool(true, "Alert On Level Retest", group = "Alerts")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type Lvl
+    line ln
+    label lb
+    label bub
+    float y
+    int x
+    bool hi
+    bool swept
+    bool retested
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Storage {
+var lvls = array.new<Lvl>()
+
+bool newHiPivotAlert = false
+bool newLoPivotAlert = false
+bool newHiAbsAlert   = false
+bool newLoAbsAlert   = false
+bool sweepHiAlert    = false
+bool sweepLoAlert    = false
+bool retestHiAlert   = false
+bool retestLoAlert   = false
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+fmtVol(float v) =>
+    string res = ""
+    if v >= 1000000
+        res := str.format("{0,number,#.#}M", v / 1000000)
+    else if v >= 1000
+        res := str.format("{0,number,#.#}K", v / 1000)
+    else
+        res := str.tostring(v, "#")
+    res
+
+getSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+lvlColor(bool hi) =>
+    hi ? hiCol : loCol
+
+lvlText(bool hi) =>
+    hi ? "High Volume Pivot High" : "High Volume Pivot Low"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Drawing Functions {
+newLine(float y, int x, color col) =>
+    line.new(
+         x1 = x,
+         y1 = y,
+         x2 = bar_index,
+         y2 = y,
+         color = col,
+         width = lWidth,
+         style = line.style_solid
+     )
+
+newInfoLabel(float y, bool hi, float vol, color col) =>
+    string txt = lvlText(hi)
+    string vTxt = showVol ? " · " + fmtVol(vol) : ""
+
+    label.new(
+         x = bar_index,
+         y = y,
+         text = txt + vTxt,
+         style = label.style_label_left,
+         color = #00000000,
+         textcolor = col,
+         size = getSize(lblSize)
+     )
+
+newBubble(float y, int x, color col) =>
+    label.new(
+         x = x,
+         y = y,
+         text = "",
+         style = label.style_circle,
+         color = color.new(col, bubTrans),
+         textcolor = color.new(col, 100),
+         size = getSize(bubSize)
+     )
+
+newAbsMark(int x, float y) =>
+    label.new(
+         x = x,
+         y = y,
+         text = "",
+         style = label.style_circle,
+         color = color.new(absCol, 0),
+         textcolor = color.white,
+         size = getSize(absSize)
+     )
+
+deleteLabel(label lb) =>
+    if not na(lb)
+        label.delete(lb)
+
+fadeLabel(label lb) =>
+    if not na(lb)
+        label.set_color(lb, color.new(chart.fg_color, 85))
+
+fadeLine(line ln) =>
+    line.set_color(ln, color.new(chart.fg_color, 80))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Level Functions {
+newLvl(float y, int x, bool hi, float vol) =>
+    color col = lvlColor(hi)
+
+    line ln = newLine(y, x, col)
+    label lb = showLbl ? newInfoLabel(y, hi, vol, col) : na
+    label bub = showBub ? newBubble(y, x, col) : na
+
+    lvls.push(Lvl.new(ln, lb, bub, y, bar_index, hi, false, false))
+
+method upd(Lvl l) =>
+    bool swpAlert = false
+    bool retAlert = false
+
+    if not l.swept
+        line.set_x2(l.ln, bar_index)
+
+        if not na(l.lb)
+            label.set_x(l.lb, bar_index)
+
+        bool swp = l.hi ? high > l.y : low < l.y
+
+        if swp and bar_index > l.x
+            l.swept := true
+            swpAlert := true
+
+            if fade
+                fadeLine(l.ln)
+                deleteLabel(l.lb)
+                l.lb := na
+                fadeLabel(l.bub)
+
+    if l.swept and not l.retested
+        bool ret = l.hi ? low <= l.y and close < l.y : high >= l.y and close > l.y
+
+        if ret and bar_index > l.x
+            l.retested := true
+            retAlert := true
+
+    [swpAlert, retAlert]
+
+deleteLvl(Lvl l) =>
+    line.delete(l.ln)
+    deleteLabel(l.lb)
+    deleteLabel(l.bub)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Core Calculations {
+float ph = ta.pivothigh(lLen, rLen)
+float pl = ta.pivotlow(lLen, rLen)
+float vAvg = ta.sma(volume, vLen)
+
+bool vOk = volume[rLen] > vAvg[rLen] * vMult
+
+bool absExact  = false
+bool absWindow = false
+
+float rngExact  = high[rLen] - low[rLen]
+float bodyExact = math.abs(close[rLen] - open[rLen])
+
+bool smallExact = rngExact > 0 and bodyExact / rngExact * 100 <= aPct
+bool volExact   = volume[rLen] > vAvg[rLen] * aVol
+
+absExact := smallExact and volExact
+
+for i = -aBars to aBars
+    int o = rLen + i
+
+    if o >= 0
+        float rng  = high[o] - low[o]
+        float body = math.abs(close[o] - open[o])
+
+        bool smallBody  = rng > 0 and body / rng * 100 <= aPct
+        bool highVol    = volume[o] > vAvg[o] * aVol
+        bool absorption = smallBody and highVol
+
+        if absorption
+            absWindow := true
+
+bool aOk = exactAbs ? absExact : absWindow
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivot High Logic {
+if not na(ph)
+    int x = bar_index - rLen
+
+    if aOk and vOk
+        newLvl(ph, x, true, volume[rLen])
+        newHiPivotAlert := alertPivots
+
+        if showAbs
+            if exactAbs
+                newAbsMark(bar_index - rLen, high[rLen])
+                newHiAbsAlert := alertAbs
+            else
+                for i = -aBars to aBars
+                    int o = rLen + i
+
+                    if o >= 0
+                        float rng  = high[o] - low[o]
+                        float body = math.abs(close[o] - open[o])
+
+                        bool smallBody  = rng > 0 and body / rng * 100 <= aPct
+                        bool highVol    = volume[o] > vAvg[o] * aVol
+                        bool absorption = smallBody and highVol
+
+                        if absorption
+                            newAbsMark(bar_index - o, high[o])
+                            newHiAbsAlert := alertAbs
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivot Low Logic {
+if not na(pl)
+    int x = bar_index - rLen
+
+    if aOk and vOk
+        newLvl(pl, x, false, volume[rLen])
+        newLoPivotAlert := alertPivots
+
+        if showAbs
+            if exactAbs
+                newAbsMark(bar_index - rLen, low[rLen])
+                newLoAbsAlert := alertAbs
+            else
+                for i = -aBars to aBars
+                    int o = rLen + i
+
+                    if o >= 0
+                        float rng  = high[o] - low[o]
+                        float body = math.abs(close[o] - open[o])
+
+                        bool smallBody  = rng > 0 and body / rng * 100 <= aPct
+                        bool highVol    = volume[o] > vAvg[o] * aVol
+                        bool absorption = smallBody and highVol
+
+                        if absorption
+                            newAbsMark(bar_index - o, low[o])
+                            newLoAbsAlert := alertAbs
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Manage Levels {
+if lvls.size() > 0
+    for i = lvls.size() - 1 to 0
+        Lvl l = lvls.get(i)
+        [swp, ret] = l.upd()
+
+        if swp
+            if l.hi
+                sweepHiAlert := alertSweep
+            else
+                sweepLoAlert := alertSweep
+
+        if ret
+            if l.hi
+                retestHiAlert := alertRetest
+            else
+                retestLoAlert := alertRetest
+
+        lvls.set(i, l)
+
+    while lvls.size() > maxLvls
+        Lvl old = lvls.shift()
+        deleteLvl(old)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(newHiPivotAlert, "New Pivot High", "New high-volume absorption pivot high detected.")
+alertcondition(newLoPivotAlert, "New Pivot Low", "New high-volume absorption pivot low detected.")
+
+alertcondition(newHiAbsAlert, "Absorption Near Pivot High", "Absorption candle detected around a valid pivot high.")
+alertcondition(newLoAbsAlert, "Absorption Near Pivot Low", "Absorption candle detected around a valid pivot low.")
+
+alertcondition(sweepHiAlert, "Pivot High Mitigated", "A pivot high level has been mitigated.")
+alertcondition(sweepLoAlert, "Pivot Low Mitigated", "A pivot low level has been mitigated.")
+
+alertcondition(retestHiAlert, "Pivot High Retest", "A mitigated pivot high level has been retested.")
+alertcondition(retestLoAlert, "Pivot Low Retest", "A mitigated pivot low level has been retested.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

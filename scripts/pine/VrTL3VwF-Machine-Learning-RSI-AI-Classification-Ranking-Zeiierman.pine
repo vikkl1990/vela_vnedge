@@ -1,0 +1,603 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator('Machine Learning RSI | AI Classification & Ranking (Zeiierman)', overlay = false, behind_chart = false, 
+ max_bars_back = 2100, max_labels_count = 500, max_lines_count = 500, precision=2)
+//}
+
+// ~~ Tooltips {
+// ~~ ML Brain {
+var string t1  = "PRICE SOURCE\n\nThe series every RSI feature is built from (close, hl2, etc.).\n\nHOW IT WORKS: All eight RSI-derived features (value, slope, acceleration, etc.) are computed from this source, so it is the raw input to the whole learning engine.\n\nTUNING: 'close' is the standard, most-tested choice. 'hl2'/'ohlc4' smooth out wick noise and can steady the ML RSI on erratic instruments. Intrabar-volatile sources make every feature noisier.\n\nAFFECTS: The ML RSI line, the analog matching, and therefore every signal."
+var string t2  = "BASE RSI LENGTH\n\nThe core RSI period that seeds the entire feature set.\n\nHOW IT WORKS: A fast RSI (½ this length) and a slow RSI (2× this length) are also derived from it to measure fast/slow spread, while slope, acceleration, volatility and regime are all read off this base RSI.\n\nWHY: RSI normalizes momentum to 0–100, giving the analog engine a bounded, comparable fingerprint of each bar.\n\nTUNING: Lower (7–10) = twitchy, more signals, better for scalping. Higher (20–30) = smoother, fewer but more deliberate signals, better for swing/position. 14 is the balanced default.\n\nAFFECTS: The shape of the ML RSI line and what the engine considers a 'similar' historical bar."
+var string t3  = "MEMORY DEPTH (bars)\n\nHow many past bars are stored and scanned as potential analogs.\n\nHOW IT WORKS: Each confirmed bar's features + outcome are banked. The engine searches this bank for the closest historical matches to the current bar.\n\nWHY: A deeper memory captures more market regimes (trends, ranges, volatility spikes), giving richer context { at the cost of heavier computation and slower adaptation to recent character changes.\n\nTUNING: 300–500 suits most instruments. Raise toward 1000+ on higher timeframes where each bar is meaningful; lower it (150–300) on fast intraday charts so the engine forgets stale regimes quickly.\n\nAFFECTS: Quality/diversity of analogs → engine bias, rank, confidence and ultimately signal frequency."
+var string t4  = "ANALOG COUNT (k)\n\nHow many nearest historical matches vote on the current bar (the 'k' in k-nearest-neighbours).\n\nHOW IT WORKS: The k closest analogs by weighted Lorentzian distance each cast a distance-weighted vote (bull/bear). Their consensus becomes the engine's directional bias.\n\nWHY: A small k is sharp but jumpy (a single odd analog can flip it); a large k is stable but blurs distinct setups together.\n\nTUNING: 5–8 = reactive, good for clean trending instruments. 12–20 = smoother consensus, better for noisy markets. If signals feel erratic, raise k; if they feel sluggish, lower it.\n\nAFFECTS: Engine bias stability, agreement fraction (confidence), and signal timing."
+//}
+// ~~ Signals {
+var string t5  = "SHOW SIGNAL MARKERS\n\nToggles the 'L' (long) and 'S' (short) entry labels on the chart.\n\nThese plot only when a flip passes BOTH the Min Rank and Min Confidence gates, plus the active filters (Trend Gate, Volatility Band, Chop Filter) and the cooldown. Turn off for a cleaner chart while still using the ML RSI / Supertrend visuals."
+var string t6  = "CANDLE COLORING\n\nPaints candles with the current regime color (uptrend vs downtrend from the ML Supertrend direction).\n\nWHY: Gives an at-a-glance read of which side the engine is on without watching the oscillator pane. Purely visual { it does not change any calculation or signal."
+var string t7  = "MIN RANK TO SIGNAL\n\nThe quality bar (0–100) a setup must clear before a signal can fire.\n\nHOW IT WORKS: Rank is a composite score blending analog agreement, how tight/close the matches are, trend alignment, volatility health, regime fit and structure { minus penalties for chop, stretched conditions and early flips.\n\nWHY: It filters out marginal setups so only well-supported rotations trigger.\n\nTUNING: Higher (70–85) = rare, high-conviction signals. Lower (40–55) = frequent, looser signals. Pair with Min Confidence.\n\nAFFECTS: Signal frequency only { not the ML RSI or Supertrend lines."
+var string t8  = "MIN CONFIDENCE TO SIGNAL\n\nMinimum engine conviction (0–100) required to fire.\n\nHOW IT WORKS: Confidence is driven mainly by how strongly the k analogs agree, how tightly clustered they are, how long the stance has persisted, and slope fit { reduced by early flips or having fewer than k usable analogs.\n\nWHY: Rank measures setup quality; Confidence measures how sure the engine is. Requiring both avoids acting on high-quality-but-uncertain reads.\n\nTUNING: Raise to demand stronger analog consensus; lower to allow more tentative entries.\n\nAFFECTS: Signal frequency only."
+var string t9  = "TREND GATE\n\nBlocks signals that fight the ML Supertrend direction.\n\nHOW IT WORKS: A long is only allowed while the adaptive trailing stop is in uptrend mode, and a short only while it is in downtrend mode.\n\nWHY: Keeps entries on the side of the prevailing trailing-stop trend, filtering counter-trend noise.\n\nTUNING: On = disciplined, trend-following entries. Off = allows mean-reversion / counter-trend signals. Turn off if you specifically trade reversals.\n\nAFFECTS: Which flips become signals; also contributes to Rank."
+var string t10 = "VOLATILITY BAND\n\nOnly allows signals while volatility (ATR percentile rank) sits inside a 'healthy' window.\n\nHOW IT WORKS: ATR is percentile-ranked over 100 bars. Signals are gated to the band between Min Vol Rank and the internal upper bound (85).\n\nWHY: Dead-flat markets produce false analogs; blow-off volatility produces whipsaw. The band targets the tradeable middle.\n\nTUNING: On for most conditions. Widen the floor down if you want to trade quieter regimes; the upper cap protects against volatility spikes.\n\nAFFECTS: Signal frequency and Rank's volatility component."
+var string t11 = "MIN VOL RANK\n\nLower edge (0–100) of the healthy volatility window used by the Volatility Band.\n\nHOW IT WORKS: Bars whose ATR percentile rank falls below this value are considered too quiet and are blocked from signalling.\n\nTUNING: Raise it (e.g. 30–40) to demand more energy/expansion before entering. Lower it (10–15) to permit signals in calmer conditions. Only relevant when Volatility Band is on.\n\nAFFECTS: Signal frequency in low-volatility regimes."
+var string t12 = "CHOP FILTER\n\nBlocks signals when the market is range-bound / choppy.\n\nHOW IT WORKS: Measures trend force as |fastEMA − slowEMA| ÷ ATR. Below the internal cutoff (0.5) the bar is flagged choppy, which both blocks signals and widens the Supertrend bands to avoid whipsaw.\n\nWHY: Mean-reverting chop is where analog systems generate the most false flips.\n\nTUNING: On for trend trading. Turn off if you intend to trade inside ranges.\n\nAFFECTS: Signal frequency, Rank penalty, and Supertrend band width during chop."
+var string t13 = "LEARNING SENSITIVITY (×ATR)\n\nHow big a forward move (in ATR multiples) must be before the engine labels a past bar a real win or loss while learning.\n\nHOW IT WORKS: For each historical bar the engine looks ahead a fixed horizon and classifies the move into strong/weak bull or bear using this ATR-scaled threshold. Those labels are what the analogs vote with.\n\nWHY: It defines what counts as a meaningful outcome versus noise { the foundation of everything the engine learns.\n\nTUNING: LOW (0.2–0.4) = small moves count, so it learns from many but noisier examples (more signals). HIGH (0.8–1.5) = only large moves count, so it learns from fewer, stronger examples (fewer, higher-quality signals).\n\nAFFECTS: The entire learned bias { engine direction, Rank, Confidence and the ML RSI tilt."
+//}
+// ~~ Auto Weight Optimizer {
+var string t14 = "AUTO-OPTIMIZE WEIGHTS\n\nLets the engine learn how important each of the 8 RSI features is, instead of using the manual Feature Weights.\n\nHOW IT WORKS: Using the banked outcomes it computes a Fisher discriminant (between-class vs within-class separation) for each feature { i.e. which features best separate winning bull setups from bear ones { then rescales them to 0–10.\n\nWHY: The most predictive features change with the instrument and regime; learning them beats guessing fixed weights.\n\nTUNING: Leave ON for hands-off adaptation. Turn OFF only if you want full manual control via the Feature Weights group.\n\nAFFECTS: The distance metric → which analogs are chosen → bias, Rank and Confidence."
+var string t15 = "ADAPTATION SPEED\n\nHow fast the learned weights drift toward newly computed values (EMA factor).\n\nHOW IT WORKS: Each bar the freshly computed Fisher weights are blended into the running weights by this factor.\n\nWHY: Controls the stability-vs-reactivity trade-off of the optimizer.\n\nTUNING: LOW (0.02–0.1) = slow, stable weights that ignore short-term noise. HIGH (toward 1.0) = weights snap to the latest data, adapting fast but jittering. Only active when Auto-Optimize is ON.\n\nAFFECTS: How quickly feature importance { and thus analog selection { responds to regime change."
+//}
+// ~~ Feature Weights {
+var string t16 = "WEIGHT · RSI VALUE\n\nImportance of the raw RSI level (overbought/oversold position) in the analog distance.\n\nHigher = the engine prioritizes matching the absolute RSI level of past bars. Raise it if outright OB/OS positioning matters most for your instrument. Only used when Auto-Optimize is OFF."
+var string t17 = "WEIGHT · RSI SLOPE\n\nImportance of RSI momentum (rate of change) when matching analogs.\n\nHigher = the engine cares more about whether RSI is rising/falling at the same pace as past bars. Raise it to emphasize momentum direction over absolute level. Only used when Auto-Optimize is OFF."
+var string t18 = "WEIGHT · RSI ACCELERATION\n\nImportance of the change-in-slope (curvature) of RSI.\n\nHigher = the engine weights how RSI momentum is speeding up or fading { useful for catching exhaustion/ignition. Raise it to favor turning-point analogs. Only used when Auto-Optimize is OFF."
+var string t19 = "WEIGHT · RSI MIDPOINT DISTANCE\n\nImportance of how far RSI sits from the neutral 50 line.\n\nHigher = the engine emphasizes how 'committed' momentum is away from neutral. Useful for separating decisive trends from indecision. Only used when Auto-Optimize is OFF."
+var string t20 = "WEIGHT · RSI PERCENTILE\n\nImportance of RSI's percentile rank within its recent window.\n\nHigher = the engine matches bars by how extreme RSI is relative to its own recent history, rather than its absolute value. Good for adapting to instruments that rarely reach classic 70/30 levels. Only used when Auto-Optimize is OFF."
+var string t21 = "WEIGHT · RSI VOLATILITY\n\nImportance of RSI's own volatility (standard deviation of RSI).\n\nHigher = the engine matches the 'energy' of momentum { calm vs erratic RSI behaviour. Raise it to separate steady trends from choppy momentum. Only used when Auto-Optimize is OFF."
+var string t22 = "WEIGHT · RSI FAST/SLOW SPREAD\n\nImportance of the gap between the fast (½ length) and slow (2× length) RSIs.\n\nHigher = the engine emphasizes momentum alignment across speeds { a proxy for trend strength/divergence. Raise it to favor multi-speed confirmation. Only used when Auto-Optimize is OFF."
+var string t23 = "WEIGHT · RSI REGIME\n\nImportance of the smoothed RSI regime (EMA of RSI relative to 50).\n\nHigher = the engine weights the broader momentum backdrop a bar sits in. Raise it to keep analogs within the same regime context. Only used when Auto-Optimize is OFF."
+//}
+// ~~ ML Supertrend {
+var string t24 = "SHOW ML SUPERTREND\n\nToggles the adaptive trailing-stop line (and its glow/cloud).\n\nUnlike a classic Supertrend, its band width is modulated by engine conviction. It also drives the Trend Gate, the regime/candle coloring and the trend cloud, so turning it off removes those visual cues."
+var string t25 = "SUPERTREND SOURCE\n\nPrice series the Supertrend bands are built around (default hl2).\n\nhl2/ohlc4 center the bands on the bar's range and reduce sensitivity to wicks; 'close' makes the stop react more to closing prints. Only active when Show ML Supertrend is on."
+var string t26 = "ATR MULTIPLIER\n\nBase distance of the Supertrend bands from price, in ATR units.\n\nHOW IT WORKS: This is the starting width before ML adaptivity tightens or loosens it.\n\nTUNING: Lower (1.0–1.5) = tighter stop, exits sooner, more flips. Higher (2.5–4) = wider stop, rides trends longer but gives back more. \n\nAFFECTS: Trailing-stop distance, flip frequency, and (via the Trend Gate) which signals are allowed."
+var string t27 = "ML BAND ADAPTIVITY\n\nHow strongly engine conviction reshapes the Supertrend band width.\n\nHOW IT WORKS: High conviction (strong, tight analog agreement) tightens the bands for a faster-trailing stop; low conviction widens them to avoid premature whipsaw. Chop detection also widens them.\n\nTUNING: 0 = a plain fixed-multiplier Supertrend. 1 = maximum ML influence. Raise it to let the engine tighten stops aggressively in high-conviction trends.\n\nAFFECTS: Adaptive stop distance and flip timing."
+//}
+// ~~ RSI Signal Line {
+var string t28 = "SIGNAL LINE · TYPE\n\nMoving-average overlay drawn on the ML RSI (like the built-in RSI's MA option).\n\n'None' hides it. SMA/EMA/SMMA/WMA/VWMA smooth the ML RSI to give a slower reference line for crossovers. 'SMA + Bollinger Bands' adds volatility bands around the SMA.\n\nUse it as a momentum trigger: ML RSI crossing its signal line can confirm shifts before a full engine flip."
+var string t29 = "SIGNAL LINE · LENGTH\n\nLookback period of the RSI signal-line moving average.\n\nLower = hugs the ML RSI closely (earlier but noisier crosses). Higher = a slower, smoother reference (later but cleaner crosses). Only active when a Type other than 'None' is selected."
+var string t30 = "SIGNAL LINE · BB STDDEV\n\nWidth of the Bollinger Bands around the signal-line SMA, in standard deviations.\n\nLarger = wider bands that only flag extreme ML RSI excursions; smaller = tighter, more frequent band touches. Only applies when Type is 'SMA + Bollinger Bands'."
+//}
+// ~~ Colors {
+var string t31 = "SIGNAL COLORS\n\nColors for the long/short entry markers and (via regime) the painted candles. Pick high-contrast colors so entries stand out against your chart background."
+var string t32 = "TRAILING STOP & CLOUD COLORS\n\nUptrend/downtrend colors for the ML Supertrend line, its glow and the gradient trend cloud. The cloud intentionally reuses these so the trend read stays visually consistent."
+var string t33 = "RSI COLORS\n\nBullish/bearish colors for the ML RSI line and its overbought/oversold gradient fills. The line blends between these based on its value (≈28 bear → ≈72 bull)."
+var string t34 = "SIGNAL LINE COLORS\n\nColor of the RSI signal-line MA and the fill of its Bollinger Bands. The Signal Line color greys out when Type is 'None'; the BB Fill only applies when Bollinger Bands are selected."
+//}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ TYPES {
+type Features
+	float value
+	float slope
+	float accel
+	float mid
+	float pct
+	float churn
+	float spread
+	float regime
+
+type Weights
+	float value
+	float slope
+	float accel
+	float mid
+	float pct
+	float churn
+	float spread
+	float regime
+
+type Neighbor
+	float gap
+	int cls
+
+type Vote
+	float total = 0.0
+	float bull = 0.0
+	float bear = 0.0
+	float score = 0.0
+
+type Engine
+	float analogScore = 0.0
+	int biasDir = 0
+	float agreeFrac = 0.0
+	float gapTight = 0.0
+	int k = 0
+
+type Context
+	bool upTrend
+	bool downTrend
+	float atrPct
+	bool volHealthy
+	bool chopRaw
+	bool chopNow
+	float oscReg
+	bool slopeUp
+	bool slopeFit
+	bool stretched
+	bool oscSmoothUp
+
+type Setup
+	float rank = 0.0
+	float conf = 0.0
+	int dir = 0
+
+type Palette
+	color bull
+	color bear
+	color neutral
+	color amber
+	color gold
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ INPUTS {
+// ~~ ML Brain {
+priceSrc    = input.source(close, 'Price Source', group = "ML Brain", tooltip = t1)
+rsiBase     = input.int(14, 'Base RSI Length', minval = 2, group = "ML Brain", tooltip = t2)
+memoryDepth = input.int(500, 'Memory Depth (bars)', minval = 80, maxval = 5000, group = "ML Brain", tooltip = t3)
+kNeighbors  = input.int(8, 'Analog Count (k)', minval = 1, maxval = 64, group = "ML Brain", tooltip = t4)
+winLen      = 100 // Lookback window for normalizing/percentile-ranking RSI features.
+spacingBars = 4   // Only every Nth stored bar is eligible as an analog — decorrelates neighbors.
+horizonBars = 4   // How many bars ahead each historical bar's win/loss label is measured over.
+//}
+
+// ~~ Signals (what creates & filters trades) {
+showMarks    = input.bool(true, 'Show Signal Markers', inline = 'show', group = "Signals", tooltip = t5)
+paintBars    = input.bool(true, 'Candle coloring', inline = 'show', group = "Signals", tooltip = t5+ "\n\n" +t6)
+gateRank     = input.int(60, 'Min Rank to Signal', minval = 0, maxval = 100, group = "Signals", tooltip = t7)
+gateConf     = input.int(50, 'Min Confidence to Signal', minval = 0, maxval = 100, group = "Signals", tooltip = t8)
+useTrendGate = input.bool(true, 'Trend Gate (Signals must align with trailing stop)', group = "Signals", tooltip = t9)
+useVolBand   = input.bool(true, 'Volatility Band', inline = 'vol', group = "Signals", tooltip = t10)
+volBandLo    = input.int(20, 'Min Vol Rank', minval = 0, maxval = 100, inline = 'vol', group = "Signals", tooltip = t10+ "\n\n" +t11)
+useChop      = input.bool(true, 'Chop Filter', group = "Signals", tooltip = t12)
+atrFactor    = input.float(0.5, 'Learning Sensitivity (×ATR)', minval = 0, step = 0.1, group = "Signals", tooltip = t13)
+trendLen  = 50  // EMA length feeding the chop filter (trend-vs-noise reference). Trend Gate itself uses the Supertrend.
+chopCut   = 0.5 // Chop cutoff: |emaFast-emaSlow|/ATR below this = market treated as choppy.
+volBandHi = 85  // Upper volatility-rank bound; above this, ATR is considered too hot to be "healthy".
+//}
+
+// ~~ Auto Weight Optimizer {
+autoWeightsOn = input.bool(true, 'Auto-Optimize Weights', group = "Auto Weight Optimizer", tooltip = t14)
+autoSpeed     = input.float(1, 'Adaptation Speed', minval = 0.005, maxval = 1.0, step = 0.005, group = "Auto Weight Optimizer", active = autoWeightsOn, tooltip = t15)
+autoFloor   = 0.5 // Minimum weight floor so no feature is ever fully zeroed out.
+autoMinRows = 60  // Bank rows required before auto-weighting activates — a warm-up guard.
+//}
+
+// ~~ Feature Weights (manual; only used when Auto-Optimize is OFF) {
+wVal = input.float(1.0, 'RSI Value', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t16)
+wSlp = input.float(1.0, 'RSI Slope', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t17)
+wAcc = input.float(1.0, 'RSI Acceleration', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t18)
+wMid = input.float(1.0, 'RSI Midpoint Dist', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t19)
+wPct = input.float(1.0, 'RSI Percentile', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t20)
+wChn = input.float(1.0, 'RSI Volatility', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t21)
+wSpr = input.float(1.0, 'RSI Fast/Slow Spread', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t22)
+wReg = input.float(1.0, 'RSI Regime', minval = 0, step = 0.1, group = "Feature Weights", active = autoWeightsOn == false, tooltip = t23)
+//}
+
+// ~~ ML Supertrend (trailing stop) {
+showSt     = input.bool(true, 'Show ML Supertrend', group = "ML Supertrend", tooltip = t24)
+stSrc      = input.source(hl2, 'Supertrend Source', group = "ML Supertrend", active = showSt, tooltip = t25)
+stMultBase = input.float(1.5, 'ATR Multiplier', minval = 0.5, step = 0.1, group = "ML Supertrend", active = showSt, tooltip = t26)
+stMlResp   = input.float(1, 'ML Band Adaptivity', minval = 0.0, maxval = 1.0, step = 0.05, group = "ML Supertrend", active = showSt, tooltip = t27)
+stAtrLen  = 10   // ATR length for the Supertrend bands — 10 is the classic setting.
+stGlow    = true // Show the soft glow under the Supertrend line (cosmetic).
+showCloud = true // Show the gradient trend cloud between stop and price (cosmetic).
+smoothLen = 10   // EMA smoothing applied to engine conviction → ML RSI tilt & band response. Lower = faster.
+//}
+
+// ~~ RSI signal line {
+maTypeInput   = input.string('SMA', 'Type', options = ['None', 'SMA', 'SMA + Bollinger Bands', 'EMA', 'SMMA (RMA)', 'WMA', 'VWMA'], group = "RSI Signal Line", tooltip = t28)
+maLengthInput = input.int(14, 'Length', group = "RSI Signal Line", active = maTypeInput != 'None', tooltip = t29)
+bbMultInput   = input.float(2.0, 'BB StdDev', minval = 0.001, maxval = 50, step = 0.5, group = "RSI Signal Line", active = maTypeInput == 'SMA + Bollinger Bands', tooltip = t30)
+//}
+
+// ~~ Colors · Signals {
+sigBull = input.color(color.lime, 'Long / Bullish', inline = 'sig', group = "Colors · Signals", tooltip = t31)
+sigBear = input.color(color.red, 'Short / Bearish', inline = 'sig', group = "Colors · Signals")
+//}
+
+// ~~ Colors · Trailing Stop & Cloud  {
+trailBull = input.color(color.blue, 'Uptrend', inline = 'tr', group = "Colors · Trailing Stop & Cloud", tooltip = t32)
+trailBear = input.color(color.white, 'Downtrend', inline = 'tr', group = "Colors · Trailing Stop & Cloud")
+//}
+
+// ~~ Colors · RSI  {
+rsiBull       = input.color(color.blue, 'Bullish', inline = 'rs', group = "Colors · RSI", tooltip = t33)
+rsiBear       = input.color(color.white, 'Bearish', inline = 'rs', group = "Colors · RSI")
+smoothLineCol = input.color(#e3b13a, 'Signal Line', inline = 'sm', group = "Colors · RSI", active = maTypeInput != 'None', tooltip = t34)
+bbAreaCol     = input.color(color.new(#e3b13a, 90), 'BB Fill', inline = 'sm', group = "Colors · RSI", active = maTypeInput == 'SMA + Bollinger Bands')
+//}
+
+neutralCol = color.new(color.gray, 100)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ HELPERS & METHODS {
+scale01(float _v, int _len) =>
+    lo = ta.lowest(_v, _len)
+    hi = ta.highest(_v, _len)
+    hi == lo ? 0.5 : (_v - lo) / (hi - lo)
+
+compress(float _d) =>
+    math.log(1.0 + math.abs(_d))
+
+// Smoothing MA for the RSI signal line 
+ma(float source, int length, string mtype) =>
+    float _sma  = ta.sma(source, length)
+    float _ema  = ta.ema(source, length)
+    float _rma  = ta.rma(source, length)
+    float _wma  = ta.wma(source, length)
+    float _vwma = ta.vwma(source, length)
+    switch mtype
+        'SMA'                   => _sma
+        'SMA + Bollinger Bands' => _sma
+        'EMA'                   => _ema
+        'SMMA (RMA)'            => _rma
+        'WMA'                   => _wma
+        'VWMA'                  => _vwma
+        => na
+
+// ~~ Fisher-discriminant feature importance over the labeled bank (bull vs bear clusters). {
+// ~~ Returns an 8-slot array of weights scaled to [floor, 10]. {
+autoFeatureWeights(matrix<float> m, int minRows, float floor) =>
+    int n = m.rows()
+    array<float> imp = array.new<float>(8, 1.0)
+    if n >= minRows
+        array<float> sumB  = array.new<float>(8, 0.0)
+        array<float> sumBe = array.new<float>(8, 0.0)
+        array<float> sqB   = array.new<float>(8, 0.0)
+        array<float> sqBe  = array.new<float>(8, 0.0)
+        int cntB = 0
+        int cntBe = 0
+        // ~~ one pass: accumulate per-class sums & sums-of-squares (online clustering) {
+        for i = 0 to n - 1 by 1
+            float o = m.get(i, 8)
+            if o > 0 or o < 0
+                bool isB = o > 0
+                for j = 0 to 7 by 1
+                    float v = m.get(i, j)
+                    if isB
+                        sumB.set(j, sumB.get(j) + v)
+                        sqB.set(j, sqB.get(j) + v * v)
+                    else
+                        sumBe.set(j, sumBe.get(j) + v)
+                        sqBe.set(j, sqBe.get(j) + v * v)
+                cntB := isB ? cntB + 1 : cntB
+                cntBe := isB ? cntBe : cntBe + 1
+                //}
+        // ~~ Fisher ratio per feature, then min-max scale across the 8 to [floor,10] {
+        if cntB > 2 and cntBe > 2
+            array<float> fish = array.new<float>(8, 0.0)
+            float maxF = 0.0
+            for j = 0 to 7 by 1
+                float mB  = sumB.get(j) / cntB
+                float mBe = sumBe.get(j) / cntBe
+                float vB  = math.max(0.0, sqB.get(j) / cntB - mB * mB)
+                float vBe = math.max(0.0, sqBe.get(j) / cntBe - mBe * mBe)
+                float f   = math.pow(mB - mBe, 2) / (vB + vBe + 1e-6)
+                fish.set(j, f)
+                maxF := math.max(maxF, f)
+            for j = 0 to 7 by 1
+                float norm = maxF > 0 ? fish.get(j) / maxF : 1.0
+                imp.set(j, math.max(floor, norm * 10.0))
+                //}
+    imp
+    //}
+    //}
+
+method sum(Weights w) =>
+    w.value + w.slope + w.accel + w.mid + w.pct + w.churn + w.spread + w.regime
+
+method gapTo(Features f, array<float> row, Weights w) =>
+    w.value * compress(f.value - row.get(0)) + w.slope * compress(f.slope - row.get(1)) + w.accel * 
+     compress(f.accel - row.get(2)) + w.mid * compress(f.mid - row.get(3)) + w.pct * 
+     compress(f.pct - row.get(4)) + w.churn * compress(f.churn - row.get(5)) + w.spread * 
+     compress(f.spread - row.get(6)) + w.regime * compress(f.regime - row.get(7))
+
+method consider(array<Neighbor> nbrs, int kMax, Neighbor cand) =>
+    if nbrs.size() < kMax
+        nbrs.push(cand)
+    else
+        int worst = 0
+        float worstGap = nbrs.get(0).gap
+        for i = 1 to nbrs.size() - 1 by 1
+            float g = nbrs.get(i).gap
+            if g > worstGap
+                worstGap := g
+                worst := i
+        if cand.gap < worstGap
+            nbrs.set(worst, cand)
+
+method tally(Vote v, Neighbor n) =>
+    float w = 1.0 / (1.0 + n.gap)
+    v.total := v.total + w
+    v.score := v.score + n.cls * w
+    if n.cls > 0
+        v.bull := v.bull + w
+    else if n.cls < 0
+        v.bear := v.bear + w
+    v
+
+method aligned(Context c, int dir) =>
+    dir == 1 and c.upTrend or dir == -1 and c.downTrend
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ RSI FEATURE ENGINE {
+rOsc    = ta.rsi(priceSrc, rsiBase)
+rOscF   = ta.rsi(priceSrc, math.max(2, math.round(rsiBase / 2)))
+rOscS   = ta.rsi(priceSrc, rsiBase * 2)
+atrVal  = ta.atr(14)
+stepLen = 3
+
+Features cur = Features.new(rOsc / 100.0, scale01(rOsc - rOsc[stepLen], winLen), 
+ scale01(rOsc - rOsc[stepLen] - (rOsc[stepLen] - rOsc[2 * stepLen]), winLen), math.abs(rOsc - 50.0) / 50.0, 
+ ta.percentrank(rOsc, winLen) / 100.0, scale01(ta.stdev(rOsc, 14), winLen), scale01(rOscF - rOscS, winLen), 
+ scale01(ta.ema(rOsc, 20) - 50.0, winLen))
+Weights wts = Weights.new(wVal, wSlp, wAcc, wMid, wPct, wChn, wSpr, wReg)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ FEATURE BANK {
+var matrix<float> bank = matrix.new<float>(0, 9)
+
+moveFwd = priceSrc - priceSrc[horizonBars]
+bandFwd = atrFactor * atrVal[horizonBars]
+outcome = moveFwd > 2 * bandFwd ? 3 : moveFwd > bandFwd ? 2 : moveFwd > 0 ? 1 : moveFwd < -2 * bandFwd ? -3 : 
+ moveFwd < -bandFwd ? -2 : moveFwd < 0 ? -1 : 0
+
+// ~~ Delayed feature snapshot: take history of the OBJECT first (CE10290),
+// ~~ then guard against na before reading fields (no history exists on early bars). {
+Features curPast = cur[horizonBars]
+fVal = na(curPast) ? na : curPast.value
+fSlp = na(curPast) ? na : curPast.slope
+fAcc = na(curPast) ? na : curPast.accel
+fMid = na(curPast) ? na : curPast.mid
+fPct = na(curPast) ? na : curPast.pct
+fChn = na(curPast) ? na : curPast.churn
+fSpr = na(curPast) ? na : curPast.spread
+fReg = na(curPast) ? na : curPast.regime
+//}
+if barstate.isconfirmed and bar_index > horizonBars
+    row = array.from(fVal, fSlp, fAcc, fMid, fPct, fChn, fSpr, fReg, float(outcome))
+    bank.add_row(0, row)
+    if bank.rows() > memoryDepth
+        bank.remove_row(bank.rows() - 1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ AUTO WEIGHT OPTIMIZER (learned, EMA-smoothed) {
+var array<float> wAuto = array.new<float>(8, 1.0)
+if autoWeightsOn and barstate.isconfirmed
+    array<float> wRaw = autoFeatureWeights(bank, autoMinRows, autoFloor)
+    for j = 0 to 7 by 1
+        float prev = wAuto.get(j)
+        wAuto.set(j, prev + autoSpeed * (wRaw.get(j) - prev))
+
+if autoWeightsOn
+    wts.value := wAuto.get(0)
+    wts.slope := wAuto.get(1)
+    wts.accel := wAuto.get(2)
+    wts.mid := wAuto.get(3)
+    wts.pct := wAuto.get(4)
+    wts.churn := wAuto.get(5)
+    wts.spread := wAuto.get(6)
+    wts.regime := wAuto.get(7)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ NEIGHBOR ENGINE (true top-K via method) {
+var array<Neighbor> nbrs = array.new<Neighbor>()
+nbrs.clear()
+
+bankN   = bank.rows()
+scanEnd = math.min(memoryDepth - 1, bankN - 1)
+if bankN > 1
+    for idx = 0 to scanEnd by 1
+        if idx % spacingBars == 0
+            row = bank.row(idx)
+            g = cur.gapTo(row, wts)
+            if not na(g)
+                nbrs.consider(kNeighbors, Neighbor.new(g, int(row.get(8))))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ DISTANCE-WEIGHTED VOTING {
+Vote vote = Vote.new()
+float gapSum = 0.0
+int kCount   = nbrs.size()
+if kCount > 0
+    for j = 0 to kCount - 1 by 1
+        Neighbor n = nbrs.get(j)
+        vote.tally(n)
+        gapSum := gapSum + n.gap
+
+Engine eng = Engine.new()
+eng.k           := kCount
+eng.analogScore := vote.total > 0 ? vote.score / vote.total : 0.0
+eng.biasDir     := eng.analogScore > 0.15 ? 1 : eng.analogScore < -0.15 ? -1 : 0
+eng.agreeFrac   := vote.total > 0 ? (eng.biasDir == 1 ? vote.bull : eng.biasDir == -1 ? vote.bear : 0.0) / vote.total : 0.0
+avgGap       = kCount > 0 ? gapSum / kCount : 0.0
+gapScale     = wts.sum() * 0.45 + 1e-9
+eng.gapTight := math.max(0.0, math.min(1.0, 1.0 - avgGap / gapScale))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ CONTEXT / REGIME  {
+var float stLong  = na
+var float stShort = na
+var int stDir     = 1
+
+emaTrend = ta.ema(priceSrc, trendLen)
+emaQuick = ta.ema(priceSrc, 5)
+atrPct   = ta.percentrank(atrVal, 100)
+trendForce = atrVal > 0 ? math.abs(emaQuick - emaTrend) / atrVal : 0.0
+chopRaw_ = trendForce < chopCut
+slopeUp_ = rOsc > rOsc[stepLen]
+oscReg_  = ta.ema(rOsc, 20)
+chopNow_ = useChop ? chopRaw_ : false
+
+// ~~ ML ADAPTIVE SUPERTREND {
+convInst     = math.max(-1.0, math.min(1.0, eng.analogScore / 1.5))
+convSmoothed = ta.ema(convInst, smoothLen)
+mlDrive  = math.max(0.0, math.min(1.0, math.abs(convSmoothed) * 0.5 + eng.gapTight * 0.3 + eng.agreeFrac * 0.2))
+mlDrive := chopNow_ ? mlDrive * 0.35 : mlDrive // demand more room when chop is detected
+
+adaptMult = stMultBase * (1.0 + stMlResp * (1.0 - mlDrive))
+stAtr  = ta.atr(stAtrLen)
+upBand = stSrc - adaptMult * stAtr
+dnBand = stSrc + adaptMult * stAtr
+
+stLong  := na(stLong[1]) ? upBand : close[1] > stLong[1] ? math.max(upBand, stLong[1]) : upBand
+stShort := na(stShort[1]) ? dnBand : close[1] < stShort[1] ? math.min(dnBand, stShort[1]) : dnBand
+stDir   := na(stDir[1]) ? 1 : stDir[1] == -1 and close > stShort[1] ? 1 : stDir[1] == 1 and close < stLong[1] ? -1 : nz(stDir[1], 1)
+
+stLine   = stDir == 1 ? stLong : stShort
+stFlipUp = stDir == 1 and stDir[1] == -1
+stFlipDn = stDir == -1 and stDir[1] == 1
+//}
+// ~~ Trend Gate alignment driven by the ML trailing stop direction {
+Context ctx = Context.new(stDir == 1, stDir == -1, atrPct, atrPct >= volBandLo and atrPct <= volBandHi, chopRaw_, chopNow_, 
+ oscReg_, slopeUp_, eng.biasDir == 1 and slopeUp_ or eng.biasDir == -1 and not slopeUp_, 
+ eng.biasDir == 1 and rOsc > 70 or eng.biasDir == -1 and rOsc < 30, ta.ema(rOsc, 5) > ta.ema(rOsc, 5)[1])
+ //}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ SIGNAL STATE / PERSISTENCE {
+var int stanceState = 0
+var int stanceAge   = 0
+
+gatesPass     = (not useTrendGate or ctx.aligned(eng.biasDir)) and (not useVolBand or ctx.volHealthy) and not ctx.chopNow
+stanceState   := eng.biasDir == 1 and gatesPass ? 1 : eng.biasDir == -1 and gatesPass ? -1 : nz(stanceState[1])
+stanceChanged = ta.change(stanceState) != 0
+stanceAge     := stanceChanged ? 0 : stanceAge + 1
+earlyFlip     = stanceChanged and (stanceChanged[1] or stanceChanged[2] or stanceChanged[3])
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ RANK / CONFIDENCE {
+rankScore(Engine e, Context c, int age, bool flip) =>
+    pAgree  = 25.0 * e.agreeFrac
+    pGap    = 15.0 * e.gapTight
+    pStruct = (c.slopeFit ? 10.0 : 0.0) + (c.stretched ? 0.0 : 5.0)
+    pTrend  = c.aligned(e.biasDir) ? 10.0 : 0.0
+    pVol    = c.volHealthy ? 10.0 : c.atrPct < volBandLo ? 5.0 : 3.0
+    regFit  = e.biasDir == 1 and c.oscReg > 55 or e.biasDir == -1 and c.oscReg < 45
+    pReg    = regFit ? 10.0 : c.oscReg >= 45 and c.oscReg <= 55 ? 4.0 : 6.0
+    pSmooth = e.biasDir == 1 and c.oscSmoothUp or e.biasDir == -1 and not c.oscSmoothUp ? 5.0 : 0.0
+    pHold   = math.min(5.0, age)
+    pPen    = math.min(20.0, (c.chopRaw ? 8.0 : 0.0) + (c.stretched ? 6.0 : 0.0) + (flip ? 6.0 : 0.0) + 
+     (e.k < kNeighbors ? 5.0 * (kNeighbors - e.k) / kNeighbors : 0.0))
+    raw     = pAgree + pGap + pStruct + pTrend + pVol + pReg + pSmooth + pHold - pPen
+    e.biasDir == 0 ? 0.0 : math.max(0.0, math.min(100.0, raw))
+
+confScore(Engine e, Context c, int age, bool flip) =>
+    raw = 40.0 * e.agreeFrac + 25.0 * e.gapTight + 15.0 * math.min(1.0, age / 5.0) + 10.0 * (c.slopeFit ? 1.0 : 0.0) - 
+     (flip ? 15.0 : 0.0) - (e.k < kNeighbors ? 10.0 * (kNeighbors - e.k) / kNeighbors : 0.0)
+    e.biasDir == 0 ? 0.0 : math.max(0.0, math.min(100.0, raw))
+
+Setup setup = Setup.new()
+setup.dir  := eng.biasDir
+setup.rank := rankScore(eng, ctx, stanceAge, earlyFlip)
+setup.conf := confScore(eng, ctx, stanceAge, earlyFlip)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ SIGNALS {
+var int lastEntryBar = na
+closeOnly = true // signal-timing: only fire on a confirmed/closed bar (prevents intrabar repaint).
+coolBars  = 5    // minimum bars to wait between signals.
+flipLong  = stanceState == 1 and stanceState[1] != 1
+flipShort = stanceState == -1 and stanceState[1] != -1
+qualifies = setup.rank >= gateRank and setup.conf >= gateConf
+barOK     = not closeOnly or barstate.isconfirmed
+coolOK    = na(lastEntryBar) or bar_index - lastEntryBar >= coolBars
+
+triggerLong  = flipLong and qualifies and coolOK and barOK
+triggerShort = flipShort and qualifies and coolOK and barOK
+if triggerLong or triggerShort
+    lastEntryBar := bar_index
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ REGIME TONE  {
+intensity = math.max(0.0, math.min(1.0, ta.ema(setup.rank, 3) / 100.0))
+
+// ~~ Regime tone follows the trailing-stop direction {
+regimeDisp = stDir
+regimeTone = regimeDisp == 1 ? trailBull : trailBear
+//}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ VISUALIZATION {
+mlTilt = math.max(-1.0, math.min(1.0, convSmoothed)) * intensity * 18.0
+mlRSI  = ta.ema(math.max(0.0, math.min(100.0, rOsc + mlTilt)), 3)
+rsiCol = color.from_gradient(mlRSI, 28, 72, rsiBear, rsiBull)
+
+hOB  = hline(70, 'OB', color = color.new(color.gray, 0), linestyle = hline.style_dashed)
+hMid = hline(50, 'Mid', color = color.new(color.gray, 0), linestyle = hline.style_dotted)
+hOS  = hline(30, 'OS', color = color.new(color.gray, 0), linestyle = hline.style_dashed)
+fill(hOB, hOS, color = color.rgb(126, 87, 194, 90), title = 'Regime Band Tint')
+
+midPlot = plot(50, 'Midline', color = na, display = display.none)
+rsiPlt  = plot(mlRSI, 'ML RSI', color = rsiCol, linewidth = 2)
+fill(rsiPlt, midPlot, 100, 70, top_color = color.new(rsiBull, 0), bottom_color = color.new(rsiBull, 100), title = 'Overbought Gradient Fill')
+fill(rsiPlt, midPlot, 30, 0, top_color = color.new(rsiBear, 100), bottom_color = color.new(rsiBear, 0), title = 'Oversold Gradient Fill')
+
+// ~~ RSI signal line {
+enableMA      = maTypeInput != 'None'
+isBB          = maTypeInput == 'SMA + Bollinger Bands'
+smoothingMA   = enableMA ? ma(mlRSI, maLengthInput, maTypeInput) : na
+smoothingStdev = isBB ? ta.stdev(mlRSI, maLengthInput) * bbMultInput : na
+
+smaPlot   = plot(smoothingMA, 'RSI Signal Line', color = enableMA ? smoothLineCol : na, linewidth = 1)
+bbUpperPlot = plot(isBB ? smoothingMA + smoothingStdev : na, 'BB Upper', color = isBB ? color.new(smoothLineCol, 40) : na)
+bbLowerPlot = plot(isBB ? smoothingMA - smoothingStdev : na, 'BB Lower', color = isBB ? color.new(smoothLineCol, 40) : na)
+fill(bbUpperPlot, bbLowerPlot, color = isBB ? bbAreaCol : na, title = 'Bollinger Bands Fill')
+//}
+
+barTone = color.new(regimeTone, 0)
+col_    = paintBars ? barTone : na
+plotcandle(open, high, low, close, title = 'Candle Coloring', color = col_, wickcolor = col_, bordercolor = col_, force_overlay = true)
+
+// ~~ ML Supertrend line {
+stUpVal = showSt and stDir == 1 ? stLine : na
+stDnVal = showSt and stDir == -1 ? stLine : na
+plot(stGlow ? stUpVal : na, 'ST Up Glow', color = color.new(trailBull, 70), linewidth = 6, style = plot.style_linebr, force_overlay = true)
+plot(stGlow ? stDnVal : na, 'ST Down Glow', color = color.new(trailBear, 70), linewidth = 6, style = plot.style_linebr, force_overlay = true)
+plot(stUpVal, 'ML Supertrend Up', color = trailBull, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+plot(stDnVal, 'ML Supertrend Down', color = trailBear, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+//}
+// ~~ ML Trend Cloud (shares the Trailing Stop colors) {
+cloudLine = showSt ? stLine : na // the adaptive trailing stop
+cloudRef  = showSt ? stSrc : na  // price the stop is trailing
+
+cloudA = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.25 : na
+cloudB = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.50 : na
+cloudC = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.75 : na
+
+cloudBaseColor = regimeTone
+pCloudLine = plot(showCloud ? cloudLine : na, 'Cloud Active Line', color = neutralCol, display = display.none, force_overlay = true)
+pCloudA = plot(showCloud ? cloudA : na, 'Cloud Layer A', color = neutralCol, display = display.none, force_overlay = true)
+pCloudB = plot(showCloud ? cloudB : na, 'Cloud Layer B', color = neutralCol, display = display.none, force_overlay = true)
+pCloudC = plot(showCloud ? cloudC : na, 'Cloud Layer C', color = neutralCol, display = display.none, force_overlay = true)
+pCloudRef = plot(showCloud ? cloudRef : na, 'Cloud Reference', color = neutralCol, display = display.none, force_overlay = true)
+
+fill(pCloudLine, pCloudA, color = showCloud ? color.new(cloudBaseColor, 60) : na, title = 'Cloud Fill 1')
+fill(pCloudA, pCloudB, color = showCloud ? color.new(cloudBaseColor, 72) : na, title = 'Cloud Fill 2')
+fill(pCloudB, pCloudC, color = showCloud ? color.new(cloudBaseColor, 84) : na, title = 'Cloud Fill 3')
+fill(pCloudC, pCloudRef, color = showCloud ? color.new(cloudBaseColor, 92) : na, title = 'Cloud Fill 4')
+//}
+// ~~ Supertrend flip dots {
+plotshape(showSt and stFlipUp ? stLine : na, 'ST Flip Up', shape.circle, location.absolute, trailBull, size = size.tiny, force_overlay = true)
+plotshape(showSt and stFlipDn ? stLine : na, 'ST Flip Dn', shape.circle, location.absolute, trailBear, size = size.tiny, force_overlay = true)
+
+placebuy=ta.lowest(low,5)
+placesell=ta.highest(high,5)
+plotshape(showMarks and triggerLong ? placebuy : na, 'Long', shape.triangleup, location.absolute, sigBull, size = size.tiny, force_overlay = true)
+plotshape(showMarks and triggerShort ? placesell : na, 'Short', shape.triangledown, location.absolute, sigBear, size = size.tiny, force_overlay = true)
+plotshape(showMarks and triggerLong ? placebuy : na, 'Long', shape.triangleup, location.absolute, color.new(sigBull,50), size = size.small, force_overlay = true)
+plotshape(showMarks and triggerShort ? placesell : na, 'Short', shape.triangledown, location.absolute, color.new(sigBear,50), size = size.small, force_overlay = true)
+//}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+// ~~ ALERTS {
+// — Static alertcondition() 
+alertcondition(triggerLong,  'Long Signal',          'ML RSI: Long signal — rank & confidence gates passed.')
+alertcondition(triggerShort, 'Short Signal',         'ML RSI: Short signal — rank & confidence gates passed.')
+alertcondition(triggerLong or triggerShort, 'Any Signal', 'ML RSI: New entry signal.')
+alertcondition(stFlipUp,     'Trend Flip Up',        'ML Supertrend flipped to UPTREND.')
+alertcondition(stFlipDn,     'Trend Flip Down',      'ML Supertrend flipped to DOWNTREND.')
+alertcondition(stFlipUp or stFlipDn, 'Any Trend Flip', 'ML Supertrend changed direction.')
+
+// — Dynamic alert() 
+if barstate.isconfirmed
+    if triggerLong
+        alert('🟢 LONG  |  ' + syminfo.ticker + ' (' + timeframe.period + ')  Rank ' + str.tostring(setup.rank, '#') + ' / Conf ' + str.tostring(setup.conf, '#'), alert.freq_once_per_bar_close)
+    if triggerShort
+        alert('🔴 SHORT |  ' + syminfo.ticker + ' (' + timeframe.period + ')  Rank ' + str.tostring(setup.rank, '#') + ' / Conf ' + str.tostring(setup.conf, '#'), alert.freq_once_per_bar_close)
+    if stFlipUp
+        alert('▲ Trend Up  |  ' + syminfo.ticker + ' (' + timeframe.period + ')', alert.freq_once_per_bar_close)
+    if stFlipDn
+        alert('▼ Trend Down  |  ' + syminfo.ticker + ' (' + timeframe.period + ')', alert.freq_once_per_bar_close)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

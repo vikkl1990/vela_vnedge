@@ -1,0 +1,78 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// ~~ © Zeiierman {
+
+//@version=6
+indicator('Trend Cylinder (Zeiierman)', overlay = true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ ToolTips {
+t1 = 'Volatility Period defines the length of the look-back period for calculating volatility. Higher values make the bands adapt more slowly to volatility changes. Lower values make them adapt more quickly.'
+t2 = 'Trend Factor adjusts the sensitivity of the trend line to price movements. A higher value makes the trend line less sensitive and smoother. Lower values make it more sensitive and reactive to price changes.'
+t3 = 'Trend Step controls how quickly the trend line adjusts to sudden price changes. Higher values cause slower adjustments, leading to smoother trend lines. Lower values result in quicker adjustments to sudden changes.'
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+volatilityPeriod = input.int(100, title = 'Period', step = 10, minval = 2, maxval = 1000, inline = 'vol', group = 'Volatility Settings', tooltip = t1)
+trendFactor = input.float(9, step = 0.1, title = 'Factor', minval = 0.1, inline = '', group = 'Trend Settings', tooltip = t2)
+trendStep = input.float(0.7, 'Step', step = 0.1, minval = 0.5, maxval = 5.0, inline = '', group = 'Trend Settings', tooltip = t3)
+
+bullishTrendColor = input.color(#493893, title = 'Bullish Trend', inline = 'trend', group = 'Style')
+bearishTrendColor = input.color(#862458, title = 'Bearish Trend', inline = 'trend', group = 'Style')
+colorForUpperBand = input.color(color.new(#862458, 10), title = 'Upper Band', inline = 'band', group = 'Style')
+colorForLowerBand = input.color(color.new(#493893, 10), title = 'Lower Band', inline = 'band', group = 'Style')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Initialize Variables
+var float currentTrend = 0.0
+var int trendDirection = 0
+averageTrueRange = ta.rma(ta.atr(200), 10)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to determine the trend direction
+determineTrendDirection(direction) =>
+    direction - direction[1] > 0 ? 1 : direction - direction[1] < 0 ? -1 : 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate Trend Direction
+closingPrice = close
+scaledStandardDev = nz(averageTrueRange) * trendFactor
+trendDirection := determineTrendDirection(currentTrend)
+priceTrendDiff = math.abs(closingPrice - currentTrend)
+reciprocalFactor = scaledStandardDev * (1 / trendFactor) * 1 / math.pow(2, 100)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate the Current Trend
+trendAdjustment = priceTrendDiff > scaledStandardDev * trendStep ? math.avg(closingPrice, currentTrend) : trendDirection * reciprocalFactor + currentTrend
+currentTrend := trendAdjustment
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate Upper and Lower Bands
+upperBand = currentTrend + scaledStandardDev - averageTrueRange - ta.ema(ta.stdev(closingPrice, volatilityPeriod), 200)
+lowerBand = currentTrend - scaledStandardDev + averageTrueRange + ta.ema(ta.stdev(closingPrice, volatilityPeriod), 200)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trend State
+isTrendConsistent = trendDirection == trendDirection[1]
+isBullishTrend = currentTrend > currentTrend[1]
+isBearishTrend = currentTrend < currentTrend[1]
+
+var color colorForPlot = bullishTrendColor
+colorForPlot := isBullishTrend ? bullishTrendColor : isBearishTrend ? bearishTrendColor : colorForPlot[1]
+
+// ~~ Trend Shift Conditions
+bullishShift = isBullishTrend and isBearishTrend[1]
+bearishShift = isBearishTrend and isBullishTrend[1]
+
+// ~~ Alerts
+alertcondition(bullishShift, title = 'Bullish Trend Shift', message = 'Trend Cylinder: Bullish trend shift detected')
+alertcondition(bearishShift, title = 'Bearish Trend Shift', message = 'Trend Cylinder: Bearish trend shift detected')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot
+plotTrend = plot(isTrendConsistent ? currentTrend : na, title = 'Trend Line', color = colorForPlot, linewidth = 2)
+plotUpper = plot(isTrendConsistent ? upperBand : na, title = 'Upper Band', color = color.new(color.black, 100))
+plotLower = plot(isTrendConsistent ? lowerBand : na, title = 'Lower Band', color = color.new(color.black, 100))
+
+fill(plotUpper, plotTrend, top_color = colorForLowerBand, bottom_color = color.new(na, 100), top_value = upperBand, bottom_value = currentTrend, title = 'Background Upper')
+fill(plotTrend, plotLower, top_color = color.new(na, 100), bottom_color = colorForUpperBand, top_value = currentTrend, bottom_value = lowerBand, title = 'Background Lower')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

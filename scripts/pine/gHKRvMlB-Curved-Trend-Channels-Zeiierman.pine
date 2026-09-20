@@ -1,0 +1,337 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator('Curved Trend Channels (Zeiierman)', overlay=true, behind_chart=false)
+//~~}
+
+// ~~ Tooltips {
+var string t1 = "Defines how much past data is used to smooth the scaled volatility. Larger values produce more stable but slower-reacting bands."
+var string t2 = "Determines the smoothing method applied to the high-low volatility input. Choose based on your preference for speed vs. smoothness."
+var string t3 = "Controls how many bars are used by the selected moving average to smooth the price range. Affects the responsiveness of the base volatility."
+var string t4 = "Applies a moving average to the raw high and low values before range calculation. Longer values produce a more smoothed underlying range."
+var string t5 = "Adjusts the final band width by multiplying the smoothed volatility. Higher values create wider bands to capture more price movement."
+var string t6 = "Sets the smoothing period for candle trend logic. Affects how reactive candles are to recent price direction changes."
+var string t7 = "Choose whether to show the gradient fill between trend bands."
+var string t8 = "Visual color when price is in an uptrend."
+var string t9 = "Visual color when price is in a downtrend."
+var string t10 = "Color used for candles during bullish trends."
+var string t11 = "Color used for candles during bearish trends."
+var string t12 = "Scales the hypertrend slope calculation. Lower values make it more sensitive."
+var string t13 = "The number of bars used to evaluate candle trend direction, impacting trend transitions."
+var string tip14_cf = "Base step size (fraction of ATR) for growth-factor slope."
+var string tip15_cf = "Growth rate per bar (fraction of ATR) for step increase."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+r_len     = input.int(100,   minval=1, title="Scaled Volatility Length", group="Range Filter", tooltip=t1)
+ma_type   = input.string("SMA", title="Smoothing Type", options=["SMA","EMA","RMA","HMA","KAMA","VIDYA","FRAMA","Super Smoother"], group="Range Filter", tooltip=t2)
+ma_len    = input.int(100,   minval=2, title="Volatility MA Length", group="Range Filter", inline="range", tooltip=t3)
+hilo_len  = input.int(100,   minval=2, title="High/Low Smoother Length", group="Range Filter", inline="range1", tooltip=t4)
+band_mult = input.float(1.8, minval=0.1, step=0.1, title="Band Multiplier", group="Range Filter", inline="range2", tooltip=t5)
+
+slope     = input.float(25,  minval=0.1, title="Slope", group="Regular Trend Channel", inline="r1", tooltip=t6)
+mult      = input.float(2.0, minval=0.1, step=0.1, title="Multiplicative Factor", group="Regular Trend Channel", inline="r2", tooltip=t12)
+
+use_curved_mode    = input.bool(false, title="Curved Channel Mode", group="Curved Channel Mode")
+baseStep_cf        = input.float(0.05, step=0.001, maxval=0.3, title="Base Step (× ATR)", group="Curved Channel Mode", tooltip=tip14_cf)
+boost_cf           = input.float(0.001,step=0.001, minval=0, title="Growth per Bar (× ATR)", group="Curved Channel Mode", tooltip=tip15_cf)
+
+showCandleColor = input.bool(false, title="Enable Candle Coloring", group="Candle Coloring", inline="candleToggle")
+candlelen        = input.int(200,  minval=1,   title="Candle Trend Length", group="Candle Coloring", inline="hyper3", tooltip=t13)
+bull_candle_col  = input.color(color.lime, title="Bull Candle Color", group="Candle Coloring", inline="candleCol", tooltip=t10)
+bear_candle_col  = input.color(color.red,  title="Bear Candle Color", group="Candle Coloring", inline="candleCol", tooltip=t11)
+
+showArea  = input.bool(true, title="Show Gradient Fill", group="Display & Style", tooltip=t7)
+upper_col = input.color(color.teal, title="Trend Up Color", group="Display & Style", inline="trendColor", tooltip=t8)
+lower_col = input.color(color.red,  title="Trend Down Color", group="Display & Style", inline="trendColor", tooltip=t9)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MA Functions {
+hma(src, len) =>
+    ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
+
+kama(src, len) =>
+    change     = math.abs(src - src[1])
+    volatility = math.sum(change, len)
+    direction  = math.abs(src - src[len])
+    ER         = direction / volatility
+    fastSC     = 2 / (2 + 1)
+    slowSC     = 2 / (30 + 1)
+    sc         = math.pow(ER * (fastSC - slowSC) + slowSC, 2)
+    var float result = src
+    result := nz(result[1]) + sc * (src - nz(result[1]))
+
+vidya(src, len) =>
+    CMO   = ta.cmo(src, len)
+    alpha = math.abs(CMO) / 100
+    var float result = src
+    result := nz(result[1]) + alpha * (src - nz(result[1]))
+
+frama(src, len) =>
+    n3   = math.round(len / 2)
+    hl1  = ta.highest(high, n3) - ta.lowest(low, n3)
+    hl2_ = ta.highest(high[n3], n3) - ta.lowest(low[n3], n3)
+    hl3  = ta.highest(high, len)   - ta.lowest(low, len)
+    dimen = (math.log(hl1 + hl2_) - math.log(hl3)) / math.log(2)
+    alpha = math.exp(-4.6 * (dimen - 1))
+    alpha := math.min(math.max(alpha, 0.01), 1.0)
+    var float result = src
+    result := nz(result[1]) + alpha * (src - nz(result[1]))
+
+supersmoother(src, len) =>
+    a1 = math.exp(-1.414 * 3.14159 / len)
+    b1 = 2 * a1 * math.cos(1.414 * 3.14159 / len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    var float result = src
+    result := c1 * src + c2 * nz(result[1]) + c3 * nz(result[2])
+
+ma(src, len) =>
+ ma_type == "HMA"            ? hma(src, len) :
+ ma_type == "KAMA"           ? kama(src, len) :
+ ma_type == "VIDYA"          ? vidya(src, len) :
+ ma_type == "FRAMA"          ? frama(src, len) :
+ ma_type == "Super Smoother" ? supersmoother(src, len) :
+ ma_type == "SMA"            ? ta.sma(src, len) :
+ ma_type == "EMA"            ? ta.ema(src, len) :
+                                  ta.rma(src, len)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range Filter Calculation {
+f_rangeFilter(_high, _low, hiloL, maL, rL, multFac) =>
+    float high_ma = ma(_high,  hiloL)
+    float low_ma  = ma(_low[1], hiloL)
+    float diff    = math.abs(high_ma - low_ma)
+    float vol     = 2.618 * ma(diff, maL)
+    float r_val   = math.max(ta.sma(vol, rL) * multFac, 0.0001)
+    r_val
+
+f_rangeFilter_cf(_high_cf, _low_cf, hiloL_cf, maL_cf, rL_cf, multFac_cf) =>
+    float high_ma_cf = ma(_high_cf,  hiloL_cf)
+    float low_ma_cf  = ma(_low_cf[1], hiloL_cf)
+    float diff_cf    = math.abs(high_ma_cf - low_ma_cf)
+    float vol_cf     = 2.618 * ma(diff_cf, maL_cf)
+    float r_val_cf   = math.max(ta.sma(vol_cf, rL_cf) * multFac_cf, 0.0001)
+    r_val_cf
+
+// ~~ StepTrend Logic {
+StepTrend(prevValue, price, threshold, prevDir, prevBuff, multFactor, stepLength) =>
+    float valueAfterJump = math.abs(price - prevValue) > threshold 
+         ? math.avg(price, prevValue) 
+         : prevValue
+    float stepValue = valueAfterJump
+    if not (math.abs(price - prevValue) > threshold)
+        float stepSize  = prevBuff / multFactor
+        float stepDelta = stepSize / stepLength
+        if prevDir > 0.0
+            stepValue := prevValue + stepDelta
+        else if prevDir < 0.0
+            stepValue := prevValue - stepDelta
+        else
+            stepValue := prevValue
+    float newDir = stepValue > prevValue ? 1.0 : stepValue < prevValue ? -1.0 : 0.0
+    float newBuff = (newDir != prevDir) ? threshold : prevBuff
+    [stepValue, newDir, newBuff]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+stepTrend_cf(prevValue_cf, price_cf, threshold_cf, prevDir_cf, prevBuff_cf, multFactor_cf, stepLen_cf) =>
+    bool jumped_cf = math.abs(price_cf - prevValue_cf) > threshold_cf
+    float stepped_cf = jumped_cf ? math.avg(price_cf, prevValue_cf) : prevValue_cf
+    if jumped_cf == false
+        float stepSize_cf = prevBuff_cf / multFactor_cf / stepLen_cf
+        stepped_cf := prevDir_cf > 0.0 ? prevValue_cf + stepSize_cf : prevDir_cf < 0.0 ? prevValue_cf - stepSize_cf : prevValue_cf
+    float newDir_cf  = stepped_cf > prevValue_cf ? 1.0 : stepped_cf < prevValue_cf ? -1.0 : 0.0
+    float newBuff_cf = (newDir_cf != prevDir_cf) ? threshold_cf : prevBuff_cf
+    [stepped_cf, newDir_cf, newBuff_cf]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Trend Calculation {
+f_candleTrend(_close, threshold, multFac, length) =>
+    var float cTrend  = na
+    var float cBuff   = 0.0
+    var float cDir    = 1.0
+    if na(cTrend)
+        cTrend  := _close
+        cDir    := 1.0
+        cBuff   := threshold
+    else
+        float prevCTrend  = cTrend[1]
+        float prevCBuff   = cBuff[1]
+        float prevCDir    = cDir[1]
+        [newT, newD, newB] = StepTrend(prevCTrend, _close, threshold, prevCDir, prevCBuff, multFac, length)
+        cTrend := newT
+        cDir   := newD
+        cBuff  := newB
+    [cTrend, cDir]
+
+f_candleTrend_cf(_close_cf, _threshold_cf, _mult_cf, _length_cf) =>
+    var float cTrend_cf  = na
+    var float cBuff_cf   = 0.0
+    var float cDir_cf    = 1.0
+    if na(cTrend_cf)
+        cTrend_cf  := _close_cf
+        cDir_cf    := 1.0
+        cBuff_cf   := _threshold_cf
+    else
+        prevTrend_cf  = cTrend_cf[1]
+        prevBuff_cf   = cBuff_cf[1]
+        prevDir_cf    = cDir_cf[1]
+        [newTrend_cf, newDir_cf, newBuff_cf] = stepTrend_cf(prevTrend_cf, _close_cf, _threshold_cf, prevDir_cf, prevBuff_cf, _mult_cf, _length_cf)
+        cTrend_cf := newTrend_cf
+        cDir_cf   := newDir_cf
+        cBuff_cf  := newBuff_cf
+    [cTrend_cf, cDir_cf]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Color Determination {
+f_candleColor(cDir, trendFast, trendMed, trendLong, bullishCol, bearishCol) =>
+    isBull = cDir == 1.0 and trendFast > trendFast[1] and trendMed > trendMed[1] and trendLong > trendLong[1]
+    isBear = cDir == -1.0 and trendFast < trendFast[1] and trendMed < trendMed[1] and trendLong < trendLong[1]
+    isBull ? bullishCol : isBear ? bearishCol : color.new(color.gray, 85)
+
+f_candleColor_cf(cDir_cf, trendFast_cf, trendMed_cf, trendLong_cf, bullCol_cf, bearCol_cf) =>
+    isBull_cf = cDir_cf == 1.0 and trendFast_cf > trendFast_cf[1] and trendMed_cf > trendMed_cf[1] and trendLong_cf > trendLong_cf[1]
+    isBear_cf = cDir_cf == -1.0 and trendFast_cf < trendFast_cf[1] and trendMed_cf < trendMed_cf[1] and trendLong_cf < trendLong_cf[1]
+    isBull_cf ? bullCol_cf : isBear_cf ? bearCol_cf : color.new(color.gray, 85)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trend Channel Calculation {
+f_hyperTrend(_close, threshold, multFac, slopeLen) =>
+    var float tLine   = na
+    var float tBuff   = 0.0
+    var float tDir    = 1.0
+    if na(tLine)
+        tLine   := _close
+        tDir    := 1.0
+        tBuff   := threshold
+    else
+        float prevTrend   = tLine[1]
+        float prevBuff    = tBuff[1]
+        float prevDir     = tDir[1]
+        [newT, newD, newB] = StepTrend(prevTrend, _close, threshold, prevDir, prevBuff, multFac, slopeLen)
+        tLine := newT
+        tDir  := newD
+        tBuff := newB
+    [tLine, tDir, tBuff]
+
+f_curvedChannel_cf(_close_cf, _threshold_cf, _baseStep_cf, _boost_cf, _mult_cf) =>
+    var float tLine_cf    = na
+    var float tBuff_cf    = 0.0
+    var float tDir_cf     = 1.0
+    var int   bars_cf     = 0
+    atr_cf = ta.atr(14)
+    if na(tLine_cf)
+        tLine_cf   := _close_cf
+        tDir_cf    := 1.0
+        tBuff_cf   := _threshold_cf
+        bars_cf    := 0
+    else
+        prevTrend_cf    = tLine_cf[1]
+        prevBuff_cf     = tBuff_cf[1]
+        prevDir_cf      = tDir_cf[1]
+        currATR_cf      = atr_cf
+        startLong_cf    = _close_cf > prevTrend_cf + _threshold_cf
+        startShort_cf   = _close_cf < prevTrend_cf - _threshold_cf
+        flip_cf         = startLong_cf or startShort_cf
+
+        if flip_cf
+            tLine_cf   := _close_cf
+            tDir_cf    := startLong_cf ? 1.0 : -1.0
+            tBuff_cf   := _threshold_cf
+            bars_cf    := 1
+        else
+            bars_cf    := bars_cf + 1
+            baseUnit_cf  = _baseStep_cf * currATR_cf
+            boostUnit_cf = _boost_cf * currATR_cf
+            rawStep_cf   = baseUnit_cf + boostUnit_cf * bars_cf
+            maxUnit_cf   = 1.1 * currATR_cf
+            stepGrow_cf  = math.min(rawStep_cf, maxUnit_cf)
+            tLine_cf     := prevDir_cf > 0 ? prevTrend_cf + stepGrow_cf : prevDir_cf < 0 ? prevTrend_cf - stepGrow_cf : prevTrend_cf
+            tBuff_cf     := prevBuff_cf
+
+        if not na(tLine_cf[1])
+            tDir_cf := tLine_cf > prevTrend_cf ? 1.0 : tLine_cf < prevTrend_cf ? -1.0 : 0.0
+
+        if tDir_cf != prevDir_cf
+            tBuff_cf := _threshold_cf
+
+    [tLine_cf, tDir_cf, tBuff_cf]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main {
+r              = f_rangeFilter(high, low, hilo_len, ma_len, r_len, band_mult)
+rangeThresh_cf = f_rangeFilter_cf(high, low, hilo_len, ma_len, r_len, band_mult)
+
+[cTrend, cDir] = f_candleTrend(close, r, mult, candlelen)
+[cTrendVal_cf, cDirVal_cf] = f_candleTrend_cf(close, rangeThresh_cf, 1, candlelen)
+
+TrendFast_candle   = cTrend
+TrendMedium_candle = ta.sma(cTrend, 2)
+TrendLong_candle   = ta.sma(cTrend, 4)
+
+trendFastCandle_cf   = cTrendVal_cf
+trendMediumCandle_cf = ta.sma(cTrendVal_cf, 2)
+trendLongCandle_cf   = ta.sma(cTrendVal_cf, 4)
+
+src_ma  = ma(close, 10)
+srcMaCf = ma(close, 10)
+
+[tLine, tDir, tBuff]                   = f_hyperTrend(close, r, mult, slope)
+[tLineVal_cf, tDirVal_cf, tBuffVal_cf] = f_curvedChannel_cf(close, rangeThresh_cf, baseStep_cf, boost_cf, 1)
+
+upper = tLine + tBuff
+lower = tLine - tBuff
+
+upperBand_cf = tLineVal_cf + tBuffVal_cf * 1
+lowerBand_cf = tLineVal_cf - tBuffVal_cf * 1
+
+cTrend_final = use_curved_mode ? cTrendVal_cf : cTrend
+cDir_final   = use_curved_mode ? cDirVal_cf   : cDir
+
+trendFast_final   = use_curved_mode ? trendFastCandle_cf   : TrendFast_candle
+trendMedium_final = use_curved_mode ? trendMediumCandle_cf : TrendMedium_candle
+trendLong_final   = use_curved_mode ? trendLongCandle_cf   : TrendLong_candle
+
+src_final = use_curved_mode ? srcMaCf : src_ma
+
+candleColor_final = use_curved_mode
+ ? f_candleColor_cf(
+     cDirVal_cf, srcMaCf, trendMediumCandle_cf, trendLongCandle_cf,
+     bull_candle_col, bear_candle_col
+   )
+ : f_candleColor(
+     cDir, src_ma, TrendMedium_candle, TrendLong_candle,
+     bull_candle_col, bear_candle_col
+   )
+
+tLine_final  = use_curved_mode ? tLineVal_cf  : tLine
+tDir_final   = use_curved_mode ? tDirVal_cf   : tDir
+upper_final  = use_curved_mode ? upperBand_cf : upper
+lower_final  = use_curved_mode ? lowerBand_cf : lower
+
+trendColor_final = tDir_final == 1.0 ? upper_col : lower_col
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plotMid   = plot(tLine_final,  title="Trend Line", color=trendColor_final, linewidth=2)
+plotUpper = plot(showArea ? upper_final : na, title="Upper Band", color=na)
+plotLower = plot(showArea ? lower_final : na, title="Lower Band", color=na)
+
+fill(
+ plotUpper, plotMid, upper_final, tLine_final,
+ showArea ? color.new(upper_col, 60) : na,
+ na
+ )
+fill(
+ plotLower, plotMid, lower_final, tLine_final,
+ showArea ? color.new(lower_col, 60) : na,
+ na
+ )
+
+plotcandle(open, high, low, close,
+ color=showCandleColor ? candleColor_final : na,
+ wickcolor=showCandleColor ? candleColor_final : na,
+ bordercolor=showCandleColor ? candleColor_final : na)
+ //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,226 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Donchian Predictive Channel (Zeiierman)", overlay = true, max_polylines_count = 100)
+//}
+
+// Tooltips {
+var string t1 = "Donchian lookback length. Higher values use more bars to define the upper, lower, and mid Donchian bands (smoother structure, fewer signals). Lower values make the channel more reactive and can increase the number of projection signals, but with more noise."
+var string t2 = "Number of bars to project the Donchian channel into the future. Higher values extend the forecast further out (wider projection cone, less precise). Lower values focus the forecast on the near term. This setting only affects the forward projection, not past calculations."
+var string t3 = "Enable or disable moving average filtering on the Donchian signals. When ON, bullish signals only appear when price is above the selected moving average and bearish signals only appear when price is below it."
+var string t4 = "Type of moving average used for both signal filtering and the optional chart overlay. Faster types (EMA, HMA) react more to recent price changes, while slower types (SMA, WMA) smooth more noise."
+var string t5 = "Lookback length of the moving average used for filtering. Higher values create a smoother, slower bias. Lower values track price more tightly and can flip bias more often."
+var string t6 = "Show or hide the moving average used for filtering directly on the chart. This is a visual option only; when Filter Signals is enabled, the MA is still used internally even if it is not plotted."
+//}
+
+// INPUTS {
+lenDC       = input.int(20, "Length", tooltip = t1, group = "Donchian Predictive Channel")
+projLen     = input.int(30, "Forecast Bars", tooltip = t2, group = "Donchian Predictive Channel")
+
+signalfilter = input.bool(true, "Filter Signals", tooltip = t3, group = "Signals")
+ma_type      = input.string("SMA", "Moving Average", options = ["SMA", "EMA", "WMA", "HMA"], tooltip = t4, group = "Signals", inline = "sig")
+ma_len       = input.int(100, "Length", minval = 1, tooltip = t5, group = "Signals", inline = "sig")
+
+colUp       = input.color(color.new(color.green, 0),  "Forecast", inline = "c1")
+colDn       = input.color(color.new(color.red,   0),  "",         inline = "c1")
+w           = input.int(2, "", minval = 1, inline = "c1")
+
+donUp       = input.color(color.blue, "Donchian", inline = "c2")
+donDn       = input.color(color.blue, "",         inline = "c2")
+colFill     = input.color(color.blue, "",         inline = "c2")
+
+colMUp      = input.color(color.lime, "Midline", inline = "c3")
+colMDn      = input.color(color.red,  "",        inline = "c3")
+
+sigcolUp    = input.color(color.lime, "Signal Color", inline = "c4")
+sigcolDn    = input.color(color.red,  "",            inline = "c4")
+
+plotma      = input.bool(false, "Show Moving Average", tooltip = t6, inline = "ma")
+maCol       = input.color(color.teal, "", inline = "ma")
+//}
+
+// UDT'S {
+type ptSet
+    array<chart.point> hiPts
+    array<chart.point> mdPts
+    array<chart.point> loPts
+
+type drawSet
+    polyline hiL
+    polyline mdL
+    polyline loL
+    label    hiLab
+    label    loLab
+//}
+
+// GLOBAL VARIABLES {
+var lastMarker  = 0
+var midColor    = color(na)
+var storage     = array.new<drawSet>()
+signalUp        = false
+signalDn        = false
+//}
+
+// FUNCTIONS {
+f_getDonchian(length) =>
+    hi = ta.highest(high, length)
+    lo = ta.lowest(low, length)
+    md = (hi + lo) * 0.5
+    [hi, md, lo]
+
+f_getSlopes(midLine, rngVal, length) =>
+    mSl = ta.linreg(midLine, length, 0) - ta.linreg(midLine, length, 1)
+    rSl = ta.linreg(rngVal,   length, 0) - ta.linreg(rngVal,   length, 1)
+    [mSl, rSl]
+
+f_clearDrawings(refArray) =>
+    for item in refArray
+        item.hiL.delete()
+        item.mdL.delete()
+        item.loL.delete()
+        item.hiLab.delete()
+        item.loLab.delete()
+    array.clear(refArray)
+
+f_drawResult(points, midColor, upColor, dnColor) =>
+    upL  = polyline.new(points.hiPts, line_color = upColor, line_width = w, line_style = line.style_dashed)
+    mdL  = polyline.new(points.mdPts, line_color = midColor, line_width = w, line_style = line.style_dotted)
+    dnL  = polyline.new(points.loPts, line_color = dnColor, line_width = w, line_style = line.style_dashed)
+
+    upLab = label.new(points.hiPts.last(), style = label.style_label_left, color = color(na), textcolor = chart.fg_color)
+    dnLab = label.new(points.loPts.last(), style = label.style_label_left, color = color(na), textcolor = chart.fg_color)
+
+    upLab.set_text(str.tostring(upLab.get_y(), "##,###,###.####"))
+    dnLab.set_text(str.tostring(dnLab.get_y(), "##,###,###.####"))
+
+    drawSet.new(upL, mdL, dnL, upLab, dnLab)
+
+f_generatePoints(hi0, md0, lo0, steps, midSlp, rngSlp) =>
+    upPts = array.new<chart.point>()
+    mdPts = array.new<chart.point>()
+    dnPts = array.new<chart.point>()
+    fillPts = array.new<chart.point>()
+
+    hi_vals = array.new_float()
+    md_vals = array.new_float()
+    lo_vals = array.new_float()
+
+    curHiLocal  = hi0
+    curLoLocal  = lo0
+    curMidLocal = md0
+
+    segBars = math.floor(steps / 3)
+    segBars := segBars < 1 ? 1 : segBars
+
+    for b = 0 to steps
+        mdProj = md0 + midSlp * b
+
+        prevRange = curHiLocal - curLoLocal
+        rngProj   = prevRange + rngSlp * b
+
+        hiTemp = 0.0
+        loTemp = 0.0
+
+        if midSlp >= 0
+            hiTemp := math.max(curHiLocal, mdProj + rngProj * 0.5)
+            loTemp := math.max(curLoLocal, mdProj - rngProj * 0.5)
+        else
+            hiTemp := math.min(curHiLocal, mdProj + rngProj * 0.5)
+            loTemp := math.min(curLoLocal, mdProj - rngProj * 0.5)
+
+        hiProj = hiTemp < mdProj ? curHiLocal : hiTemp
+        loProj = loTemp > mdProj ? curLoLocal : loTemp
+
+        if b % segBars == 0
+            curHiLocal  := hiProj
+            curLoLocal  := loProj
+            curMidLocal := mdProj
+
+        array.push(hi_vals, curHiLocal)
+        array.push(md_vals, curMidLocal)
+        array.push(lo_vals, curLoLocal)
+
+        array.push(upPts, chart.point.from_index(bar_index + b, curHiLocal))
+        array.push(mdPts, chart.point.from_index(bar_index + b, curMidLocal))
+        array.push(dnPts, chart.point.from_index(bar_index + b, curLoLocal))
+    ptSet.new(upPts, mdPts, dnPts)
+
+// Moving average switch
+f_ma(src, length, type) =>
+    type == "SMA" ? ta.sma(src, length) :
+     type == "EMA" ? ta.ema(src, length) :
+     type == "WMA" ? ta.wma(src, length) :
+     type == "HMA" ? ta.hma(src, length) :
+     ta.sma(src, length)
+//}
+
+// MAIN {
+[dcHi, dcMd, dcLo] = f_getDonchian(lenDC)
+rngDC              = dcHi - dcLo
+[midSlp, rngSlp]   = f_getSlopes(dcMd, rngDC, lenDC)
+
+// Moving average for filtering and optional plotting
+ma = f_ma(close, ma_len, ma_type)
+
+midColor := dcMd > dcMd[2] ? colMUp :
+             dcMd < dcMd[2] ? colMDn :
+             midColor
+
+// Base signal conditions (unfiltered)
+bearCond = high < dcHi and high[1] >= dcHi[1] and close > dcMd and bar_index - lastMarker >= lenDC
+bullCond = low  > dcLo and low[1]  <= dcLo[1] and close < dcMd and bar_index - lastMarker >= lenDC
+
+// Apply MA filter if enabled
+if signalfilter
+    bearCond := bearCond and close < ma   // Only accept bearish signal when price is below MA
+    bullCond := bullCond and close > ma   // Only accept bullish signal when price is above MA
+
+signalUp := false
+signalDn := false
+
+if bearCond
+    lastMarker := bar_index
+    signalDn   := true
+
+if bullCond
+    lastMarker := bar_index
+    signalUp   := true
+//}
+
+// FINAL {
+if barstate.islast
+    f_clearDrawings(storage)
+    pts = f_generatePoints(dcHi, dcMd, dcLo, projLen, midSlp, rngSlp)
+
+    finalMidColor =
+         midSlp > 0 ? colMUp :
+         midSlp < 0 ? colMDn :
+         color.new(color.gray, 0)
+
+    dObj = f_drawResult(pts, finalMidColor, colUp, colDn)
+    storage.push(dObj)
+//}
+
+// PLOTS {
+// Donchian mid + fill
+mid1 = plot(dcMd, "Mid", color = midColor, linewidth = 1)
+mid2 = plot(dcMd[2], "Mid (Offset)", color = na, linewidth = 1)
+fill(mid1, mid2, color = color.new(midColor, 70))
+
+// Donchian bands
+upperPlot = plot(dcHi, "Upper", color = donUp)
+lowerPlot = plot(dcLo, "Lower", color = donDn)
+fill(upperPlot, lowerPlot, color = color.new(colFill, 90))
+
+// Optional MA plot
+maPlot = plot(plotma ? ma : na, "Signal MA", color = maCol, linewidth = 2)
+
+// Signal offset for markers
+of = ta.ema(ta.atr(14), 200)
+
+plotshape(signalDn ? dcHi + of : na, "Signal Down", shape.triangledown, location.absolute, sigcolDn, size = size.tiny)
+plotshape(signalUp ? dcLo - of : na, "Signal Up",   shape.triangleup,   location.absolute, sigcolUp, size = size.tiny)
+plotshape(signalDn ? dcHi + of : na, "Signal Down Big", shape.triangledown, location.absolute, color.new(sigcolDn, 60), size = size.small)
+plotshape(signalUp ? dcLo - of : na, "Signal Up Big",   shape.triangleup,   location.absolute, color.new(sigcolUp, 60), size = size.small)
+//}

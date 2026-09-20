@@ -5,7 +5,7 @@ import type { Order, Trade } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { PositionsTable } from '../components/PositionsTable'
 import { ErrorState, ExitReasonPill, Loading, PageTitle, Panel, Pnl, QueryState, SidePill, StatusDot } from '../components/ui'
-import { fmtDateTime, fmtDuration, fmtInt, fmtPct, fmtPrice, fmtR, fmtTime } from '../lib/format'
+import { fmtDateTime, fmtDuration, fmtInt, fmtPct, fmtPrice, fmtR, fmtTime, fmtPnl, fmtMoney } from '../lib/format'
 
 const EXIT_REASONS = ['tp3', 'sl', 'be', 'script_exit', 'reversal', 'manual', 'tp_partial']
 
@@ -107,7 +107,7 @@ export function Trades() {
       </Panel>
 
       <Panel
-        title={<span>Closed trades <span className="muted small">({rows.length})</span></span>}
+        title={<span>Closed trades <span className="muted small">({rows.length})</span> <span className={`mono small ${rows.reduce((a, t) => a + t.pnl, 0) >= 0 ? 'gain' : 'loss'}`}>· net {fmtPnl(rows.reduce((a, t) => a + t.pnl, 0))}</span> <span className="muted small">· fees {fmtMoney(rows.reduce((a, t) => a + (t.fees ?? 0), 0))}</span></span>}
         right={
           <div className="row gap filters">
             <select className="select select-sm" value={scanner} onChange={(e) => setScanner(e.target.value)} aria-label="Scanner">

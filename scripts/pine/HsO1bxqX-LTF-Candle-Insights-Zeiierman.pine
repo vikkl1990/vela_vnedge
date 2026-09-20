@@ -1,0 +1,115 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("LTF Candle Insights (Zeiierman)",overlay = true,max_bars_back = 500, max_boxes_count = 500)
+
+// ~~ Inputs {
+tf       = input.timeframe("1","Timeframe", group="Lower Timeframe Candles")
+numb     = input.int(20,"Amount of Candles",minval=0, maxval=100, group="Lower Timeframe Candles")
+dn_col   = input.color(color.new(color.red,10), title="Dn", inline="Candles", group="Lower Timeframe Candles")
+dn_wick  = input.color(color.new(color.red,0), title="Wick", inline="Candles", group="Lower Timeframe Candles")
+up_col   = input.color(color.new(color.lime,10), title="Up",inline="Candles", group="Lower Timeframe Candles")
+up_wick  = input.color(color.new(color.lime,0), title="Wick", inline="Candles", group="Lower Timeframe Candles")
+Range    = input.bool(true,"Range High/Low", inline="range", group="Range")
+Mid      = input.bool(true,"Range Mid", inline="range", group="Range")
+high_col = input.color(color.red, title="High", inline="range 1", group="Range")
+low_col  = input.color(color.lime, title="Low",inline="range 1", group="Range")
+mid_col  = input.color(color.rgb(20, 69, 246), title="Mid",inline="range 1", group="Range")
+loc      = input.int(1,"Location", group="Location Settings")
+
+// ~~ Table Inputs {
+showTable      = input.bool(true,title="Show Table", inline="tbl", group="Table")
+TblSize        = input.string(size.normal,title="",options=[size.auto,size.tiny,size.small,size.normal,size.large,size.huge],inline="tbl", group="Table")
+pos            = input.string(position.top_right, title="",options =[position.top_right,position.top_center,
+ position.top_left,position.bottom_right,position.bottom_center,position.bottom_left,position.middle_right,position.middle_left],inline="tbl", group="Table")
+textcolor      = input.color(color.white, title="Text",inline="tbl_col", group="Table")
+bgcolor        = input.color(color.new(color.blue,30), title="Bg",inline="tbl_col", group="Table")
+//~~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ LTF Error Message {
+tfs = str.tonumber(tf)
+if str.tostring(tf) == "1D"
+    tfs := 1440 
+error = str.tonumber(timeframe.period)<tfs
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ UDT {
+type Candle
+    array<box> candle
+    array<line> wickH
+    array<line> wickL
+    array<float> hl
+type LTF
+    array<float> o
+    array<float> h
+    array<float> l
+    array<float> c
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+var candle  = Candle.new(array.new<box>(numb),array.new<line>(numb),array.new<line>(numb),array.new<float>(numb*2))
+var ltfData = LTF.new(array.new<float>(numb),array.new<float>(numb),array.new<float>(numb),array.new<float>(numb))
+ltfO        = request.security_lower_tf(syminfo.tickerid, tf, open)
+ltfH        = request.security_lower_tf(syminfo.tickerid, tf, high)
+ltfL        = request.security_lower_tf(syminfo.tickerid, tf, low)
+ltfC        = request.security_lower_tf(syminfo.tickerid, tf, close)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Code {
+//~~Save Previous Candle Data
+if timeframe.change(timeframe.period)
+    if ltfData.o.size()>numb
+        while ltfData.o.size()>numb
+            ltfData.o.shift()
+            ltfData.h.shift()
+            ltfData.l.shift()
+            ltfData.c.shift()
+    ltfData.o.concat(ltfO)
+    ltfData.h.concat(ltfH)
+    ltfData.l.concat(ltfL)
+    ltfData.c.concat(ltfC)
+
+//~~ Plot Candles
+if ltfData.o.size()>=numb
+    d = loc
+    for i=ltfData.o.size()-numb to ltfData.o.size()-1
+        candle.candle.shift().delete()
+        candle.wickH.shift().delete()
+        candle.wickL.shift().delete()
+        candle.hl.shift()
+        candle.hl.shift()
+        o = ltfData.o.get(i)
+        h = ltfData.h.get(i)
+        l = ltfData.l.get(i)
+        c = ltfData.c.get(i)
+        candle.candle.push(box.new(b+d*2+loc,math.max(o,c),b+d*2+2+loc,math.min(o,c),color(na),bgcolor=o>c?dn_col:up_col))
+        candle.wickH.push(line.new(b+d*2+1+loc,math.max(o,c),b+d*2+1+loc,h,color=o>c?dn_col:up_col))
+        candle.wickL.push(line.new(b+d*2+1+loc,math.min(o,c),b+d*2+1+loc,l,color=o>c?dn_col:up_col))
+        candle.hl.push(h)
+        candle.hl.push(l)
+        d += 2
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range {
+if Range
+    RangeHigh  = line.new(b,candle.hl.max(),b+numb*4+loc*3,candle.hl.max(),color=high_col,extend=extend.none)
+    RangeLow   = line.new(b,candle.hl.min(),b+numb*4+loc*3,candle.hl.min(),color=low_col,extend=extend.none)
+    (RangeHigh[1]).delete()
+    (RangeLow[1]).delete()
+
+if Mid    
+    RangeMid = line.new(b,math.avg(candle.hl.max(),candle.hl.min()),b+numb*4+loc*3,math.avg(candle.hl.max(),candle.hl.min()),color=mid_col,extend=extend.none)
+    (RangeMid[1]).delete()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table { 
+tbl            = table.new(pos, 2, 11, frame_color=chart.bg_color, frame_width=2, border_width=2, border_color=chart.bg_color)
+if barstate.islast and showTable
+    tbl.cell(0, 0, text=error?"Error":"TF", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+    tbl.cell(0, 1, text=error?"The chart's timeframe must be greater than the LTF '"+tf+"' timeframe. \n\nor please select a lower timeframe in the setting panel of the indicator.":str.tostring(timeframe.period), text_halign=text.align_center, bgcolor=bgcolor, text_color=textcolor, text_size=TblSize)
+    tbl.cell(1, 0, text="LTF", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+    tbl.cell(1, 1, text=str.tostring(tf), text_halign=text.align_center, bgcolor=bgcolor, text_color=textcolor, text_size=TblSize)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

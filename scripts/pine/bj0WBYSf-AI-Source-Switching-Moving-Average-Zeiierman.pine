@@ -1,0 +1,537 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("AI Source Switching Moving Average (Zeiierman)", overlay = true, max_bars_back = 3000, max_labels_count = 500, precision = 4, behind_chart = false)
+//}
+
+// ~~ Tooltips {
+var string t1 = "Selects the moving-average formula applied to the AI-selected price source. Faster types such as EMA, WMA, ZLEMA, and HMA react more quickly, while smoother types such as SMA, RMA, KAMA, and ALMA reduce noise and delay source-switch impact."
+var string t2 = "Defines the length of the final moving average calculated from the AI-selected OHLC source. Higher values create a slower, smoother trend line. Lower values make the average more responsive but can increase noise."
+var string t3 = "Controls the smoothing applied after the engine selects Open, High, Low, or Close. Higher values soften abrupt source changes and make the line more stable. Lower values keep the selected source closer to the raw hard-switch output."
+var string t4 = "Sets how many historical learning rows are stored for each OHLC source. Larger values give the analog engine more memory and broader context, but can make adaptation slower. Smaller values react faster to recent conditions but may be less stable."
+var string t5 = "Defines how many closest historical analogs are used when scoring each source. Higher values create broader consensus and smoother source rankings. Lower values focus only on the most similar past conditions and can react more aggressively."
+var string t6 = "Defines how many bars ahead the engine uses to label past outcomes during learning. Higher values train the model on longer forward moves. Lower values train it on shorter-term reactions and can make the source selection more sensitive."
+var string t7 = "Controls how far apart historical analog samples must be when scanning the memory bank. Higher spacing reduces clustering from nearby similar bars and improves diversity. Lower spacing uses more nearby samples and can make the analog engine more reactive."
+var string t8 = "Sets the ATR-based threshold used to classify the strength of historical forward movement. Higher values require larger price moves to count as strong outcomes. Lower values make the learning engine more sensitive to smaller moves."
+var string t9 = "Enables the online neural training layer. When active, the script continuously updates feature weights from confirmed bars to add a self-adaptive directional bias to the source ranking model."
+var string t10 = "Controls how much the neural score contributes to the source ranking. Higher values give the online neural model more authority. Lower values rely more on analog similarity, agreement, and tightness from the KNN engine."
+var string t11 = "Sets the step size used by the online neural optimizer. Higher values adapt faster but may become unstable or overreact. Lower values learn more slowly and usually produce smoother behavior."
+var string t12 = "Defines the Huber loss threshold used during neural training. Smaller values reduce the effect of large errors and make learning more conservative. Larger values allow stronger corrections when predictions are wrong."
+var string t13 = "Enables Fisher-based automatic feature weighting. When active, the script estimates which features best separate bullish and bearish outcomes and gives those features more influence in analog distance calculations."
+var string t14 = "Controls how quickly the Fisher feature weights adapt toward newly calculated values. Higher values update weights faster but can be less stable. Lower values make the weighting smoother and more persistent."
+var string t15 = "Sets the minimum allowed feature weight in the Fisher weighting model. Higher values prevent any feature from becoming too weak. Lower values allow the model to suppress less useful features more aggressively."
+var string t16 = "Defines the minimum number of rows required before Fisher weighting becomes fully active. Higher values wait for more historical evidence before adapting feature importance. Lower values activate optimization sooner."
+var string t17 = "Shows or hides the AI Supertrend trail. When enabled, the trail uses the AI-selected source and an adaptive ATR multiplier based on the model drive score."
+var string t18 = "Sets the ATR length used for the AI Supertrend bands. Higher values create smoother and wider trail behavior. Lower values react faster to recent volatility changes."
+var string t19 = "Controls the base ATR multiplier for the AI Supertrend. Higher values create wider bands and fewer flips. Lower values make the trail tighter and more sensitive to price movement."
+var string t20 = "Controls how strongly the Supertrend band width adapts to AI confidence. Higher values make the trail expand when AI drive is weak and tighten when AI drive is strong. Lower values keep the band behavior closer to the base ATR multiplier."
+var string t21 = "Sets the bullish color used for the moving average, Supertrend trail, candles, fills, and bullish markers when the trend state is positive."
+var string t22 = "Sets the bearish color used for the moving average, Supertrend trail, candles, fills, and bearish markers when the trend state is negative."
+var string t23 = "Sets the neutral color used for Open-source switch markers and other neutral visual elements."
+var string t24 = "Shows or hides the overlay candles colored by the current AI Supertrend direction. Disable this if you only want the moving average and trail without replacing the chart candle colors."
+var string t25 = "Shows or hides the O, H, L, and C markers that appear when the AI source selector changes the active price source. This is useful for debugging and understanding when the engine switches between Open, High, Low, and Close."
+var string t26 = "Shows or hides the Supertrend flip markers. When enabled, triangle markers appear on bullish and bearish trend flips generated by the AI Supertrend trail."
+var string t27 = "Enables or disables the glow fill between the AI moving average and price. This visual highlight makes the distance between price and the AI average easier to see without changing the calculation."
+var string t28 = "Enables or disables the glow fill between the AI Supertrend trail and price. This highlights the trailing stop zone and makes bullish or bearish trail pressure easier to see."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+groupCore = "AI Moving Average"
+maType = input.string("EMA", "MA Type", options=["SMA", "EMA", "WMA", "VWMA", "RMA", "HMA", "TEMA", "ZLEMA", "KAMA", "ALMA"], group=groupCore, tooltip=t1)
+maLen = input.int(50, "MA Length", minval=2, group=groupCore, tooltip=t2)
+srcSmoothLen = input.int(3, "AI Source Smoothing", minval=1, group=groupCore, tooltip=t3)
+
+groupML = "Machine Learning Engine"
+memoryDepth = input.int(40, "Memory Depth", minval=5, maxval=2000, group=groupML, tooltip=t4)
+kNeighbors = input.int(9, "Analog Count", minval=1, maxval=50, group=groupML, tooltip=t5)
+horizonBars = input.int(4, "Learning Horizon", minval=1, maxval=20, group=groupML, tooltip=t6)
+spacingBars = input.int(4, "Analog Spacing", minval=1, maxval=20, group=groupML, tooltip=t7)
+learnAtrFactor = input.float(0.45, "Learning Sensitivity x ATR", minval=0.05, step=0.05, group=groupML, tooltip=t8)
+
+groupAI = "Neural Training"
+useNeural = input.bool(true, "Use Neural Online Training", group=groupAI, tooltip=t9)
+neuralInfluence = input.float(0.35, "Neural Influence", minval=0, maxval=1, step=0.05, group=groupAI, tooltip=t10)
+learnRate = input.float(0.01, "Learning Rate", minval=0.001, maxval=0.1, step=0.001, group=groupAI, tooltip=t11)
+huberD = input.float(0.02, "Huber Delta", minval=0.001, maxval=0.2, step=0.001, group=groupAI, tooltip=t12)
+
+groupFisher = "Fisher Auto Weights"
+useFisher = input.bool(true, "Auto Optimize Feature Weights", group=groupFisher, tooltip=t13)
+fisherSpeed = input.float(0.20, "Adaptation Speed", minval=0.005, maxval=1, step=0.005, group=groupFisher, tooltip=t14)
+fisherFloor = input.float(0.40, "Weight Floor", minval=0.05, maxval=2, step=0.05, group=groupFisher, tooltip=t15)
+minRows = input.int(80, "Minimum Rows", minval=20, maxval=500, group=groupFisher, tooltip=t16)
+
+groupST = "AI Supertrend"
+showST = input.bool(true, "Show AI Supertrend", group=groupST, tooltip=t17)
+stLen = input.int(10, "ATR Length", minval=1, group=groupST, tooltip=t18)
+stMult = input.float(1.7, "ATR Multiplier", minval=0.5, step=0.1, group=groupST, tooltip=t19)
+stAdapt = input.float(0.80, "AI Band Adaptivity", minval=0, maxval=1, step=0.05, group=groupST, tooltip=t20)
+
+groupStyle = "Style"
+bullCol = input.color(#00e676, "Bullish", group=groupStyle, tooltip=t21)
+bearCol = input.color(#ff5252, "Bearish", group=groupStyle, tooltip=t22)
+neutralCol = input.color(color.gray, "Neutral", group=groupStyle, tooltip=t23)
+showCandles = input.bool(false, "Show AI Trend Candles", group=groupStyle, tooltip=t24)
+showSourceMarks = input.bool(false, "Show AI Source Switch Marks", group=groupStyle, tooltip=t25)
+showFlipMarks = input.bool(true, "Show Supertrend Flip Marks", group=groupStyle, tooltip=t26)
+showMAGlow = input.bool(true, "Show MA Glow", group=groupStyle, tooltip=t27)
+showTrailGlow = input.bool(true, "Show Trail Glow", group=groupStyle, tooltip=t28)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+
+// ~~ Utility Functions {
+clamp(x, lo, hi) =>
+    math.max(lo, math.min(x, hi))
+
+scale01(x, len) =>
+    lo = ta.lowest(x, len)
+    hi = ta.highest(x, len)
+    hi == lo ? 0.5 : clamp((x - lo) / (hi - lo), 0.0, 1.0)
+
+compress(d) =>
+    math.log(1.0 + math.abs(d))
+
+normScore(x) =>
+    1.0 / (1.0 + math.exp(-clamp(x, -8, 8)))
+
+srcName(id) =>
+    id == 0 ? "Open" : id == 1 ? "High" : id == 2 ? "Low" : "Close"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Moving Average Function {
+ma(src, len, typ) =>
+    switch typ
+        "SMA" => ta.sma(src, len)
+        "EMA" => ta.ema(src, len)
+        "WMA" => ta.wma(src, len)
+        "VWMA" => ta.vwma(src, len)
+        "RMA" => ta.rma(src, len)
+        "HMA" => ta.hma(src, len)
+        "TEMA" =>
+            ema1 = ta.ema(src, len)
+            ema2 = ta.ema(ema1, len)
+            ema3 = ta.ema(ema2, len)
+            3.0 * (ema1 - ema2) + ema3
+        "ZLEMA" =>
+            lag = math.max(1, math.floor((len - 1) / 2))
+            ta.ema(src + (src - src[lag]), len)
+        "KAMA" =>
+            changeAbs = math.abs(src - src[len])
+            volatility = math.sum(math.abs(src - src[1]), len)
+            er = volatility == 0 ? 0.0 : changeAbs / volatility
+            fastSC = 2.0 / 3.0
+            slowSC = 2.0 / 31.0
+            sc = math.pow(er * (fastSC - slowSC) + slowSC, 2)
+            var float kama = na
+            kama := na(kama[1]) ? src : kama[1] + sc * (src - kama[1])
+        "ALMA" => ta.alma(src, len, 0.85, 6.0)
+        => ta.ema(src, len)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Feature Functions {
+featTrend(src, atrVal) =>
+    fast = ta.ema(src, 10)
+    slow = ta.ema(src, 34)
+    atrVal == 0 ? 0.0 : clamp((fast - slow) / atrVal, -3, 3) / 3
+
+featMean(src) =>
+    basis = ta.sma(src, 30)
+    dev = ta.stdev(src, 30)
+    z = dev == 0 ? 0.0 : (src - basis) / dev
+    clamp(-z, -3, 3) / 3
+
+featMomentum(src) =>
+    roc = src / src[14] - 1.0
+    clamp(roc / 0.05, -3, 3) / 3
+
+featVol(src) =>
+    scale01(ta.stdev(src, 20), 100) * 2.0 - 1.0
+
+featRange(src) =>
+    rng = high - low
+    rng == 0 ? 0.0 : clamp(((src - low) / rng) * 2.0 - 1.0, -1, 1)
+
+featSlope(src, atrVal) =>
+    atrVal == 0 ? 0.0 : clamp((src - src[3]) / atrVal, -3, 3) / 3
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Feature Calculations {
+atrNow = ta.atr(14)
+
+oT  = featTrend(open, atrNow)
+oM  = featMean(open)
+oMo = featMomentum(open)
+oV  = featVol(open)
+oR  = featRange(open)
+oS  = featSlope(open, atrNow)
+
+hT  = featTrend(high, atrNow)
+hM  = featMean(high)
+hMo = featMomentum(high)
+hV  = featVol(high)
+hR  = featRange(high)
+hS  = featSlope(high, atrNow)
+
+lT  = featTrend(low, atrNow)
+lM  = featMean(low)
+lMo = featMomentum(low)
+lV  = featVol(low)
+lR  = featRange(low)
+lS  = featSlope(low, atrNow)
+
+cT  = featTrend(close, atrNow)
+cM  = featMean(close)
+cMo = featMomentum(close)
+cV  = featVol(close)
+cR  = featRange(close)
+cS  = featSlope(close, atrNow)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Learning Dataset Functions {
+valid(t, m, mo, v, r, s) =>
+    not na(t) and not na(m) and not na(mo) and not na(v) and not na(r) and not na(s)
+
+makeRow(t, m, mo, v, r, s, outcome) =>
+    array.from(t, m, mo, v, r, s, float(outcome))
+
+var matrix<float> bankO = matrix.new<float>(0, 7)
+var matrix<float> bankH = matrix.new<float>(0, 7)
+var matrix<float> bankL = matrix.new<float>(0, 7)
+var matrix<float> bankC = matrix.new<float>(0, 7)
+var matrix<float> bankAll = matrix.new<float>(0, 7)
+
+addBank(matrix<float> m, array<float> row, int limit) =>
+    m.add_row(0, row)
+    if m.rows() > limit
+        m.remove_row(m.rows() - 1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Learning Dataset Update {
+moveFwd = close - close[horizonBars]
+bandFwd = learnAtrFactor * atrNow[horizonBars]
+outcome = moveFwd > 2 * bandFwd ? 3 : moveFwd > bandFwd ? 2 : moveFwd > 0 ? 1 : moveFwd < -2 * bandFwd ? -3 : moveFwd < -bandFwd ? -2 : moveFwd < 0 ? -1 : 0
+
+rowO = makeRow(oT[horizonBars], oM[horizonBars], oMo[horizonBars], oV[horizonBars], oR[horizonBars], oS[horizonBars], outcome)
+rowH = makeRow(hT[horizonBars], hM[horizonBars], hMo[horizonBars], hV[horizonBars], hR[horizonBars], hS[horizonBars], outcome)
+rowL = makeRow(lT[horizonBars], lM[horizonBars], lMo[horizonBars], lV[horizonBars], lR[horizonBars], lS[horizonBars], outcome)
+rowC = makeRow(cT[horizonBars], cM[horizonBars], cMo[horizonBars], cV[horizonBars], cR[horizonBars], cS[horizonBars], outcome)
+
+validO = valid(oT[horizonBars], oM[horizonBars], oMo[horizonBars], oV[horizonBars], oR[horizonBars], oS[horizonBars])
+validH = valid(hT[horizonBars], hM[horizonBars], hMo[horizonBars], hV[horizonBars], hR[horizonBars], hS[horizonBars])
+validL = valid(lT[horizonBars], lM[horizonBars], lMo[horizonBars], lV[horizonBars], lR[horizonBars], lS[horizonBars])
+validC = valid(cT[horizonBars], cM[horizonBars], cMo[horizonBars], cV[horizonBars], cR[horizonBars], cS[horizonBars])
+
+if barstate.isconfirmed and bar_index > horizonBars + 120
+    if validO
+        addBank(bankO, rowO, memoryDepth)
+        addBank(bankAll, rowO, memoryDepth * 4)
+    if validH
+        addBank(bankH, rowH, memoryDepth)
+        addBank(bankAll, rowH, memoryDepth * 4)
+    if validL
+        addBank(bankL, rowL, memoryDepth)
+        addBank(bankAll, rowL, memoryDepth * 4)
+    if validC
+        addBank(bankC, rowC, memoryDepth)
+        addBank(bankAll, rowC, memoryDepth * 4)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fisher Auto Weights {
+autoFeatureWeights(matrix<float> m, int minN, float floor) =>
+    int n = m.rows()
+    array<float> imp = array.new<float>(6, 1.0)
+    if n >= minN
+        array<float> sumB = array.new<float>(6, 0.0)
+        array<float> sumS = array.new<float>(6, 0.0)
+        array<float> sqB = array.new<float>(6, 0.0)
+        array<float> sqS = array.new<float>(6, 0.0)
+        int cntB = 0
+        int cntS = 0
+        for i = 0 to n - 1
+            cls = m.get(i, 6)
+            if cls != 0
+                isBull = cls > 0
+                for j = 0 to 5
+                    val = m.get(i, j)
+                    if isBull
+                        sumB.set(j, sumB.get(j) + val)
+                        sqB.set(j, sqB.get(j) + val * val)
+                    else
+                        sumS.set(j, sumS.get(j) + val)
+                        sqS.set(j, sqS.get(j) + val * val)
+                cntB += isBull ? 1 : 0
+                cntS += isBull ? 0 : 1
+        if cntB > 3 and cntS > 3
+            maxF = 0.0
+            fish = array.new<float>(6, 0.0)
+            for j = 0 to 5
+                meanB = sumB.get(j) / cntB
+                meanS = sumS.get(j) / cntS
+                varB = math.max(0.0, sqB.get(j) / cntB - meanB * meanB)
+                varS = math.max(0.0, sqS.get(j) / cntS - meanS * meanS)
+                f = math.pow(meanB - meanS, 2) / (varB + varS + 0.000001)
+                fish.set(j, f)
+                maxF := math.max(maxF, f)
+            for j = 0 to 5
+                norm = maxF > 0 ? fish.get(j) / maxF : 1.0
+                imp.set(j, math.max(floor, norm * 8.0))
+    imp
+
+var array<float> wAuto = array.new<float>(6, 1.0)
+
+if useFisher and barstate.isconfirmed
+    wRaw = autoFeatureWeights(bankAll, minRows, fisherFloor)
+    for j = 0 to 5
+        prev = wAuto.get(j)
+        wAuto.set(j, prev + fisherSpeed * (wRaw.get(j) - prev))
+
+wT  = useFisher ? wAuto.get(0) : 1.0
+wM  = useFisher ? wAuto.get(1) : 1.0
+wMo = useFisher ? wAuto.get(2) : 1.0
+wV  = useFisher ? wAuto.get(3) : 1.0
+wR  = useFisher ? wAuto.get(4) : 1.0
+wS  = useFisher ? wAuto.get(5) : 1.0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ KNN Analog Engine {
+gapTo(t, m, mo, v, r, s, array<float> row) =>
+    wT * compress(t - row.get(0)) +
+     wM * compress(m - row.get(1)) +
+     wMo * compress(mo - row.get(2)) +
+     wV * compress(v - row.get(3)) +
+     wR * compress(r - row.get(4)) +
+     wS * compress(s - row.get(5))
+
+knnScore(t, m, mo, v, r, s, matrix<float> bank) =>
+    gaps = array.new<float>()
+    classes = array.new<float>()
+    n = bank.rows()
+    scanEnd = math.min(n - 1, memoryDepth - 1)
+    if n > 1 and valid(t, m, mo, v, r, s)
+        for i = 0 to scanEnd
+            if i % spacingBars == 0
+                row = bank.row(i)
+                g = gapTo(t, m, mo, v, r, s, row)
+                cls = row.get(6)
+                if not na(g) and cls != 0
+                    if gaps.size() < kNeighbors
+                        gaps.push(g)
+                        classes.push(cls)
+                    else
+                        worst = 0
+                        worstGap = gaps.get(0)
+                        for j = 1 to gaps.size() - 1
+                            gj = gaps.get(j)
+                            if gj > worstGap
+                                worstGap := gj
+                                worst := j
+                        if g < worstGap
+                            gaps.set(worst, g)
+                            classes.set(worst, cls)
+    total  = 0.0
+    bull   = 0.0
+    bear   = 0.0
+    score  = 0.0
+    gapSum = 0.0
+    k = gaps.size()
+    if k > 0
+        for j = 0 to k - 1
+            g = gaps.get(j)
+            cls = classes.get(j)
+            wg = 1.0 / (1.0 + g)
+            total += wg
+            score += cls * wg
+            bull += cls > 0 ? wg : 0.0
+            bear += cls < 0 ? wg : 0.0
+            gapSum += g
+    analog = total > 0 ? score / total : 0.0
+    dir    = analog > 0.15 ? 1 : analog < -0.15 ? -1 : 0
+    agree  = total > 0 ? (dir == 1 ? bull : dir == -1 ? bear : 0.0) / total : 0.0
+    avgGap = k > 0 ? gapSum / k : 0.0
+    gapScale = (wT + wM + wMo + wV + wR + wS) * 0.45 + 0.000001
+    tight    = clamp(1.0 - avgGap / gapScale, 0.0, 1.0)
+    [analog, agree, tight, k]
+
+[oAnalog, oAgree, oTight, oK] = knnScore(oT, oM, oMo, oV, oR, oS, bankO)
+[hAnalog, hAgree, hTight, hK] = knnScore(hT, hM, hMo, hV, hR, hS, bankH)
+[lAnalog, lAgree, lTight, lK] = knnScore(lT, lM, lMo, lV, lR, lS, bankL)
+[cAnalog, cAgree, cTight, cK] = knnScore(cT, cM, cMo, cV, cR, cS, bankC)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Neural Online Training {
+beta1 = 0.9
+beta2 = 0.999
+eps   = 0.00000001
+
+adam(weight, grad, mom, vel, step) =>
+    newMom = beta1 * mom + (1.0 - beta1) * grad
+    newVel = beta2 * vel + (1.0 - beta2) * grad * grad
+    mHat = newMom / (1.0 - math.pow(beta1, step))
+    vHat = newVel / (1.0 - math.pow(beta2, step))
+    newWeight = weight - learnRate * mHat / (math.sqrt(vHat) + eps)
+    [newWeight, newMom, newVel]
+
+var float nt = 0.01
+var float nm = 0.01
+var float nmo = 0.01
+var float nv = 0.01
+var float nr = 0.01
+var float ns = 0.01
+var float nb = 0.0
+
+var float mt = 0.0
+var float mm = 0.0
+var float mmo = 0.0
+var float mv = 0.0
+var float mr = 0.0
+var float ms = 0.0
+var float mb = 0.0
+
+var float vt = 0.0
+var float vm = 0.0
+var float vmo = 0.0
+var float vv = 0.0
+var float vr = 0.0
+var float vs = 0.0
+var float vb = 0.0
+
+var int step = 0
+
+targetDir = outcome > 0 ? 1.0 : outcome < 0 ? -1.0 : 0.0
+trainPred = nt * cT[horizonBars] + nm * cM[horizonBars] + nmo * cMo[horizonBars] + nv * cV[horizonBars] + nr * cR[horizonBars] + ns * cS[horizonBars] + nb
+trainErr  = trainPred - targetDir
+trainAbsErr = math.abs(trainErr)
+trainGrad   = trainAbsErr <= huberD ? trainErr : huberD * math.sign(trainErr)
+
+if useNeural and barstate.isconfirmed and bar_index > horizonBars + 120 and validC and targetDir != 0
+    step += 1
+    [nt2, mt2, vt2] = adam(nt, trainGrad * cT[horizonBars], mt, vt, step)
+    [nm2, mm2, vm2] = adam(nm, trainGrad * cM[horizonBars], mm, vm, step)
+    [nmo2, mmo2, vmo2] = adam(nmo, trainGrad * cMo[horizonBars], mmo, vmo, step)
+    [nv2, mv2, vv2] = adam(nv, trainGrad * cV[horizonBars], mv, vv, step)
+    [nr2, mr2, vr2] = adam(nr, trainGrad * cR[horizonBars], mr, vr, step)
+    [ns2, ms2, vs2] = adam(ns, trainGrad * cS[horizonBars], ms, vs, step)
+    [nb2, mb2, vb2] = adam(nb, trainGrad, mb, vb, step)
+
+    nt := nt2
+    nm := nm2
+    nmo := nmo2
+    nv := nv2
+    nr := nr2
+    ns := ns2
+    nb := nb2
+
+    mt := mt2
+    mm := mm2
+    mmo := mmo2
+    mv := mv2
+    mr := mr2
+    ms := ms2
+    mb := mb2
+
+    vt := vt2
+    vm := vm2
+    vmo := vmo2
+    vv := vv2
+    vr := vr2
+    vs := vs2
+    vb := vb2
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Source Ranking {
+neuralScore(t, m, mo, v, r, s) =>
+    nt * t + nm * m + nmo * mo + nv * v + nr * r + ns * s + nb
+
+regimePenalty = 0.0
+
+rankSource(t, m, mo, v, r, s, analog, agree, tight, k) =>
+    neural = useNeural ? neuralScore(t, m, mo, v, r, s) : 0.0
+    directional = math.abs(analog) / 3.0
+    raw = directional * 0.35 + agree * 0.25 + tight * 0.20 + normScore(neural) * neuralInfluence + (k >= kNeighbors ? 0.10 : 0.0) - regimePenalty
+    clamp(raw, 0.0, 1.0)
+
+rO = rankSource(oT, oM, oMo, oV, oR, oS, oAnalog, oAgree, oTight, oK)
+rH = rankSource(hT, hM, hMo, hV, hR, hS, hAnalog, hAgree, hTight, hK)
+rL = rankSource(lT, lM, lMo, lV, lR, lS, lAnalog, lAgree, lTight, lK)
+rC = rankSource(cT, cM, cMo, cV, cR, cS, cAnalog, cAgree, cTight, cK)
+
+ready  = bankO.rows() > 20 and bankH.rows() > 20 and bankL.rows() > 20 and bankC.rows() > 20
+safeRO = ready ? rO : 0.25
+safeRH = ready ? rH : 0.25
+safeRL = ready ? rL : 0.25
+safeRC = ready ? rC : 0.25
+
+bestId = safeRO >= safeRH and safeRO >= safeRL and safeRO >= safeRC ? 0 : safeRH >= safeRL and safeRH >= safeRC ? 1 : safeRL >= safeRC ? 2 : 3
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ AI Source Selection {
+hardSrc = bestId == 0 ? open : bestId == 1 ? high : bestId == 2 ? low : close
+aiSourceRaw = hardSrc
+aiSource = ta.ema(aiSourceRaw, srcSmoothLen)
+aiMA = ma(aiSource, maLen, maType)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ AI Supertrend Calculation {
+avgAnalog = (oAnalog + hAnalog + lAnalog + cAnalog) / 4.0
+avgAgree  = (oAgree + hAgree + lAgree + cAgree) / 4.0
+avgTight  = (oTight + hTight + lTight + cTight) / 4.0
+
+aiDrive = clamp(math.abs(avgAnalog) * 0.20 + avgAgree * 0.40 + avgTight * 0.40, 0.0, 1.0)
+
+adaptMult = stMult * (1.0 + stAdapt * (1.0 - aiDrive))
+stAtr  = ta.atr(stLen)
+upBand = aiSource - adaptMult * stAtr
+dnBand = aiSource + adaptMult * stAtr
+
+var float stLong = na
+var float stShort = na
+var int stDir = 1
+
+stLong := na(stLong[1]) ? upBand : close[1] > stLong[1] ? math.max(upBand, stLong[1]) : upBand
+stShort := na(stShort[1]) ? dnBand : close[1] < stShort[1] ? math.min(dnBand, stShort[1]) : dnBand
+stDir := na(stDir[1]) ? 1 : stDir[1] == -1 and close > stShort[1] ? 1 : stDir[1] == 1 and close < stLong[1] ? -1 : nz(stDir[1], 1)
+
+stLine   = stDir == 1 ? stLong : stShort
+stFlipUp = stDir == 1 and stDir[1] == -1
+stFlipDn = stDir == -1 and stDir[1] == 1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+maCol   = stDir == 1 ? bullCol : bearCol
+trailUp = showST and stDir == 1 ? stLine : na
+trailDn = showST and stDir == -1 ? stLine : na
+
+pMA = plot(aiMA, "AI Source Adaptive MA", color=maCol, linewidth=2, force_overlay=true)
+
+pTrailUp = plot(trailUp, "AI Supertrend Up", color=color.new(bullCol, 0), linewidth=2, style=plot.style_linebr, force_overlay=true)
+pTrailDn = plot(trailDn, "AI Supertrend Down", color=color.new(bearCol, 0), linewidth=2, style=plot.style_linebr, force_overlay=true)
+pClose   = plot(close, "Glow Anchor", display=display.none, editable=false, force_overlay=true)
+
+fill(pMA, pClose, aiMA, close, showMAGlow ? color.new(maCol, 85) : na, color(na))
+fill(pTrailUp, pClose, trailUp, close, showTrailGlow ? color.new(bullCol, 85) : na, color(na))
+fill(pTrailDn, pClose, trailDn, close, showTrailGlow ? color.new(bearCol, 85) : na, color(na))
+
+c_ = stDir == 1 ? color.new(bullCol, 0) : color.new(bearCol, 0)
+plotcandle(showCandles ? open : na, showCandles ? high : na, showCandles ? low : na, showCandles ? close : na, color=c_, wickcolor=c_, bordercolor=c_)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Source Switch Marks {
+sourceChanged = bestId != bestId[1]
+
+plotshape(showSourceMarks and sourceChanged and bestId == 0, title="Source Open", text="O", style=shape.labelup, location=location.belowbar, color=color.new(neutralCol, 0), textcolor=color.white, size=size.tiny)
+plotshape(showSourceMarks and sourceChanged and bestId == 1, title="Source High", text="H", style=shape.labelup, location=location.belowbar, color=color.new(bullCol, 0), textcolor=color.black, size=size.tiny)
+plotshape(showSourceMarks and sourceChanged and bestId == 2, title="Source Low", text="L", style=shape.labeldown, location=location.abovebar, color=color.new(bearCol, 0), textcolor=color.white, size=size.tiny)
+plotshape(showSourceMarks and sourceChanged and bestId == 3, title="Source Close", text="C", style=shape.labelup, location=location.belowbar, color=color.new(color.white, 0), textcolor=color.black, size=size.tiny)
+
+plotshape(showFlipMarks and stFlipUp?trailUp:na, title="Trend Flip Up", style=shape.triangleup, location=location.absolute, color=bullCol, size=size.tiny)
+plotshape(showFlipMarks and stFlipDn?trailDn:na, title="Trend Flip Down", style=shape.triangledown, location=location.absolute, color=bearCol, size=size.tiny)
+
+plotshape(showFlipMarks and stFlipUp?trailUp:na, title="Trend Flip Up", style=shape.triangleup, location=location.absolute, color=color.new(bullCol,50), size=size.small)
+plotshape(showFlipMarks and stFlipDn?trailDn:na, title="Trend Flip Down", style=shape.triangledown, location=location.absolute, color=color.new(bearCol,50), size=size.small)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alert Conditions {
+alertcondition(stFlipUp, "AI Trend Flip Up", "AI Source Adaptive MA flipped bullish")
+alertcondition(stFlipDn, "AI Trend Flip Down", "AI Source Adaptive MA flipped bearish")
+alertcondition(sourceChanged, "AI Source Changed", "AI Source Selector switched OHLC source")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

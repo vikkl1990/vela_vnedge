@@ -1,0 +1,268 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=5
+indicator("Adaptive Kalman Trend Filter (Zeiierman)", overlay=true)
+//~~}
+
+// ~~ Tooltips {
+string t1 = "Sets the measurement noise, affecting the responsiveness of the Kalman Filter to changes in price. Higher values result in a smoother filter with less noise sensitivity."
+string t2 = "Sets the primary input source for the Kalman filter. Typically, the close price is used, but other values can be selected based on analysis needs."
+string t3 = "Selects the Kalman Filter model: standard, volume-adjusted, or Parkinson-adjusted. Each model adjusts the filter's calculations based on different market conditions."
+string t4 = "Determines the lookback period for calculating the Kalman Filter bands. Higher values will result in wider bands that capture more historical volatility."
+string t5 = "Enables volatility-adjusted bands, which adapt based on recent price volatility to provide a more dynamic range for the filter bands."
+string t6 = "Adjusts the level of smoothing applied to volatility in volatility-adjusted bands. Higher values result in more smoothness in the bands."
+string t7 = "Defines the lookback period for calculating trend strength. Longer periods smooth trend calculations, whereas shorter periods make the indicator more responsive to recent trends."
+string t8 = "Specifies the range calculation period used to evaluate the trend range. This setting impacts how trend strength and range are assessed."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Parameters {
+//@enum Defines Kalman filter extension models
+enum kf_model
+    standard = "standard"
+    volume_adjusted = "volume adjusted"
+    parkinson_adjusted = "Parkinson adjusted"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Settings {
+measNoise1 = 500
+measNoise2 = input.float(5000.0, "Measurement Noise", minval=0.0, maxval=10000, step=0.01, group='General settings', tooltip=t1)
+src        = close  // input.source(close, "Input Source", group='General settings', tooltip=t2)
+selected_kf_model = input.enum(kf_model.standard, "Kalman Filter Model", group='Kalman Model Settings', tooltip=t3)
+N_1      = 20
+N_2      = input.int(20, "Band Sigma", minval=2, step=1, group='Band Settings', tooltip=t4)
+volla    = input.bool(false, title="Volatility Adjusted Bands", group='Band Settings', inline="Band")
+xv       = input.int(1, minval=1, title="", group='Band Settings', inline="Band", tooltip=t5 + "\n\n" + t6)
+N2       = input.int(5, "Trend strength", minval=2, step=1, group='Trend/Range Settings', tooltip=t7)
+rangeLB  = input.int(14, "Trend Range", minval=5, group='Trend/Range Settings', tooltip=t8)
+
+pNoise1  = 0.01 
+pNoise2  = 0.01 
+pNoise12 = 0.00
+pNoise22 = 1000.0
+
+pos_col    = input.color(color.rgb(175, 255, 105, 0), title="Trend", inline="style", group='Style Settings')
+neg_col    = input.color(color.rgb(255, 71, 80, 0), title="", inline="style", group='Style Settings')
+bg_col     = input.color(#91d5ff4d, title="BG", inline="style", group='Style Settings')
+st_col     = input.color(color.rgb(0, 55, 255, 15), title="Trend Strength", inline="style3", group='Style Settings')
+tpos_col   = input.color(color.rgb(175, 255, 105), title="Trend Range", inline="style3", group='Style Settings')
+tneg_col   = input.color(color.rgb(255, 71, 80), title="", inline="style3", group='Style Settings')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Support variables {
+var Y_diff  = array.new<float>()
+var Y_diff2 = array.new<float>()
+var osc_buffer = array.new<float>()
+var osc_buffer2 = array.new<float>()
+var df1 = N_1 - 2
+var df2 = N_2 - 2
+var confLvls = array.from(0.05, 0.25, 0.50, 0.75, 0.90, 0.95)
+var confEstPos  = array.new<float>(array.size(confLvls))
+var confEstNeg = array.new<float>(array.size(confLvls))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Initialize all KF matrices and vectors {
+// ~~ State transition matrix {
+var F = matrix.new<float>(2, 2, 0.0)
+F.set(0, 0, 1.0)
+F.set(0, 1, 1.0)
+F.set(1, 0, 1.0)
+//~~}
+// ~~ Initial covariance matrix {
+var P = matrix.new<float>(2, 2, 0.0)
+matrix.set(P, 0, 0, 1.0)
+matrix.set(P, 1, 1, 1.0)
+var P2 = matrix.new<float>(2, 2, 0.0)
+matrix.set(P2, 0, 0, 1.0)
+matrix.set(P2, 1, 1, 1.0)
+//~~}
+// ~~ Process noise matrix {
+var Q = matrix.new<float>(2, 2, 0.0)
+matrix.set(Q, 0, 0, pNoise1)
+matrix.set(Q, 0, 1, pNoise1*pNoise2)
+matrix.set(Q, 1, 0, pNoise2*pNoise1)
+matrix.set(Q, 1, 1, pNoise2)
+
+var Q2 = matrix.new<float>(2, 2, 0.0)
+matrix.set(Q2, 0, 0, pNoise12)
+matrix.set(Q2, 0, 1, pNoise12*pNoise22)
+matrix.set(Q2, 1, 0, pNoise22*pNoise12)
+matrix.set(Q2, 1, 1, pNoise22)
+//~~}
+// ~~  Measurement noise vector {
+var R1 = matrix.new<float>(1, 1, measNoise1)
+var R2 = matrix.new<float>(1, 1, measNoise2)
+//~~}
+// ~~ Observation vector {
+var H = matrix.new<float>(1, 2, 0.0)
+matrix.set(H, 0, 0, 1.0)
+//~~}
+// ~~ Identity {
+var I = matrix.new<float>(2, 2, 0.0)
+matrix.set(I, 0, 0, 1.0)
+matrix.set(I, 1, 1, 1.0)
+//~~}
+// ~~ State vector {
+var X = array.from(0.0, 0.0)
+var X2 = array.from(0.0, 0.0)
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Define Functions {
+// ~~ Helper functions {
+f_t_inv(p, df) =>
+    // Hill's approximation constants based on empirical observations
+    A = (p == 0.95) ? 1.96 : (p == 0.75) ? 1.15 : (p == 0.50) ? 0.68 : (p == 0.25) ? 0.33 : (p == 0.05) ? 0.07 : na
+    B = 0.5 / (df - 0.5)
+    C = 0.7 / (df + 1.0)
+    D = 1.0 / (df + 3.0)
+    A * (1 + B + C + D)
+//~~}
+// ~~ Function for Kalman filter prediction and update steps {
+kalmanStep(X, P, F, Q, H, R, I, src, Y_diff, selected_kf_model) =>
+    // Prediction step
+    x1 = matrix.get(F, 0, 0) * array.get(X, 0) + matrix.get(F, 0, 1) * array.get(X, 1)
+    x2 = matrix.get(F, 1, 1) * array.get(X, 1)
+    pred_X = array.from(x1, x2)
+    pred_P = F.mult(P.mult(F.transpose())).sum(Q)
+    array.push(Y_diff, src - array.get(pred_X, 0))
+
+    // Adjust R based on model
+    R_adjusted = R.copy()
+    if selected_kf_model != kf_model.standard and bar_index > 2
+        if selected_kf_model == kf_model.volume_adjusted
+            matrix.set(R_adjusted, 0, 0, matrix.get(R, 0, 0) * volume[1] / math.min(volume[1], volume))
+        else if selected_kf_model == kf_model.parkinson_adjusted
+            range_ratio = (high - low) / math.max(high[1] - low[1], syminfo.mintick)
+            matrix.set(R_adjusted, 0, 0, matrix.get(R, 0, 0) * (1 + range_ratio))
+
+    // Update step
+    S = H.mult(pred_P.mult(H.transpose())).sum(R_adjusted)
+    K = pred_P.mult(H.transpose().mult(S.inv()))
+    innovation = src - array.get(H.mult(pred_X), 0)
+    diff = K.mult(innovation)
+    new_X = array.from(array.get(pred_X, 0) + matrix.get(diff, 0, 0), array.get(pred_X, 1) + matrix.get(diff, 1, 0))
+    new_P = I.sum(K.mult(H).mult(-1)).mult(pred_P)
+
+    [pred_X, pred_P, new_X, new_P]
+//~~}
+// ~~ Function to get estimate, oscillator, filtered source, and bands {
+calcEst(X, osc_buffer, Y_diff, N, volla) =>
+    estimate = array.get(X, 0)
+    oscillator = array.get(X, 1)
+    filtered_src = estimate
+    array.push(osc_buffer, oscillator)
+
+    // Calculate bands if Y_diff has enough data
+    float lower_band = na
+    float upper_band = na
+    smstd = ta.ema(ta.stdev(close,xv),5)
+    if array.size(Y_diff) >= N
+        variance = array.stdev(Y_diff)
+        lower_band := volla ? (estimate - variance)-smstd : (ta.wma(filtered_src, N) - variance)
+        upper_band := volla ? (estimate + variance)+smstd : (ta.wma(filtered_src, N) + variance)
+        array.shift(Y_diff)
+
+    [estimate, oscillator, filtered_src, lower_band, upper_band]
+//~~}
+// ~~ CFunction to calculate trend strength and variance {
+calcTrend(osc_buffer, N2, oscillator, Y_diff) =>
+    float trend_strength = na
+    float A = 0.0
+
+    // Calculate maximum absolute oscillator if enough data in osc_buffer
+    if array.size(osc_buffer) >= N2
+        for i = 0 to array.size(osc_buffer) - 1
+            A := math.max(A, math.abs(array.get(osc_buffer, i)))
+        trend_strength := math.abs(oscillator / A)
+        array.shift(osc_buffer)
+
+    // Calculate variance from Y_diff
+    variance = array.size(Y_diff) > 0 ? array.stdev(Y_diff) : na
+    [trend_strength, variance]
+//~~}
+// ~~ Function for high/low and confidence estimates {
+calcHiLo(confLvls, df, rangeLB, high,low, variance, confEstPos , confEstNeg) =>
+    highest_high = ta.lowest(low, rangeLB)
+    lowest_low   = ta.highest(high, rangeLB)
+    for i = 0 to array.size(confLvls) - 1
+        t_critical = f_t_inv(array.get(confLvls, i), df)
+        array.set(confEstPos , i, highest_high + t_critical * variance)
+        array.set(confEstNeg, i, lowest_low - t_critical * variance)
+    [highest_high, lowest_low, confEstPos , confEstNeg]
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Run Functions {
+// ~~ Run Kalman filter prediction and update steps {
+[_, _, new_X, new_P] = kalmanStep(X, P, F, Q, H, R1, I, src, Y_diff, selected_kf_model)
+X := new_X  // Update state vector
+P := new_P  // Update covariance matrix
+
+[_, _, new_X2, new_P2] = kalmanStep(X2, P2, F, Q2, H, R2, I, array.get(X, 0), Y_diff2, selected_kf_model)
+X2 := new_X2 // Update state vector
+P2 := new_P2 // Update covariance matrix
+//~~}
+// ~~ Get estimate, oscillator, filtered source, and bands {
+[estimate, oscillator, filtered_src, lower_band, upper_band]      = calcEst(X, osc_buffer, Y_diff, N_1, volla)
+[estimate2, oscillator2, filtered_src2, lower_band2, upper_band2] = calcEst(X2, osc_buffer2, Y_diff2, N_2, volla)
+//~~}
+// ~~ Calculate trend strength and variance {
+[trend_strength, variance]   = calcTrend(osc_buffer, N2, oscillator, Y_diff)
+[trend_strength2, variance2] = calcTrend(osc_buffer2, N2, oscillator2, Y_diff2)
+//~~}
+// ~~ Calculate highest high, lowest low, and confidence estimates {
+[hh, ll, cep, cen] = calcHiLo(confLvls, df1, rangeLB, high,low, variance, confEstPos , confEstNeg)
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plotting {
+trend_bg_color = bg_col
+trend_color    = array.get(X2, 1) > 0.0 ? pos_col : neg_col
+
+av_plot = plot(filtered_src2, color=trend_color, title="Adaptive Kalman Filter", linewidth = 2, style=plot.style_linebr)
+up_plot = plot(upper_band2, color=na, title="Upper band")
+lo_plot = plot(lower_band2, color=na, title="Lower band")
+fill(up_plot, av_plot, upper_band2, filtered_src2, trend_bg_color, na)
+fill(lo_plot, av_plot, lower_band2, filtered_src2, trend_bg_color, na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table and Boxes {
+if barstate.islast
+    trend_strength_current = math.round(trend_strength * 100)
+    var int num_segments   = 20
+    segment_width          = 100 / num_segments
+    filled_segments        = math.floor(trend_strength_current / segment_width)
+    transparency_step      = 70 / num_segments
+
+    empty_color           = color.new(color.gray, 100)
+    var table trend_table = table.new(position.bottom_center, num_segments + 1, 1, border_color=chart.fg_color, border_width=1, frame_color=chart.fg_color, frame_width=1)
+
+    for i = 0 to num_segments - 1
+        color = (i < filled_segments) ? color.new(st_col, 100 - i * 10) : empty_color
+        table.cell(trend_table, i, 0, "", bgcolor=color, width=1, height=2)
+    table.cell(trend_table, num_segments, 0, str.tostring(trend_strength_current) + " %", text_color=chart.fg_color, bgcolor=na)
+
+    // Delete all boxes if present
+    if array.size(box.all) != 0
+        box_ids = box.all.copy()
+        for i = 0 to array.size(box_ids) - 1
+            box.delete(array.get(box_ids, i))
+
+    // Loop to plot projected levels
+    trans_up_addn   = array.get(X, 1) > 0 ? 0 : 25
+    trans_down_addn = array.get(X, 1) <= 0 ? 0 : 25
+    num_levels = 6
+
+    for j = 0 to num_levels - 1
+        // Upper projection boxes
+        up_level_top = array.get(confEstPos, j)
+        up_level_bottom = j > 0 ? array.get(confEstPos, j - 1) : close[1]
+        up_bgcolor = color.new(tpos_col, j * 15 + trans_up_addn)
+        box.new(bar_index + 15, up_level_top, bar_index + 20, up_level_bottom, bgcolor=up_bgcolor, border_color=na)
+        
+        // Lower projection boxes
+        down_level_top = j > 0 ? array.get(confEstNeg, j - 1) : close[1]
+        down_level_bottom = array.get(confEstNeg, j)
+        down_bgcolor = color.new(tneg_col, j * 15 + trans_down_addn)
+        box.new(bar_index + 15, down_level_top, bar_index + 20, down_level_bottom, bgcolor=down_bgcolor, border_color=na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,613 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Neural Weight Oscillator (Zeiierman)", overlay=false, precision=1, max_labels_count=500)
+//}
+
+// ~~ Tooltips {
+t1  = "Fast EMA used for the Trend and Momentum components. Lower values make the oscillator more responsive."
+t2  = "Slow EMA used as the structural trend baseline. Higher values make trend detection slower but smoother."
+t3  = "Smoothing applied to the final oscillator line. Higher values reduce noise but add lag."
+
+t4  = "Selects the most important factor in the BWM model. This factor should have value 1 in Best-to-Others."
+t5  = "Selects the least important factor in the BWM model. This factor should have value 1 in Relative-to-Worst."
+t6  = "Shows or hides the BWM explanation table on the main chart."
+
+t7  = "Best-to-Others value for Trend. If Trend is selected as Best, this should be 1."
+t8  = "Best-to-Others value for Mean Reversion. If Mean Reversion is selected as Best, this should be 1."
+t9  = "Best-to-Others value for Momentum. If Momentum is selected as Best, this should be 1."
+
+t10 = "Relative-to-Worst value for Trend. If Trend is selected as Worst, this should be 1."
+t11 = "Relative-to-Worst value for Mean Reversion. If Mean Reversion is selected as Worst, this should be 1."
+t12 = "Relative-to-Worst value for Momentum. If Momentum is selected as Worst, this should be 1."
+
+t13 = "Turns the adaptive learning layer on or off. When off, the oscillator uses only the BWM-weighted model."
+t14 = "Controls how much the learned model affects feature amplification. Higher values make the oscillator more adaptive."
+t15 = "Controls how much the learned model can directly shift the oscillator line. Lower values keep the line closer to the BWM base."
+
+t16 = "Shows or hides the layered bullish and bearish gradient fill around the oscillator."
+t17 = "Shows or hides the histogram around the 50 neutral level."
+t18 = "Shows or hides oscillator/signal-line crossover markers."
+t19 = "Signal line length used for the oscillator crossover signals and histogram."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ UDTs {
+type Criterion
+    string name
+    float weight
+    float score
+    float contribution
+
+type TrainSample
+    float score
+    float trend
+    float mean
+    float momentum
+    float target
+    int t
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+groupCore     = "01. Core Oscillator"
+groupBWM      = "02. BWM Weight Model"
+groupBO       = "03. Best-to-Others Comparisons"
+groupOW       = "04. Relative-to-Worst Comparisons"
+groupTraining = "05. Adaptive Training Model"
+groupStyle    = "06. Visual Design"
+
+// Core
+lenFast   = input.int(20, "Fast EMA", minval=2, group=groupCore, inline="ema", tooltip=t1)
+lenSlow   = input.int(100, "Slow EMA", minval=10, group=groupCore, inline="ema", tooltip=t1+ "\n\n" +t2)
+smoothLen = input.int(5, "Smoothing", minval=1, group=groupCore, inline="s",tooltip=t3)
+
+// BWM model
+bestCriterion  = input.string("Trend", "Best", options=["Trend", "Mean Reversion", "Momentum"], group=groupBWM, inline="bw", tooltip=t4)
+worstCriterion = input.string("Momentum", "Worst", options=["Trend", "Mean Reversion", "Momentum"], group=groupBWM, inline="bw", tooltip=t5)
+showBwmGuide   = input.bool(false, "BWM Guide Table", group=groupBWM, inline="bw", tooltip=t4+ "\n\n" +t5+ "\n\n" +t6)
+
+// Best-to-Others
+boTrend    = input.float(1.0, "Trend", minval=1, maxval=9, group=groupBO, inline="bo1", tooltip=t7)
+boMean     = input.float(3.0, "Mean", minval=1, maxval=9, group=groupBO, inline="bo1", tooltip=t8)
+boMomentum = input.float(6.0, "Mom", minval=1, maxval=9, group=groupBO, inline="bo1", tooltip=t7+ "\n\n" +t6+ "\n\n" +t9)
+
+// Relative-to-Worst
+owTrend    = input.float(6.0, "Trend", minval=1, maxval=9, group=groupOW, inline="ow1", tooltip=t10)
+owMean     = input.float(3.0, "Mean", minval=1, maxval=9, group=groupOW, inline="ow1", tooltip=t11)
+owMomentum = input.float(1.0, "Mom", minval=1, maxval=9, group=groupOW, inline="ow1", tooltip=t10+ "\n\n" +t11+ "\n\n" +t12)
+
+// Training model
+useTraining    = input.bool(true, "Use Training", group=groupTraining, inline="train1", tooltip=t13)
+learnInfluence = input.float(0.30, "Influence", minval=0, maxval=1, step=0.05, group=groupTraining, inline="train1", tooltip=t13+ "\n\n" +t14)
+lineInfluence  = input.float(0.25, "Line Impact", minval=0, maxval=1, step=0.05, group=groupTraining, tooltip=t15)
+
+// Visuals
+showGradient  = input.bool(true, "Layered Gradient", group=groupStyle, inline="v1", tooltip=t16)
+showHistogram = input.bool(true, "Histogram", group=groupStyle, inline="v1", tooltip=t17)
+showSignals   = input.bool(true, "Signals", group=groupStyle, inline="v1", tooltip=t16+ "\n\n" +t17+ "\n\n" +t18)
+signalLen     = input.int(9, "Signal Line", minval=1, group=groupStyle, tooltip=t19)
+
+// Defaults
+lenRSI      = 14
+lenATR      = 14
+lenMomentum = 20
+
+warmupBars = 100
+targetLen  = 3
+memorySize = 150
+batchSize  = 20
+
+lr     = 0.01
+huberD = 0.01
+beta1  = 0.9
+beta2  = 0.999
+eps    = 0.00000001
+
+aiCenterLen = 100
+histSmooth  = 3
+
+// Colors
+groupColors = "07. Color Settings"
+
+bullColor      = input.color(#00E5FF, "Bullish", group=groupColors, inline="main")
+bearColor      = input.color(#FF2D75, "Bearish", group=groupColors, inline="main")
+
+midColor       = input.color(#7C8EA3, "Neutral", group=groupColors, inline="levels")
+upperZoneColor = input.color(#00ffcc, "Upper Zone", group=groupColors, inline="levels")
+lowerZoneColor = input.color(#ed3a58, "Lower Zone", group=groupColors, inline="levels")
+
+signalColor    = input.color(#FFFFFF, "Signal Line", group=groupColors, inline="plots")
+bullSignalCol  = input.color(#00E5FF, "Bull Signal", group=groupColors, inline="signals")
+bearSignalCol  = input.color(#FF2D75, "Bear Signal", group=groupColors, inline="signals")
+
+tblBgColor     = input.color(#050816, "Table BG", group=groupColors, inline="tbl1")
+tblRowAColor   = input.color(#07111F, "Row A", group=groupColors, inline="tbl1")
+tblRowBColor   = input.color(#0B1628, "Row B", group=groupColors, inline="tbl1")
+
+tblTextColor   = input.color(color.white, "Text", group=groupColors, inline="tbl2")
+tblSoftColor   = input.color(color.rgb(210, 235, 245), "Soft Text", group=groupColors, inline="tbl2")
+
+tblOkColor     = input.color(color.teal, "OK", group=groupColors, inline="tbl3")
+tblWarnColor   = input.color(color.red, "Warning", group=groupColors, inline="tbl3")
+
+tblBg       = color.new(tblBgColor, 0)
+tblHeader   = color.from_gradient(75, 0, 100, bearColor, bullColor)
+tblRowA     = color.new(tblRowAColor, 0)
+tblRowB     = color.new(tblRowBColor, 0)
+tblText     = tblTextColor
+tblSoftText = tblSoftColor
+tblOk       = tblOkColor
+tblWarn     = tblWarnColor
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+clamp(x, lo, hi) =>
+    math.max(lo, math.min(x, hi))
+
+normalize(x, lo, hi) =>
+    hi == lo ? 50 : clamp((x - lo) / (hi - lo) * 100, 0, 100)
+
+criterionIndex(name) =>
+    switch name
+        "Trend" => 0
+        "Mean Reversion" => 1
+        "Momentum" => 2
+
+normalizeWeights(weights) =>
+    total = 0.0
+    for i = 0 to 2
+        total += array.get(weights, i)
+    for i = 0 to 2
+        array.set(weights, i, array.get(weights, i) / total)
+
+getBoValue(name) =>
+ name == "Trend" ? boTrend :
+ name == "Mean Reversion" ? boMean :
+ boMomentum
+
+getOwValue(name) =>
+ name == "Trend" ? owTrend :
+ name == "Mean Reversion" ? owMean :
+ owMomentum
+
+shortName(name) =>
+ name == "Mean Reversion" ? "Mean Rev" : name
+
+boMeaning(name) =>
+    val = getBoValue(name)
+    if name == bestCriterion
+        shortName(name) + " compared to itself"
+    else if val == 1
+        shortName(bestCriterion) + " is equally important as " + shortName(name)
+    else
+        shortName(bestCriterion) + " is " + str.tostring(val, "#.#") + "x more important than " + shortName(name)
+
+owMeaning(name) =>
+    val = getOwValue(name)
+    if name == worstCriterion
+        shortName(name) + " compared to itself"
+    else if val == 1
+        shortName(name) + " is equally important as " + shortName(worstCriterion)
+    else
+        shortName(name) + " is " + str.tostring(val, "#.#") + "x more important than " + shortName(worstCriterion)
+
+bestRowBg(row) =>
+    color.new(bullColor, 88)
+
+worstRowBg(row) =>
+    color.new(bearColor, 88)
+
+rowBg(row) =>
+    row % 2 == 0 ? tblRowA : tblRowB
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ BWM Functions {
+bwmObjective(weights, bo, ow, bestIdx, worstIdx) =>
+    wBest = array.get(weights, bestIdx)
+    wWorst = array.get(weights, worstIdx)
+    maxErr = 0.0
+
+    for i = 0 to 2
+        wi = array.get(weights, i)
+        boTarget = array.get(bo, i)
+        owTarget = array.get(ow, i)
+
+        boErr = math.abs((wBest / wi) - boTarget)
+        owErr = math.abs((wi / wWorst) - owTarget)
+
+        maxErr := math.max(maxErr, math.max(boErr, owErr))
+
+    maxErr
+
+bwmSolve(bo, ow, bestIdx, worstIdx) =>
+    weights = array.new_float(3, 0.0)
+    aBW = array.get(bo, worstIdx)
+
+    for i = 0 to 2
+        boVal = array.get(bo, i)
+        owVal = array.get(ow, i)
+        relWeight = math.sqrt((aBW / boVal) * owVal)
+        array.set(weights, i, relWeight)
+
+    normalizeWeights(weights)
+    weights
+
+adamUpdate(weight, grad, m, v, stepCount) =>
+    newM = beta1 * m + (1.0 - beta1) * grad
+    newV = beta2 * v + (1.0 - beta2) * grad * grad
+    mHat = newM / (1.0 - math.pow(beta1, stepCount))
+    vHat = newV / (1.0 - math.pow(beta2, stepCount))
+    newWeight = weight - lr * mHat / (math.sqrt(vHat) + eps)
+    [newWeight, newM, newV]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ BWM Calculations {
+bo = array.from(boTrend, boMean, boMomentum)
+ow = array.from(owTrend, owMean, owMomentum)
+
+bestIdx = criterionIndex(bestCriterion)
+worstIdx = criterionIndex(worstCriterion)
+
+array.set(bo, bestIdx, 1.0)
+array.set(ow, worstIdx, 1.0)
+
+bwmWeights = bwmSolve(bo, ow, bestIdx, worstIdx)
+
+bwmTrend    = array.get(bwmWeights, 0)
+bwmMean     = array.get(bwmWeights, 1)
+bwmMomentum = array.get(bwmWeights, 2)
+
+bwmError = bwmObjective(bwmWeights, bo, ow, bestIdx, worstIdx)
+
+requiredBoSelf =
+     bestCriterion == "Trend" ? boTrend :
+     bestCriterion == "Mean Reversion" ? boMean :
+     boMomentum
+
+requiredOwSelf =
+     worstCriterion == "Trend" ? owTrend :
+     worstCriterion == "Mean Reversion" ? owMean :
+     owMomentum
+
+bwmSetupWarning = requiredBoSelf != 1 or requiredOwSelf != 1
+
+guideText =
+     bwmSetupWarning ?
+     "Set " + shortName(bestCriterion) + " in BO to 1 and " + shortName(worstCriterion) + " in OW to 1" :
+     "Best/Worst self-comparisons are correct"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Market Components {
+emaFast = ta.ema(close, lenFast)
+emaSlow = ta.ema(close, lenSlow)
+atr = ta.atr(lenATR)
+rsi = ta.rsi(close, lenRSI)
+
+// Trend
+trendSpread = (emaFast - emaSlow) / atr
+trendSlope  = (emaFast - emaFast[1]) / atr
+trendRaw    = trendSpread + trendSlope
+trendScore  = normalize(trendRaw, -2.5, 2.5)
+
+// Mean Reversion
+basis  = ta.sma(close, lenMomentum)
+dev    = ta.stdev(close, lenMomentum)
+zScore = dev == 0 ? 0 : (close - basis) / dev
+
+rsiReversion = 100 - rsi
+zReversion   = normalize(-zScore, -2.5, 2.5)
+meanScore    = rsiReversion * 0.5 + zReversion * 0.5
+
+// Momentum
+roc     = close / close[lenMomentum] - 1.0
+rocNorm = normalize(roc, -0.05, 0.05)
+
+rsiMomentum = rsi
+emaMomentum = normalize((emaFast - emaFast[1]) / atr, -0.5, 0.5)
+
+momentumScore = rocNorm * 0.45 + rsiMomentum * 0.35 + emaMomentum * 0.20
+
+// Features
+trendFeature    = (trendScore - 50.0) / 50.0
+meanFeature     = (meanScore - 50.0) / 50.0
+momentumFeature = (momentumScore - 50.0) / 50.0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Training Model {
+var array<TrainSample> memory = array.new<TrainSample>()
+
+oldTrend = trendFeature[targetLen]
+oldMean  = meanFeature[targetLen]
+oldMomentum = momentumFeature[targetLen]
+
+target = close / close[targetLen] - 1.0
+targetDirection = target > 0 ? 1.0 : target < 0 ? -1.0 : 0.0
+
+qualityVol = math.max(atr[targetLen] / close[targetLen], 0.000001)
+sampleScore = math.abs(target) / qualityVol
+
+sampleReady =
+     useTraining and
+     bar_index > warmupBars and
+     not na(oldTrend) and
+     not na(oldMean) and
+     not na(oldMomentum) and
+     not na(targetDirection) and
+     not na(sampleScore)
+
+if sampleReady
+    memory.push(TrainSample.new(sampleScore, oldTrend, oldMean, oldMomentum, targetDirection, time))
+
+    while memory.size() > memorySize
+        memory.shift()
+
+// Trainable weights
+var float twTrend = 0.01
+var float twMean  = 0.01
+var float twMomentum = 0.01
+var float tbias = 0.0
+
+var float mtwTrend = 0.0
+var float mtwMean  = 0.0
+var float mtwMomentum = 0.0
+var float mtbias = 0.0
+
+var float vtwTrend = 0.0
+var float vtwMean  = 0.0
+var float vtwMomentum = 0.0
+var float vtbias = 0.0
+
+var int step   = 0
+float lastLoss = na
+
+if useTraining and memory.size() >= batchSize
+    memory.sort(order=order.descending, sort_field="score")
+
+    n = math.min(batchSize, memory.size())
+
+    for i = 0 to n - 1
+        TrainSample s = memory.get(i)
+
+        pred = twTrend * s.trend + twMean * s.mean + twMomentum * s.momentum + tbias
+        err  = pred - s.target
+
+        absErr  = math.abs(err)
+        loss    = absErr <= huberD ? 0.5 * err * err : huberD * (absErr - 0.5 * huberD)
+        gradErr = absErr <= huberD ? err : huberD * math.sign(err)
+
+        gTrend = gradErr * s.trend
+        gMean  = gradErr * s.mean
+        gMomentum = gradErr * s.momentum
+        gbias = gradErr
+
+        step += 1
+
+        [nwTrend, nmTrend, nvTrend] = adamUpdate(twTrend, gTrend, mtwTrend, vtwTrend, step)
+        [nwMean, nmMean, nvMean] = adamUpdate(twMean, gMean, mtwMean, vtwMean, step)
+        [nwMomentum, nmMomentum, nvMomentum] = adamUpdate(twMomentum, gMomentum, mtwMomentum, vtwMomentum, step)
+        [nbias, nmbias, nvbias] = adamUpdate(tbias, gbias, mtbias, vtbias, step)
+
+        twTrend := nwTrend
+        twMean := nwMean
+        twMomentum := nwMomentum
+        tbias := nbias
+
+        mtwTrend := nmTrend
+        mtwMean := nmMean
+        mtwMomentum := nmMomentum
+        mtbias := nmbias
+
+        vtwTrend := nvTrend
+        vtwMean := nvMean
+        vtwMomentum := nvMomentum
+        vtbias := nvbias
+
+        lastLoss := loss
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Adaptive Feature Amplification {
+blend = useTraining ? learnInfluence : 0.0
+
+maxWeight = math.max(math.abs(twTrend), math.max(math.abs(twMean), math.abs(twMomentum)))
+safeMax   = math.max(maxWeight, 0.0001)
+
+learnTrend    = twTrend / safeMax
+learnMean     = twMean / safeMax
+learnMomentum = twMomentum / safeMax
+
+trendAmplifier = 1.0 + learnTrend * blend
+meanAmplifier  = 1.0 + learnMean * blend
+momentumAmplifier = 1.0 + learnMomentum * blend
+
+finalTrend = bwmTrend
+finalMean  = bwmMean
+finalMomentum = bwmMomentum
+
+aiPredRaw =
+     twTrend * trendFeature +
+     twMean * meanFeature +
+     twMomentum * momentumFeature +
+     tbias
+
+aiPredCenter = ta.ema(aiPredRaw, aiCenterLen)
+aiPred = aiPredRaw - aiPredCenter
+
+aiOsc = 50 + clamp(aiPred * 50, -50, 50)
+aiStrength = clamp(math.abs(aiPred) * 3.0, 0.0, 1.0)
+
+lineBlend = blend * aiStrength * lineInfluence
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Oscillator {
+trendPressure = (trendScore - 50.0) * finalTrend * trendAmplifier
+meanPressure  = (meanScore - 50.0) * finalMean * meanAmplifier
+momentumPressure = (momentumScore - 50.0) * finalMomentum * momentumAmplifier
+
+rawOsc = 50.0 + trendPressure + meanPressure + momentumPressure
+
+baseOsc = ta.ema(rawOsc, smoothLen)
+osc = clamp(baseOsc * (1.0 - lineBlend) + aiOsc * lineBlend, 0, 100)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Signal Line + Histogram {
+signalLine = ta.ema(osc, signalLen)
+histRaw    = osc - signalLine
+hist       = ta.ema(histRaw, histSmooth)
+histPlot   = 50 + hist
+
+// Price sweep confirmation
+sweepLookback = 10
+
+bullSweepNow = low < low[10] and close > low[10]
+bearSweepNow = high > high[10] and close < high[10]
+
+bullSweep = ta.barssince(bullSweepNow) <= sweepLookback
+bearSweep = ta.barssince(bearSweepNow) <= sweepLookback
+
+bullSignal = ta.crossover(osc, signalLine) and osc < 30 and  bullSweep 
+bearSignal = ta.crossunder(osc, signalLine) and osc > 70 and bearSweep
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+midLine = plot(50, "Neutral", color=color.new(midColor, 35), linewidth=1)
+
+hline(80, "Overbought Extreme", color=color.new(upperZoneColor, 0), linestyle=hline.style_dotted)
+hline(70, "Overbought Start", color=color.new(upperZoneColor, 0), linestyle=hline.style_dotted)
+hline(50, "Neutral", color=color.new(midColor, 0), linestyle=hline.style_solid)
+hline(30, "Oversold Start", color=color.new(lowerZoneColor, 0), linestyle=hline.style_dotted)
+hline(20, "Oversold Extreme", color=color.new(lowerZoneColor, 0), linestyle=hline.style_dotted)
+
+oscColor = color.from_gradient(osc, 0, 100, bearColor, bullColor)
+
+oscPlot = plot(osc, "Adaptive BWM Oscillator", color=oscColor, linewidth=2)
+sigPlot = plot(signalLine, "Signal Line", color=color.new(signalColor, 20), linewidth=1)
+
+fill(
+     oscPlot,
+     midLine,
+     100,
+     60,
+     top_color=showGradient ? color.new(bullColor, 0) : na,
+     bottom_color=showGradient ? color.new(bullColor, 100) : na,
+     title="Bullish Layered Gradient"
+)
+
+fill(
+     oscPlot,
+     midLine,
+     40,
+     0,
+     top_color=showGradient ? color.new(bearColor, 100) : na,
+     bottom_color=showGradient ? color.new(bearColor, 0) : na,
+     title="Bearish Layered Gradient"
+)
+
+histColor =
+     hist >= 0 ?
+     color.from_gradient(histPlot, 50, 70, color.new(bullColor, 75), color.new(bullColor, 15)) :
+     color.from_gradient(histPlot, 30, 50, color.new(bearColor, 15), color.new(bearColor, 75))
+
+plot(
+     showHistogram ? histPlot : na,
+     "Momentum Histogram",
+     style=plot.style_columns,
+     color=histColor,
+     histbase=50
+)
+
+plotshape(
+     showSignals and bullSignal,
+     title="Bullish Signal",
+     style=shape.circle,
+     location=location.bottom,
+     size=size.tiny,
+     color=bullSignalCol,
+     text="●",
+     textcolor=bullSignalCol
+)
+
+plotshape(
+     showSignals and bearSignal,
+     title="Bearish Signal",
+     style=shape.circle,
+     location=location.top,
+     size=size.tiny,
+     color=bearSignalCol,
+     text="●",
+     textcolor=bearSignalCol
+)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+bestSectionBg  = color.new(bullColor, 82)
+worstSectionBg = color.new(bearColor, 82)
+
+var table bwmTable = table.new(
+     position.top_right,
+     3,
+     11,
+     bgcolor=tblBg,
+     border_color=color.new(bullColor, 55),
+     border_width=1,
+     force_overlay=true
+)
+
+if barstate.islast and showBwmGuide
+    guideBg = bwmSetupWarning ? color.new(tblWarn, 0) : color.new(tblOk, 0)
+
+    table.cell(bwmTable, 0, 0, "BWM", text_color=tblText, bgcolor=tblHeader)
+    table.cell(bwmTable, 1, 0, "Input", text_color=tblText, bgcolor=tblHeader)
+    table.cell(bwmTable, 2, 0, "Meaning", text_color=tblText, bgcolor=tblHeader)
+
+    table.cell(bwmTable, 0, 1, "Best → Others", text_color=bullColor, bgcolor=bestSectionBg)
+    table.cell(bwmTable, 1, 1, shortName(bestCriterion), text_color=tblText, bgcolor=bestSectionBg)
+    table.cell(bwmTable, 2, 1, "Best factor selected", text_color=tblSoftText, bgcolor=bestSectionBg)
+
+    table.cell(bwmTable, 0, 2, shortName("Trend"), text_color=tblText, bgcolor=bestRowBg(2))
+    table.cell(bwmTable, 1, 2, str.tostring(boTrend, "#.#"), text_color=tblText, bgcolor=bestRowBg(2))
+    table.cell(bwmTable, 2, 2, boMeaning("Trend"), text_color=tblSoftText, bgcolor=bestRowBg(2))
+
+    table.cell(bwmTable, 0, 3, shortName("Mean Reversion"), text_color=tblText, bgcolor=bestRowBg(3))
+    table.cell(bwmTable, 1, 3, str.tostring(boMean, "#.#"), text_color=tblText, bgcolor=bestRowBg(3))
+    table.cell(bwmTable, 2, 3, boMeaning("Mean Reversion"), text_color=tblSoftText, bgcolor=bestRowBg(3))
+
+    table.cell(bwmTable, 0, 4, shortName("Momentum"), text_color=tblText, bgcolor=bestRowBg(4))
+    table.cell(bwmTable, 1, 4, str.tostring(boMomentum, "#.#"), text_color=tblText, bgcolor=bestRowBg(4))
+    table.cell(bwmTable, 2, 4, boMeaning("Momentum"), text_color=tblSoftText, bgcolor=bestRowBg(4))
+
+    table.cell(bwmTable, 0, 5, "Relative to Worst", text_color=bearColor, bgcolor=worstSectionBg)
+    table.cell(bwmTable, 1, 5, shortName(worstCriterion), text_color=tblText, bgcolor=worstSectionBg)
+    table.cell(bwmTable, 2, 5, "Worst factor selected", text_color=tblSoftText, bgcolor=worstSectionBg)
+
+    table.cell(bwmTable, 0, 6, shortName("Trend"), text_color=tblText, bgcolor=worstRowBg(6))
+    table.cell(bwmTable, 1, 6, str.tostring(owTrend, "#.#"), text_color=tblText, bgcolor=worstRowBg(6))
+    table.cell(bwmTable, 2, 6, owMeaning("Trend"), text_color=tblSoftText, bgcolor=worstRowBg(6))
+
+    table.cell(bwmTable, 0, 7, shortName("Mean Reversion"), text_color=tblText, bgcolor=worstRowBg(7))
+    table.cell(bwmTable, 1, 7, str.tostring(owMean, "#.#"), text_color=tblText, bgcolor=worstRowBg(7))
+    table.cell(bwmTable, 2, 7, owMeaning("Mean Reversion"), text_color=tblSoftText, bgcolor=worstRowBg(7))
+
+    table.cell(bwmTable, 0, 8, shortName("Momentum"), text_color=tblText, bgcolor=worstRowBg(8))
+    table.cell(bwmTable, 1, 8, str.tostring(owMomentum, "#.#"), text_color=tblText, bgcolor=worstRowBg(8))
+    table.cell(bwmTable, 2, 8, owMeaning("Momentum"), text_color=tblSoftText, bgcolor=worstRowBg(8))
+
+    table.cell(bwmTable, 0, 9, "Weights", text_color=tblText, bgcolor=rowBg(9))
+    table.cell(bwmTable, 1, 9, "T/M/Mo", text_color=tblText, bgcolor=rowBg(9))
+    table.cell(
+         bwmTable,
+         2,
+         9,
+         str.tostring(bwmTrend, "#.##") + " / " + str.tostring(bwmMean, "#.##") + " / " + str.tostring(bwmMomentum, "#.##"),
+         text_color=color.from_gradient(bwmTrend * 100, 0, 100, bearColor, bullColor),
+         bgcolor=rowBg(9)
+    )
+
+    table.cell(bwmTable, 0, 10, "Guide", text_color=tblText, bgcolor=guideBg)
+    table.cell(bwmTable, 1, 10, bwmSetupWarning ? "Fix" : "OK", text_color=tblText, bgcolor=guideBg)
+    table.cell(bwmTable, 2, 10, guideText, text_color=tblText, bgcolor=guideBg)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(bullSignal, "Bullish Adaptive BWM", "Adaptive BWM oscillator crossed above signal line above 50")
+alertcondition(bearSignal, "Bearish Adaptive BWM", "Adaptive BWM oscillator crossed below signal line below 50")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

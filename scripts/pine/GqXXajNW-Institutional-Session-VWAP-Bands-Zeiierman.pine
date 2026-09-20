@@ -1,0 +1,216 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator('Institutional Session VWAP Bands (Zeiierman)', overlay = true, max_bars_back = 5000)
+//~~}
+
+// ~~ Tooltips {
+var string t1  = "Defines the time zone used for the session schedule (e.g., UTC+2)."
+var string t2  = "Toggle visibility of each session (Sydney, Tokyo, London, New York)."
+var string t3  = "Defines the session time interval (e.g., 0900-1700). Must match 'HHMM-HHMM'."
+var string t17 = "Plot a session VWAP that restarts at the 'True Close' (after the first session hour)."
+var string t18 = "Source used for VWAP weighting."
+var string t19 = "Line width for the VWAP."
+var string t20 = "Enable STDEV bands around the session VWAP."
+var string t21 = "Standard deviation multiplier for the bands."
+var string t22 = "Line width for the upper/lower band."
+var string t23 = "Fill the area between the bands."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+utc  = input.string('UTC+2', 'UTC', tooltip=t1)
+
+show = array.from(
+ input.bool(true, 'Sydney',   group = 'Sessions', inline = 'sy', tooltip=t2),
+ input.bool(true, 'Tokyo',    group = 'Sessions', inline = 'to', tooltip=t2),
+ input.bool(true, 'London',   group = 'Sessions', inline = 'lo', tooltip=t2),
+ input.bool(true, 'New York', group = 'Sessions', inline = 'ny', tooltip=t2))
+
+times = array.from(
+ input.session('0100-0900', '', group = 'Sessions',   inline = 'sy', tooltip=t3),
+ input.session('0000-0600', '', group = 'Sessions',    inline = 'to', tooltip=t3),
+ input.session('0900-1730', '', group = 'Sessions',   inline = 'lo', tooltip=t3),
+ input.session('1530-2200', '', group = 'Sessions', inline = 'ny', tooltip=t3))
+
+// Per-session colors (used for VWAP and bands)
+lineColors = array.from(
+ input.color(color.new(color.red,    0), '', group = 'Sessions',   inline = 'sy'),
+ input.color(color.new(color.yellow, 0), '', group = 'Sessions',    inline = 'to'),
+ input.color(color.new(#06e3ff,      0), '', group = 'Sessions',   inline = 'lo'),
+ input.color(color.new(color.lime,   0), '', group = 'Sessions', inline = 'ny'))
+
+// VWAP controls
+useVwapOnly  = input.bool(true,   'Enable VWAP', group='VWAP', tooltip=t17)
+vwapSrc      = input.source(hlc3, 'VWAP Price',   group='VWAP', tooltip=t18)
+vwapWidth    = input.int(2,       'Line Width',   minval=1, maxval=6, group='VWAP', tooltip=t19)
+
+// Band controls
+useBands     = input.bool(true,  'Enable VWAP Bands',         group='VWAP Bands', tooltip=t20)
+bandMult     = input.float(2.0,  'Band Multiplier (σ)',   minval=0.0, step=0.1, group='VWAP Bands', tooltip=t21)
+bandWidth    = input.int(1,      'Band Line Width',       minval=1, maxval=6,  group='VWAP Bands', tooltip=t22)
+bandFillOn   = input.bool(true,  'Fill Between Bands',    group='VWAP Bands', tooltip=t23)
+
+sessionNames = array.from('Sydney', 'Tokyo', 'London', 'New York')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Constants {
+const int ONE_HOUR_MS = 60 * 60 * 1000
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+inSession(sessStr) =>
+    not na(time(timeframe.period, sessStr, utc))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Type {
+type Sessions
+    // session start time (ms since epoch)
+    float st
+    // VWAP active after true close?
+    bool  vwapOn
+    // cumulative sums for VWAP
+    float vSum
+    float pvSum
+    int   vCount
+    float vwapVal
+    // running stats for bands (unweighted)
+    float mean
+    float m2
+    int   n
+    // last computed bands
+    float upVal
+    float dnVal
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Session instances {
+var a1 = Sessions.new(na, false, 0.0, 0.0, 0, na, 0.0, 0.0, 0, na, na)  // Sydney
+var a2 = Sessions.new(na, false, 0.0, 0.0, 0, na, 0.0, 0.0, 0, na, na)  // Tokyo
+var a3 = Sessions.new(na, false, 0.0, 0.0, 0, na, 0.0, 0.0, 0, na, na)  // London
+var a4 = Sessions.new(na, false, 0.0, 0.0, 0, na, 0.0, 0.0, 0, na, na)  // New York
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Session flags {
+syd = inSession(times.get(0))
+tok = inSession(times.get(1))
+lon = inSession(times.get(2))
+nyc = inSession(times.get(3))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Per-session current values {
+var vwapVals = array.new_float(4, na)
+var upVals   = array.new_float(4, na)
+var dnVals   = array.new_float(4, na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Session logic {
+method RunSessions(Sessions x, int i, bool session) =>
+    if show.get(i)
+        // Session just started
+        if session and not session[1]
+            x.st      := time
+            x.vwapOn  := false
+            x.vSum    := 0.0
+            x.pvSum   := 0.0
+            x.vCount  := 0
+            x.vwapVal := na
+            x.mean    := 0.0
+            x.m2      := 0.0
+            x.n       := 0
+            x.upVal   := na
+            x.dnVal   := na
+            array.set(vwapVals, i, na)
+            array.set(upVals,   i, na)
+            array.set(dnVals,   i, na)
+
+        // While inside session
+        if session
+            // Activate VWAP at true close (after first hour)
+            firstHourDone = not na(x.st) and (time - x.st) >= ONE_HOUR_MS
+            if useVwapOnly and firstHourDone and not x.vwapOn
+                x.vwapOn := true
+                // fresh anchor (reset both VWAP accumulators and band stats)
+                x.vSum    := 0.0
+                x.pvSum   := 0.0
+                x.vCount  := 0
+                x.vwapVal := na
+                x.mean    := 0.0
+                x.m2      := 0.0
+                x.n       := 0
+                x.upVal   := na
+                x.dnVal   := na
+                array.set(vwapVals, i, na)
+                array.set(upVals,   i, na)
+                array.set(dnVals,   i, na)
+
+            // Accumulate after activation
+            if useVwapOnly and x.vwapOn
+                _p = vwapSrc
+                _v = volume
+                // VWAP sums
+                x.vSum  += _v
+                x.pvSum += _p * _v
+                x.vCount += 1
+                x.vwapVal := x.vSum != 0.0 ? x.pvSum / x.vSum : na
+                array.set(vwapVals, i, x.vwapVal)
+
+                // Bands running stats
+                x.n += 1
+                _delta  = _p - x.mean
+                x.mean += _delta / x.n
+                x.m2   += _delta * (_p - x.mean)
+                _sd = x.n > 1 ? math.sqrt(x.m2 / (x.n - 1)) : na
+
+                if useBands and not na(x.vwapVal) and not na(_sd)
+                    x.upVal := x.vwapVal + bandMult * _sd
+                    x.dnVal := x.vwapVal - bandMult * _sd
+                    array.set(upVals, i, x.upVal)
+                    array.set(dnVals, i, x.dnVal)
+                else
+                    array.set(upVals, i, na)
+                    array.set(dnVals, i, na)
+
+        // Session ended: clear current values
+        if not session and session[1]
+            x.vwapOn  := false
+            x.vwapVal := na
+            x.upVal   := na
+            x.dnVal   := na
+            array.set(vwapVals, i, na)
+            array.set(upVals,   i, na)
+            array.set(dnVals,   i, na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Run sessions {
+a1.RunSessions(0, syd)
+a2.RunSessions(1, tok)
+a3.RunSessions(2, lon)
+a4.RunSessions(3, nyc)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Global plots (VWAP + Bands) {
+float vwapPlot = na
+float upPlot   = na
+float dnPlot   = na
+color curCol   = na
+
+// Priority order: Sydney -> Tokyo -> London -> New York.
+// If overlap, later session in loop wins for the bar.
+for j = 0 to 3
+    _active = (j == 0 and syd) or (j == 1 and tok) or (j == 2 and lon) or (j == 3 and nyc)
+    if _active and show.get(j)
+        _v = array.get(vwapVals, j)
+        if not na(_v)
+            vwapPlot := _v
+            upPlot   := useBands ? array.get(upVals, j) : na
+            dnPlot   := useBands ? array.get(dnVals, j) : na
+            curCol   := lineColors.get(j)
+
+// Plots
+pVWAP = plot(useVwapOnly ? vwapPlot : na, title='Session VWAP (True-Close Anchored)', color=curCol, linewidth=vwapWidth, style=plot.style_linebr)
+pUP   = plot(useVwapOnly and useBands ? upPlot : na,   title='VWAP Upper Band', color=curCol, linewidth=bandWidth, style=plot.style_linebr)
+pDN   = plot(useVwapOnly and useBands ? dnPlot : na,   title='VWAP Lower Band', color=curCol, linewidth=bandWidth, style=plot.style_linebr)
+
+fill(pUP, pDN, color=bandFillOn?color.new(curCol, 85):color.new(color.blue,100), title="Band Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

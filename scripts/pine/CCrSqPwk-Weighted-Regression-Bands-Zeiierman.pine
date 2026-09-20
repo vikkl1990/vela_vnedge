@@ -1,0 +1,195 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Weighted Regression Bands (Zeiierman)", overlay=true)
+//~~}
+
+// ~~ Tootips {
+var string t1 = "The number of bars used to calculate the trend and weighted high/low midline.\n\nA longer length smooths the trend but increases lag, while a shorter length reacts faster to price changes. This length controls both the regression/smoothing and the weighting window for high and low values."
+var string t2 = "Controls the distance between the Fair Value line and the volatility bands.\n\nThis value multiplies the standard deviation of price to determine the spacing. Higher values create wider bands, capturing more volatility. Default is 0.5 for balanced sensitivity."
+var string t3 = "Selects the smoothing method applied to the custom Weighted High/Low midline.\n\n• ALMA: Smooth and reactive with minimal lag.\n• Linear Regression: Projects the current trend based on recent HL structure.\n\nAll methods operate on the weighted median price instead of standard close values."
+var string t4 = "Controls how much smoothing is applied to the Weighted High/Low midline before calculating the trend.\n\nValues closer to 1 apply little to no smoothing, keeping the midline reactive. Lower values apply stronger filtering using a Kalman-style approach, which helps reduce noise and stabilize the trend signal.\n\nRecommended: 1 for raw signals, 0.1–0.5 for smoothed trend detection."
+
+// ~~ Inputs {
+len  = input.int(50, minval=1, title="Length", group="", inline="", tooltip=t1)
+mult = input.float(1.0, minval=0.01, step=0.1, title="Deviation Multiplier", group="", inline="", tooltip=t2)
+MA   = input.string("Linear Regression", "Method", ["Linear Regression","ALMA"], group="", inline="", tooltip=t3)
+weightingMethod = input.string("Simple", title="Weighted HL Method", options=["Simple", "Advanced", "Smooth"], tooltip="Choose the method used to calculate the Weighted High/Low structure.\n\n• Simple: Picks the bar with the strongest median.\n• Advanced: Considers range × recency for sharper structure.\n• Smooth: Blended structural strength using a weighted average.")
+filterStrength  = input.float(0.08, title='Smoothing [1 = None Smoothing]', minval=0.01, maxval=1, step=0.01, group="Trend Factor", tooltip=t4)
+upper_col = input.color(#00e676, title="", group="", inline="c", tooltip="")
+lower_col = input.color(#e91e63, title="", group="", inline="c", tooltip="")
+noband    = input.bool(true, title="Bands", group="", inline="c", tooltip="")
+if noband == false
+    mult := 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Kalman Filter {
+kf(src,s_len)=>
+    var float kfRSI = na
+    kfRSI    := na(kfRSI) ? src : kfRSI + s_len * (src - kfRSI)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Weighted High/Low Functions {
+WeightedHighest(srcHigh, srcLow, len) =>
+    _len = math.max(1, len)
+    float hi = (srcHigh + srcLow) / 2
+    for i = 1 to math.min(_len - 1, bar_index)
+        pastMed = (srcHigh[i] + srcLow[i]) / 2
+        if pastMed > hi
+            hi := pastMed
+    hi
+
+WeightedLowest(srcHigh, srcLow, len) =>
+    _len = math.max(1, len)
+    float lo = (srcHigh + srcLow) / 2
+    for i = 1 to math.min(_len - 1, bar_index)
+        pastMed = (srcHigh[i] + srcLow[i]) / 2
+        if pastMed < lo
+            lo := pastMed
+    lo
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Advanced High/Low Functions {
+AdvancedWeightedHighest(srcHigh, srcLow, len) =>
+    _len = math.max(1, len)
+    float weightedHi = na
+    float maxScore = na
+    for i = 0 to math.min(_len - 1, bar_index)
+        med = (srcHigh[i] + srcLow[i]) / 2
+        rng = srcHigh[i] - srcLow[i]
+        decay = 1.0 - (i / _len)  
+        score = med * rng * decay 
+        if na(maxScore) or score > maxScore
+            maxScore := score
+            weightedHi := med
+    kf(weightedHi,0.1)
+
+AdvancedWeightedLowest(srcHigh, srcLow, len) =>
+    _len = math.max(1, len)
+    float weightedLo = na
+    float minScore = na
+    for i = 0 to math.min(_len - 1, bar_index)
+        med = (srcHigh[i] + srcLow[i]) / 2
+        rng = srcHigh[i] - srcLow[i]
+        decay = 1.0 - (i / _len)
+        score = med * rng * decay
+        if na(minScore) or score < minScore
+            minScore := score
+            weightedLo := med
+    kf(weightedLo,0.1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+/// ~~ Smooth Weighted High/Low Functions {
+SmoothWeightedHighest(srcHigh, srcLow, len) =>
+    float num = 0.0
+    float denom = 0.0
+    for i = 0 to len - 1
+        med   = (srcHigh[i] + srcLow[i]) / 2
+        rng   = srcHigh[i] - srcLow[i]
+        decay = math.pow(1 - (i / len), 2) 
+        weight = rng * decay
+        num += med * weight
+        denom += weight
+    num / denom
+
+SmoothWeightedLowest(srcHigh, srcLow, len) =>
+    float num = 0.0
+    float denom = 0.0
+    for i = 0 to len - 1
+        med   = (srcHigh[i] + srcLow[i]) / 2
+        rng   = srcHigh[i] - srcLow[i]
+        decay = math.pow(1 - (i / len), 2)
+        weight = rng * decay
+        num += med * weight
+        denom += weight
+    num / denom
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Midline value from Weighted HL
+getWHLMid(i, len) =>
+    hi = switch weightingMethod
+        "Simple"   => WeightedHighest(high[i], low[i], len)
+        "Advanced" => AdvancedWeightedHighest(high[i], low[i], len)
+        "Smooth"   => SmoothWeightedHighest(high[i], low[i], len)
+        => na
+
+    lo = switch weightingMethod
+        "Simple"   => WeightedLowest(high[i], low[i], len)
+        "Advanced" => AdvancedWeightedLowest(high[i], low[i], len)
+        "Smooth"   => SmoothWeightedLowest(high[i], low[i], len)
+        => na
+
+    (hi + lo) / 2
+
+whlMid = kf(getWHLMid(0, len),filterStrength)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Linear Regression using Weighted HL
+LinReg_WHL(len) =>
+    sumX = 0.0
+    sumY = 0.0
+    sumXY = 0.0
+    sumXX = 0.0
+    for i = 0 to len - 1
+        x = i
+        y = whlMid
+        sumX += x
+        sumY += y
+        sumXY += x * y
+        sumXX += x * x
+    slope = (len * sumXY - sumX * sumY) / (len * sumXX - sumX * sumX)
+    intercept = (sumY - slope * sumX) / len
+    slope * (len - 1) + intercept
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MA over Weighted HL Midline or Regression {
+maWHL(src, len, method) =>
+    switch method
+        "ALMA" => ta.alma(src, len, 0.85, 6)
+        "Linear Regression" => LinReg_WHL(len)
+        => na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fair Value {
+fairvalue = maWHL(whlMid, len, MA)
+slope     = fairvalue - fairvalue[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Deviation Bands {
+dev = mult * ta.stdev(close, len)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Bands {
+bandColor  = color.gray
+bandColor := slope > 0 ? upper_col: slope < 0 ? lower_col : bandColor[1]
+upper1 = fairvalue + dev
+upper2 = fairvalue + dev * 2
+upper3 = fairvalue + dev * 3
+lower1 = fairvalue - dev
+lower2 = fairvalue - dev * 2
+lower3 = fairvalue - dev * 3
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plot(fairvalue, title="Weighted Regression Line", color=bandColor, linewidth=2)
+upper1Plot = plot(upper1, color=na,display = display.none, editable = false)
+upper2Plot = plot(upper2, color=na,display = display.none, editable = false)
+upper3Plot = plot(upper3, color=na,display = display.none, editable = false)
+
+lower1Plot = plot(lower1, color=na,display = display.none, editable = false)
+lower2Plot = plot(lower2, color=na,display = display.none, editable = false)
+lower3Plot = plot(lower3, color=na,display = display.none, editable = false)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fills {
+fill(upper1Plot, lower1Plot, color=color.new(bandColor, 85))
+fill(upper2Plot, lower2Plot, color=color.new(bandColor, 92))
+fill(upper3Plot, lower3Plot, color=color.new(bandColor, 96))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+bullishFlip = slope > 0 and slope[1] <= 0
+bearishFlip = slope < 0 and slope[1] >= 0
+alertcondition(bullishFlip, "Trend - Long", "Trend turned bullish for {{ticker}}")
+alertcondition(bearishFlip, "Trend - Short", "Trend turned bearish for {{ticker}}")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

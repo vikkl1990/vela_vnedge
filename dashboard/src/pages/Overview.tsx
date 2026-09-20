@@ -47,6 +47,7 @@ export function Overview() {
       {s && (
         <div className="kpi-grid">
           <KpiTile label="Equity" value={fmtMoney(s.equity, 2)} sub={<span className="muted">initial {fmtMoney(s.initialEquity, 0)}</span>} />
+          <KpiTile label="Net PnL" value={fmtPnl(s.realizedPnl + s.unrealizedPnl)} tone={pnlClass(s.realizedPnl + s.unrealizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">{s.initialEquity ? `${((s.realizedPnl + s.unrealizedPnl) / s.initialEquity * 100).toFixed(2)}% of purse` : ''} · after fees</span>} />
           <KpiTile label="Realized PnL" value={fmtPnl(s.realizedPnl)} tone={pnlClass(s.realizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className="muted">fees {fmtMoney(s.fees)}</span>} />
           <KpiTile label="Unrealized PnL" value={fmtPnl(s.unrealizedPnl)} tone={pnlClass(s.unrealizedPnl) as 'gain' | 'loss' | 'neutral'} sub={<span className={pnlClass(s.todayPnl)}>today {fmtPnl(s.todayPnl)}</span>} />
           <KpiTile label="Win rate" value={fmtPct(s.winRatePct)} sub={<span className="muted">{s.wins}W / {s.losses}L</span>} />

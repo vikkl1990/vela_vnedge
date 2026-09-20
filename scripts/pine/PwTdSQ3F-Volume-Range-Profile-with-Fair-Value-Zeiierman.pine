@@ -1,0 +1,335 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=6
+indicator("Volume Range Profile with Fair Value (Zeiierman)", overlay=true, max_boxes_count=200, max_lines_count=10, max_labels_count=10)
+//~~}
+
+//~~ Tooltips for Inputs {
+var string t1 = "Defines how many historical bars to consider when calculating the highest high and lowest low for the volume range zones. A larger value creates broader zones and more stable volume profiles, while a smaller value reacts quicker to price shifts."
+var string t2 = "Controls how much of the full price range (from high to low) is allocated for the volume zones. A smaller value makes zones narrower and more focused on extremes; a higher value widens the zones to capture more volume."
+var string t3 = "Sets the number of horizontal volume bins in each zone. More bins give finer granularity, while fewer bins make the volume histogram more generalized. Increasing too much may impact performance."
+var string t4 = "Color used to fill the upper (typically sell) volume zone background. Lower transparency means stronger visual emphasis."
+var string t5 = "Color used to fill the lower (typically buy) volume zone background. Adjust transparency to make it more or less visible against chart elements."
+var string t6 = "Color used for the most active bin (POC – Point of Control). This bin represents where the most volume was traded within the zone."
+var string t7 = "Toggle to display a dashed midline inside each volume zone. Helps visually separate the upper and lower halves of each zone."
+var string t8 = "Color for the zone midlines. A more visible color helps with separation, especially on dark or noisy charts."
+var string t9 = "When enabled, adds a label showing the percentage of total zone volume that occurred inside the POC bin."
+var string t10 = "When enabled, displays labels showing the total Buy or Sell volume accumulated in each respective zone. Useful for reading directional volume pressure directly on the chart."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+len     = input.int(100, "Lookback Period", minval=2, group="Period & Zones", tooltip=t1)
+zoneP   = input.float(30.0, "Zone Width (% of Range)", minval=1, maxval=50, step=0.5, group="Period & Zones", tooltip=t2)
+bins    = input.int(10, "Bins per Zone", minval=1, maxval=50, group="Volume Profile", tooltip=t3)
+
+clrUp   = input.color(color.new(color.red, 80), "Upper Zone Color", group="Visuals", tooltip=t4)
+clrLo   = input.color(color.new(color.lime, 80), "Lower Zone Color", group="Visuals", tooltip=t5)
+clrPOC  = input.color(color.new(color.white, 0), "POC Bin Color", group="Visuals", tooltip=t6)
+
+showMid = input.bool(true, "Show Zone Midline", group="Visuals", tooltip=t7)
+clrMid  = input.color(color.new(color.orange, 0), "Midline Color", group="Visuals", tooltip=t8)
+
+showPOClbl = input.bool(true, "Show POC % Label", group="Visuals", tooltip=t9)
+showTotlbl = input.bool(true, "Show Total Vol Label", group="Visuals", tooltip=t10)
+
+lblClr     = color.white
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Globals {
+var array<box>   allBoxes  = array.new_box(0)
+var array<line>  allLines  = array.new_line(0)
+var array<label> allLabels = array.new_label(0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Helpers {
+f_formatVol(_v) =>
+    suf = ""
+    x   = _v
+    if _v >= 1e9
+        suf := "B"
+        x   := _v / 1e9
+    else if _v >= 1e6
+        suf := "M"
+        x   := _v / 1e6
+    else if _v >= 1e3
+        suf := "K"
+        x   := _v / 1e3
+    str.format("{0,number,#.###}{1}", x, suf)
+
+f_clearDrawings() =>
+    for b in allBoxes
+        box.delete(b)
+    array.clear(allBoxes)
+    for l in allLines
+        line.delete(l)
+    array.clear(allLines)
+    for lb in allLabels
+        label.delete(lb)
+    array.clear(allLabels)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Zone calculation with distributed volume + buy/sell per bin {
+f_zone() =>
+    hh   = ta.highest(high, len)
+    ll   = ta.lowest( low, len)
+    rng  = hh - ll
+    zh   = rng * zoneP / 100
+    ut   = hh
+    ub   = hh - zh
+    lt   = ll + zh
+    lbz  = ll
+    bs   = zh / bins
+
+    volsU = array.new_float(bins, 0.0)
+    volsL = array.new_float(bins, 0.0)
+    buyU  = array.new_float(bins, 0.0)
+    sellU = array.new_float(bins, 0.0)
+    buyL  = array.new_float(bins, 0.0)
+    sellL = array.new_float(bins, 0.0)
+    totU  = 0.0
+    totL  = 0.0
+
+    for i = 0 to len - 1
+        bh    = high[i]
+        bl    = low[i]
+        v     = volume[i]
+        isBuy = close[i] >= open[i]
+
+        // Upper zone overlap
+        if bh >= ub and bl <= ut
+            br = bh - bl
+            if br <= syminfo.mintick
+                price = hl2[i]
+                if price >= ub and price <= ut
+                    j = math.floor((ut - price) / bs)
+                    j := math.min(math.max(j, 0), bins - 1)
+                    array.set(volsU, j, array.get(volsU, j) + v)
+                    if isBuy
+                        array.set(buyU, j, array.get(buyU, j) + v)
+                    else
+                        array.set(sellU, j, array.get(sellU, j) + v)
+                    totU := totU + v
+            else
+                for j = 0 to bins - 1
+                    binT = ut - j * bs
+                    binB = binT - bs
+                    ov   = math.min(bh, binT) - math.max(bl, binB)
+                    if ov > 0
+                        frac = ov / br
+                        cvol = v * frac
+                        array.set(volsU, j, array.get(volsU, j) + cvol)
+                        if isBuy
+                            array.set(buyU, j, array.get(buyU, j) + cvol)
+                        else
+                            array.set(sellU, j, array.get(sellU, j) + cvol)
+                        totU := totU + cvol
+
+        // Lower zone overlap
+        if bh >= lbz and bl <= lt
+            br2 = bh - bl
+            if br2 <= syminfo.mintick
+                price = hl2[i]
+                if price >= lbz and price <= lt
+                    j2 = math.floor((price - lbz) / bs)
+                    j2 := math.min(math.max(j2, 0), bins - 1)
+                    array.set(volsL, j2, array.get(volsL, j2) + v)
+                    if isBuy
+                        array.set(buyL, j2, array.get(buyL, j2) + v)
+                    else
+                        array.set(sellL, j2, array.get(sellL, j2) + v)
+                    totL := totL + v
+            else
+                for j2 = 0 to bins - 1
+                    binB2 = lbz + j2 * bs
+                    binT2 = binB2 + bs
+                    ov2   = math.min(bh, binT2) - math.max(bl, binB2)
+                    if ov2 > 0
+                        frac2 = ov2 / br2
+                        cvol2 = v * frac2
+                        array.set(volsL, j2, array.get(volsL, j2) + cvol2)
+                        if isBuy
+                            array.set(buyL, j2, array.get(buyL, j2) + cvol2)
+                        else
+                            array.set(sellL, j2, array.get(sellL, j2) + cvol2)
+                        totL := totL + cvol2
+    pocU = 0
+    pocL = 0
+    maxU = 0.0
+    maxL = 0.0
+    for j = 0 to bins - 1
+        u = array.get(volsU, j)
+        l = array.get(volsL, j)
+        if u > maxU
+            maxU := u
+            pocU := j
+        if l > maxL
+            maxL := l
+            pocL := j
+
+    [ut, ub, lt, lbz, bs,
+     volsU, volsL,
+     buyU, sellU, buyL, sellL,
+     totU, totL,
+     pocU, pocL]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Main {
+f_clearDrawings()
+
+hh = ta.highest(high, len)
+ll = ta.lowest( low, len)
+if hh - ll <= syminfo.mintick * bins
+    runtime.error("Range too small")
+
+[ut, ub, lt, lbz, bs,
+ volsU, volsL,
+ buyU, sellU, buyL, sellL,
+ totU, totL,
+ pocU, pocL] = f_zone()
+
+startBar = bar_index - len + 1
+histW    = math.round(len * 0.5)
+rightB   = startBar - 2
+leftB    = rightB - histW
+zoneEnd  = bar_index + 1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Draw boxes {
+bU = box.new(leftB, ut,   zoneEnd, ub,   border_color=na, bgcolor=clrUp)
+bL = box.new(leftB, lt,   zoneEnd, lbz, border_color=na, bgcolor=clrLo)
+array.push(allBoxes, bU)
+array.push(allBoxes, bL)
+
+// Draw upper bins
+pocVolU = totU > 0 ? array.get(volsU, pocU) : 0.0
+for j = 0 to bins - 1
+    volj  = array.get(volsU, j)
+    ratio = pocVolU > 0 ? volj / pocVolU : 0.0
+    wBars = math.max(1, math.ceil(histW * ratio))
+    x0    = math.max(leftB, rightB - wBars)
+    yT    = ut - j * bs
+    yB    = yT - bs
+    col   = j == pocU ? clrPOC : color.new(clrUp, 50)
+    b     = box.new(x0, yT, rightB, yB, border_color=color.new(color.red,30), bgcolor=col)
+    array.push(allBoxes, b)
+
+// Draw lower bins
+pocVolL = totL > 0 ? array.get(volsL, pocL) : 0.0
+for j = 0 to bins - 1
+    volj  = array.get(volsL, j)
+    ratio = pocVolL > 0 ? volj / pocVolL : 0.0
+    wBars = math.max(1, math.ceil(histW * ratio))
+    x0    = math.max(leftB, rightB - wBars)
+    yB2   = lbz + j * bs
+    yT2   = yB2 + bs
+    col2  = j == pocL ? clrPOC : color.new(clrLo, 50)
+    b2    = box.new(x0, yT2, rightB, yB2, border_color=color.new(color.lime,30), bgcolor=col2)
+    array.push(allBoxes, b2)
+
+//  Midlines
+if showMid
+    mU = (ut + ub) / 2
+    mL = (lt + lbz) / 2
+    lnU = line.new(startBar, mU, zoneEnd, mU, color=clrMid, style=line.style_dashed)
+    lnL = line.new(startBar, mL, zoneEnd, mL, color=clrMid, style=line.style_dashed)
+    array.push(allLines, lnU)
+    array.push(allLines, lnL)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Draw Total‑Volume Labels {
+if showTotlbl
+    // Upper zone: total Sell volume
+    totalSellU = array.sum(sellU)
+    if totalSellU > 0
+        labU = label.new(
+         startBar + histW/2, ut + bs,
+         "Sell Vol: " + f_formatVol(totalSellU),
+         xloc = xloc.bar_index,
+         style = label.style_label_center,
+         color = color.red,
+         textcolor = color.white,
+         size = size.normal
+         )
+        array.push(allLabels, labU)
+
+    // Lower zone: total Buy volume
+    totalBuyL = array.sum(buyL)
+    if totalBuyL > 0
+        labL = label.new(
+         startBar + histW/2, lbz - bs,
+         "Buy Vol:  " + f_formatVol(totalBuyL),
+         xloc = xloc.bar_index,
+         style = label.style_label_center,
+         color = color.green,
+         textcolor = color.white,
+         size = size.normal
+         )
+        array.push(allLabels, labL)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Draw POC Vol % {
+    xLab = zoneEnd + 1
+
+    // Upper zone POC
+    if totU > 0
+        pvU      = array.get(volsU, pocU)
+        bvU      = array.get(buyU, pocU)
+        svU      = array.get(sellU, pocU)
+        buyPctU  = pvU > 0 ? bvU      / pvU * 100 : 0
+        sellPctU = pvU > 0 ? svU      / pvU * 100 : 0
+        totalPctU= pvU / totU * 100
+        txtU =  "POC Vol:\n" +
+         "Buy   " + str.format("{0,number,#.##}%", buyPctU)  + "\n" +
+         "Sell  " + str.format("{0,number,#.##}%", sellPctU) + "\n" +
+         "Total " + str.format("{0,number,#.##}%", totalPctU)
+        colU = buyPctU >= sellPctU ? color.green : color.red
+        labPOCU = label.new(
+         xLab, ut - (pocU + 0.5) * bs, txtU,
+         xloc = xloc.bar_index,
+         style = label.style_label_left,
+         color = colU,
+         textcolor = color.white,
+         size = size.small
+         )
+        array.push(allLabels, labPOCU)
+
+    // Lower zone POC
+    if totL > 0
+        pvL       = array.get(volsL, pocL)
+        bvL       = array.get(buyL, pocL)
+        svL       = array.get(sellL, pocL)
+        buyPctL   = pvL > 0 ? bvL      / pvL * 100 : 0
+        sellPctL  = pvL > 0 ? svL      / pvL * 100 : 0
+        totalPctL = pvL / totL * 100
+        txtL =  "POC Vol:\n" +
+         "Buy   " + str.format("{0,number,#.##}%", buyPctL)  + "\n" +
+         "Sell  " + str.format("{0,number,#.##}%", sellPctL) + "\n" +
+         "Total " + str.format("{0,number,#.##}%", totalPctL)
+        colL = buyPctL >= sellPctL ? color.green : color.red
+        labPOCL = label.new(
+         xLab, lbz + (pocL + 0.5) * bs, txtL,
+         xloc = xloc.bar_index,
+         style = label.style_label_left,
+         color = colL,
+         textcolor = color.white,
+         size = size.small
+         )
+        array.push(allLabels, labPOCL)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  6. POC‑volume trend line {
+pocPrice    = ut - (pocU + 0.5) * bs
+avgPocPrice = ta.sma(pocPrice, len)
+delta       = avgPocPrice - avgPocPrice[1]
+lineColor   = delta >= 0 ? color.green : color.red
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+// ~~ Plot {
+plot(
+ avgPocPrice,
+ title   = "Fair value - drifting over time.",
+ color   = lineColor,
+ linewidth = 1,
+ style   = plot.style_line
+ )
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~} 

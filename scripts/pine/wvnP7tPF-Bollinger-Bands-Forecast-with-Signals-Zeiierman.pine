@@ -1,0 +1,432 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Bollinger Bands Forecast with Signals (Zeiierman)", overlay=true, max_lines_count=500)
+//}
+// ~~ Tooltips {
+var string t1  = "Price series used to build Bollinger Bands and drive the forecast (usually Close)."
+var string t2  = "Bollinger lookback length. Higher = smoother bands and fewer touches. Lower = faster bands and more signals/noise."
+var string t3  = "Band width multiplier (standard is 2.0). Higher = wider bands (fewer touches). Lower = tighter bands (more touches)."
+
+var string t4  = "Color of the current (non-forecast) Bollinger basis (middle) line."
+var string t5  = "Color of the current (non-forecast) Bollinger upper band."
+var string t6  = "Color of the current (non-forecast) Bollinger lower band."
+var string t7  = "Background fill color between the current upper and lower Bollinger bands (use transparency)."
+
+var string t8  = "How many bars into the future to draw the projection. More bars = longer projection but less near-term relevance."
+var string t9  = "Lookback used to estimate slopes (trend) of basis/volatility/ATR for the projection. Higher = smoother, slower trend."
+
+var string t10 = "Projection mode:\n" +
+     "• Trend: straight-line basis + linear width.\n" +
+     "• Curved: eased/curved transition toward projected endpoints.\n" +
+     "• Bollinger style: adds a 'breathing' term based on volatility acceleration.\n" +
+     "• ATR style: width driven by ATR instead of stdev.\n" +
+     "• Smoothed: extra smoothing applied to projected basis and width."
+
+var string t11 = "Line style used for the forecast bands (basis/upper/lower)."
+var string t12 = "Line thickness for forecast bands."
+
+var string t13 = "Color of the projected basis line."
+var string t14 = "Color of the projected upper band."
+var string t15 = "Color of the projected lower band."
+var string t16 = "Fill color between projected upper/lower bands (use transparency)."
+var string t17 = "Enable/disable fill between the projected upper and lower bands."
+
+var string t18 = "Number of zigzag swings used for the projected price path. More swings = more turns (busier path)."
+var string t19 = "Zigzag amplitude measured in projected band half-width units.\nExample: 1.0 means the path targets roughly one band half-width away from the projected basis."
+var string t20 = "Zigzag amplitude decay per swing. 1.0 = no decay. Lower values shrink swings over time."
+
+var string t21 = "Line style used for the projected price path (separate from forecast bands)."
+var string t22 = "Line thickness for the projected price path."
+var string t23 = "Color of the projected price path."
+
+var string t24 = "Blend a random-walk component into the zigzag price path.\nUses a deterministic pseudo-random sequence so it stays stable on redraws."
+var string t25 = "How strongly the random-walk offsets the zigzag path.\n0 = pure zigzag. 1 = strong random-walk influence (still anchored to band width)."
+var string t26 = "Random-walk step size in band-width units per swing.\nHigher values add more drift/variation."
+var string t27 = "Decay applied to random-walk step size as forecast steps progress.\n1.0 = no decay. Lower values reduce randomness further out."
+var string t28 = "Seed for the deterministic random-walk. Change it to get a different (but stable) random path."
+
+var string t29 = "Show/hide all signal markers (and optional signal MA). Turning this off disables signal plotting."
+var string t30 = "When enabled, bullish signals only trigger if price is above the selected MA and bearish signals only trigger if price is below it."
+var string t31 = "Moving average type used for signal filtering (and optional display). Faster types (EMA/HMA) react quicker; SMA/WMA are smoother."
+var string t32 = "Length of the moving average used for signal filtering. Higher = slower bias; lower = faster bias."
+
+var string t33 = "Color for bullish (up) signal markers."
+var string t34 = "Color for bearish (down) signal markers."
+
+var string t35 = "Show/hide the moving average used for signal filtering (visual only)."
+var string t36 = "Color of the optional signal moving average line."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+src           = input.source(close, title="Source", tooltip=t1, group="Bollinger Band", inline="bb")
+length        = input.int(20, minval=1, title="Length", tooltip=t2, group="Bollinger Band", inline="bb")
+baseMult      = input.float(2.0, minval=0.001, maxval=50, title="Multiplier", tooltip=t1+ "\n\n" +t2+ "\n\n" +t3, group="Bollinger Band", inline="bb")
+
+bbBasisCol    = input.color(color.orange, "Basis", tooltip=t4, group="Bollinger Band", inline="bbCol")
+bbUpperCol    = input.color(color.blue,   "Upper", tooltip=t5, group="Bollinger Band", inline="bbCol")
+bbLowerCol    = input.color(color.blue,   "Lower", tooltip=t6, group="Bollinger Band", inline="bbCol")
+bbFillCol     = input.color(color.new(color.blue, 90), "Fill", tooltip=t4+ "\n\n" +t5+ "\n\n" +t6+ "\n\n" +t7, group="Bollinger Band", inline="bbCol")
+
+projBars      = input.int(50, minval=5, maxval=100, title="Forecast Bars", tooltip=t8, group="Forecast", inline="Forecast")
+trendLen      = input.int(50, minval=10, title="Trend Length", tooltip=t9, group="Forecast", inline="Forecast")
+projMode      = input.string(
+     "Curved",
+     "Forecast Band Mode",
+     options=["Trend", "Curved", "Bollinger style", "ATR style", "Smoothed"],
+     tooltip=t8+ "\n\n" +t9+ "\n\n" +t10,
+     group="Forecast", inline="Forecast"
+)
+
+projStyleOpt  = input.string("Solid", title="Style", options=["Dashed", "Dotted", "Solid"], tooltip=t11, group="Forecast", inline="s")
+projWidth     = input.int(2, title="Width", minval=1, maxval=5, tooltip=t11+ "\n\n" +t12, group="Forecast", inline="s")
+
+projBasisCol  = input.color(#ffe0b2, "Basis", tooltip=t13, group="Forecast", inline="1")
+projUpperCol  = input.color(color.new(#80deea, 0), "Upper", tooltip=t14, group="Forecast", inline="1")
+projLowerCol  = input.color(color.new(#80deea, 0), "Lower", tooltip=t15, group="Forecast", inline="1")
+projFillCol   = input.color(color.new(color.blue, 92), "Fill", tooltip=t16, group="Forecast", inline="1")
+projFillOn    = input.bool(true, "Show Fill", tooltip=t13+ "\n\n" +t14+ "\n\n" +t15+ "\n\n" +t16+ "\n\n" +t17, group="Forecast", inline="1")
+
+swings        = input.int(3, minval=1, maxval=10, title="Price ZigZags (2–5 recommended)", tooltip=t18, group="Price Forecast", inline="Price")
+zzAmpUnits    = input.float(1.1, minval=0.1, maxval=3.0, step=0.1, title="Amplitude", tooltip=t19, group="Price Forecast", inline="Price")
+zzDecay       = input.float(0.75, minval=0.1, maxval=1.0, step=0.01, title="Decay", tooltip=t18+ "\n\n" +t19+ "\n\n" +t20, group="Price Forecast", inline="Price")
+
+pathStyleOpt  = input.string("Dotted", "Style", options=["Dashed", "Dotted", "Solid"], tooltip=t21, group="Price Forecast", inline="2")
+pathWidth     = input.int(2, "Width", minval=1, maxval=5, tooltip=t22, group="Price Forecast", inline="2")
+pathCol       = input.color(#9dd3ff, "", tooltip=t21+ "\n\n" +t22+ "\n\n" +t23, group="Price Forecast", inline="2")
+
+rwOn          = input.bool(true, "Blend Random Walk into ZigZag", tooltip=t24, group="Random-walk", inline="Randomwalk")
+rwMix         = input.float(0.8, minval=0.0, maxval=1.0, step=0.05, title="(0=none, 1=strong)", tooltip=t24+ "\n\n" +t25, group="Random-walk", inline="Randomwalk")
+rwStepUnits   = input.float(0.35, minval=0.0, maxval=3.0, step=0.05, title="Amplitude", tooltip=t26, group="Random-walk", inline="Random-walk")
+rwStepDecay   = input.float(0.90, minval=0.0, maxval=1.0, step=0.01, title="Decay", tooltip=t26+ "\n\n" +t27, group="Random-walk", inline="Random-walk")
+rwSeed        = input.int(1337, "Random Walk Seed", tooltip=t28, group="Random-walk", inline="Seed")
+
+sigShow       = input.bool(true, "Show Signals", tooltip=t29, group="Signals", inline="Signals")
+sigFilterMA   = input.bool(true, "Filter Signals", tooltip=t29+ "\n\n" +t30, group="Signals", inline="Signals")
+sigMaType     = input.string("SMA", "Moving Average", options=["SMA", "EMA", "WMA", "HMA"], tooltip=t31, group="Signals", inline="sig")
+sigMaLen      = input.int(100, "Length", minval=1, tooltip=t31+ "\n\n" +t32, group="Signals", inline="sig")
+
+sigBullCol    = input.color(color.lime, "Bull Signal", tooltip=t33, group="Signals", inline="col")
+sigBearCol    = input.color(color.red,  "Bear Signal", tooltip=t33+ "\n\n" +t34, group="Signals", inline="col")
+
+sigShowMA     = input.bool(false, "Show Signal MA", tooltip=t35, group="Signals", inline="ma")
+sigMaCol      = input.color(color.teal, "", tooltip=t35+ "\n\n" +t36, group="Signals", inline="ma")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Style mapping {
+projLineStyle = projStyleOpt == "Dashed" ? line.style_dashed :
+     projStyleOpt == "Dotted" ? line.style_dotted : line.style_solid
+
+pathLineStyle = pathStyleOpt == "Dashed" ? line.style_dashed :
+     pathStyleOpt == "Dotted" ? line.style_dotted : line.style_solid
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Bollinger Bands {
+bbBasis = ta.sma(src, length)
+bbDev   = ta.stdev(src, length)
+bbW     = baseMult * bbDev
+bbUpper = bbBasis + bbW
+bbLower = bbBasis - bbW
+
+plot(bbBasis, "Basis", color=bbBasisCol)
+pU = plot(bbUpper, "Upper", color=bbUpperCol)
+pL = plot(bbLower, "Lower", color=bbLowerCol)
+fill(pU, pL, color=bbFillCol)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ ATR {
+atr14 = ta.atr(14)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trend slopes {
+bNow   = ta.linreg(bbBasis, trendLen, 0)
+bPrev  = ta.linreg(bbBasis, trendLen, 1)
+bSlope = bNow - bPrev
+
+dNow   = ta.linreg(bbDev, trendLen, 0)
+dPrev  = ta.linreg(bbDev, trendLen, 1)
+dSlope = dNow - dPrev
+
+aNow   = ta.linreg(atr14, trendLen, 0)
+aPrev  = ta.linreg(atr14, trendLen, 1)
+aSlope = aNow - aPrev
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Acceleration proxy for breathing {
+dd0 = nz(bbDev - bbDev[1], 0.0)
+dd1 = nz(bbDev[1] - bbDev[2], 0.0)
+devAccel = dd0 - dd1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Signals {
+var int lastSigBar = 0
+sigUp = false
+sigDn = false
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+easeInOut(t) =>
+    tt = math.max(0.0, math.min(1.0, t))
+    tt * tt * (3.0 - 2.0 * tt)
+
+frac(x) =>
+    x - math.floor(x)
+
+hash01(n) =>
+    frac(math.sin(n) * 43758.5453123)
+
+hashSigned(n) =>
+    hash01(n) * 2.0 - 1.0
+
+maPick(s, len, kind) =>
+    kind == "SMA" ? ta.sma(s, len) :
+     kind == "EMA" ? ta.ema(s, len) :
+     kind == "WMA" ? ta.wma(s, len) :
+     kind == "HMA" ? ta.hma(s, len) :
+     ta.sma(s, len)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Dynamic multiplier endpoints {
+bEnd = bbBasis + bSlope * projBars
+dEnd = math.max(0.0, bbDev + dSlope * projBars)
+ratio = bbDev > 0 ? (dEnd / bbDev) : 1.0
+mEndRaw = baseMult * (1.0 + 1.0 * (ratio - 1.0))
+mEnd = math.max(2.0, math.min(5.0, mEndRaw))
+
+multAt(step) =>
+    t = step / projBars
+    m = baseMult + (mEnd - baseMult) * easeInOut(t)
+    math.max(2.0, math.min(5.0, m))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Forecast basis {
+basisAt(step) =>
+    t = step / projBars
+    (projMode == "Trend") ? (bbBasis + bSlope * step) : (bbBasis + (bEnd - bbBasis) * easeInOut(t))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Forecast half-width {
+halfWidthAt(step) =>
+    t = step / projBars
+
+    if projMode == "ATR style"
+        aEnd = math.max(0.0, atr14 + aSlope * projBars)
+        aF   = math.max(0.0, atr14 + (aEnd - atr14) * easeInOut(t))
+        aF * 2.0
+    else
+        dTrend = math.max(0.0, bbDev + dSlope * step)
+
+        if projMode == "Bollinger style"
+            accelTerm = 0.5 * devAccel * (step * step) * 0.5
+            dBreathe  = math.max(0.0, dTrend + accelTerm)
+            dMR       = dBreathe - (dBreathe - bbDev) * (0.9 * t)
+            dMR * multAt(step)
+        else if projMode == "Curved"
+            dF = math.max(0.0, bbDev + (dEnd - bbDev) * easeInOut(t))
+            dF * multAt(step)
+        else
+            dTrend * multAt(step)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Zigzag {
+zigOffset(k) =>
+    dir = (k % 2 == 0) ? 1.0 : -1.0
+    amp = zzAmpUnits * math.pow(zzDecay, k)
+    dir * amp
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Line arrays {
+var line[] projBasisLines = array.new_line()
+var line[] projUpperLines = array.new_line()
+var line[] projLowerLines = array.new_line()
+var line[] pathLines      = array.new_line()
+var linefill[] projFills  = array.new_linefill()
+
+wipeLines(line[] arr) =>
+    sz = array.size(arr)
+    if sz > 0
+        for j = 0 to sz - 1
+            line.delete(array.get(arr, j))
+        array.clear(arr)
+
+wipeFills(linefill[] arr) =>
+    sz = array.size(arr)
+    if sz > 0
+        for j = 0 to sz - 1
+            linefill.delete(array.get(arr, j))
+        array.clear(arr)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main {
+if barstate.islast
+    wipeLines(projBasisLines)
+    wipeLines(projUpperLines)
+    wipeLines(projLowerLines)
+    wipeLines(pathLines)
+    wipeFills(projFills)
+
+    float smB = bbBasis
+    float smW = bbW
+
+    px0 = bar_index
+    b0  = bbBasis
+    u0  = bbUpper
+    l0  = bbLower
+
+    for step = 1 to projBars
+        x1 = bar_index + step
+
+        bRaw = basisAt(step)
+        wRaw = halfWidthAt(step)
+
+        float bUse = na
+        float wUse = na
+
+        if projMode == "Bollinger style"
+            smW := smW + (wRaw - smW) * (1.0 - 0.5)
+            bUse := bRaw
+            wUse := smW
+        else if projMode == "Smoothed"
+            smB := smB + (bRaw - smB) * 0.35
+            smW := smW + (wRaw - smW) * 0.35
+            bUse := smB
+            wUse := smW
+        else
+            bUse := bRaw
+            wUse := wRaw
+
+        uUse = bUse + wUse
+        lUse = bUse - wUse
+
+        lnB = line.new(px0, b0, x1, bUse, color=projBasisCol, style=projLineStyle, width=projWidth)
+        lnU = line.new(px0, u0, x1, uUse, color=projUpperCol, style=projLineStyle, width=projWidth)
+        lnL = line.new(px0, l0, x1, lUse, color=projLowerCol, style=projLineStyle, width=projWidth)
+
+        array.push(projBasisLines, lnB)
+        array.push(projUpperLines, lnU)
+        array.push(projLowerLines, lnL)
+
+        if projFillOn
+            array.push(projFills, linefill.new(lnU, lnL, color=projFillCol))
+
+        px0 := x1
+        b0  := bUse
+        u0  := uUse
+        l0  := lUse
+
+    pts = swings * 2 + 1
+
+    step0 = 0
+    x0 = bar_index
+    p0 = src
+
+    float rwAcc = 0.0
+
+    for k = 1 to pts - 1
+        tt = k / (pts - 1)
+        stepK = int(math.round(tt * projBars))
+        stepK := math.max(stepK, step0 + 1)
+        if stepK > projBars
+            stepK := projBars
+
+        x1 = bar_index + stepK
+
+        bRaw = basisAt(stepK)
+        wRaw = halfWidthAt(stepK)
+
+        float bA = bRaw
+        float wA = wRaw
+
+        if projMode == "Bollinger style"
+            wA := bbW + (wRaw - bbW) * (1.0 - 0.5)
+        else if projMode == "Smoothed"
+            bA := bbBasis + (bRaw - bbBasis) * 0.35
+            wA := bbW + (wRaw - bbW) * 0.35
+
+        z = zigOffset(k - 1)
+        pZ = bA + wA * z
+
+        if rwOn and rwMix > 0 and rwStepUnits > 0
+            key  = float(rwSeed) + float(bar_index) * 0.001 + float(k) * 17.0 + float(stepK) * 0.13
+            step = hashSigned(key) * rwStepUnits * math.pow(rwStepDecay, k - 1)
+            rwAcc := rwAcc + step
+
+        p1 = pZ + (rwOn ? (rwMix * rwAcc * wA) : 0.0)
+
+        array.push(pathLines, line.new(x0, p0, x1, p1, color=pathCol, style=pathLineStyle, width=pathWidth))
+
+        step0 := stepK
+        x0 := x1
+        p0 := p1
+
+        if step0 >= projBars
+            break
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Signal Logic {
+sigMA = maPick(close, sigMaLen, sigMaType)
+
+bearHit = false
+bullHit = false
+
+if sigShow
+    bearHit :=
+         high < bbUpper and
+         high[1] >= bbUpper[1] and
+         close > bbBasis and
+         bar_index - lastSigBar >= length
+
+    bullHit :=
+         low > bbLower and
+         low[1] <= bbLower[1] and
+         close < bbBasis and
+         bar_index - lastSigBar >= length
+
+    if sigFilterMA
+        bearHit := bearHit and close < sigMA
+        bullHit := bullHit and close > sigMA
+
+    if bearHit
+        lastSigBar := bar_index
+        sigDn      := true
+
+    if bullHit
+        lastSigBar := bar_index
+        sigUp      := true
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Signal plots {
+sigOffset = ta.ema(ta.atr(14), 200)
+
+plotshape(sigShow and sigDn ? bbUpper + sigOffset : na,
+     "Signal Down",
+     shape.triangledown,
+     location.absolute,
+     sigBearCol,
+     size=size.tiny)
+
+plotshape(sigShow and sigUp ? bbLower - sigOffset : na,
+     "Signal Up",
+     shape.triangleup,
+     location.absolute,
+     sigBullCol,
+     size=size.tiny)
+
+plotshape(sigShow and sigDn ? bbUpper + sigOffset : na,
+     "Signal Down Big",
+     shape.triangledown,
+     location.absolute,
+     color.new(sigBearCol, 60),
+     size=size.small)
+
+plotshape(sigShow and sigUp ? bbLower - sigOffset : na,
+     "Signal Up Big",
+     shape.triangleup,
+     location.absolute,
+     color.new(sigBullCol, 60),
+     size=size.small)
+
+plot(sigShow and sigShowMA ? sigMA : na, "Signal MA", color=sigMaCol, linewidth=2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

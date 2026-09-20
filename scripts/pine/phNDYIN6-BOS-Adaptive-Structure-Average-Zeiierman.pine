@@ -1,0 +1,510 @@
+//@version=6
+indicator("BOS Adaptive Structure Average (Zeiierman)", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// ~~ Tooltips {
+var string t1  = "Controls how quickly the adaptive average speeds up during strong structure activity. Lower values make the fast side of the average react more aggressively."
+var string t2  = "Controls the slow baseline speed of the adaptive average when structure activity is quiet. Higher values make the average smoother and slower."
+var string t3  = "Adds directional structure push to the adaptive average using BOS bias and ATR. Higher values push the average farther in the active structure direction."
+var string t4  = "Shows or hides the adaptive average cloud."
+
+var string t6  = "Pivot length used by the first BOS/ChoCH structure engine. Lower values detect more frequent swings and create more structure events."
+var string t7  = "Shows or hides the first structure horizontal BOS/ChoCH lines."
+var string t8  = "Shows or hides the first structure BOS/ChoCH labels."
+var string t9  = "Bullish color used for the first structure bullish lines and labels."
+var string t10 = "Bearish color used for the first structure bearish lines and labels."
+var string t11 = "Line style used for the first structure BOS/ChoCH lines."
+var string t12 = "Label size used for the first structure BOS/ChoCH labels."
+var string t13 = "Line width used for the first structure BOS/ChoCH lines."
+
+var string t14 = "Pivot length used by the second live High/Low structure engine. Higher values usually track broader and more important High and Low levels."
+var string t15 = "Shows or hides the second structure live High and Low lines."
+var string t16 = "Shows or hides the second structure strength labels for the live High and Low levels."
+var string t17 = "Color used for the second structure High line and High strength label."
+var string t18 = "Color used for the second structure Low line and Low strength label."
+var string t19 = "Line style used for the second structure live High and Low lines."
+var string t20 = "Label size used for the second structure live High and Low strength labels."
+var string t21 = "Line width used for the second structure live High and Low lines."
+var string t22 = "Linear regression length used to derive cloud direction from the adaptive average."
+var string t23 = "Bullish cloud color."
+var string t24 = "Bearish cloud color."
+var string t25 = "Neutral cloud color."
+var string t26 = "Base transparency of the cloud."
+var string t27 = "Length of the cloud reference."
+var string t28 = "Extra smoothing on the adaptive average before building the cloud."
+var string t29 = "How many cloud fill layers are used."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Input {
+grpAvg   = "Adaptive Average"
+grpS1Log = "ChoCH/BOS Structure Logic"
+grpS1Vis = "ChoCH/BOS Structure Visuals"
+grpS2Log = "High/Low Structure Logic"
+grpS2Vis = "High/Low Structure Visuals"
+grpS2Str = "High/Low Structure Strength"
+grpCloud = "Adaptive Average Cloud"
+
+// Adaptive Average
+lenFast  = input.int(6, "Fast Response Length", minval=1, group=grpAvg, tooltip=t1)
+lenSlow  = input.int(40, "Slow Response Length", minval=2, group=grpAvg, tooltip=t2)
+pushFac  = input.float(0.35, "BOS Directional Push", minval=0.0, step=0.01, group=grpAvg, tooltip=t3)
+
+// Cloud visuals
+showCloud = input.bool(true, "Show Cloud", group=grpCloud, tooltip=t4)
+colSUp    = input.color(#089981, "Bullish", group=grpCloud, inline="cl1", tooltip=t23)
+colSDn    = input.color(#f23645, "Bearish", group=grpCloud, inline="cl1", tooltip=t24)
+cloudTransp = input.int(60, "Transparency", minval=0, maxval=95, group=grpCloud,inline="cl1",tooltip=t26)
+
+// ChoCH/BOS Structure Logic
+piv1 = input.int(5, "Pivot Length", minval=3, group=grpS1Log, tooltip=t6)
+
+// ChoCH/BOS Structure Visuals
+showS1Ln = input.bool(true, "Structure Lines", group=grpS1Vis, inline="f0", tooltip=t7)
+showS1Lb = input.bool(true, "Labels", group=grpS1Vis, inline="f0", tooltip=t8)
+colS1Up  = input.color(#089981, "Bullish", group=grpS1Vis, inline="f1", tooltip=t9)
+colS1Dn  = input.color(#f23645, "Bearish", group=grpS1Vis, inline="f1", tooltip=t10)
+styS1In  = input.string("Dotted", "Style", options=["Solid", "Dashed", "Dotted"], group=grpS1Vis, inline="f3", tooltip=t11)
+szS1In   = input.string("Small", "", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=grpS1Vis, inline="f3", tooltip=t12)
+widS1    = input.int(2, "", minval=1, group=grpS1Vis, inline="f3", tooltip=t13)
+
+// High/Low Structure Logic
+piv2 = input.int(15, "Pivot Length", minval=1, group=grpS2Log, tooltip=t14)
+
+// High/Low Structure Visuals
+showS2Ln = input.bool(true, "Structure Lines", group=grpS2Vis, inline="s0", tooltip=t15)
+showS2Lb = input.bool(true, "Labels", group=grpS2Vis, inline="s0", tooltip=t16)
+colS2Hi  = input.color(color.new(#00e676, 0), "High", group=grpS2Vis, inline="s1", tooltip=t17)
+colS2Lo  = input.color(color.new(#ff0015, 0), "Low", group=grpS2Vis, inline="s1", tooltip=t18)
+styS2In  = input.string("Solid", "Style", options=["Solid", "Dashed", "Dotted"], group=grpS2Vis, inline="s3", tooltip=t19)
+szS2In   = input.string("Small", "", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=grpS2Vis, inline="s3", tooltip=t20)
+widS2    = input.int(2, "", minval=1, group=grpS2Vis, inline="s3", tooltip=t21)
+
+// High/Low Structure Strength
+wChoch   = 1
+wBos     = 3
+thMed    = 2
+thStr    = 5
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Helpers {
+lineStyle(txt) =>
+    switch txt
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        => line.style_dotted
+
+labelSize(txt) =>
+    switch txt
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.huge
+
+structText(os, isBull) =>
+    isBull ? (os == -1 ? "ChoCH" : "BOS") : (os == 1 ? "ChoCH" : "BOS")
+
+strengthText(score, isHigh, medTh, strTh) =>
+    prefix = score >= strTh ? "Strong" : score >= medTh ? "Medium" : "Weak"
+    prefix + (isHigh ? " High" : " Low")
+
+clamp01(x) =>
+    math.max(0.0, math.min(1.0, x))
+
+structCalc(pLen, swHi, swLo, swHiBar, swLoBar) =>
+    ph = ta.pivothigh(high, pLen, pLen)
+    pl = ta.pivotlow(low, pLen, pLen)
+
+    hi = swHi
+    lo = swLo
+    hiBar = swHiBar
+    loBar = swLoBar
+
+    if not na(ph)
+        hi := ph
+        hiBar := bar_index - pLen
+
+    if not na(pl)
+        lo := pl
+        loBar := bar_index - pLen
+
+    bullBos = not na(hi) and close > hi and close[1] <= hi
+    bearBos = not na(lo) and close < lo and close[1] >= lo
+
+    [ph, pl, hi, lo, hiBar, loBar, bullBos, bearBos]
+
+drawStruct(isBull, trig, sBar, sPx, txt, lnCol, lbCol, lnSty, lnWid, showLn, showLb, actLb, actPx, actBar, lbSz) =>
+    newLb = actLb
+    newPx = actPx
+    newBar = actBar
+
+    if trig and not na(sBar)
+        if showLn
+            line.new(
+                 sBar,
+                 sPx,
+                 bar_index,
+                 sPx,
+                 color = lnCol,
+                 style = lnSty,
+                 width = lnWid
+             )
+
+        if showLb
+            sameSwing = not na(actPx) and not na(actBar) and math.abs(actPx - sPx) < syminfo.mintick and actBar == sBar
+
+            if sameSwing and not na(actLb)
+                label.delete(actLb)
+
+            newLb := label.new(
+                 int(math.avg(bar_index, sBar)),
+                 sPx,
+                 txt,
+                 color = color(na),
+                 textcolor = lbCol,
+                 style = isBull ? label.style_label_down : label.style_label_up,
+                 size = lbSz
+             )
+
+            newPx := sPx
+            newBar := sBar
+
+    [newLb, newPx, newBar]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Derived settings {
+styS1 = lineStyle(styS1In)
+styS2 = lineStyle(styS2In)
+labS1 = labelSize(szS1In)
+labS2 = labelSize(szS2In)
+
+aFast = 2.0 / (lenFast + 1.0)
+aSlow = 2.0 / (lenSlow + 1.0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// State: Set 1 {
+var float hi1 = na
+var float lo1 = na
+var int hiBar1 = na
+var int loBar1 = na
+var int os1 = 0
+
+var label bullLb1 = na
+var label bearLb1 = na
+var float bullPx1 = na
+var float bearPx1 = na
+var int bullBar1 = na
+var int bearBar1 = na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// State: Set 2 {
+var float hi2 = na
+var float lo2 = na
+var int hiBar2 = na
+var int loBar2 = na
+
+var line hiLn2 = na
+var line loLn2 = na
+var label hiLb2 = na
+var label loLb2 = na
+
+var int bullPtsHi2 = 0
+var int bearPtsHi2 = 0
+var int bullPtsLo2 = 0
+var int bearPtsLo2 = 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Structure calculations {
+[ph1, pl1, newHi1, newLo1, newHiBar1, newLoBar1, bullBos1, bearBos1] =
+ structCalc(piv1, hi1, lo1, hiBar1, loBar1)
+
+hi1 := newHi1
+lo1 := newLo1
+hiBar1 := newHiBar1
+loBar1 := newLoBar1
+
+[ph2, pl2, newHi2, newLo2, newHiBar2, newLoBar2, bullBos2, bearBos2] =
+ structCalc(piv2, hi2, lo2, hiBar2, loBar2)
+
+hi2 := newHi2
+lo2 := newLo2
+hiBar2 := newHiBar2
+loBar2 := newLoBar2
+
+scorePh = ta.pivothigh(high, 30, 30)
+scorePl = ta.pivotlow(low, 30, 30)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Reset tracking {
+if not na(ph1)
+    bullLb1 := na
+    bullPx1 := na
+    bullBar1 := na
+
+if not na(pl1)
+    bearLb1 := na
+    bearPx1 := na
+    bearBar1 := na
+
+if not na(scorePh)
+    bullPtsHi2 := 0
+    bearPtsHi2 := 0
+
+if not na(scorePl)
+    bullPtsLo2 := 0
+    bearPtsLo2 := 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Set 1 BOS / ChoCH text and strength feed {
+bullTxt1 = structText(os1, true)
+bearTxt1 = structText(os1, false)
+
+bullW1 = bullBos1 ? (bullTxt1 == "ChoCH" ? wChoch : wBos) : 0
+bearW1 = bearBos1 ? (bearTxt1 == "ChoCH" ? wChoch : wBos) : 0
+
+if bullW1 > 0
+    bullPtsHi2 += bullW1
+    bullPtsLo2 += bullW1
+
+if bearW1 > 0
+    bearPtsHi2 += bearW1
+    bearPtsLo2 += bearW1
+
+scoreHi2 = bearPtsHi2 - bullPtsHi2
+scoreLo2 = bullPtsLo2 - bearPtsLo2
+
+txtHi2 = strengthText(scoreHi2, true, thMed, thStr)
+txtLo2 = strengthText(scoreLo2, false, thMed, thStr)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Adaptive average core {
+bosImp = bullBos1 ? 1.0 : bearBos1 ? -1.0 : 0.0
+bosAct = ta.rma(math.abs(bosImp), 20)
+bosBias = ta.rma(bosImp, 20)
+
+alpha = aSlow + (aFast - aSlow) * bosAct
+
+mid = na(hi1) or na(lo1) ? na : (hi1 + lo1) / 2.0
+anchW = 0.20 * bosAct
+
+m1 = 1.36
+m2 = 1.18
+m3 = 1.0
+m4 = 0.82
+m5 = 0.64
+
+a1 = clamp01(alpha * m1)
+a2 = clamp01(alpha * m2)
+a3 = clamp01(alpha * m3)
+a4 = clamp01(alpha * m4)
+a5 = clamp01(alpha * m5)
+
+p1 = pushFac * m1
+p2 = pushFac * m2
+p3 = pushFac * m3
+p4 = pushFac * m4
+p5 = pushFac * m5
+
+var float b1 = na
+var float b2 = na
+var float b3 = na
+var float b4 = na
+var float b5 = na
+
+atr = ta.atr(14)
+
+b1 := na(b1[1]) ? close : b1[1] + a1 * (close - b1[1])
+b2 := na(b2[1]) ? close : b2[1] + a2 * (close - b2[1])
+b3 := na(b3[1]) ? close : b3[1] + a3 * (close - b3[1])
+b4 := na(b4[1]) ? close : b4[1] + a4 * (close - b4[1])
+b5 := na(b5[1]) ? close : b5[1] + a5 * (close - b5[1])
+
+b1 := b1 + p1 * bosBias * atr
+b2 := b2 + p2 * bosBias * atr
+b3 := b3 + p3 * bosBias * atr
+b4 := b4 + p4 * bosBias * atr
+b5 := b5 + p5 * bosBias * atr
+
+b1 := not na(mid) ? b1 + anchW * (mid - b1) : b1
+b2 := not na(mid) ? b2 + anchW * (mid - b2) : b2
+b3 := not na(mid) ? b3 + anchW * (mid - b3) : b3
+b4 := not na(mid) ? b4 + anchW * (mid - b4) : b4
+b5 := not na(mid) ? b5 + anchW * (mid - b5) : b5
+
+avgMain = b3
+
+l       = ta.linreg(math.avg(b1, b2, b3, b4, b5), 10, 0)
+lslope  = l - l[1]
+avgColor = lslope > 0 ? colSUp : lslope < 0 ? colSDn : color.blue
+
+plot(avgMain, "BOS Adaptive Structure Average", color=avgColor, linewidth=2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Cloud only {
+cloudLine = ta.sma(avgMain, 2)
+cloudRef  = ta.ema(hlc3, 10)
+
+cloudA = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.25 : na
+cloudB = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.50 : na
+cloudC = not na(cloudLine) and not na(cloudRef) ? cloudLine + (cloudRef - cloudLine) * 0.75 : na
+
+cloudPos = avgMain > avgMain[1] and close > avgMain
+cloudNeg = avgMain < avgMain[1] and close < avgMain
+
+cloudBaseColor = cloudPos ? colSUp : cloudNeg ? colSDn : avgColor
+
+pCloudLine = plot(showCloud ? cloudLine : na, title="Cloud Adaptive Line", color=color.new(chart.fg_color, 100), display=display.none)
+pCloudA    = plot(showCloud and 3 >= 1 ? cloudA : na, title="Cloud Layer A", color=color.new(chart.fg_color, 100), display=display.none)
+pCloudB    = plot(showCloud and 3 >= 2 ? cloudB : na, title="Cloud Layer B", color=color.new(chart.fg_color, 100), display=display.none)
+pCloudC    = plot(showCloud and 3 >= 3 ? cloudC : na, title="Cloud Layer C", color=color.new(chart.fg_color, 100), display=display.none)
+pCloudRef  = plot(showCloud ? cloudRef : na, title="Cloud Reference", color=color.new(chart.fg_color, 100), display=display.none)
+
+fill(pCloudLine, pCloudA, color=showCloud and 3 >= 1 ? color.new(cloudBaseColor, math.max(0, cloudTransp - 18)) : na, title="Cloud Fill 1")
+fill(pCloudA, pCloudB, color=showCloud and 3 >= 2 ? color.new(cloudBaseColor, math.max(0, cloudTransp - 6)) : na, title="Cloud Fill 2")
+fill(pCloudB, pCloudC, color=showCloud and 3 >= 3 ? color.new(cloudBaseColor, math.min(95, cloudTransp + 6)) : na, title="Cloud Fill 3")
+fill(pCloudC, pCloudRef, color=showCloud and 3 >= 3 ? color.new(cloudBaseColor, math.min(95, cloudTransp + 18)) : na, title="Cloud Fill 4")
+fill(pCloudB, pCloudRef, color=showCloud and 3 == 2 ? color.new(cloudBaseColor, math.min(95, cloudTransp + 10)) : na, title="Cloud Fill 2 Layer")
+fill(pCloudA, pCloudRef, color=showCloud and 3 == 1 ? color.new(cloudBaseColor, math.min(95, cloudTransp + 14)) : na, title="Cloud Fill 1 Layer")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Draw set 1 {
+[tmpBullLb1, tmpBullPx1, tmpBullBar1] = drawStruct(
+    true,
+    bullBos1,
+    hiBar1,
+    hi1,
+    bullTxt1,
+    colS1Up,
+    colS1Up,
+    styS1,
+    widS1,
+    showS1Ln,
+    showS1Lb,
+    bullLb1,
+    bullPx1,
+    bullBar1,
+    labS1
+)
+
+bullLb1 := tmpBullLb1
+bullPx1 := tmpBullPx1
+bullBar1 := tmpBullBar1
+
+[tmpBearLb1, tmpBearPx1, tmpBearBar1] = drawStruct(
+    false,
+    bearBos1,
+    loBar1,
+    lo1,
+    bearTxt1,
+    colS1Dn,
+    colS1Dn,
+    styS1,
+    widS1,
+    showS1Ln,
+    showS1Lb,
+    bearLb1,
+    bearPx1,
+    bearBar1,
+    labS1
+)
+
+bearLb1 := tmpBearLb1
+bearPx1 := tmpBearPx1
+bearBar1 := tmpBearBar1
+
+if bullBos1
+    os1 := 1
+if bearBos1
+    os1 := -1
+
+if bullBos1
+    hi1 := na
+    hiBar1 := na
+    bullPx1 := na
+    bullBar1 := na
+    bullLb1 := na
+
+    if bullTxt1 == "ChoCH"
+        lo1 := na
+        loBar1 := na
+        bearPx1 := na
+        bearBar1 := na
+        bearLb1 := na
+
+if bearBos1
+    lo1 := na
+    loBar1 := na
+    bearPx1 := na
+    bearBar1 := na
+    bearLb1 := na
+
+    if bearTxt1 == "ChoCH"
+        hi1 := na
+        hiBar1 := na
+        bullPx1 := na
+        bullBar1 := na
+        bullLb1 := na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Draw set 2: only one live High and one live Low {
+if not na(hiLn2)
+    line.delete(hiLn2)
+    hiLn2 := na
+
+if not na(loLn2)
+    line.delete(loLn2)
+    loLn2 := na
+
+if not na(hiLb2)
+    label.delete(hiLb2)
+    hiLb2 := na
+
+if not na(loLb2)
+    label.delete(loLb2)
+    loLb2 := na
+
+if showS2Ln
+    if not na(hiBar2) and not na(hi2)
+        hiLn2 := line.new(
+             hiBar2,
+             hi2,
+             bar_index,
+             hi2,
+             color = colS2Hi,
+             style = styS2,
+             width = widS2
+         )
+
+    if not na(loBar2) and not na(lo2)
+        loLn2 := line.new(
+             loBar2,
+             lo2,
+             bar_index,
+             lo2,
+             color = colS2Lo,
+             style = styS2,
+             width = widS2
+         )
+
+if showS2Lb
+    if not na(hiBar2) and not na(hi2)
+        hiLb2 := label.new(
+             bar_index + 1,
+             hi2,
+             txtHi2,
+             color = color(na),
+             textcolor = colS2Hi,
+             style = label.style_label_left,
+             size = labS2
+         )
+
+    if not na(loBar2) and not na(lo2)
+        loLb2 := label.new(
+             bar_index + 1,
+             lo2,
+             txtLo2,
+             color = color(na),
+             textcolor = colS2Lo,
+             style = label.style_label_left,
+             size = labS2
+         )
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

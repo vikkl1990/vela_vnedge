@@ -1,0 +1,313 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Ranked FVG Imbalance Zones (Zeiierman)", overlay = true, max_boxes_count = 300)
+//}
+
+// ~~ Tooltips {
+t1 = "Controls how many of the highest-ranked FVG zones are visible on the chart. The script can store more zones internally, but only the strongest ranked zones are displayed."
+t2 = "Maximum number of FVG zones stored internally before the oldest/lowest-ranked zones are removed. Higher values allow more historical zones to be tracked."
+t3 = "Length used to calculate the average volume baseline. The FVG volume score compares current volume against this average."
+t4 = "EMA length used to define trend alignment. Bullish FVGs above the EMA and bearish FVGs below the EMA receive stronger trend scores."
+t5 = "Shows or hides the internal bullish and bearish strength bars inside each FVG block."
+t6 = "Shows or hides the smart text label inside each FVG block, such as Strong Bullish Imbalance, Bearish Bias, or Weak Bearish."
+t7 = "Color used for bullish FVG bodies and bullish strength bars."
+t8 = "Color used for bearish FVG bodies and bearish strength bars."
+t9 = "Trigger an alert when a new bullish FVG is detected."
+t10 = "Trigger an alert when a new bearish FVG is detected."
+t11 = "Trigger an alert when a new FVG becomes the highest-ranked visible zone."
+t12 = "Trigger an alert when price touches or begins mitigating an active bullish FVG."
+t13 = "Trigger an alert when price touches or begins mitigating an active bearish FVG."
+t14 = "Trigger an alert when an FVG becomes fully mitigated and is removed from the chart."
+t15 = "Controls the text size used for the bullish and bearish strength percentage labels inside each FVG."
+t16 = "Controls the text size used for the smart FVG block text, such as Strong Bullish Imbalance or Bearish Bias."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+gRanking = "Ranking"
+gStrength = "Strength Engine"
+gDisplay = "Display"
+gColors = "Colors"
+gAlerts = "Alerts"
+
+maxZones  = input.int(10, "Show Top Zones", minval = 1, maxval = 20, tooltip = t1, group = gRanking)
+maxStored = input.int(50, "Max Stored FVGs", minval = 10, maxval = 200, tooltip = t2, group = gRanking)
+
+volLength   = input.int(20, "Volume MA Length", tooltip = t3, group = gStrength)
+trendLength = input.int(50, "Trend EMA Length", tooltip = t4, group = gStrength)
+
+showBars      = input.bool(true, "Show Strength Bars", tooltip = t5, group = gDisplay)
+showBlockText = input.bool(true, "Show FVG Block Text", tooltip = t6, group = gDisplay)
+strengthTextSize = input.string("auto", "Strength Text Size", options = ["auto", "tiny", "small", "normal", "large", "huge"], tooltip = t15, group = gDisplay)
+blockTextSize    = input.string("auto", "Block Text Size", options = ["auto", "tiny", "small", "normal", "large", "huge"], tooltip = t16, group = gDisplay)
+
+bullColor = input.color(color.rgb(26, 216, 194, 50), "Bullish", inline = "colors", tooltip = t7, group = gColors)
+bearColor = input.color(color.rgb(216, 26, 102, 50), "Bearish", inline = "colors", tooltip = t8, group = gColors)
+
+alertNewBull      = input.bool(true, "New Bullish FVG", tooltip = t9, group = gAlerts)
+alertNewBear      = input.bool(true, "New Bearish FVG", tooltip = t10, group = gAlerts)
+alertTopRank      = input.bool(true, "New Top-Ranked FVG", tooltip = t11, group = gAlerts)
+alertBullTouch    = input.bool(true, "Bullish FVG Touch", tooltip = t12, group = gAlerts)
+alertBearTouch    = input.bool(true, "Bearish FVG Touch", tooltip = t13, group = gAlerts)
+alertFullyMitigated = input.bool(true, "FVG Fully Mitigated", tooltip = t14, group = gAlerts)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ UDT for each imbalance zone {
+type FVG
+    float qualityScore
+    float top
+    float bottom
+    int   direction
+    int   bornBar
+    int   leftTime
+    float size
+    float mitigation
+    float volumeScore
+    float trendScore
+    int   bullStrength
+    int   bearStrength
+    box   body
+    box   bullBar
+    box   bearBar
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+volumeMA = ta.sma(volume, volLength)
+trendEMA = ta.ema(close, trendLength)
+barMs    = timeframe.in_seconds(timeframe.period) * 1000
+
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Create new FVG object {
+var array<FVG> fvgs = array.new<FVG>()
+
+var string topFvgKey = ""
+
+newBullFvgAlert = false
+newBearFvgAlert = false
+newTopRankAlert = false
+bullTouchAlert = false
+bearTouchAlert = false
+fullyMitigatedAlert = false
+
+if bullFVG or bearFVG
+    float top        = bullFVG ? low : low[2]
+    float bottom     = bullFVG ? high[2] : high
+    int direction    = bullFVG ? 1 : -1
+    newBullFvgAlert := direction == 1
+    newBearFvgAlert := direction == -1
+    float fvgSize    = math.abs(top - bottom)
+    float volScore   = volumeMA != 0 ? volume / volumeMA : 1.0
+    float trendScore = direction == 1 and close > trendEMA ? 1.0 : direction == -1 and close < trendEMA ? 1.0 : 0.0
+    float mitigation = 0.0
+
+    float qualityScore = fvgSize * 100 + volScore * 10 + trendScore * 20 - mitigation * 50
+
+    float gapStrength = math.min(fvgSize / ta.atr(14), 2.0) / 2.0 * 40
+    float volStrength = math.min(volScore, 2.0) / 2.0 * 30
+    float trendStrength = trendScore * 20
+    float candleStrength = math.abs(close - open) / math.max(high - low, syminfo.mintick) * 10
+
+    float totalStrength = gapStrength + volStrength + trendStrength + candleStrength
+    int mainStrength = int(math.max(math.min(totalStrength, 100), 0))
+
+    int bullStrength = direction == 1 ? mainStrength : 100 - mainStrength
+    int bearStrength = direction == -1 ? mainStrength : 100 - mainStrength
+
+    color bodyColor = direction == 1 ? bullColor : bearColor
+
+    int leftTime  = time[2]
+    int rightTime = time + barMs * 5
+
+    box body = box.new(
+         left = leftTime,
+         right = rightTime,
+         top = top,
+         bottom = bottom,
+         xloc = xloc.bar_time,
+         bgcolor = color.new(bodyColor, 70),
+         border_color = na
+    )
+
+    float mid = math.avg(top, bottom)
+
+    box bearBar = box.new(
+         left = leftTime,
+         right = leftTime,
+         top = top,
+         bottom = mid,
+         xloc = xloc.bar_time,
+         bgcolor = bearColor,
+         border_color = chart.bg_color
+    )
+
+    box bullBar = box.new(
+         left = leftTime,
+         right = leftTime,
+         top = mid,
+         bottom = bottom,
+         xloc = xloc.bar_time,
+         bgcolor = bullColor,
+         border_color = chart.bg_color
+    )
+
+    fvgs.push(FVG.new(
+         qualityScore,
+         top,
+         bottom,
+         direction,
+         bar_index,
+         leftTime,
+         fvgSize,
+         mitigation,
+         volScore,
+         trendScore,
+         bullStrength,
+         bearStrength,
+         body,
+         bullBar,
+         bearBar
+    ))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Update existing FVGs {
+if fvgs.size() > 0
+    for i = fvgs.size() - 1 to 0
+        FVG fvg = fvgs.get(i)
+
+        int age = bar_index - fvg.bornBar
+
+        bool touched = fvg.direction == 1 ? low <= fvg.top : high >= fvg.bottom
+
+        bullTouchAlert := bullTouchAlert or (touched and fvg.direction == 1)
+        bearTouchAlert := bearTouchAlert or (touched and fvg.direction == -1)
+
+        if touched
+            float fillDistance = fvg.direction == 1 ? fvg.top - low : high - fvg.bottom
+            float zoneSize = math.max(fvg.top - fvg.bottom, syminfo.mintick)
+            fvg.mitigation := math.min(math.max(fillDistance / zoneSize, 0), 1)
+
+        fvg.qualityScore := fvg.size * 100 + fvg.volumeScore * 10 + fvg.trendScore * 20 - fvg.mitigation * 50 - age * 0.1
+
+        box.set_right(fvg.body, time + barMs * 25)
+
+        if fvg.mitigation >= 1
+            fullyMitigatedAlert := true
+
+            box.delete(fvg.body)
+            box.delete(fvg.bullBar)
+            box.delete(fvg.bearBar)
+            fvgs.remove(i)
+        else
+            fvgs.set(i, fvg)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Sort FVGs by quality score {
+fvgs.sort(order.descending, sort_field = "qualityScore")
+
+if fvgs.size() > 0
+    FVG topFvg = fvgs.get(0)
+    string currentTopKey = str.tostring(topFvg.leftTime) + "_" + str.tostring(topFvg.direction)
+
+    newTopRankAlert := currentTopKey != topFvgKey
+    topFvgKey := currentTopKey
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Limit stored zones {
+while fvgs.size() > maxStored
+    FVG removed = fvgs.pop()
+    box.delete(removed.body)
+    box.delete(removed.bullBar)
+    box.delete(removed.bearBar)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Show only top zones {
+if fvgs.size() > 0
+    for i = 0 to fvgs.size() - 1
+        FVG fvg = fvgs.get(i)
+        bool showZone = i < maxZones
+
+        color bodyColor = fvg.direction == 1 ? bullColor : bearColor
+
+        int left  = fvg.leftTime
+        int right = time + barMs * 25
+        int width = right - left
+        int sizeUnit = math.max(int(width / 200), 1)
+
+        float top = box.get_top(fvg.body)
+        float bot = box.get_bottom(fvg.body)
+        float mid = math.avg(top, bot)
+
+        box.set_bgcolor(fvg.body, showZone ? color.new(bodyColor, 70) : color.new(color.gray, 100))
+        box.set_border_color(fvg.body, na)
+        box.set_right(fvg.body, right)
+
+        if showZone and showBars
+            box.set_left(fvg.bearBar, left)
+            box.set_right(fvg.bearBar, left + sizeUnit * fvg.bearStrength)
+            box.set_top(fvg.bearBar, top)
+            box.set_bottom(fvg.bearBar, mid)
+            box.set_bgcolor(fvg.bearBar, bearColor)
+            box.set_border_color(fvg.bearBar, chart.bg_color)
+            box.set_text(fvg.bearBar, str.tostring(fvg.bearStrength, format.percent))
+            box.set_text_color(fvg.bearBar, chart.fg_color)
+            box.set_text_halign(fvg.bearBar, text.align_right)
+            box.set_text_size(fvg.bearBar, strengthTextSize)
+
+            box.set_left(fvg.bullBar, left)
+            box.set_right(fvg.bullBar, left + sizeUnit * fvg.bullStrength)
+            box.set_top(fvg.bullBar, mid)
+            box.set_bottom(fvg.bullBar, bot)
+            box.set_bgcolor(fvg.bullBar, bullColor)
+            box.set_border_color(fvg.bullBar, chart.bg_color)
+            box.set_text(fvg.bullBar, str.tostring(fvg.bullStrength, format.percent))
+            box.set_text_color(fvg.bullBar, chart.fg_color)
+            box.set_text_halign(fvg.bullBar, text.align_right)
+            box.set_text_size(fvg.bullBar, strengthTextSize)
+
+            string labelText = ""
+
+            if fvg.direction == -1  // Bearish FVG
+                if fvg.bearStrength >= 70
+                    labelText := "Strong Bearish Imbalance"
+                else if fvg.bearStrength >= 55
+                    labelText := "Bearish Bias"
+                else if fvg.bullStrength > fvg.bearStrength
+                    labelText := "Weak Bearish (Bull Pressure)"
+                else
+                    labelText := "Neutral Bearish"
+            else  // Bullish FVG
+                if fvg.bullStrength >= 70
+                    labelText := "Strong Bullish Imbalance"
+                else if fvg.bullStrength >= 55
+                    labelText := "Bullish Bias"
+                else if fvg.bearStrength > fvg.bullStrength
+                    labelText := "Weak Bullish (Bear Pressure)"
+                else
+                    labelText := "Neutral Bullish"
+
+            box.set_text(fvg.body, showBlockText ? labelText : "")
+            box.set_text_halign(fvg.body, text.align_right)
+            box.set_text_color(fvg.body, chart.bg_color)
+            box.set_text_size(fvg.body, blockTextSize)
+        else
+            box.set_bgcolor(fvg.bullBar, color.new(color.gray, 100))
+            box.set_bgcolor(fvg.bearBar, color.new(color.gray, 100))
+            box.set_border_color(fvg.bullBar, color.new(color.gray, 100))
+            box.set_border_color(fvg.bearBar, color.new(color.gray, 100))
+            box.set_text(fvg.bullBar, "")
+            box.set_text(fvg.bearBar, "")
+            box.set_text(fvg.body, "")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}            
+
+// ~~ Alerts {
+alertcondition(alertNewBull and newBullFvgAlert, "New Bullish FVG", "A new bullish FVG has formed.")
+alertcondition(alertNewBear and newBearFvgAlert, "New Bearish FVG", "A new bearish FVG has formed.")
+alertcondition(alertTopRank and newTopRankAlert, "New Top-Ranked FVG", "A new FVG has become the highest-ranked zone.")
+alertcondition(alertBullTouch and bullTouchAlert, "Bullish FVG Touch", "Price has touched or started mitigating a bullish FVG.")
+alertcondition(alertBearTouch and bearTouchAlert, "Bearish FVG Touch", "Price has touched or started mitigating a bearish FVG.")
+alertcondition(alertFullyMitigated and fullyMitigatedAlert, "FVG Fully Mitigated", "An FVG has been fully mitigated and removed.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,767 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Fibonacci Projection with Volume & Delta Profile (Zeiierman)", shorttitle ="Fibonacci Projection (Zeiierman)" ,overlay = true, max_bars_back = 5000)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Period:\nNumber of bars used to detect swing highs and swing lows. Larger values give fewer but larger swings."
+var string t2  = "Projection Level:\nFibonacci ratio used to calculate the projected future swing targets (e.g. 61.8%)."
+
+var string t3  = "0.236 Color:\nLine and label color for the 23.6% Fibonacci retracement level."
+var string t4  = "0.382 Color:\nLine and label color for the 38.2% Fibonacci retracement level."
+var string t5  = "0.500 Color:\nLine and label color for the 50.0% Fibonacci retracement level."
+var string t6  = "0.618 Color:\nLine and label color for the 61.8% Fibonacci retracement level."
+var string t7  = "0.786 Color:\nLine and label color for the 78.6% Fibonacci retracement level."
+var string t8  = "Fib Line Width:\nThickness of all horizontal Fibonacci retracement lines."
+
+var string t9  = "Fib Labels:\nShow or hide percentage labels at each Fibonacci retracement line."
+var string t10 = "Fib Label Text Color:\nText color of Fibonacci retracement labels."
+var string t11 = "Fib Label Size:\nFont size of Fibonacci retracement labels."
+
+var string t12 = "Low Line Color:\nColor for the most recent swing low horizontal guide line."
+var string t13 = "High Line Color:\nColor for the most recent swing high horizontal guide line."
+var string t14 = "Swing Line Width:\nThickness of both swing high and swing low guide lines."
+
+var string t15 = "Fib Volume Profile:\nEnable or disable the main volume profile drawn between the last swing high and low."
+var string t16 = "Rows:\nNumber of price rows (bins) used in the Fib volume profile. More rows = finer detail."
+var string t17 = "Flip Bull/Bear:\nSwap the horizontal position of bullish and bearish volume bars in the profile."
+
+var string t18 = "Bull Volume Color:\nBase color used for bullish (up-bar) volume in the Fib volume profile."
+var string t19 = "Bear Volume Color:\nBase color used for bearish (down-bar) volume in the Fib volume profile."
+
+var string t20 = "Fib Volume Delta:\nEnable or disable the separate volume delta profile between Fibonacci price bands."
+var string t21 = "Delta Max Width:\nMaximum horizontal width (in bars) used to scale delta boxes from smallest to largest."
+
+var string t22 = "Bullish Delta Color:\nFill color for bands where bullish volume exceeds bearish volume (positive delta)."
+var string t23 = "Bearish Delta Color:\nFill color for bands where bearish volume exceeds bullish volume (negative delta)."
+
+var string t24 = "Bullish Projection Line Color:\nColor of projected segments when price is projected upward."
+var string t25 = "Bearish Projection Line Color:\nColor of projected segments when price is projected downward."
+var string t26 = "Projection Line Width:\nThickness of projected swing segments."
+var string t27 = "Projection Line Style:\nVisual style of projected lines (solid, dashed, dotted, or arrows)."
+
+var string t28 = "Bullish Label Background:\nBackground color for percentage labels on upward projection segments."
+var string t29 = "Bearish Label Background:\nBackground color for percentage labels on downward projection segments."
+var string t30 = "Projection Label Text Color:\nText color of projection percentage labels."
+var string t31 = "Projection Label Size:\nFont size of projection percentage labels."
+
+var string t32 = "Projection Box Background:\nToggle the background fill of projection boxes on or off."
+var string t33 = "Projection Box Background Color:\nFill color used for projection boxes (when background is enabled)."
+var string t34 = "Projection Box Border:\nToggle drawing a border around projection boxes."
+var string t35 = "Projection Box Border Color:\nColor of the border around projection boxes."
+var string t36 = "Projection Box Border Width:\nThickness of projection box borders."
+var string t37 = "Projection Box Border Style:\nLine style for projection box borders (solid/dashed/dotted)."
+
+var string t38 = "Projection Box Horizontal Align:\nHorizontal alignment of text inside projection boxes (left/center/right)."
+var string t39 = "Projection Box Vertical Align:\nVertical alignment of text inside projection boxes (top/center/bottom)."
+
+var string t40 = "Projection Box Text Color:\nText color for the projection level values shown inside the boxes."
+var string t41 = "Projection Box Text Size:\nFont size of the projection level values shown inside the boxes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+prd = input.int(
+     100,
+     "Period",
+     group   = "Fib Settings",
+     inline  = "fibColor",
+     tooltip = t1
+     )
+
+lvl = input.float(
+     0.618,
+     title   = "Projection Level",
+     group   = "Fib Settings",
+     options = [0.236, 0.382, 0.5, 0.618, 0.786],
+     tooltip = t2
+     )
+
+// Fib line style inputs (horizontal fib levels)
+fibColor236 = input.color(#f23645, "0.236", group = "Fib Levels Style", inline = "fibColor")
+fibColor382 = input.color(#81c784, "0.382", group = "Fib Levels Style", inline = "fibColor")
+fibColor500 = input.color(#4caf50, "0.500", group = "Fib Levels Style", inline = "fibColor")
+fibColor618 = input.color(#089981, "0.618", group = "Fib Levels Style", inline = "fibColor")
+fibColor786 = input.color(#64b5f6, "0.786", group = "Fib Levels Style", inline = "fibColor")
+fibLineWidth = input.int(
+     2,
+     "Fib Line Width",
+     minval  = 1,
+     maxval  = 5,
+     group   = "Fib Levels Style",
+     inline  = "fibColor",
+     tooltip = t3 + "\n\n" + t4 + "\n\n" + t5 + "\n\n" + t6 + "\n\n" + t7 + "\n\n" + t8
+     )
+
+showlab = input.bool(
+     false,
+     title   = "Fib Labels",
+     group   = "Fib Levels Style",
+     inline  = "fiblab"
+     )
+
+fibLabelColor = input.color(
+     color.white,
+     "",
+     group  = "Fib Levels Style",
+     inline = "fiblab"
+     )
+
+fibLabelSizeStr = input.string(
+     "Small",
+     "",
+     options = ["Tiny","Small","Normal","Large","Huge"],
+     group   = "Fib Levels Style",
+     inline  = "fiblab",
+     tooltip = t9 + "\n\n" + t10 + "\n\n" + t11
+     )
+
+fibLabelOffset = 1  // (fixed) x offset for labels
+
+// derived label size
+fibLabelSize =
+     fibLabelSizeStr == "Tiny"   ? size.tiny  :
+     fibLabelSizeStr == "Small"  ? size.small :
+     fibLabelSizeStr == "Large"  ? size.large :
+     fibLabelSizeStr == "Huge"   ? size.huge  :
+                                   size.normal
+
+// Swing high/low lines
+loLineColor = input.color(
+     color.new(color.green, 0),
+     "Low Line",
+     group   = "Swing High/Low Lines Style",
+     inline  = "hi"
+     )
+
+hiLineColor = input.color(
+     color.new(color.red, 0),
+     "High Line",
+     group   = "Swing High/Low Lines Style",
+     inline  = "hi"
+     )
+
+hiloLineWidth = input.int(
+     2,
+     "Width",
+     1,
+     5,
+     group   = "Swing High/Low Lines Style",
+     inline  = "hi",
+     tooltip = t12 + "\n\n" + t13 + "\n\n" + t14
+     )
+
+// Fib volume profile inputs 
+showFibProfile = input.bool(
+     true,
+     "Fib Volume Profile",
+     group   = "Fib Volume Profile",
+     inline  = "fibprof"
+     )
+
+rows = input.int(
+     10,
+     "Rows",
+     2,
+     100,
+     group   = "Fib Volume Profile",
+     inline  = "fibprof"
+     )
+
+flipOrder = input.bool(
+     false,
+     "Flip Bull/Bear",
+     group   = "Fib Volume Profile",
+     inline  = "fibprof",
+     tooltip = t15 + "\n\n" + t16 + "\n\n" + t17
+     )
+
+bull_color = input.color(
+     color.new(color.teal, 30),
+     "Bull",
+     group   = "Fib Volume Profile",
+     inline  = "volColor"
+     )
+
+bear_color = input.color(
+     color.new(color.orange, 30),
+     "Bear",
+     group   = "Fib Volume Profile",
+     inline  = "volColor",
+     tooltip = t18 + "\n\n" + t19
+     )
+
+// Fib Volume Delta profile
+showFibDelta = input.bool(
+     false,
+     "Fib Volume Delta",
+     group   = "Fib Volume Delta Profile",
+     inline  = "delta"
+     )
+
+deltaMaxWidth = input.int(
+     30,
+     "Max Width",
+     minval  = 5,
+     maxval  = 200,
+     group   = "Fib Volume Delta Profile",
+     inline  = "delta",
+     tooltip = t20 + "\n\n" + t21
+     )
+
+deltaBullColor = input.color(
+     color.new(color.lime, 80),
+     "Bullish Delta",
+     group   = "Fib Volume Delta Profile",
+     inline  = "deltaColor"
+     )
+
+deltaBearColor = input.color(
+     color.new(color.red, 80),
+     "Bearish Delta",
+     group   = "Fib Volume Delta Profile",
+     inline  = "deltaColor",
+     tooltip = t22 + "\n\n" + t23
+     )
+
+// Projection LINES style
+projLineBullColor = input.color(
+     color.new(color.green, 0),
+     "Bullish",
+     group  = "Projection Lines Style",
+     inline = "plc"
+     )
+
+projLineBearColor = input.color(
+     color.new(color.red, 0),
+     "Bearish",
+     group  = "Projection Lines Style",
+     inline = "plc"
+     )
+
+projLineWidth = input.int(
+     2,
+     "Width",
+     1,
+     5,
+     group  = "Projection Lines Style",
+     inline = "plc"
+     )
+
+projLineStyleStr = input.string(
+     "Arrow Right",
+     "",
+     options = ["Solid", "Dashed", "Dotted", "Arrow Left", "Arrow Right"],
+     group   = "Projection Lines Style",
+     inline  = "plc",
+     tooltip = t24 + "\n\n" + t25 + "\n\n" + t26 + "\n\n" + t27
+     )
+
+projLineStyle =
+     projLineStyleStr == "Solid"       ? line.style_solid      :
+     projLineStyleStr == "Dashed"      ? line.style_dashed     :
+     projLineStyleStr == "Dotted"      ? line.style_dotted     :
+     projLineStyleStr == "Arrow Left"  ? line.style_arrow_left :
+                                         line.style_arrow_right
+
+// Projection % LABELS style 
+projPercBullColor = input.color(
+     color.new(color.green, 0),
+     "Bullish Bg",
+     group  = "Projection Labels Style",
+     inline = "plc"
+     )
+
+projPercBearColor = input.color(
+     color.new(color.red, 0),
+     "Bearish Bg",
+     group  = "Projection Labels Style",
+     inline = "plc"
+     )
+
+projPercTextColor = input.color(
+     color.white,
+     "Text",
+     group  = "Projection Labels Style",
+     inline = "plc"
+     )
+
+projPercLabelSizeStr = input.string(
+     "Small",
+     "",
+     options = ["Tiny","Small","Normal","Large","Huge"],
+     group   = "Projection Labels Style",
+     inline  = "plc",
+     tooltip = t28 + "\n\n" + t29 + "\n\n" + t30 + "\n\n" + t31
+     )
+
+projPercLabelSize =
+     projPercLabelSizeStr == "Tiny"   ? size.tiny  :
+     projPercLabelSizeStr == "Small"  ? size.small :
+     projPercLabelSizeStr == "Large"  ? size.large :
+     projPercLabelSizeStr == "Huge"   ? size.huge  :
+                                     size.normal
+
+// Projection box style inputs
+projBoxBgOn = input.bool(
+     true,
+     "Background",
+     group  = "Projection Box Style",
+     inline = "pbg"
+     )
+
+projBoxBgColor = input.color(
+     color.new(color.blue, 80),
+     "",
+     group  = "Projection Box Style",
+     inline = "pbg"
+     )
+
+projBoxBorderOn = input.bool(
+     true,
+     "Border",
+     group  = "Projection Box Style",
+     inline = "pbg"
+     )
+
+projBoxBorderCol = input.color(
+     color.new(color.white, 0),
+     "",
+     group  = "Projection Box Style",
+     inline = "pbg"
+     )
+
+projBoxBorderW = input.int(
+     1,
+     "",
+     minval  = 1,
+     maxval  = 5,
+     group   = "Projection Box Style",
+     inline  = "pbg"
+     )
+
+projBoxBorderStyleStr = input.string(
+     "Solid",
+     "",
+     options = ["Solid", "Dashed", "Dotted"],
+     group   = "Projection Box Style",
+     inline  = "pbg",
+     tooltip = t32 + "\n\n" + t33 + "\n\n" + t34 + "\n\n" + t35 + "\n\n" + t36 + "\n\n" + t37
+     )
+
+projBoxTextHAlignStr = input.string(
+     "Center",
+     "H Align",
+     options = ["Left", "Center", "Right"],
+     group   = "Projection Box Style",
+     inline  = "ptxt"
+     )
+
+projBoxTextVAlignStr = input.string(
+     "Center",
+     "V Align",
+     options = ["Top", "Center", "Bottom"],
+     group   = "Projection Box Style",
+     inline  = "ptxt",
+     tooltip = t38 + "\n\n" + t39
+     )
+
+projBoxTextColor = input.color(
+     color.white,
+     "Text",
+     group  = "Projection Box Style",
+     inline = "ptxt2"
+     )
+
+projBoxTextSizeStr = input.string(
+     "Normal",
+     "",
+     options = ["Tiny","Small","Normal","Large","Huge"],
+     group   = "Projection Box Style",
+     inline  = "ptxt2",
+     tooltip = t40 + "\n\n" + t41
+     )
+
+projBoxTextSize =
+     projBoxTextSizeStr == "Tiny"   ? size.tiny  :
+     projBoxTextSizeStr == "Small"  ? size.small :
+     projBoxTextSizeStr == "Large"  ? size.large :
+     projBoxTextSizeStr == "Huge"   ? size.huge  :
+                                      size.normal
+
+// Derived projection box style settings
+projBoxBorderStyle =
+     projBoxBorderStyleStr == "Solid"  ? line.style_solid  :
+     projBoxBorderStyleStr == "Dashed" ? line.style_dashed :
+                                         line.style_dotted
+
+projBoxTextHAlign =
+     projBoxTextHAlignStr == "Left"   ? "left"  :
+     projBoxTextHAlignStr == "Right"  ? "right" :
+                                     "center"
+
+projBoxTextVAlign =
+     projBoxTextVAlignStr == "Top"    ? "top"    :
+     projBoxTextVAlignStr == "Bottom" ? "bottom" :
+                                     "center"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Swing detection {
+hi = ta.highest(high, prd)
+lo = ta.lowest(low, prd)
+
+isHi = high == hi
+isLo = low == lo
+
+HB = ta.barssince(isHi)
+LB = ta.barssince(isLo)
+
+// price of last swing high/low
+hiPrice = ta.valuewhen(isHi, high, 0)
+loPrice = ta.valuewhen(isLo, low, 0)
+
+// bar index of last swing high/low
+hiBar   = ta.valuewhen(isHi, bar_index, 0)
+loBar   = ta.valuewhen(isLo, bar_index, 0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+// ~~ Persistent drawings {
+var line hiLine = na
+var line loLine = na
+
+if barstate.isfirst
+    hiLine := line.new(na, na, na, na, color = hiLineColor, width = hiloLineWidth)
+    loLine := line.new(na, na, na, na, color = loLineColor, width = hiloLineWidth)
+
+// arrays to store objects
+var array<line>  fibbLines           = array.new_line()
+var array<label> fibbLabels          = array.new_label()
+var array<line>  forecastLines       = array.new_line()
+var array<box>   areas               = array.new_box()
+var array<label> perc                = array.new_label()
+var array<box>   fibProfileBoxes     = array.new_box()
+var array<box>   fibDeltaBoxes       = array.new_box()
+
+var int deltaStartX = na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+// fib level calculator
+fibbFunc(v, last, h, l) =>
+    last ? h - (h - l) * v : l + (h - l) * v
+
+// generic cleaner for drawing-object arrays (lines, boxes, labels)
+cleaner(a, idx) =>
+    if idx >= 0 and idx < array.size(a)
+        el = array.get(a, idx)
+        if not na(el)
+            el.delete()
+        array.remove(a, idx)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Main logic {
+if not na(HB) and not na(LB) and not na(hiPrice) and not na(loPrice) and not na(hiBar) and not na(loBar)
+    // update swing lines
+    // update swing lines (position + live style)
+    line.set_xy1(hiLine, hiBar, hiPrice)
+    line.set_xy2(hiLine, bar_index, hiPrice)
+    line.set_color(hiLine, hiLineColor)
+    line.set_width(hiLine, hiloLineWidth)
+
+    line.set_xy1(loLine, loBar, loPrice)
+    line.set_xy2(loLine, bar_index, loPrice)
+    line.set_color(loLine, loLineColor)
+    line.set_width(loLine, hiloLineWidth)
+
+    bars = math.abs(HB - LB)
+
+    // FIB retracement lines
+    for i = array.size(fibbLines) - 1 to 0
+        cleaner(fibbLines, i)
+    for i = array.size(fibbLabels) - 1 to 0
+        cleaner(fibbLabels, i)
+
+    lvls = array.from(0.236, 0.382, 0.5, 0.618, 0.786)
+    cols = array.from(fibColor236, fibColor382, fibColor500, fibColor618, fibColor786)
+
+    baseOffset = HB > LB ? LB : HB
+    xFibStart  = bar_index - baseOffset 
+
+    for [i, e] in lvls
+        f  = fibbFunc(e, HB < LB, hiPrice, loPrice)
+        x1 = xFibStart
+        x2 = bar_index
+
+        ln = line.new(
+         chart.point.from_index(x1, f),
+         chart.point.from_index(x2, f),
+         color = cols.get(i),
+         width = fibLineWidth
+         )
+        array.push(fibbLines, ln)
+
+        // fib label at right of line
+        if showlab
+            fibText = str.tostring(e * 100, "#.##") + "%"
+            lbl     = label.new(
+             chart.point.from_index(x2 + fibLabelOffset, f),
+             fibText,
+             textcolor = fibLabelColor,
+             style      = label.style_label_left,
+             size       = fibLabelSize,
+             color =cols.get(i)
+             )
+            array.push(fibbLabels, lbl)
+
+        // Projection part 
+    fibb  = fibbFunc(lvl, LB > HB, hiPrice, loPrice)
+    fibb2 = LB < HB ?
+     fibbFunc(lvl, true,  fibb,  loPrice) :
+     fibbFunc(lvl, false, hiPrice, fibb)
+
+    trendfibb = LB > HB ?
+     fibbFunc(1.272, true,  hiPrice, loPrice) :
+     fibbFunc(1.272, false, hiPrice, loPrice)
+
+    forecast = array.from(HB < LB ? hiPrice : loPrice, fibb, fibb2, trendfibb)
+    segment  = math.min(bars, math.floor(500.0 / 4.0))
+
+    // clear previous forecast lines, boxes, and labels
+    for i = array.size(forecastLines) - 1 to 0
+        cleaner(forecastLines, i)
+    for i = array.size(areas) - 1 to 0
+        cleaner(areas, i)
+    for i = array.size(perc) - 1 to 0
+        cleaner(perc, i)
+
+    deltaStartX := na
+    future = bar_index
+
+    for i = 0 to forecast.size() - 2
+        x1 = math.min(future, bar_index + 500)
+        x2 = math.min(future + segment, bar_index + 500)
+
+        y1 = forecast.get(i)
+        y2 = forecast.get(i + 1)
+
+        lnForecast = line.new(
+         x1, y1,
+         x2, y2,
+         color = y1 < y2 ? projLineBullColor : projLineBearColor,
+         width = projLineWidth,
+         style = projLineStyle
+         )
+        array.push(forecastLines, lnForecast)
+
+        // area box around the end of segment
+        midBoxLeft  = x2 - math.round((x1 - x2) / 4.0)
+        midBoxRight = x2 + math.round((x1 - x2) / 4.0)
+        boxHeight   = math.abs(y1 - y2) / 10.0
+
+        txtLevel = i == forecast.size() - 2 ?
+             "1.272" :
+             str.tostring(lvl * 100, "#.##")
+
+        boxBg   = projBoxBgOn     ? projBoxBgColor       : color.new(projBoxBgColor, 100)
+        boxBord = projBoxBorderOn ? projBoxBorderCol     : color.new(projBoxBorderCol, 100)
+
+        bx = box.new(
+         midBoxLeft,
+         y2 + boxHeight,
+         midBoxRight,
+         y2 - boxHeight,
+         bgcolor      = boxBg,
+         border_color = boxBord,
+         border_style = projBoxBorderStyle,
+         border_width = projBoxBorderW,
+         text         = txtLevel,
+         text_halign  = projBoxTextHAlign,
+         text_valign  = projBoxTextVAlign,
+         text_color   = projBoxTextColor,
+         text_size    = projBoxTextSize
+         )
+        array.push(areas, bx)
+
+        // keep track of the rightmost edge of the last projection box
+        deltaStartX := na(deltaStartX) ? box.get_right(bx) : math.max(deltaStartX, box.get_right(bx))
+
+        // percentage label 
+        change = (y2 - y1) / y1
+        midX   = int(math.avg(x1, x2))
+        midY   = line.get_price(lnForecast, midX)
+
+        lb = label.new(
+         chart.point.from_index(midX, midY),
+         str.tostring(change * 100, format.percent),
+         color     = change > 0 ? projPercBullColor : projPercBearColor,
+         style     = i == 1 ? label.style_label_lower_right : label.style_label_lower_left,
+         textcolor = projPercTextColor,
+         size      = projPercLabelSize
+         )
+        array.push(perc, lb)
+        future += segment
+
+
+    // ~~ Fib Volume Profile 
+    if showFibProfile and hiBar != loBar and not na(hiPrice) and not na(loPrice)
+        for i = array.size(fibProfileBoxes) - 1 to 0
+            cleaner(fibProfileBoxes, i)
+
+        top    = math.max(hiPrice, loPrice)
+        bottom = math.min(hiPrice, loPrice)
+
+        if top != bottom
+            step = (top - bottom) / rows
+
+            levels = array.new_float()
+            for i = 0 to rows
+                array.push(levels, bottom + step * i)
+
+            volUp = array.new_float(rows, 0.0)
+            volDn = array.new_float(rows, 0.0)
+
+            startBar = math.min(hiBar, loBar)
+            endBar   = math.max(hiBar, loBar)
+
+            for bi = startBar to endBar
+                offset = bar_index - bi
+                price  = hlc3[offset]
+                vol    = volume[offset]
+                bull   = close[offset] > open[offset]
+
+                for r = 0 to rows - 1
+                    dn = array.get(levels, r)
+                    up = array.get(levels, r + 1)
+                    if price >= dn and price < up
+                        if bull
+                            array.set(volUp, r, array.get(volUp, r) + vol)
+                        else
+                            array.set(volDn, r, array.get(volDn, r) + vol)
+                        break
+
+            maxTot = 0.0
+            for r = 0 to rows - 1
+                tot = array.get(volUp, r) + array.get(volDn, r)
+                maxTot := math.max(maxTot, tot)
+
+            span = endBar - startBar + 1
+
+            if maxTot > 0
+                for r = 0 to rows - 1
+                    upVol = array.get(volUp, r)
+                    dnVol = array.get(volDn, r)
+
+                    normUp = upVol == 0 ? 0 : int((upVol / maxTot) * span)
+                    normDn = dnVol == 0 ? 0 : int((dnVol / maxTot) * span)
+
+                    bullRowCol = color.from_gradient(r, 0, rows - 1, color.new(bull_color, 80), color.new(bull_color, 10))
+                    bearRowCol = color.from_gradient(r, 0, rows - 1, color.new(bear_color, 80), color.new(bear_color, 10))
+
+                    yTop    = array.get(levels, r + 1)
+                    yBottom = array.get(levels, r)
+
+                    leftBull  = flipOrder ? startBar : startBar + normDn
+                    rightBull = flipOrder ? startBar + normUp : startBar + normDn + normUp
+
+                    leftBear  = flipOrder ? startBar + normUp : startBar
+                    rightBear = flipOrder ? startBar + normUp + normDn : startBar + normDn
+
+                    if normUp > 0
+                        bBull = box.new(
+                         leftBull,  yTop,
+                         rightBull, yBottom,
+                         bgcolor      = bullRowCol,
+                         border_color = color.new(bullRowCol, 0),
+                         border_style = line.style_dotted
+                         )
+                        array.push(fibProfileBoxes, bBull)
+
+                    if normDn > 0
+                        bBear = box.new(
+                         leftBear,  yTop,
+                         rightBear, yBottom,
+                         bgcolor      = bearRowCol,
+                         border_color = color.new(bearRowCol, 0),
+                         border_style = line.style_dotted
+                         )
+                        array.push(fibProfileBoxes, bBear)
+
+    // Fib Volume Delta Profile
+    if showFibDelta and hiBar != loBar and not na(hiPrice) and not na(loPrice)
+        for i = array.size(fibDeltaBoxes) - 1 to 0
+            cleaner(fibDeltaBoxes, i)
+
+        // Build fib prices
+        fibPrices = array.new_float()
+        array.push(fibPrices, hiPrice)
+        for e in lvls
+            lvlPrice = fibbFunc(e, HB < LB, hiPrice, loPrice)
+            array.push(fibPrices, lvlPrice)
+        array.push(fibPrices, loPrice)
+
+        // Sort prices low→high
+        fibSorted = array.copy(fibPrices)
+        array.sort(fibSorted)
+
+        bandsCount = array.size(fibSorted) - 1
+        if bandsCount > 0
+            bandBull = array.new_float(bandsCount, 0.0)
+            bandBear = array.new_float(bandsCount, 0.0)
+
+            startBar = math.min(hiBar, loBar)
+            endBar   = math.max(hiBar, loBar)
+
+            // accumulate bull/bear volume per band
+            for bi = startBar to endBar
+                offset = bar_index - bi
+                price  = hlc3[offset]
+                vol    = volume[offset]
+                bull   = close[offset] > open[offset]
+
+                for b = 0 to bandsCount - 1
+                    bandLow  = array.get(fibSorted, b)
+                    bandHigh = array.get(fibSorted, b + 1)
+                    if price >= bandLow and price < bandHigh
+                        if bull
+                            array.set(bandBull, b, array.get(bandBull, b) + vol)
+                        else
+                            array.set(bandBear, b, array.get(bandBear, b) + vol)
+                        break
+            // compute delta
+            maxAbsDelta = 0.0
+            for b = 0 to bandsCount - 1
+                delta = array.get(bandBull, b) - array.get(bandBear, b)
+                maxAbsDelta := math.max(maxAbsDelta, math.abs(delta))
+
+            if maxAbsDelta > 0
+                xStartBase = startBar
+
+                for b = 0 to bandsCount - 1
+                    bandLow  = array.get(fibSorted, b)
+                    bandHigh = array.get(fibSorted, b + 1)
+
+                    delta = array.get(bandBull, b) - array.get(bandBear, b)
+                    if delta == 0
+                        continue
+
+                    absDelta  = math.abs(delta)
+                    widthBars = int((absDelta / maxAbsDelta) * deltaMaxWidth)
+                    widthBars := math.max(widthBars, 1)
+
+                    xEnd   = xStartBase        
+                    xStart = xStartBase - widthBars
+                    col    = delta >= 0 ? deltaBullColor : deltaBearColor
+
+                    dBox = box.new(
+                     xStart,  bandHigh,
+                     xEnd,    bandLow,
+                     bgcolor      = col,
+                     border_color = color.new(col, 0),
+                     border_style = line.style_solid,
+                     text         = "Δ " + str.tostring(delta, format.volume),
+                     text_color   = color.white,
+                     text_halign  = "center",
+                     text_valign  = "center"
+                     )
+                    array.push(fibDeltaBoxes, dBox)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}                    

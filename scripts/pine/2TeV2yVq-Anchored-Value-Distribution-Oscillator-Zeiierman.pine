@@ -1,0 +1,560 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Anchored Value Distribution Oscillator (Zeiierman)", shorttitle = "AVDO (Zeiierman)", overlay=false, max_bars_back=2000, precision = 0)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Number of bars used to build the value distribution. Higher values smooth structure and reduce noise, lower values react faster to recent price shifts."
+var string t2  = "Expands the price range used to build the distribution. Increasing this captures more extreme price activity at the cost of resolution."
+var string t3  = "Sensitivity of profile rebuild when price range changes. Lower values rebuild more often, higher values allow more drift before recalculating."
+
+var string t4  = "Shows the smoothed signal line of the oscillator for trend confirmation and crossover signals."
+var string t5  = "Length of the signal line smoothing. Higher values produce smoother but slower signals."
+
+var string t6  = "Displays the adaptive trailing anchor on the main chart. This anchor defines trend direction and reacts to structural shifts."
+var string t7  = "Fills the area between price and the trailing anchor, visually highlighting bullish and bearish regimes."
+
+var string t8  = "Blends between value center and point of control to define the structural base. Higher values follow the distribution center, lower values follow peak activity."
+var string t9  = "Controls how strongly fast price movement compresses the trailing distance. Higher values make the trail tighten faster during impulsive moves."
+var string t16 = "Limits the maximum tightening effect from acceleration. Higher values allow the trail to pull in more aggressively during strong expansion."
+
+var string t10 = "Fills the oscillator area above and below zero to highlight bullish and bearish positioning."
+var string t11 = "Displays reversal diamonds when momentum shifts within extreme zones of the oscillator."
+var string t12 = "Colors price candles based on oscillator state, aligning chart visuals with internal trend positioning."
+
+var string t13 = "Primary bullish color used for oscillator, trail, and chart elements."
+var string t14 = "Primary bearish color used for oscillator, trail, and chart elements."
+var string t15 = "Neutral midpoint color used when price is balanced within its value distribution."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+nBar  = input.int(233, "Lookback", minval=25, maxval=600, step=10, group="Core", tooltip=t1)
+pad   = input.float(0.03, "Canvas Pad", minval=0.0, maxval=1, step=0.05, group="Core", tooltip=t2)
+rbPct = input.float(0.2, "Rebuild Drift", minval=0.0, maxval=10.0, step=0.025, group="Core", tooltip=t3)
+
+shSig  = input.bool(true, "Signal Line", group="Signal line", inline="signal", tooltip=t4)
+lenSig = input.int(50, "", minval=2, group="Signal line", inline="signal", tooltip=t4 + "\n\n" + t5)
+
+showTrailOnChart = input.bool(true, "Show Trail On Chart", group="Trend Logic", inline="t", tooltip=t6)
+showTrailFill    = input.bool(true, "Fill", group="Trend Logic", inline="t", tooltip=t6 + "\n\n" +t7)
+
+profBias  = input.float(0.70, "Profile Center Bias", minval=0.0, maxval=1.0, step=0.05, group="Trend Logic", tooltip=t8)
+accelSens = input.float(2.25, "Trail Acceleration", minval=0.1, maxval=5.0, step=0.05, group="Trend Logic", tooltip=t9)
+accelMax  = input.float(2.5, "Max Trail Acceleration", minval=1.0, maxval=10.0, step=0.1, group="Trend Logic", tooltip=t16)
+
+shFill       = input.bool(true, "Osc Fill", group="Display", tooltip=t10)
+showRevMarks = input.bool(false, "Show Reversal Marks", group="Display", tooltip=t11)
+paintBars    = input.bool(true, "Trend Candlesticks", group="Display", tooltip=t12)
+
+cPos = input.color(#aeff00, "Bull", group="Colors", tooltip=t13)
+cNeg = input.color(#ff4000, "Bear", group="Colors", tooltip=t14)
+cTra = input.color(#94cfff, "Neutral", group="Colors", tooltip=t15)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+neu() =>
+    bg = chart.bg_color
+    r  = color.r(bg) / 255.0
+    g0 = color.g(bg) / 255.0
+    b  = color.b(bg) / 255.0
+    lum = 0.2126 * r + 0.7152 * g0 + 0.0722 * b
+    lum > 0.5 ? color.black : cTra
+
+clp(x, lo, hi) =>
+    math.max(lo, math.min(hi, x))
+
+lg(x) =>
+    x > 0 ? math.log(x) : na
+
+ctr(lf0, rs0, i) =>
+    math.exp(lf0 + (i + 0.5) * rs0)
+
+gmid(a, b) =>
+    a > 0 and b > 0 ? math.sqrt(a * b) : na
+
+mix(c1, c2, t) =>
+    u = clp(t, 0.0, 1.0)
+    color.rgb(
+         int(math.round(color.r(c1) + (color.r(c2) - color.r(c1)) * u)),
+         int(math.round(color.g(c1) + (color.g(c2) - color.g(c1)) * u)),
+         int(math.round(color.b(c1) + (color.b(c2) - color.b(c1)) * u)),
+         int(math.round(color.t(c1) + (color.t(c2) - color.t(c1)) * u))
+    )
+
+ease(x, p) =>
+    s = clp(x, -1.0, 1.0)
+    s == 0 ? 0.0 : math.sign(s) * math.pow(math.abs(s), p)
+
+triCol(x, neg, mid, pos, p) =>
+    s = ease(x, p)
+    s <= 0 ? mix(mid, neg, math.abs(s)) : mix(mid, pos, s)
+
+oscCol(x, neg, mid, pos) =>
+    triCol(clp(x / 50.0, -1.0, 1.0), neg, mid, pos, 0.7)
+
+fixBands(a, vh, vl, xh, xl) =>
+    lo1 = math.min(vl, vh)
+    hi1 = math.max(vl, vh)
+    lo2 = math.min(xl, xh)
+    hi2 = math.max(xl, xh)
+    aa  = clp(a, lo1, hi1)
+    vll = lo1
+    vhh = hi1
+    xll = math.min(lo2, vll)
+    xhh = math.max(hi2, vhh)
+    [aa, vhh, vll, xhh, xll]
+
+norm(px, a, vh, vl, xh, xl) =>
+    s = 0.0
+    if na(px) or na(a) or na(vh) or na(vl) or na(xh) or na(xl)
+        s := na
+    else
+        [aa, vhh, vll, xhh, xll] = fixBands(a, vh, vl, xh, xl)
+        if px >= aa
+            if px <= vhh
+                sp = vhh - aa
+                s := sp > 0 ? 25.0 * (px - aa) / sp : 0.0
+            else
+                sp = xhh - vhh
+                s := sp > 0 ? 25.0 + 25.0 * (px - vhh) / sp : 25.0
+        else
+            if px >= vll
+                sp = aa - vll
+                s := sp > 0 ? -25.0 * (aa - px) / sp : 0.0
+            else
+                sp = vll - xll
+                s := sp > 0 ? -25.0 - 25.0 * (vll - px) / sp : -25.0
+    clp(s, -50.0, 50.0)
+
+sigmoid(t) =>
+    x    = -6.0 + 12.0 * clp(t, 0.0, 1.0)
+    sMin = 1.0 / (1.0 + math.exp(6.0))
+    sMax = 1.0 / (1.0 + math.exp(-6.0))
+    sig  = 1.0 / (1.0 + math.exp(-x))
+    (sig - sMin) / (sMax - sMin)
+
+colClr(m, nr, c) =>
+    for r = 0 to nr - 1
+        matrix.set(m, r, c, 0.0)
+
+addBar(m, p, nr, c, lf0, rs0, kRaw, gs, bb) =>
+    h = lg(high)
+    l = lg(low)
+    o = lg(open)
+    cc = lg(close)
+    v = math.max(0.0, nz(volume)) * kRaw
+    if not na(h) and not na(l) and not na(o) and not na(cc) and v > 0 and rs0 > 0
+        r0 = int(math.floor((l - lf0) / rs0))
+        r1 = int(math.floor((h - lf0) / rs0))
+        r0 := math.max(0, math.min(nr - 1, r0))
+        r1 := math.max(0, math.min(nr - 1, r1))
+        cnt = math.max(1, r1 - r0 + 1)
+        bLo = math.min(o, cc)
+        bHi = math.max(o, cc)
+        bodyV = v * bb
+        wickV = v * (1.0 - bb)
+        wickAdd = wickV / cnt
+        bodyDen = math.max(rs0, bHi - bLo)
+        addNow = 0.0
+        for r = r0 to r1
+            rl = lf0 + r * rs0
+            rh = rl + rs0
+            ov = math.max(0.0, math.min(rh, bHi) - math.max(rl, bLo))
+            bodyAdd = bodyV * ov / bodyDen
+            raw = wickAdd + bodyAdd
+            if raw != 0
+                matrix.set(m, r, c, raw)
+                addNow := raw * gs
+                array.set(p, r, array.get(p, r) + addNow)
+
+subCol(m, p, nr, c, gs) =>
+    for r = 0 to nr - 1
+        v = matrix.get(m, r, c)
+        if v != 0
+            array.set(p, r, array.get(p, r) - v * gs)
+            matrix.set(m, r, c, 0.0)
+
+reb(m, p, nr, nb, lf0, rs0, q, bb) =>
+    matrix.fill(m, 0.0)
+    array.fill(p, 0.0)
+    for c = 0 to nb - 1
+        b = nb - 1 - c
+        h = lg(high[b])
+        l = lg(low[b])
+        o = lg(open[b])
+        cc = lg(close[b])
+        v  = math.max(0.0, nz(volume[b])) * math.pow(q, b)
+        if not na(h) and not na(l) and not na(o) and not na(cc) and v > 0 and rs0 > 0
+            r0 = int(math.floor((l - lf0) / rs0))
+            r1 = int(math.floor((h - lf0) / rs0))
+            r0 := math.max(0, math.min(nr - 1, r0))
+            r1 := math.max(0, math.min(nr - 1, r1))
+            cnt = math.max(1, r1 - r0 + 1)
+            bLo = math.min(o, cc)
+            bHi = math.max(o, cc)
+            bodyV = v * bb
+            wickV = v * (1.0 - bb)
+            wickAdd = wickV / cnt
+            bodyDen = math.max(rs0, bHi - bLo)
+            for r  = r0 to r1
+                rl = lf0 + r * rs0
+                rh = rl + rs0
+                ov = math.max(0.0, math.min(rh, bHi) - math.max(rl, bLo))
+                raw = wickAdd + bodyV * ov / bodyDen
+                if raw != 0
+                    matrix.set(m, r, c, raw)
+                    array.set(p, r, array.get(p, r) + raw)
+
+rebase(m, p, nr, nb, gs) =>
+    if gs != 1.0
+        array.fill(p, 0.0)
+        for c = 0 to nb - 1
+            for r = 0 to nr - 1
+                v = matrix.get(m, r, c) * gs
+                matrix.set(m, r, c, v)
+                if v != 0
+                    array.set(p, r, array.get(p, r) + v)
+
+massIdx(a, nr, frac) =>
+    tv = 0.0
+    for r = 0 to nr - 1
+        tv += array.get(a, r)
+    if tv <= 0
+        na
+    else
+        tgt = tv * frac
+        run = 0.0
+        outI = 0.0
+        for r = 0 to nr - 1
+            v = array.get(a, r)
+            prev = run
+            run += v
+            if run >= tgt
+                f = v > 0 ? (tgt - prev) / v : 0.0
+                outI := r + clp(f, 0.0, 1.0)
+                break
+        outI
+
+stats(a, lf0, rs0, nr, im, om, st) =>
+    tv  = 0.0
+    wm  = 0.0
+    pk  = -1.0
+    ipk = 0
+    for r = 0 to nr - 1
+        v = array.get(a, r)
+        tv += v
+        wm += v * r
+        if v > pk
+            pk := v
+            ipk := r
+    if tv <= 0
+        [na, na, na, na, na, na]
+    else
+        float p0 = ipk
+        if ipk > 0 and ipk < nr - 1
+            vl0 = array.get(a, ipk - 1)
+            vm0 = array.get(a, ipk)
+            vr0 = array.get(a, ipk + 1)
+            dn0 = vl0 + vm0 + vr0
+            if dn0 > 0
+                p0 := ((ipk - 1) * vl0 + ipk * vm0 + (ipk + 1) * vr0) / dn0
+
+        mu = wm / tv
+        loIn  = massIdx(a, nr, (1.0 - im) * 0.5)
+        hiIn  = massIdx(a, nr, 1.0 - (1.0 - im) * 0.5)
+        loOut = massIdx(a, nr, (1.0 - om) * 0.5)
+        hiOut = massIdx(a, nr, 1.0 - (1.0 - om) * 0.5)
+
+        vh0  = ctr(lf0, rs0, hiIn)
+        vl0  = ctr(lf0, rs0, loIn)
+        xh0  = ctr(lf0, rs0, hiOut)
+        xl0  = ctr(lf0, rs0, loOut)
+        muPx = ctr(lf0, rs0, mu)
+
+        mid0  = gmid(vh0, vl0)
+        sym   = mid0 > 0 ? math.abs(muPx - mid0) / mid0 : 1.0
+        blend = clp(sym / math.max(st, 0.0001), 0.0, 1.0)
+        cen   = na(mid0) or na(muPx) ? na : mid0 * (1.0 - blend) + muPx * blend
+
+        [ctr(lf0, rs0, p0), vh0, vl0, xh0, xl0, cen]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Lengths {
+lenF = int(math.max(3.0, math.round(math.sqrt(nBar))))
+lenM = int(math.max(5.0, math.round(math.sqrt(float(lenF * nBar)))))
+lenS = int(math.max(8.0, math.round((float(lenF + lenM + nBar)) / 3.0)))
+
+cNeu    = neu()
+cMidOsc = mix(cNeu, color.new(cNeu, 0), 1.0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Profile state {
+mxMax = 100000
+nCap  = int(math.max(1, math.min(nBar, math.floor(mxMax / 400))))
+q     = math.exp(-1.0 / math.max(1.0, math.sqrt(nBar)))
+
+var matrix<float> m = matrix.new<float>(400, nCap, 0.0)
+var float[] p  = array.new_float(400, 0.0)
+var int fill   = 0
+var int head   = 0
+var float cvLo = na
+var float cvHi = na
+var float lf   = na
+var float rs   = na
+var int rbCnt  = 0
+var float gs   = 1.0
+
+inMass   = 0.68
+outMass  = 0.95
+bodyBias = 0.64
+symThr   = 0.20
+
+hiLb  = ta.highest(high, nBar)
+loLb  = ta.lowest(low, nBar)
+loPad = math.max(syminfo.mintick, loLb * (1.0 - pad))
+hiPad = hiLb * (1.0 + pad)
+
+initCv = na(cvLo) or na(cvHi) or na(lf) or na(rs)
+outCv  = not initCv and (low < cvLo or high > cvHi)
+lfNew  = lg(loPad)
+rsNew  = not na(lfNew) and hiPad > 0 ? (lg(hiPad) - lfNew) / 400 : na
+rsDr    = not initCv and rs > 0 and rsNew > 0 ? math.abs(rsNew - rs) / rs : 0.0
+driftCv = not initCv and rsDr > rbPct
+doRb    = initCv or outCv or driftCv
+
+canProfileUpdate = barstate.isconfirmed
+
+if canProfileUpdate
+    if doRb and not na(lfNew) and not na(rsNew) and rsNew > 0
+        cvLo := loPad
+        cvHi := hiPad
+        lf := lfNew
+        rs := rsNew
+        fill := math.min(nCap, bar_index + 1)
+        head := 0
+        gs := 1.0
+        reb(m, p, 400, fill, lf, rs, q, bodyBias)
+        rbCnt += 1
+    else if not na(lf) and not na(rs) and rs > 0
+        gs := gs * q
+        if fill < nCap
+            addBar(m, p, 400, fill, lf, rs, 1.0 / gs, gs, bodyBias)
+            fill += 1
+        else
+            subCol(m, p, 400, head, gs)
+            colClr(m, 400, head)
+            addBar(m, p, 400, head, lf, rs, 1.0 / gs, gs, bodyBias)
+            head := (head + 1) % nCap
+        if gs < 0.000001
+            rebase(m, p, 400, fill, gs)
+            gs := 1.0
+        if low < cvLo or high > cvHi
+            cvLo := math.min(cvLo, low * (1.0 - pad))
+            cvHi := math.max(cvHi, high * (1.0 + pad))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Profile stats {
+[vp0, vh0, vl0, xh0, xl0, cen0] = stats(p, lf, rs, 400, inMass, outMass, symThr)
+
+vp = ta.ema(vp0, lenF)
+vh = ta.ema(vh0, lenF)
+vl = ta.ema(vl0, lenF)
+xh = ta.ema(xh0, lenM)
+xl = ta.ema(xl0, lenM)
+cen = ta.ema(cen0, lenF)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Internal profile-based trend logic {
+profBase = na(cen) or na(vp) ? na : profBias * cen + (1.0 - profBias) * vp
+atrv     = ta.atr(120)
+
+var float anc    = na
+var int trendDir = 1
+
+flipDistBase  = 2.2 * atrv
+transDist     = 2.2 * atrv
+minDist       = 0.45 * atrv
+
+moveNow = math.abs(close - close[1]) / math.max(atrv, syminfo.mintick)
+baseGap = na(profBase) ? 0.0 : math.abs(close - profBase) / math.max(atrv, syminfo.mintick)
+
+rawAccel = 1.0 + accelSens * (0.7 * moveNow + 0.3 * baseGap)
+accelMul = clp(rawAccel, 1.0, accelMax)
+
+effFlipDist = flipDistBase / accelMul
+effFlipDist := math.max(minDist, effFlipDist)
+
+if na(anc) or na(profBase) or na(atrv)
+    anc := profBase
+    trendDir := close >= profBase ? 1 : -1
+else
+    if trendDir == 1 and close < anc
+        trendDir := -1
+        anc := profBase + effFlipDist
+    else if trendDir == -1 and close > anc
+        trendDir := 1
+        anc := profBase - effFlipDist
+
+    baseTrail = trendDir == 1 ? profBase - effFlipDist : profBase + effFlipDist
+    anc := trendDir == 1 ? math.max(anc, baseTrail) : math.min(anc, baseTrail)
+
+    gapToBase = trendDir == 1 ? profBase - anc : anc - profBase
+    if gapToBase > transDist
+        targetLevel = trendDir == 1 ? profBase - minDist : profBase + minDist
+        anc := trendDir == 1 ? math.max(anc, targetLevel) : math.min(anc, targetLevel)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Oscillator {
+[ancA, vhA, vlA, xhA, xlA] = fixBands(anc, vh, vl, xh, xl)
+[vpA, vhB, vlB, xhB, xlB]  = fixBands(vp, vh, vl, xh, xl)
+
+scAnc = norm(close, ancA, vhA, vlA, xhA, xlA)
+scVp  = norm(close, vpA, vhB, vlB, xhB, xlB)
+
+conf   = 1.0 - clp(math.abs(scAnc - scVp) / 100.0, 0.0, 1.0)
+outAvg = ta.ema(scAnc * 0.75 + scVp * 0.25 * conf, 8)
+sig    = ta.ema(outAvg, lenSig)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+hline(50, "XH", color=color.new(color.gray, 55))
+vha=plot(25, "VH", color=color.new(color.gray, 72), linestyle=plot.linestyle_dotted)
+hline(0, "Mid", color=color.new(color.gray, 45))
+vla=plot(-25, "VL", color=color.new(color.gray, 72), linestyle=plot.linestyle_dotted)
+hline(-50, "XL", color=color.new(color.gray, 55))
+fill(vha, vla, color.new(color.navy,95), title="Value Area")
+
+outColSrc = ta.ema(outAvg, 2)
+cOsc      = oscCol(outColSrc, cNeg, cMidOsc, cPos)
+
+pOsc = plot(outAvg, "Osc", color=cOsc, linewidth=2)
+pSig = plot(shSig ? sig : na, "Sig", color=color.new(cNeu, 10), linewidth=1)
+p0   = plot(0, color=cOsc,display=display.none)
+fTop = outAvg >= 0 ? color.new(cPos, 78) : color.new(cNeg, 78)
+fBot = outAvg >= 0 ? color.new(cPos, 100) : color.new(cNeg, 100)
+fill(pOsc, p0, outAvg, 0, shFill ? fTop : na, shFill ? fBot : na, title="Osc Fill")
+
+trailCol  = trendDir == 1 ? cPos : cNeg
+trailPlot = showTrailOnChart ? (trendDir != trendDir[1] ? float(na) : anc) : na
+closePlot = showTrailOnChart ? close : na
+
+pTrail = plot(trailPlot, "Trailing", color=color.new(trailCol, 0), linewidth=2, style=plot.style_linebr, force_overlay=true)
+pClose = plot(closePlot, display=display.none, editable=false, force_overlay=true)
+fill(pTrail, pClose, anc, close, showTrailFill?color.new(trailCol, 85):na, color(na))
+plotcandle(open, high, low, close, title="Trend Candlesticks", color=paintBars ? cOsc : na, wickcolor=paintBars ? cOsc : na, bordercolor=paintBars ? cOsc : na, force_overlay=true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Reversal marks {
+var int lastRevBar = na
+canMark = na(lastRevBar) or bar_index - lastRevBar > 20
+
+sweepLen  = 2
+sweepHigh = high > ta.highest(high[1], sweepLen)
+sweepLow  = low  < ta.lowest(low[1], sweepLen)
+
+revavg    = ta.ema(outAvg,10)
+prevreavg = revavg[1]
+revDown = ta.crossunder(revavg, prevreavg) and outAvg > 30 and sweepHigh
+revUp   = ta.crossover(revavg, prevreavg) and outAvg < -30 and sweepLow
+
+plotshape(showRevMarks and revDown and canMark ? outAvg[1] : na, "Reversal Down", shape.diamond, location.absolute, size=size.tiny, color=cNeg, offset=-1)
+plotshape(showRevMarks and revUp and canMark ? outAvg[1] : na, "Reversal Up", shape.diamond, location.absolute, size=size.tiny, color=cPos, offset=-1)
+
+plotshape(showRevMarks and revDown and canMark ? outAvg[1] : na, "Reversal Down Glow", shape.diamond, location.absolute, size=size.small, color=color.new(cNeg, 70), offset=-1)
+plotshape(showRevMarks and revUp and canMark ? outAvg[1] : na, "Reversal Up Glow", shape.diamond, location.absolute, size=size.small, color=color.new(cPos, 70), offset=-1)
+
+if (showRevMarks and revDown and canMark) or (showRevMarks and revUp and canMark)
+    lastRevBar := bar_index
+
+plotshape(showRevMarks and revDown and canMark, "Chart Reversal Down", shape.diamond, location.abovebar, size=size.tiny, color=color.new(cNeg, 0), offset=-1, force_overlay=true)
+plotshape(showRevMarks and revUp and canMark, "Chart Reversal Up", shape.diamond, location.belowbar, size=size.tiny, color=color.new(cPos, 0), offset=-1, force_overlay=true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+// ~~ Alerts {
+sigCrossUpRaw         = ta.crossover(outAvg, sig)
+sigCrossDownRaw       = ta.crossunder(outAvg, sig)
+zeroCrossUpRaw        = ta.crossover(outAvg, 0)
+zeroCrossDownRaw      = ta.crossunder(outAvg, 0)
+
+crossVLUpRaw          = ta.crossover(outAvg, -25)
+crossVLDownRaw        = ta.crossunder(outAvg, -25)
+crossVHUpRaw          = ta.crossover(outAvg, 25)
+crossVHDownRaw        = ta.crossunder(outAvg, 25)
+crossXLUpRaw          = ta.crossover(outAvg, -50)
+crossXHDownRaw        = ta.crossunder(outAvg, 50)
+
+priceCrossTrailUpRaw   = ta.crossover(close, anc)
+priceCrossTrailDownRaw = ta.crossunder(close, anc)
+profBaseCrossUpRaw     = ta.crossover(close, profBase)
+profBaseCrossDownRaw   = ta.crossunder(close, profBase)
+
+// Final alert conditions
+bullSigCross      = sigCrossUpRaw
+bearSigCross      = sigCrossDownRaw
+bullZeroCross     = zeroCrossUpRaw
+bearZeroCross     = zeroCrossDownRaw
+
+bullCrossVL       = crossVLUpRaw
+bearCrossVL       = crossVLDownRaw
+bullCrossVH       = crossVHUpRaw
+bearCrossVH       = crossVHDownRaw
+bullCrossXL       = crossXLUpRaw
+bearCrossXH       = crossXHDownRaw
+
+trendFlipBull     = trendDir == 1 and trendDir[1] == -1
+trendFlipBear     = trendDir == -1 and trendDir[1] == 1
+
+priceCrossTrailUp   = priceCrossTrailUpRaw
+priceCrossTrailDown = priceCrossTrailDownRaw
+
+profBaseCrossUp     = profBaseCrossUpRaw
+profBaseCrossDown   = profBaseCrossDownRaw
+
+bullReversal      = showRevMarks and revUp and canMark
+bearReversal      = showRevMarks and revDown and canMark
+
+fullBullStack     = trendDir == 1 and close > anc and outAvg > 0 and outAvg > sig
+fullBearStack     = trendDir == -1 and close < anc and outAvg < 0 and outAvg < sig
+
+// Signal / oscillator
+alertcondition(bullSigCross, "Sig crosses Osc Bull", "AVDO Sig crossed above Osc.")
+alertcondition(bearSigCross, "Sig crosses Osc Bear", "AVDO Sig crossed below Osc.")
+
+alertcondition(bullZeroCross, "Osc crosses Mid Bull", "AVDO Osc crossed above Mid.")
+alertcondition(bearZeroCross, "Osc crosses Mid Bear", "AVDO Osc crossed below Mid.")
+
+// Value levels
+alertcondition(bullCrossVL, "Osc crosses VL Bull", "AVDO Osc crossed above VL.")
+alertcondition(bearCrossVL, "Osc crosses VL Bear", "AVDO Osc crossed below VL.")
+
+alertcondition(bullCrossVH, "Osc crosses VH Bull", "AVDO Osc crossed above VH.")
+alertcondition(bearCrossVH, "Osc crosses VH Bear", "AVDO Osc crossed below VH.")
+
+alertcondition(bullCrossXL, "Osc crosses XL Bull", "AVDO Osc crossed above XL.")
+alertcondition(bearCrossXH, "Osc crosses XH Bear", "AVDO Osc crossed below XH.")
+
+// Trend / trailing
+alertcondition(trendFlipBull, "Trail flips Bull", "AVDO Trailing flipped bullish.")
+alertcondition(trendFlipBear, "Trail flips Bear", "AVDO Trailing flipped bearish.")
+
+alertcondition(priceCrossTrailUp,   "Price crosses Trail Bull", "Price crossed above Trailing.")
+alertcondition(priceCrossTrailDown, "Price crosses Trail Bear", "Price crossed below Trailing.")
+
+// Profile base
+alertcondition(profBaseCrossUp,   "Price crosses Base Bull", "Price crossed above profile base.")
+alertcondition(profBaseCrossDown, "Price crosses Base Bear", "Price crossed below profile base.")
+
+// Reversals (matched to plots but cleaned)
+alertcondition(bearReversal, "Reversal Down", "AVDO bearish reversal detected.")
+alertcondition(bullReversal, "Reversal Up",   "AVDO bullish reversal detected.")
+
+alertcondition(bearReversal, "Reversal Down Glow", "AVDO bearish reversal (strong).")
+alertcondition(bullReversal, "Reversal Up Glow",   "AVDO bullish reversal (strong).")
+
+alertcondition(bearReversal, "Chart Reversal Down", "AVDO chart bearish reversal.")
+alertcondition(bullReversal, "Chart Reversal Up",   "AVDO chart bullish reversal.")
+
+// Full alignment
+alertcondition(fullBullStack, "Full Stack Bull", "AVDO full bullish alignment.")
+alertcondition(fullBearStack, "Full Stack Bear", "AVDO full bearish alignment.")

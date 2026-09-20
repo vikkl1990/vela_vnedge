@@ -1,0 +1,63 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ © Zeiierman {
+//@version=5
+indicator("Dynamic Price Oscillator (Zeiierman)", precision=0)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Tooltips {
+t1 = "Defines the lookback period for the oscillator and Bollinger Bands calculation. Increasing this value will consider a longer history, potentially smoothing out the oscillator and making the Bollinger Bands wider, leading to fewer signals. Decreasing this value will make the oscillator more sensitive to recent price changes, and the Bollinger Bands will become narrower, possibly increasing the number of signals."
+t2 = "Determines how much the oscillator's calculation is smoothed. A higher smoothing factor reduces noise and makes the oscillator's line smoother, which may help in identifying the dominant trend more clearly but can delay signal generation. A lower smoothing factor makes the oscillator more responsive to recent price movements, which can be beneficial for short-term trading strategies but may increase the risk of false signals."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+length       = input.int(33, "Length", minval=1,group="Dynamic Price Oscillator", inline="",tooltip=t1)
+smoothFactor = input.int(5, "Smoothing Factor", minval=1,group="Dynamic Price Oscillator", inline="",tooltip=t2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to calculate True Range {
+trueRange(h, l, c) =>
+    tr1 = h - l
+    tr2 = math.abs(h - c[1])
+    tr3 = math.abs(l - c[1])
+    math.max(tr1, tr2, tr3)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function to calculate Bollinger Bands {
+bollingerBands(src, length, mult) =>
+    basis = ta.sma(src, length)
+    dev = mult * ta.stdev(src, length)
+    upper = basis + dev
+    lower = basis - dev
+    [upper, lower]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Adjusted Price based on True Range {
+volAdjPrice = ta.ema(trueRange(high, low, close), length)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Price calculation {
+priceChange = (close - close[length])
+priceDelta  = (close - volAdjPrice)
+oscillator  = ta.ema(math.avg(priceDelta, priceChange), smoothFactor)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Bollinger Bands on Oscillator {
+[bbHigh, bbLow]       = bollingerBands(oscillator, length*5, 1)
+[bbHighExp, bbLowExp] = bollingerBands(oscillator, length*5, 2)
+mean                  = math.avg(bbHighExp,bbLowExp)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot {
+p1 = plot(oscillator, "Dynamic Price Oscillator", color = color.rgb(227, 161, 54))
+plot(mean, "Dynamic Mean", color = color.new(#f7cb85,0))
+p2 = plot(bbHigh, "Bollinger High", color = color.new(#089981, 60))
+p3 = plot(bbHighExp, "Expanded Bollinger High", color = color.new(#089981, 0))
+p4 = plot(bbLow, "Bollinger Low", color = color.new(#f23645, 60))
+p5 = plot(bbLowExp, "Expanded Bollinger Low", color = color.new(#f23645, 0))
+
+fill(p1, p2, oscillator > bbHigh ? color.new(#089981, 80) : na, "Oscillator Above Bollinger High")
+fill(p1, p3, oscillator > bbHighExp ? color.new(#089981, 80) : na, "Oscillator Above Expanded Bollinger High")
+fill(p1, p4, oscillator < bbLow ? color.new(#f23645, 80) : na, "Oscillator Below Bollinger Low")
+fill(p1, p5, oscillator < bbLowExp ? color.new(#f23645,80) : na, "Oscillator Below Expanded Bollinger Low")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

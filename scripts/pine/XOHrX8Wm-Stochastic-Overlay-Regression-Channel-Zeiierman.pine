@@ -1,0 +1,225 @@
+
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=6
+indicator("Stochastic Overlay - Regression Channel (Zeiierman)", overlay=false, max_bars_back=500)
+//~~}
+
+//~~ Tooltips {
+var string t1 = "Stochastic Length sets the number of bars over which the stochastic oscillator is calculated. A higher length smooths the indicator but may delay signals, while a lower value makes it more responsive (but possibly noisier)."
+var string t2 = "%K Smoothing determines how many bars are averaged to create the %K line. Increasing this value smooths the %K line further, reducing noise at the expense of responsiveness."
+var string t3 = "%D Smoothing sets the averaging period for the %K line to generate the %D line. A higher value results in a smoother, lagging %D, whereas a lower value provides a more sensitive signal."
+var string t4 = "Band Length defines the period used to calculate the basis of the volatility bands. A longer band length yields a smoother, less reactive channel, while a shorter length produces a channel that more closely follows recent price movements."
+var string t5 = "Volatility Multiplier adjusts the channel width by scaling the ATR. Increasing the multiplier widens the bands to capture more volatility, and decreasing it narrows the bands for a tighter range."
+var string t6 = "Band Type allows you to choose the moving average used to calculate the band basis. Options like EMA, SMA, WMA, HMA, and RMA each offer different smoothness and responsiveness; for example, EMA reacts faster than SMA."
+var string t7 = "Regression Type selects the method used to compute the regression channel. 'Logarithmic' uses log-transformed prices, 'Linear' uses the raw values, 'Adaptive' adjusts responsiveness, and 'Leading' can project trends forward. Choose the one that best fits your analysis."
+var string t8 = "Regression Channel Length specifies the number of bars used to calculate the regression trend line. A longer length provides a more stable and smooth trend, though it may lag, while a shorter length makes the channel more reactive but can be more erratic."
+var string t9 = "Heatmap Length sets the number of bars considered for the heatmap calculation that visualizes bullish and bearish strength. Increasing the length will smooth the heatmap, whereas decreasing it will make the display more sensitive to recent changes."
+var string t10 = "Bar Coloring toggles whether bars are color-coded based on trend direction. If enabled, bars above the basis are tinted bullish and those below are bearish."
+var string t11 = "Bullish Color sets the color for bullish elements (such as the regression channel and band boundaries) when the market trend is upward. Changing this adjusts the visual emphasis for bullish conditions."
+var string t12 = "Bearish Color sets the color for bearish elements of the channel when the market is trending downwards. Altering this lets you distinguish bearish signals visually."
+var string t13 = "Stochastic %K Color determines the color of the %K line in the stochastic oscillator. Adjust this to suit your aesthetic preferences or improve chart readability."
+var string t14 = "Stochastic %D Color sets the color for the %D line, allowing you to differentiate it from the %K line and better identify crossovers and trends."
+var string t15 = "OB/OS Color specifies the color used to highlight the overbought/oversold zones of the stochastic indicator, making these key levels visually distinct."
+var string t16 = "Secondary OB/OS Color provides an additional color option for overbought/oversold elements to enhance contrast and clarity in the indicator's display."
+var string t17 = "Mid Zone Color defines the color for the midpoint or neutral area within the overbought/oversold zones of the stochastic indicator, offering extra visual context."
+var string t18 = "BG Fill Color controls the background fill color behind the stochastic indicator’s zones. Adjusting this setting can improve readability or help match your chart’s theme."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Settings {
+stochLength = input.int(14, "Stochastic Length", minval=1, maxval=50, group="Stochastic Settings", inline="", tooltip=t1)
+smoothK     = input.int(5, title="%K Smoothing", minval=1, group="Stochastic Settings", inline="", tooltip=t2)
+periodD     = input.int(3, title="%D Smoothing", minval=1, group="Stochastic Settings", inline="", tooltip=t3)
+bandLength  = input.int(21, "Band Length", minval=5, maxval=100, group="Stochastic Band", inline="", tooltip=t4)
+atrMult     = input.float(1.8, "Volatility Multiplier", minval=0.1, maxval=5.0, step=0.1, group="Stochastic Band", inline="", tooltip=t5)
+bandType    = input.string("EMA", "Band Type", options=["EMA", "SMA", "WMA", "HMA", "RMA"], group="Stochastic Band", inline="", tooltip=t6)
+
+regressionType = input.string("Logarithmic", "Regression Type", options=["Logarithmic", "Linear", "Adaptive", "Leading"], group="Regression Channel", inline="", tooltip=t7)
+regLength      = input.int(100, minval=1, title="Regression Length", group="Regression Channel", inline="", tooltip=t8)
+heatLength     = input.int(50, "Heatmap Length", minval=10, maxval=500, group="Heatmap Settings", inline = "", tooltip=t9)
+barSize        = 20
+
+barColoring = input.bool(true, "Bar Coloring", group="Channel & Band Style", inline="", tooltip=t10)
+upCol   = input.color(color.rgb(0, 213, 255), title="",group="Channel & Band Style", inline="col", tooltip=t11)
+dnCol   = input.color(#ff0088,title="", group="Channel & Band Style", inline="col", tooltip=t12)
+StochColor   = input.color(#92affd, title="K%", group="Stochastic Style", inline="Stoch", tooltip=t13)
+StockDColor  = input.color(color.rgb(255, 157, 82), title="D%",group="Stochastic Style", inline="Stoch", tooltip=t14)
+OBColor      = input.color(#ff0101, title="OB/OS",group="Stochastic Style", inline="obos", tooltip=t15)
+OSColor      = input.color(color.rgb(58, 255, 9), title=" ",group="Stochastic Style", inline="obos", tooltip=t16)
+MidColor     = input.color(#989898, title=" ",group="Stochastic Style", inline="obos", tooltip=t17)
+bgfill       = input.color(color.rgb(33, 150, 243, 90), title="BG",group="Stochastic Style", inline="obos", tooltip=t18)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Ma Function {
+ma(src, len, type) =>
+    switch type
+        "SMA"  => ta.sma(src, len)
+        "EMA"  => ta.ema(src, len)
+        "WMA" => ta.wma(src, len)
+        "HMA" => ta.hma(src, len)
+        "RMA" => ta.rma(src, len)
+        => ta.ema(src, len)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Stochastic %K {
+lowestLow   = ta.lowest(low, stochLength)
+highestHigh = ta.highest(high, stochLength)
+stochK      = 100 * ta.sma(((close - lowestLow) / (highestHigh - lowestLow)),smoothK)
+d           = ta.sma(stochK, periodD)
+
+atr   = ta.atr(14) * atrMult
+basis = ma(close, bandLength, bandType)
+dev   = atr * (1 + (50 - math.abs(stochK - 50)) / 100)
+upperBand = basis + dev
+lowerBand = basis - dev
+
+upperMa = ma(upperBand, 3, "EMA")
+lowerMa = ma(lowerBand, 3, "EMA")
+
+isUptrend   = close > basis and close[1] > basis[1]
+isDowntrend = close < basis and close[1] < basis[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Regression Calculation {
+regression(src, length) =>
+    float sumX = 0.0
+    float sumY = 0.0
+    float sumXSqr = 0.0
+    float sumXY   = 0.0
+
+    for i = 0 to length - 1
+        val = src[i]
+        per = i + 1.0
+        sumX += per
+        sumY += val
+        sumXSqr += per * per
+        sumXY += val * per
+
+    slope     = (length * sumXY - sumX * sumY) / (length * sumXSqr - sumX * sumX)
+    intercept = (sumY - slope * sumX) / length
+    [slope, intercept]
+
+[slope, intercept] = switch regressionType
+    "Logarithmic" => regression(math.log(basis), regLength)
+    "Linear" => regression(ta.ema(basis,20), regLength)
+    "Adaptive" =>
+        [s, i] = regression(math.log(ta.hma(basis,5)), regLength)
+        [ta.hma(s, 5), i]
+    "Leading" =>
+        [s, i] = regression(basis, regLength-20)
+        [s * 1.5, i]
+
+calcReg(x) =>
+    useLog = regressionType == "Logarithmic" or regressionType == "Adaptive"
+    useLog ? math.exp(intercept + slope * x) : (intercept + slope * x)
+
+rStart = calcReg(regLength)
+rEnd   = calcReg(0)
+rDev   = ta.stdev(basis, regLength)
+upperStart = rStart + rDev
+upperEnd   = rEnd + rDev
+lowerStart = rStart - rDev
+lowerEnd   = rEnd - rDev
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Regression Channel Plot {
+b = bar_index
+var line ml = na
+var line ul = na
+var line ll = na
+
+ml := na(ml) ? line.new(b - regLength, rStart, b, rEnd, color=color.gray, style=line.style_dashed, width=2, force_overlay=true) : ml
+ul := na(ul) ? line.new(b - regLength, upperStart, b, upperEnd, color=dnCol, width=2, force_overlay=true) : ul
+ll := na(ll) ? line.new(b - regLength, lowerStart, b, lowerEnd, color=upCol, width=2, force_overlay=true) : ll
+
+line.set_xy1(ml, b - regLength, rStart)
+line.set_xy2(ml, b, rEnd)
+line.set_xy1(ul, b - regLength, upperStart)
+line.set_xy2(ul, b, upperEnd)
+line.set_xy1(ll, b - regLength, lowerStart)
+line.set_xy2(ll, b, lowerEnd)
+lFill = isUptrend ? color.new(upCol, 90) : color.new(dnCol, 90)
+linefill.new(ul, ll, lFill)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Heatmap {
+bullSum  = ta.ema(math.sum(close > basis ? 1 : 0, heatLength),5)
+bearSum  = ta.ema(math.sum(close < basis ? 1 : 0, heatLength),5)
+totalSum = bullSum + bearSum
+totalSum := totalSum == 0 ? 1 : totalSum
+
+bullRatio = bullSum / totalSum
+bearRatio = bearSum / totalSum
+
+bullBricks = int(barSize * bullRatio)
+bearBricks = int(barSize * bearRatio)
+emptyBull = barSize - bullBricks
+emptyBear = barSize - bearBricks
+bullStr   = str.repeat("█", bullBricks) + str.repeat("▒", emptyBull)
+bearStr   = str.repeat("█", bearBricks) + str.repeat("▒", emptyBear)
+
+bullHighlight = ta.sma(close,5) > upperBand
+bearHighlight = ta.sma(close,5) < lowerBand
+
+upColBg = bullHighlight ? color.new(upCol, 0) : color.new(upCol, 85)
+dnColBg = bearHighlight ? color.new(dnCol, 0) : color.new(dnCol, 85)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Plots {
+plot(stochK, title="%K", color=StochColor)
+plot(d, title="%D", color=StockDColor)
+h0  = hline(80, "OB", color=OBColor)
+h50 =hline(50, "Middle Band", color=color.new(MidColor, 50))
+h1  = hline(20, "OS", color=OSColor)
+fill(h0, h1, color=bgfill, title="Background")
+
+baseline    = plot(basis, "Stoch Basis", color.new(color.gray, 0), 1, force_overlay = true)
+upDist  = (upperMa - basis) / 10
+dnDist  = (basis - lowerMa) / 10
+
+ub1 = plot(upperMa, "Upper Band 1", color.new(dnCol, 0), 1, force_overlay=true)
+ub2 = plot(upperMa - upDist, "Upper Band 2", color.new(dnCol, 70), 1, force_overlay=true)
+ub3 = plot(upperMa - upDist * 2, "Upper Band 3", color.new(dnCol, 75), 1, force_overlay=true)
+ub4 = plot(upperMa - upDist * 3, "Upper Band 4", color.new(dnCol, 80), 1, force_overlay=true)
+ub5 = plot(upperMa - upDist * 4, "Upper Band 5", color.new(dnCol, 83), 1, force_overlay=true)
+ub6 = plot(upperMa - upDist * 5, "Upper Band 6", color.new(dnCol, 86), 1, force_overlay=true)
+ub7 = plot(upperMa - upDist * 6, "Upper Band 7", color.new(dnCol, 89), 1, force_overlay=true)
+ub8 = plot(upperMa - upDist * 7, "Upper Band 8", color.new(dnCol, 92), 1, force_overlay=true)
+
+fill(ub1, ub2, color.new(dnCol, 70))
+fill(ub2, ub3, color.new(dnCol, 75))
+fill(ub3, ub4, color.new(dnCol, 80))
+fill(ub4, ub5, color.new(dnCol, 83))
+fill(ub5, ub6, color.new(dnCol, 86))
+fill(ub6, ub7, color.new(dnCol, 89))
+fill(ub7, baseline, color.new(dnCol, 92))
+
+lb1 = plot(lowerMa, "Lower Band 1", color.new(upCol, 0), 1, force_overlay=true)
+lb2 = plot(lowerMa + dnDist, "Lower Band 2", color.new(upCol, 70), 1, force_overlay=true)
+lb3 = plot(lowerMa + dnDist * 2, "Lower Band 3", color.new(upCol, 75), 1, force_overlay=true)
+lb4 = plot(lowerMa + dnDist * 3, "Lower Band 4", color.new(upCol, 80), 1, force_overlay=true)
+lb5 = plot(lowerMa + dnDist * 4, "Lower Band 5", color.new(upCol, 83), 1, force_overlay=true)
+lb6 = plot(lowerMa + dnDist * 5, "Lower Band 6", color.new(upCol, 86), 1, force_overlay=true)
+lb7 = plot(lowerMa + dnDist * 6, "Lower Band 7", color.new(upCol, 89), 1, force_overlay=true)
+lb8 = plot(lowerMa + dnDist * 7, "Lower Band 8", color.new(upCol, 92), 1, force_overlay=true)
+
+fill(lb1, lb2, color.new(upCol, 70))
+fill(lb2, lb3, color.new(upCol, 75))
+fill(lb3, lb4, color.new(upCol, 80))
+fill(lb4, lb5, color.new(upCol, 83))
+fill(lb5, lb6, color.new(upCol, 86))
+fill(lb6, lb7, color.new(upCol, 89))
+fill(lb7, baseline, color.new(upCol, 92))
+
+plotcandle(barColoring ?open:na,barColoring ?high:na,barColoring ?low:na,barColoring ?close:na ,color=barColoring ?
+ (isUptrend ? upCol : dnCol) : na, wickcolor=barColoring ?(isUptrend ? upCol : dnCol) : na, bordercolor= barColoring ?
+ (isUptrend ? upCol : dnCol) : na, 
+ title="Trend Candlesticks", force_overlay=true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Plot Table {
+var table powerTable = table.new(position.bottom_right, 1, 2, force_overlay = true)
+table.cell(powerTable, 0, 0, "Bull Power  " + bullStr, bgcolor=upColBg, text_color=color.white, text_halign=text.align_left)
+table.cell(powerTable, 0, 1, "Bear Power " + bearStr, bgcolor=dnColBg, text_color=color.white, text_halign=text.align_left)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

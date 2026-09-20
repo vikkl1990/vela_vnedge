@@ -1,0 +1,521 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("LTF Volume Microburst Bubbles (Zeiierman)", overlay = false, precision = 1, max_labels_count = 500, max_lines_count = 300)
+//}
+
+// ~~ Tooltips {
+var string t1 = "Automatically selects a practical lower timeframe from the chart timeframe. The goal is to keep enough intrabars to detect meaningful volume microbursts without requesting unnecessarily dense lower-timeframe data."
+var string t2 = "Sets the lower timeframe used by the Microburst engine when Auto Lower Timeframe is disabled. It must be equal to or lower than the chart timeframe."
+var string t3 = "Controls the EMA length used to establish normal lower-timeframe volume inside each enabled session. Higher values create a slower and more stable baseline, while lower values react faster to changing activity."
+var string t4 = "Requires lower-timeframe volume to reach at least this multiple of its session volume baseline before the intrabar can qualify as a spike. Higher values detect fewer but more unusual volume events."
+var string t5 = "Requires the lower-timeframe candle body to occupy at least this fraction of its full high-low range. Higher values favor cleaner directional candles and reject more wick-heavy activity."
+var string t6 = "Sets the absolute Microburst Score required for the bullish or bearish signal markers, signal candle coloring, and directional alerts. Bubbles can still appear below this threshold when qualifying lower-timeframe spikes exist."
+var string t7 = "Controls how session times are interpreted. Market Local uses each session's native IANA timezone and follows daylight-saving changes. A GMT offset interprets every enabled session using one fixed timezone."
+var string t8 = "Enables Sydney-session lower-timeframe data. When enabled, Sydney maintains its own volume baseline and contributes Microbursts only during the selected Sydney session window."
+var string t9 = "Sets the Sydney session window. With Market Local selected, these hours are interpreted in Australia/Sydney time. With a GMT offset selected, the hours use that fixed offset instead."
+var string t10 = "Enables Tokyo-session lower-timeframe data. When enabled, Tokyo maintains its own volume baseline and contributes Microbursts only during the selected Tokyo session window."
+var string t11 = "Sets the Tokyo session window. With Market Local selected, these hours are interpreted in Asia/Tokyo time. With a GMT offset selected, the hours use that fixed offset instead."
+var string t12 = "Enables London-session lower-timeframe data. London is enabled by default and maintains its own volume baseline so London activity is normalized against London activity."
+var string t13 = "Sets the London session window. With Market Local selected, these hours are interpreted in Europe/London time and follow local daylight-saving changes."
+var string t14 = "Enables New York-session lower-timeframe data. New York is enabled by default and maintains its own volume baseline so New York activity is normalized against New York activity."
+var string t15 = "Sets the New York session window. With Market Local selected, these hours are interpreted in America/New_York time and follow local daylight-saving changes."
+var string t16 = "Shows Microburst bubbles on the main price chart for directional bars containing at least one qualifying lower-timeframe spike. Disabling this option does not stop Microburst calculations."
+var string t17 = "Shows qualifying lower-timeframe spike volume inside each Microburst bubble. Disable it for a cleaner chart while keeping the same bubble detection and sizing."
+var string t18 = "Applies a global size adjustment to all Microburst bubbles. Actual bubble tiers still respond to qualifying spike-volume strength."
+var string t19 = "Sets the base transparency used by the bubble system. Lower values make the bubble cores and halos more solid, while higher values make them lighter."
+var string t20 = "Shows horizontal first-burst levels on the main chart. Bullish levels begin from the first qualifying bullish burst low and bearish levels begin from the first qualifying bearish burst high."
+var string t21 = "Prevents another same-direction level from being created until this many chart bars have passed since the previous level of that direction. Bullish and bearish cooldowns are tracked independently."
+var string t22 = "Deletes a level after this many chart bars have passed since its creation, even if price never mitigated it. This prevents very old levels from remaining on the chart indefinitely."
+var string t23 = "Sets the width of bullish and bearish Microburst levels. This changes appearance only and does not affect level creation or mitigation."
+var string t24 = "Sets the drawing style of Microburst levels. Solid, Dashed, and Dotted change appearance only and do not affect detection or mitigation."
+var string t25 = "Sets the primary bullish bubble color. Weaker bullish Microbursts use darker shades of this color while stronger scores move toward the full selected color."
+var string t26 = "Sets the primary bearish bubble color. Weaker bearish Microbursts use darker shades of this color while stronger scores move toward the full selected color."
+var string t27 = "Sets the text color used inside bullish Microburst bubbles when volume text is enabled."
+var string t28 = "Sets the text color used inside bearish Microburst bubbles when volume text is enabled."
+var string t29 = "Sets the color of bullish first-burst levels drawn from qualifying bullish Microburst lows."
+var string t30 = "Sets the color of bearish first-burst levels drawn from qualifying bearish Microburst highs."
+var string t31 = "Colors chart candles when the Microburst Score reaches the bullish or bearish Signal Threshold. This affects chart appearance only."
+var string t32 = "Adds a subtle lower-pane background highlight whenever the current chart bar contains a qualifying Microburst. The background strength responds to burst concentration."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+var string gDet  = "Detection"
+var string gSess = "Sessions"
+var string gBub  = "Bubbles"
+var string gLvl  = "Levels"
+var string gStyle = "Styling"
+var string gView  = "Display"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+autoLtf   = input.bool(true, "Auto Lower Timeframe", group = gDet, tooltip = t1)
+ltfManual = input.timeframe("1", "Manual Lower Timeframe", group = gDet, tooltip = t2)
+baseLen   = input.int(50, "Volume Baseline", minval = 5, maxval = 500, group = gDet, tooltip = t3)
+spikeMin  = input.float(2.5, "Spike Threshold", minval = 1.1, maxval = 20.0, step = 0.1, group = gDet, tooltip = t4)
+effMin = input.float(0.10, "Min Body Efficiency", minval = 0.0, maxval = 1.0, step = 0.05, group = gDet, tooltip = t5)
+sigMin = input.float(35.0, "Signal Threshold", minval = 1.0, maxval = 100.0, step = 1.0, group = gDet, tooltip = t6)
+
+tzMode = input.string("Market Local", "Session Time Zone", options = ["Market Local", "GMT-12", "GMT-11", "GMT-10", 
+ "GMT-9", "GMT-8", "GMT-7", "GMT-6", "GMT-5", "GMT-4", "GMT-3", "GMT-2", "GMT-1", "GMT+0", "GMT+1", "GMT+2", "GMT+3", 
+ "GMT+4", "GMT+5", "GMT+6", "GMT+7", "GMT+8", "GMT+9", "GMT+10", "GMT+11", "GMT+12", "GMT+13", "GMT+14"], 
+  group = gSess, tooltip = t7)
+sydOn   = input.bool(false, "Sydney", inline = "syd", group = gSess, tooltip = t8)
+sydSess = input.session("0800-1700", "", inline = "syd", group = gSess, tooltip = t9)
+tokOn   = input.bool(false, "Tokyo", inline = "tok", group = gSess, tooltip = t10)
+tokSess = input.session("0900-1800", "", inline = "tok", group = gSess, tooltip = t11)
+lonOn   = input.bool(true, "London", inline = "lon", group = gSess, tooltip = t12)
+lonSess = input.session("0800-1700", "", inline = "lon", group = gSess, tooltip = t13)
+nyOn    = input.bool(true, "New York", inline = "ny", group = gSess, tooltip = t14)
+nySess  = input.session("0930-1600", "", inline = "ny", group = gSess, tooltip = t15)
+
+showBub  = input.bool(true, "Show Bubbles", group = gBub, tooltip = t16)
+showTxt  = input.bool(true, "Show Volume Text", group = gBub, tooltip = t17)
+bubScale = input.string("Normal", "Bubble Size", options = ["Small", "Normal", "Large"], group = gBub, tooltip = t18)
+bubFade  = input.int(4, "Bubble Transparency", minval = 0, maxval = 25, group = gBub, tooltip = t19)
+
+showLvl = input.bool(true, "Show Levels", group = gLvl, tooltip = t20)
+lvlGap  = input.int(15, "New Level Cooldown", minval = 1, maxval = 200, group = gLvl, tooltip = t21)
+lvlAge  = input.int(2000, "Max Level Age", minval = 50, maxval = 5000, group = gLvl, tooltip = t22)
+lvlWidth   = input.int(1, "Line Width", minval = 1, maxval = 4, group = gLvl, tooltip = t23)
+lvlStyleIn = input.string("Solid", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = gLvl, tooltip = t24)
+
+bullCol = input.color(color.rgb(0, 200, 140), "Bull Bubble", group = gStyle, tooltip = t25)
+bearCol = input.color(color.rgb(235, 70, 90), "Bear Bubble", group = gStyle, tooltip = t26)
+bullTxt = input.color(color.white, "Bull Text", group = gStyle, tooltip = t27)
+bearTxt = input.color(color.white, "Bear Text", group = gStyle, tooltip = t28)
+bullLvl = input.color(color.rgb(0, 200, 140), "Bull Level", group = gStyle, tooltip = t29)
+bearLvl = input.color(color.rgb(235, 70, 90), "Bear Level", group = gStyle, tooltip = t30)
+
+colorBars = input.bool(true, "Color Signal Candles", group = gView, tooltip = t31)
+showBg    = input.bool(true, "Burst Background", group = gView, tooltip = t32)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Constants {
+extreme = 5.0
+sat     = 3.0
+bubCap  = 480
+lvlCap  = 280
+peakCol = color.rgb(245, 190, 55)
+flatCol = color.rgb(135, 145, 165)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+clip(float x, float lo, float hi) =>
+    math.max(lo, math.min(hi, x))
+
+fmtVol(float v) =>
+    if v >= 1000000000.0
+        str.tostring(v / 1000000000.0, "#.##") + "B"
+    else if v >= 1000000.0
+        str.tostring(v / 1000000.0, "#.##") + "M"
+    else if v >= 1000.0
+        str.tostring(v / 1000.0, "#.##") + "K"
+    else
+        str.tostring(v, "#.0")
+
+lvlStyle(string s) =>
+    if s == "Dashed"
+        line.style_dashed
+    else if s == "Dotted"
+        line.style_dotted
+    else
+        line.style_solid
+
+scoreTier(float s, float lim) =>
+    if s >= lim
+        4
+    else if s >= lim * 0.75
+        3
+    else if s >= lim * 0.50
+        2
+    else if s >= lim * 0.25
+        1
+    else
+        0
+
+volTier(float p) =>
+    if p >= 0.82
+        4
+    else if p >= 0.62
+        3
+    else if p >= 0.42
+        2
+    else if p >= 0.22
+        1
+    else
+        0
+
+szName(int n) =>
+    if n <= 0
+        size.tiny
+    else if n == 1
+        size.small
+    else if n == 2
+        size.normal
+    else if n == 3
+        size.large
+    else
+        size.huge
+
+bubSz(int t, string s, bool halo) =>
+    adj = s == "Small" ? -1 : s == "Large" ? 1 : 0
+    n = int(clip(t + adj + (halo ? 1 : 0), 0, 4))
+    szName(n)
+
+tierAlpha(int t, int base) =>
+    int(clip(base + (4 - t) * 3, 0, 35))
+
+haloAlpha(int t, int base) =>
+    int(clip(base + 43 - t * 4, 28, 72))
+
+tone(color c, int t, int a) =>
+    k = t == 4 ? 1.00 : t == 3 ? 0.86 : t == 2 ? 0.72 : t == 1 ? 0.58 : 0.46
+    r = int(math.round(color.r(c) * k))
+    g = int(math.round(color.g(c) * k))
+    b = int(math.round(color.b(c) * k))
+    tr = int(clip(color.t(c) + a, 0, 100))
+    color.rgb(r, g, b, tr)
+
+emaStep(float prev, float x, int len) =>
+    a = 2.0 / (len + 1.0)
+    na(prev) ? x : prev + a * (x - prev)
+
+pickTz(string local, string mode) =>
+    mode == "Market Local" ? local : mode
+
+inSess(string sess, string tz) =>
+    openHit = not na(time(timeframe.period, sess, tz))
+    closeHit = not na(time_close(timeframe.period, sess, tz))
+    openHit or closeHit
+
+autoTf(bool sessOn) =>
+    s = timeframe.in_seconds()
+    tf = timeframe.period
+
+    if not na(s)
+        if timeframe.isweekly
+            tf := "1D"
+        else if timeframe.ismonthly
+            tf := "1W"
+        else if timeframe.isdaily
+            tf := timeframe.from_seconds(int(s / 6.0))
+        else if s >= 3600.0
+            tf := timeframe.from_seconds(int(s / 4.0))
+        else if s >= 300.0
+            tf := timeframe.from_seconds(int(s / 5.0))
+        else
+            tf := timeframe.from_seconds(math.max(1, int(s / 6.0)))
+
+        if sessOn and (timeframe.isweekly or timeframe.ismonthly)
+            tf := "240"
+
+    tf
+
+ltfData(int len, string mode, bool sOn, string sSess, bool tOn, string tSess, bool lOn, string lSess, bool nOn, string nSess) =>
+    vol = na(volume) or volume < 0.0 ? 0.0 : volume
+    useSess = sOn or tOn or lOn or nOn
+
+    sydTz = pickTz("Australia/Sydney", mode)
+    tokTz = pickTz("Asia/Tokyo", mode)
+    lonTz = pickTz("Europe/London", mode)
+    nyTz  = pickTz("America/New_York", mode)
+
+    inSyd = sOn and inSess(sSess, sydTz)
+    inTok = tOn and inSess(tSess, tokTz)
+    inLon = lOn and inSess(lSess, lonTz)
+    inNy  = nOn and inSess(nSess, nyTz)
+    active = not useSess or inSyd or inTok or inLon or inNy
+
+    var float allBase = na
+    var float sydBase = na
+    var float tokBase = na
+    var float lonBase = na
+    var float nyBase = na
+
+    if not useSess
+        allBase := emaStep(allBase, vol, len)
+    if inSyd
+        sydBase := emaStep(sydBase, vol, len)
+    if inTok
+        tokBase := emaStep(tokBase, vol, len)
+    if inLon
+        lonBase := emaStep(lonBase, vol, len)
+    if inNy
+        nyBase := emaStep(nyBase, vol, len)
+
+    ratio = 0.0
+
+    if not useSess and not na(allBase) and allBase > 0.0
+        ratio := vol / allBase
+
+    if useSess
+        if inSyd and not na(sydBase) and sydBase > 0.0
+            ratio := math.max(ratio, vol / sydBase)
+        if inTok and not na(tokBase) and tokBase > 0.0
+            ratio := math.max(ratio, vol / tokBase)
+        if inLon and not na(lonBase) and lonBase > 0.0
+            ratio := math.max(ratio, vol / lonBase)
+        if inNy and not na(nyBase) and nyBase > 0.0
+            ratio := math.max(ratio, vol / nyBase)
+
+    rng = math.max(high - low, syminfo.mintick)
+    eff = clip((close - open) / rng, -1.0, 1.0)
+
+    [active ? ratio : 0.0, eff, vol, active ? 1.0 : 0.0]
+
+addBub(array<label> ids, float y, string txt, string tip, color col, color tc, int st, int vt, string scale, int fade) =>
+    while ids.size() > bubCap - 2
+        old = ids.shift()
+        old.delete()
+
+    haloCol = color.new(col, haloAlpha(st, fade))
+    coreCol = tone(col, st, tierAlpha(st, fade))
+
+    halo = label.new(
+         bar_index, y, "",
+         xloc  = xloc.bar_index,
+         yloc  = yloc.price,
+         color = haloCol,
+         style = label.style_circle,
+         textcolor = color(na),
+         size    = bubSz(vt, scale, true),
+         tooltip = tip,
+         force_overlay = true)
+
+    core = label.new(
+         bar_index, y, txt,
+         xloc  = xloc.bar_index,
+         yloc  = yloc.price,
+         color = coreCol,
+         style = label.style_circle,
+         textcolor = tc,
+         size    = bubSz(vt, scale, false),
+         tooltip = tip,
+         force_overlay = true)
+
+    ids.push(halo)
+    ids.push(core)
+
+trimLvl(array<line> ids, array<float> pxs, array<bool> dirs, array<bool> acts) =>
+    sameSize = pxs.size() == ids.size() and dirs.size() == ids.size() and acts.size() == ids.size()
+
+    if ids.size() >= lvlCap and sameSize
+        cut = 0
+        n = acts.size()
+
+        if n > 0
+            for i = 0 to n - 1
+                if not acts.get(i)
+                    cut := i
+                    break
+
+        old = ids.remove(cut)
+        old.delete()
+        pxs.remove(cut)
+        dirs.remove(cut)
+        acts.remove(cut)
+
+addLvl(array<line> ids, array<float> pxs, array<bool> dirs, array<bool> acts, float px, bool bull, color col, int width, string sty) =>
+    trimLvl(ids, pxs, dirs, acts)
+
+    id = line.new(
+         bar_index, px,
+         bar_index, px,
+         xloc   = xloc.bar_index,
+         extend = extend.none,
+         color = col,
+         style = lvlStyle(sty),
+         width = width,
+         force_overlay = true)
+
+    ids.push(id)
+    pxs.push(px)
+    dirs.push(bull)
+    acts.push(true)
+
+updLvl(array<line> ids, array<float> pxs, array<bool> dirs, array<bool> acts, int maxAge) =>
+    n = ids.size()
+    sameSize = pxs.size() == n and dirs.size() == n and acts.size() == n
+
+    if n > 0 and sameSize
+        i = n - 1
+
+        while i >= 0
+            id = ids.get(i)
+            born = id.get_x1()
+            old = bar_index - born > maxAge
+
+            if old
+                id.delete()
+                ids.remove(i)
+                pxs.remove(i)
+                dirs.remove(i)
+                acts.remove(i)
+            else if acts.get(i)
+                px = pxs.get(i)
+                bull = dirs.get(i)
+                hit = bull ? close < px : close > px
+
+                id.set_x2(bar_index)
+
+                if hit
+                    acts.set(i, false)
+
+            i -= 1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Lower Timeframe {
+sessOn   = sydOn or tokOn or lonOn or nyOn
+ltfAuto  = autoTf(sessOn)
+ltf      = autoLtf ? ltfAuto : ltfManual
+chartSec = timeframe.in_seconds()
+ltfSec   = timeframe.in_seconds(ltf)
+validTf  = not na(chartSec) and not na(ltfSec) and ltfSec <= chartSec
+safeLtf  = validTf ? ltf : timeframe.period
+[ratioData, effData, volData, gateData] = request.security_lower_tf(syminfo.tickerid, safeLtf, 
+ ltfData(baseLen, tzMode, sydOn, sydSess, tokOn, tokSess, lonOn, lonSess, nyOn, nySess))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Microburst {
+intraN  = ratioData.size()
+activeN = 0
+spikeN  = 0
+peakRatio   = 0.0
+bullEnergy  = 0.0
+bearEnergy  = 0.0
+totalEnergy = 0.0
+sqEnergy = 0.0
+totalVol = 0.0
+spikeVol = 0.0
+
+if validTf and intraN > 0 and effData.size() == intraN and volData.size() == intraN and gateData.size() == intraN
+    for i = 0 to intraN - 1
+        ratio  = nz(ratioData.get(i), 0.0)
+        eff    = nz(effData.get(i), 0.0)
+        vol    = nz(volData.get(i), 0.0)
+        active = nz(gateData.get(i), 0.0) > 0.5
+
+        if active
+            activeN += 1
+            totalVol += vol
+            peakRatio := math.max(peakRatio, ratio)
+            isSpike = ratio >= spikeMin and math.abs(eff) >= effMin
+
+            if isSpike
+                spikeN += 1
+                spikeVol += vol
+                excess = math.max(ratio - spikeMin, 0.0)
+                energy = (0.25 + excess) * math.abs(eff)
+                totalEnergy += energy
+                sqEnergy += energy * energy
+
+                if eff > 0.0
+                    bullEnergy += energy
+                else if eff < 0.0
+                    bearEnergy += energy
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Burst State {
+dirEnergy = bullEnergy - bearEnergy
+dominance = totalEnergy > 0.0 ? dirEnergy / totalEnergy : 0.0
+rawConc   = totalEnergy > 0.0 ? sqEnergy / (totalEnergy * totalEnergy) : 0.0
+concFloor = spikeN > 0 ? 1.0 / spikeN : 0.0
+conc  = spikeN <= 1 ? spikeN == 1 ? 1.0 : 0.0 : clip((rawConc - concFloor) / math.max(1.0 - concFloor, 0.000001), 
+ 0.0, 1.0)
+part  = 1.0 - math.exp(-totalEnergy / sat)
+concW = math.sqrt(part * (0.35 + 0.65 * conc))
+scoreRaw  = 100.0 * dominance * concW
+hasVol    = totalVol > 0.0
+calcReady = validTf and activeN > 0 and hasVol
+sigReady  = calcReady
+score     = sigReady ? scoreRaw : na
+rawBurst  = sigReady and spikeN > 0
+bullRaw = rawBurst and scoreRaw > 0.0
+bearRaw = rawBurst and scoreRaw < 0.0
+bullSig = bullRaw and scoreRaw >= sigMin
+bearSig = bearRaw and scoreRaw <= -sigMin
+extremeBurst = rawBurst and peakRatio >= extreme
+bullStart    = bullRaw and not bullRaw[1]
+bearStart    = bearRaw and not bearRaw[1]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Bubble System {
+avgIntraVol = activeN > 0 ? totalVol / activeN : 0.0
+relVol = avgIntraVol > 0.0 ? spikeVol / avgIntraVol : 0.0
+volPow = 1.0 - math.exp(-relVol / 6.0)
+sTier  = scoreTier(math.abs(scoreRaw), sigMin)
+vTier  = volTier(volPow)
+dirCol = bullRaw ? bullCol : bearCol
+txtCol = bullRaw ? bullTxt : bearTxt
+side   = bullRaw ? "Bullish" : "Bearish"
+bubTxt = showTxt ? fmtVol(spikeVol) : ""
+bubTip = (side + " Microburst\nScore: " + str.tostring(scoreRaw, "#.0") + "\nThreshold: " + str.tostring(math.abs(scoreRaw) / sigMin * 100.0, "#.0")
+ + "%\nSpikes: " + str.tostring(spikeN) + "\nPeak ratio: " + str.tostring(peakRatio, "#.00") + "x\nBurst volume: " + fmtVol(spikeVol)
+ + "\nConcentration: " + str.tostring(conc * 100.0, "#.0") + "%")
+
+var bubs = array.new<label>()
+
+if showBub and (bullRaw or bearRaw)
+    addBub(bubs, hl2, bubTxt, bubTip, dirCol, txtCol, sTier, vTier, bubScale, bubFade)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ First-Burst Levels {
+var lvlIds = array.new<line>()
+var lvlPx  = array.new<float>()
+var lvlDir = array.new<bool>()
+var lvlAct = array.new<bool>()
+var int lastBull = na
+var int lastBear = na
+
+newBullLvl = bullStart and (na(lastBull) or bar_index - lastBull >= lvlGap)
+newBearLvl = bearStart and (na(lastBear) or bar_index - lastBear >= lvlGap)
+
+if showLvl
+    updLvl(lvlIds, lvlPx, lvlDir, lvlAct, lvlAge)
+
+    if newBullLvl
+        addLvl(lvlIds, lvlPx, lvlDir, lvlAct, low, true, bullLvl, lvlWidth, lvlStyleIn)
+        lastBull := bar_index
+
+    if newBearLvl
+        addLvl(lvlIds, lvlPx, lvlDir, lvlAct, high, false, bearLvl, lvlWidth, lvlStyleIn)
+        lastBear := bar_index
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+scoreCol = scoreRaw > 0.0 ? bullCol : scoreRaw < 0.0 ? bearCol : flatCol
+bgAlpha  = 92 - int(math.round(22.0 * conc))
+
+plot(score, "Microburst Score", color = scoreCol, style = plot.style_columns, linewidth = 5)
+plot(sigMin, "Bullish Signal Level", color = color.new(bullCol, 70), linewidth = 1)
+plot(-sigMin, "Bearish Signal Level", color = color.new(bearCol, 70), linewidth = 1)
+hline(0.0, "Zero", color = color.new(flatCol, 65))
+
+plotshape(bullSig ? sigMin : na, title = "Bullish Microburst Signal", style = shape.triangleup, location = location.absolute, color = bullCol, size = size.tiny, text = "", textcolor = color.white)
+plotshape(bearSig ? -sigMin : na, title = "Bearish Microburst Signal", style = shape.triangledown, location = location.absolute, color = bearCol, size = size.tiny, text = "", textcolor = color.white)
+plotshape(extremeBurst ? scoreRaw >= 0.0 ? 88.0 : -88.0 : na, title = "Extreme LTF Volume", style = shape.diamond, location = location.absolute, color = peakCol, size = size.tiny)
+
+bgcolor(showBg and rawBurst ? color.new(scoreCol, bgAlpha) : na, title = "Burst Background")
+
+sigCandle    = colorBars and (bullSig or bearSig)
+sigCandleCol = bullSig ? color.new(bullCol, 15) : bearSig ? color.new(bearCol, 15) : na
+plotcandle(
+     sigCandle ? open : na,
+     sigCandle ? high : na,
+     sigCandle ? low : na,
+     sigCandle ? close : na,
+     title = "Signal Candles",
+     color = sigCandleCol,
+     wickcolor = sigCandleCol,
+     bordercolor = sigCandleCol,
+     force_overlay = true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(bullSig, "Bullish LTF volume microburst", "Bullish lower-timeframe volume microburst detected on {{ticker}} at {{close}}.")
+alertcondition(bearSig, "Bearish LTF volume microburst", "Bearish lower-timeframe volume microburst detected on {{ticker}} at {{close}}.")
+alertcondition(extremeBurst, "Extreme LTF volume spike", "An extreme lower-timeframe volume spike was detected on {{ticker}} at {{close}}.")
+alertcondition(bullSig or bearSig or extremeBurst, "Any LTF microburst event", "A lower-timeframe volume microburst event occurred on {{ticker}} at {{close}}.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

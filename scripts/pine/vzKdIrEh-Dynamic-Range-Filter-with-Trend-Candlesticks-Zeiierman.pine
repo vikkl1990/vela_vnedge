@@ -1,0 +1,186 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator('Dynamic Range Filter with Trend Candlesticks (Zeiierman)', shorttitle = "Dynamic Range Filter (Zeiierman)", overlay = true, behind_chart=false)
+//~~}
+
+// ~~ Tooltips {
+var string t1 = "Defines how much past data is used to smooth the scaled volatility. Larger values produce more stable but slower-reacting bands."
+var string t2 = "Determines the smoothing method applied to the high-low volatility input. Choose based on your preference for speed vs. smoothness."
+var string t3 = "Controls how many bars are used by the selected moving average to smooth the price range. Affects the responsiveness of the base volatility."
+var string t4 = "Applies a moving average to the raw high and low values before range calculation. Longer values produce a more smoothed underlying range."
+var string t5 = "Adjusts the final band width by multiplying the smoothed volatility. Higher values create wider bands to capture more price movement."
+var string t6 = "Sets the smoothing period for candle trend logic. Affects how reactive candles are to recent price direction changes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+r_len     = input.int(200, minval=1, step=10, maxval=2000, title="Scaled Volatility Length", group="Range Filter", inline="", tooltip=t1)
+ma_type   = input.string("HMA", "", options=["SMA","EMA","RMA","HMA", "KAMA", "VIDYA", "FRAMA", "Super Smoother"], group="Range Filter", inline="ma", tooltip=t2)
+ma_len    = input.int(100, minval=2, step=2, maxval=2000, title="", group="Range Filter", inline="ma", tooltip= t2 + "\n\n" + t3)
+hilo_len  = input.int(100, minval=2, step=2, maxval=2000, title="High/Low Smoother", group="Range Filter", inline="", tooltip=t4)
+band_mult = input.float(1.8, title="Band Multiplier", minval=0.1, step=0.1, group="Range Filter", tooltip = t5)
+
+upper_col = input.color(#00e676, title="", group="Range Filter", inline="c", tooltip="")
+lower_col = input.color(#e91e63, title="", group="Range Filter", inline="c", tooltip="")
+
+candlelen = input.int(200, minval=1, step=10, maxval=2000, title="Trend Length", group="Candlesticks", inline="", tooltip=t6)
+upper_candle_col = input.color(#00e676, title="", group="Candlesticks", inline="cc", tooltip="")
+lower_candle_col = input.color(#e91e63, title="", group="Candlesticks", inline="cc", tooltip="")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Initialization {
+var float rngfilt        = close
+var float rngfilt_candle = close
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MA Functions {
+hma(src, len) => ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
+
+kama(src, len) =>
+    change     = math.abs(src - src[1])
+    volatility = math.sum(change, len)
+    direction  = math.abs(src - src[len])
+    ER     = direction / volatility
+    fastSC = 2 / (2 + 1)
+    slowSC = 2 / (30 + 1)
+    sc         = math.pow(ER * (fastSC - slowSC) + slowSC, 2)
+    var result = src
+    result := nz(result[1]) + sc * (src - nz(result[1]))
+
+vidya(src, len) =>
+    CMO   = ta.cmo(src, len)
+    alpha = math.abs(CMO) / 100
+    var result = src
+    result := nz(result[1]) + alpha * (src - nz(result[1]))
+
+frama(src, len) =>
+    n3   = math.round(len / 2)
+    hl1  = ta.highest(high, n3) - ta.lowest(low, n3)
+    hl2_ = ta.highest(high[n3], n3) - ta.lowest(low[n3], n3)
+    hl3  = ta.highest(high, len) - ta.lowest(low, len)
+    dimen = (math.log(hl1 + hl2_) - math.log(hl3)) / math.log(2)
+    alpha = math.exp(-4.6 * (dimen - 1))
+    alpha := math.min(math.max(alpha, 0.01), 1.0)
+    var result = src
+    result := nz(result[1]) + alpha * (src - nz(result[1]))
+
+supersmoother(src, len) =>
+    a1 = math.exp(-1.414 * 3.14159 / len)
+    b1 = 2 * a1 * math.cos(1.414 * 3.14159 / len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    var result = src
+    result := c1 * src + c2 * nz(result[1]) + c3 * nz(result[2])
+
+ma(src, len) =>
+    ma_type == "HMA" ? hma(src, len) :
+ ma_type == "KAMA" ? kama(src, len) :
+ ma_type == "VIDYA" ? vidya(src, len) :
+ ma_type == "FRAMA" ? frama(src, len) :
+ ma_type == "SMA" ? ta.sma(src, len) :
+ ma_type == "EMA" ? ta.ema(src, len) :
+ ma_type == "RMA" ? ta.rma(src, len) :
+ supersmoother(src, len)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range Calculation {
+high_ma = ma(high, hilo_len)
+low_ma  = ma(low[1], hilo_len)
+diff    = math.abs(high_ma - low_ma)
+scale   = 2.618 * ma(diff, ma_len)
+r       = ta.sma(scale, r_len) * band_mult
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculation Functions {
+pricejump_trend(prev_) =>
+    highJump = prev_ + math.abs(close - prev_) / r * r
+    lowJump  = prev_ - math.abs(close - prev_) / r * r
+    [highJump, lowJump]
+
+pricejump_candle(prev_) =>
+    highJump = prev_ + math.abs(close - prev_) / r * r
+    lowJump  = prev_ - math.abs(close - prev_) / r * r
+    [ta.wma(highJump,candlelen), ta.wma(lowJump,candlelen)]
+
+rangefilter(hhjump_, lljump_, prev_) =>
+    hhBreak    = close > prev_
+    hhTooClose = close - r < prev_
+    hhShift    = close - r
+
+    llTooClose = close + r > prev_
+    llShift    = close + r
+
+    rangeStep1    = hhBreak ? (hhTooClose ? prev_ : hhShift) : (llTooClose ? prev_ : llShift)
+    hhAboveBand   = close >= prev_ + r
+    llBelowBand   = close <= prev_ - r
+
+    hhAboveBand ? hhjump_ : llBelowBand ? lljump_ : rangeStep1
+
+bands(filt) =>
+    [filt + r, filt - r]
+
+trenddir(filt) =>
+    [filt > nz(filt[1]), filt < nz(filt[1])]
+
+trendcomp(filt) =>
+    [filt, ta.sma(filt, 2), ta.sma(filt, 4)]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trend Logic {
+prev             = nz(rngfilt[1])
+[hhJump, llJump] = pricejump_trend(prev)
+rngfilt          := rangefilter(hhJump, llJump, prev)
+
+[hiband, loband]   = bands(rngfilt)
+[upward, downward] = trenddir(rngfilt)
+[TrendFast, TrendMedium, TrendLong] = trendcomp(rngfilt)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Trend Logic {
+prev_candle        = nz(rngfilt_candle[1])
+[hhJumpC, llJumpC] = pricejump_candle(prev_candle)
+rngfilt_candle    := rangefilter(hhJumpC, llJumpC, prev_candle)
+
+[upward_candle, downward_candle]                         = trenddir(rngfilt_candle)
+[TrendFast_candle, TrendMedium_candle, TrendLong_candle] = trendcomp(rngfilt_candle)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trend Color {
+var color trendColor = na
+trendColor := upward ? color.new(color.lime, 0) :
+               downward ? color.new(color.red, 0) :
+               nz(trendColor[1], color.gray)  
+
+plotTrend = plot(TrendFast, title='Trend', color=trendColor, linewidth=1, style= plot.style_stepline) 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Conditions {
+c           = ma(close,10)
+isBull      = upward_candle and c > TrendFast_candle and TrendMedium_candle > nz(TrendMedium_candle[1]) and TrendLong_candle > nz(TrendLong_candle[1])
+isBear      = downward_candle and c < TrendFast_candle and TrendMedium_candle < nz(TrendMedium_candle[1]) and TrendLong_candle < nz(TrendLong_candle[1])
+candleColor = isBull ? upper_candle_col :isBear ? lower_candle_col : color.new(color.blue,100)
+plotcandle(open, high, low, close, color=candleColor, wickcolor=candleColor, bordercolor=candleColor)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Midbands  {
+MIDX1 = (hiband - rngfilt) / 3
+MID1  = rngfilt + MIDX1
+MID2  = MID1 + MIDX1
+
+MIDX2 = (rngfilt - loband) / 3
+MID3  = rngfilt - MIDX2
+MID4  = MID3 - MIDX2
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot {
+plotMid1 = plot(MID1, 'MID1', color=color.new(upper_col, 50), style= plot.style_stepline)   
+plotMid2 = plot(MID2, 'MID2', color=color.new(upper_col, 50), style= plot.style_stepline)   
+
+plotMid3 = plot(MID3, 'MID3', color=color.new(lower_col, 50), style= plot.style_stepline)    
+plotMid4 = plot(MID4, 'MID4', color=color.new(lower_col, 50), style= plot.style_stepline) 
+
+fill(plotMid2, plotTrend, MID2, TrendFast, color.new(upper_col, 60),na)
+fill(plotMid4, plotTrend, MID4, TrendFast, color.new(lower_col, 60),na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

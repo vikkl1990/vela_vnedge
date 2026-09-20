@@ -1,0 +1,151 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=5
+indicator("Fibonacci Structure Trend Channel (Expo)",overlay=true, max_labels_count=500)
+//~~}
+
+// ~~ Tooltips {
+t1 = "Determines the Fibonacci retracement level used for calculating the Trend Channel. The higher the value, the more significant the pullback before a reversal. Options include 0.236, 0.382, 0.50, 0.618, and 0.786."
+t2 = "Allows you to set a custom Fibonacci level. Enable this to override the default Fibonacci options. Value should be between 0.001 and 0.999. Higher values will mean more significant pullbacks before a reversal."
+t3 = "Enables or disables color-coding the price bars based on the current trend direction. Green for bullish and Red for bearish."
+t4 = "Determines the sensitivity of structure lines by setting the lookback period. A smaller value will produce more lines but might include noise. A larger value will be less sensitive but could miss shorter-term structures."
+t5 = "Enables or disables the Fibonacci Channel. This channel is calculated around the Fibonacci Trend and can provide additional insight into potential price action."
+t6 =  "Controls the width of the Fibonacci Channel. The higher the value, the wider the channel. Width is based on the ATR (Average True Range)."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+fibonacci = input.float(0.382,"Fibonacci Level  ",options=[0.236,0.382,0.50,0.618,0.786], group="Fib Settings", tooltip=t1)
+custom    = input.bool(false,"Custom Value",inline="custom", group="Fib Settings")
+customfib = input.float(0.5,"",.001,.999,.001,inline="custom", group="Fib Settings", tooltip=t2)
+bull      = input.color(color.lime,"Bullish Color",inline="col", group="")
+bear      = input.color(color.red,"Bearish Color",inline="col", group="")
+barcol    = input.bool(false,"Barcolor",inline="col", group="", tooltip=t3)
+structure = input.bool(true,title="Structure",inline="Structure", group="Fibonacci Structure")
+sen       = input.int(5,title="", minval=1, maxval=200, inline="Structure", group="Fibonacci Structure", tooltip=t4)
+s_bull    = input.color(color.rgb(203, 68, 140),"",inline="Structure color", group="Fibonacci Structure")
+s_bear    = input.color(color.rgb(95, 75, 188),"", inline="Structure color", group="Fibonacci Structure")
+Channel   = input.bool(false, title="Fibonacci Channel",inline="", group="Fibonacci Channel", tooltip=t5)
+mult      = input.float(3.5, minval=1, maxval=10, step=0.1, title="Fib Channel width",inline="", group="Fibonacci Channel", tooltip=t6)
+max_col   = input.color(color.rgb(95, 75, 188),"Upper Channel",inline="max", group="Fibonacci Channel")
+min_col   = input.color(color.rgb(203, 68, 140),"Lower Channel",inline="max", group="Fibonacci Channel")
+levels    = input.bool(true,"Fibonacci Levels",inline="level", group="Show Levels")
+lvl_lab   = input.bool(true,"Labels",inline="level", group="Show Levels")
+line_s    = input.string("Dotted","",options=["Solid","Dotted","Dashed"],inline="style", group="Show Levels")
+width     = input.int(1, title=" ", inline="style", group="Show Levels")
+info      = input.bool(true,"Fib Trend Information", group="Show Levels")
+Level_0236  = input.color(#F44336,"0.236",inline="fibcol", group="Color Fib Levels")
+Level_0382  = input.color(#81C784,"0.382",inline="fibcol", group="Color Fib Levels")
+Level_050   = input.color(#4CAF50,"0.50",inline="fibcol", group="Color Fib Levels")
+Level_0618  = input.color(#009688,"0.618",inline="fibcol", group="Color Fib Levels")
+Level_0786  = input.color(#64B5F6,"0.786",inline="fibcol", group="Color Fib Levels")
+Level_0     = input.color(#5f5f5f,"",inline="fibcol", group="Color Fib Levels")
+line_style = switch line_s
+    "Solid" => line.style_solid
+    "Dotted"=> line.style_dotted
+    "Dashed"=> line.style_dashed
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+var pos     = 0
+var hi      = high
+var lo      = low
+var hloc    = b
+var lloc    = b
+var retrace = 0.0
+var t       = string(na)
+fib         = custom?customfib:fibonacci
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Track high/low and calculate fibonacci level {
+if pos>=0
+    if high<retrace
+        pos     := -1
+        lo      := low
+        lloc    := time
+        retrace := lo+(hi-lo)*fib
+        t       := str.tostring(dayofmonth)+"/"+str.tostring(month)+"/"+str.tostring(year)+" "
+        if structure
+            label.new(math.round(math.avg(hloc,lloc)),retrace[1],"▼",xloc.bar_time,
+             color=color(na),style=label.style_label_up,textcolor=bear)
+            
+    else if high>hi
+        hi      := high
+        hloc    := time
+        retrace := hi-(hi-lo)*fib
+        if structure and hi[1]==hi[sen]
+            pos += 1
+            line.new(hloc[1],hi[1],hloc,hi[1],xloc.bar_time,color=s_bear)
+if pos<=0
+    if low>retrace
+        pos     := 1
+        hi      := high
+        hloc    := time
+        retrace := hi-(hi-lo)*fib
+        t       := str.tostring(dayofmonth)+"/"+str.tostring(month)+"/"+str.tostring(year)+" "
+        if structure
+            label.new(math.round(math.avg(hloc,lloc)),retrace[1],"▲",xloc.bar_time,
+             color=color(na),style=label.style_label_down,textcolor=bull)
+            
+    else if low<lo
+        lo      := low
+        lloc    := time
+        retrace := lo+(hi-lo)*fib
+        if structure and lo[1]==lo[sen]
+            pos := pos-1
+            line.new(lloc[1],lo[1],lloc,lo[1],xloc.bar_time,color=s_bull)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fibonacci Channel {
+ma   = ta.wma(retrace,10)
+atr  = ta.sma(ta.atr(500)*mult,20)
+max  = (ma + atr)
+min  = (ma - atr)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plot & Barcolor {
+plot(retrace,"Fibonacci Trend",pos>0?bull:bear)
+plot(Channel?max:na,"Upper Fibonacci Channel",max_col)
+plot(Channel?min:na,"Lower Fibonacci Channel",min_col)
+barcolor(barcol?pos>0?bull:bear:na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Levels {
+if levels or lvl_lab
+    var lines = array.new<line>(7)
+    var labels= array.new<label>(7)
+    var lvls  = array.from(0,0.236,0.382,0.50,0.618,0.786,1)
+    var cols  = array.from(Level_0,Level_0236,Level_0382,Level_050,Level_0618,Level_0786,Level_0)
+    //Create fibonacci level lines
+    if na(lines.get(0))
+        for [i,c] in cols
+            lines.pop().delete()
+            labels.pop().delete()
+            lines.unshift(line.new(na,na,na,na,xloc.bar_time,color=c,style=line_style,width=width))
+            labels.unshift(label.new(na,na,str.tostring(lvls.get(i)*100,format.percent),
+             color=color(na),style=label.style_label_left,textcolor=c))
+        lines.push(line.new(na,na,na,na,xloc.bar_time,color=cols.get(0),style=line_style,width=width))
+    //Update xy
+    for [i,lvl] in lvls
+        if levels 
+            lines.get(i).set_xy1(lvl==0?pos<0?hloc:lloc:pos>0?hloc:lloc,pos>0?lo+(hi-lo)*lvl:hi-(hi-lo)*lvl)
+            lines.get(i).set_xy2(timenow,pos>0?lo+(hi-lo)*lvl:hi-(hi-lo)*lvl)
+        if lvl_lab
+            labels.get(i).set_xy(b,pos>0?lo+(hi-lo)*lvl:hi-(hi-lo)*lvl)
+    if levels
+        lines.get(7).set_xy1(pos<0?hloc:lloc,pos<0?hi:lo)
+        lines.get(7).set_xy2(pos>0?hloc:lloc,pos<0?lo:hi)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+if barstate.islast and info
+    var tbl = table.new(position.top_right,1,3,chart.bg_color,chart.fg_color,2)
+    col = pos>0?color.new(bull,75):color.new(bear,75)
+    tbl.cell(0,0,pos>0?"Bullish":"Bearish",bgcolor=col,
+     text_color=chart.fg_color)
+    tbl.cell(0,1,"Trend Level: "+str.tostring(retrace,format.mintick),bgcolor=col,
+     text_color=chart.fg_color)
+    tbl.cell(0,2,"Trend started: "+t,bgcolor=col,
+     text_color=chart.fg_color)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

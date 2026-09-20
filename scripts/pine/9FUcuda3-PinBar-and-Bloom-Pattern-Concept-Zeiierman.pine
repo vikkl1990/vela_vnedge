@@ -1,0 +1,302 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ © Zeiierman {
+//@version=6
+indicator('PinBar and Bloom Pattern (Zeiierman)', overlay = true, max_lines_count = 500, max_labels_count = 500)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Tooltips {
+t1_ = ''
+t2_ = 'This setting allows you to select the timeframe for the current period. By choosing different timeframes (e.g., 1H for one hour, D for one day), you can adjust the indicator to analyze market data over your preferred interval. Increasing the timeframe (e.g., from 1H to 1D) will provide a broader, longer-term view of market trends. Conversely, choosing a shorter timeframe (e.g., from 1D to 1H) offers a more granular, short-term perspective. This flexibility enables you to tailor the indicator for different trading strategies, whether you\'re focusing on intraday movements or longer-term trends. \n\nThe second setting determines the number of previous periods to consider for plotting open, high, and low values. Increasing the value will include X more historical periods, providing a broader context for current market trends.'
+t3_ = 'Symmetry Precision adjusts the sensitivity of the Symmetry Signal detection. A higher value increases the tolerance for symmetry variation, potentially identifying more signals but with less precision. Conversely, a lower value tightens the criteria for symmetry, leading to fewer but more accurate signals. Adjust this value to balance between signal frequency and accuracy.'
+t4_ = 'Range Threshold determines the proportion of the high-low range used in the BaselineBound Pattern. Increasing this value widens the range, making the indicator more sensitive to price movements and potentially generating more signals. Decreasing it narrows the range, which might reduce the number of signals but can increase their reliability. Tune this setting to match your analysis to the volatility of the market.'
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs Open High Low
+lines_ = input.bool(true, title = 'Open-High-Low lines', group = 'Enable Open/High/Low Lines', inline = 'Enable Open/High/Low Lines')
+
+Level_ = input.bool(true, title = '', group = 'Timeframe & Current Period[0]', inline = '1')
+tf = input.timeframe('D', title = '', group = 'Timeframe & Current Period[0]', inline = '1')
+p_ = input.int(0, minval = 0, title = '', group = 'Timeframe & Current Period[0]', inline = '1')
+style = input.string('solid', title = '', options = ['solid', 'dotted', 'dashed'], group = 'Timeframe & Current Period[0]', inline = '1')
+clr = input(color.new(#69bcff, 0), title = '', group = 'Timeframe & Current Period[0]', inline = '1')
+labels_ = input.bool(true, title = '', group = 'Timeframe & Current Period[0]', inline = '1', tooltip = t2_)
+
+Level_1 = input.bool(true, title = '', group = 'Timeframe 1 & Previous Period[1]', inline = '2')
+tf1 = input.timeframe('D', title = '', group = 'Timeframe 1 & Previous Period[1]', inline = '2')
+p_1 = input.int(1, minval = 0, title = '', group = 'Timeframe 1 & Previous Period[1]', inline = '2')
+style1 = input.string('dotted', title = '', options = ['solid', 'dotted', 'dashed'], group = 'Timeframe 1 & Previous Period[1]', inline = '2')
+clr1 = input(color.new(#41ffa3, 0), title = '', group = 'Timeframe 1 & Previous Period[1]', inline = '2')
+labels_1 = input.bool(true, title = 'Price', group = 'Timeframe 1 & Previous Period[1]', inline = '2')
+
+Level_2 = input.bool(true, title = '', group = 'Timeframe 2 & Previous Period[2]', inline = '3')
+tf2 = input.timeframe('D', title = '', group = 'Timeframe 2 & Previous Period[2]', inline = '3')
+p_2 = input.int(2, minval = 0, title = '', group = 'Timeframe 2 & Previous Period[2]', inline = '3')
+style2 = input.string('dotted', title = '', options = ['solid', 'dotted', 'dashed'], group = 'Timeframe 2 & Previous Period[2]', inline = '3')
+clr2 = input(color.new(#ffd024, 0), title = '', group = 'Timeframe 2 & Previous Period[2]', inline = '3')
+labels_2 = input.bool(false, title = 'Price', group = 'Timeframe 2 & Previous Period[2]', inline = '3')
+
+Level_3 = input.bool(true, title = '', group = 'Timeframe 3 & Previous Period[3]', inline = '4')
+tf3 = input.timeframe('D', title = '', group = 'Timeframe 3 & Previous Period[3]', inline = '4')
+p_3 = input.int(3, minval = 0, title = '', group = 'Timeframe 3 & Previous Period[3]', inline = '4')
+style3 = input.string('dotted', title = '', options = ['solid', 'dotted', 'dashed'], group = 'Timeframe 3 & Previous Period[3]', inline = '4')
+clr3 = input(color.new(#ff5420, 0), title = '', group = 'Timeframe 3 & Previous Period[3]', inline = '4')
+labels_3 = input.bool(false, title = 'Price', group = 'Timeframe 3 & Previous Period[3]', inline = '4')
+
+Level_4 = input.bool(true, title = '', group = 'Timeframe 4 & Previous Period[4]', inline = '5')
+tf4 = input.timeframe('D', title = '', group = 'Timeframe 4 & Previous Period[4]', inline = '5')
+p_4 = input.int(4, minval = 0, title = '', group = 'Timeframe 4 & Previous Period[4]', inline = '5')
+style4 = input.string('dotted', title = '', options = ['solid', 'dotted', 'dashed'], group = 'Timeframe 4 & Previous Period[4]', inline = '5')
+clr4 = input(color.new(#fc39ff, 0), title = '', group = 'Timeframe 4 & Previous Period[4]', inline = '5')
+labels_4 = input.bool(false, title = 'Price', group = 'Timeframe 4 & Previous Period[4]', inline = '5')
+
+// ~~ Merged Label Zones
+mergeCloseLevels = input.bool(true, 'Merge close labels', group = 'Merged Label Zones')
+mergeAtrMult = input.float(0.3, 'ATR Merge Distance', minval = 0.01, step = 0.01, group = 'Merged Label Zones')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs Pattern
+precision = input.int(2, step = 1, minval = 1, title = 'Symetry Precision', group = 'Bloom & Precision PinBar Pattern', tooltip = t3_)
+rangeFactor = input.float(0.05, title = 'Range Threshold', minval = 0.01, maxval = 1, step = 0.01, group = 'Bloom & Precision PinBar Pattern', tooltip = t4_)
+
+BloomPatternInput = input.bool(true, title = 'Bloom Pattern (Zeiierman)', group = 'Bloom & Precision PinBar Pattern', inline = 'Bloom Pattern')
+BloomUp = input.color(color.lime, title = '', group = 'Bloom & Precision PinBar Pattern', inline = 'Bloom Pattern')
+BloomDn = input.color(color.red, title = '', group = 'Bloom & Precision PinBar Pattern', inline = 'Bloom Pattern')
+
+PinPattern = input.bool(true, title = 'Precision PinBar Pattern (Zeiierman)', group = 'Bloom & Precision PinBar Pattern', inline = 'Precision PinBar Pattern')
+PinUp = input.color(color.aqua, title = '', group = 'Bloom & Precision PinBar Pattern', inline = 'Precision PinBar Pattern')
+PinDn = input.color(color.rgb(106, 77, 232), title = '', group = 'Bloom & Precision PinBar Pattern', inline = 'Precision PinBar Pattern')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Global Functions
+sty(type_) =>
+    switch type_
+        'dotted' => line.style_dotted
+        'dashed' => line.style_dashed
+        => line.style_solid
+
+labelStyle(clr_) =>
+    label.style_label_left
+
+lineUpdate(ln, t, p, clr_, sty_) =>
+    if na(ln)
+        line.new(t, p, last_bar_time, p, xloc.bar_time, extend.none, clr_, sty_)
+    else
+        ln.set_xy1(t, p)
+        ln.set_xy2(last_bar_time, p)
+        ln
+
+labelUpdate(lbl, p, text_, clr_) =>
+    if na(lbl)
+        label.new(bar_index, p, text_, style = labelStyle(clr_), color = color.new(clr_, 100), textcolor = clr_, yloc = yloc.price, size = size.normal)
+    else
+        lbl.set_xy(bar_index, p)
+        lbl.set_text(text_)
+        lbl.set_textcolor(clr_)
+        lbl.set_color(color.new(clr_, 100))
+        lbl
+
+addLevel(array<float> prices, array<string> texts, array<color> colors, float price, string txt, color col, bool enabled) =>
+    if enabled and not na(price)
+        array.push(prices, price)
+        array.push(texts, txt)
+        array.push(colors, col)
+
+swapLevels(array<float> prices, array<string> texts, array<color> colors, int i, int j) =>
+    pSwap = array.get(prices, i)
+    tSwap = array.get(texts, i)
+    cSwap = array.get(colors, i)
+
+    array.set(prices, i, array.get(prices, j))
+    array.set(texts, i, array.get(texts, j))
+    array.set(colors, i, array.get(colors, j))
+
+    array.set(prices, j, pSwap)
+    array.set(texts, j, tSwap)
+    array.set(colors, j, cSwap)
+
+sortLevelsDescending(array<float> prices, array<string> texts, array<color> colors) =>
+    sz = array.size(prices)
+    if sz > 1
+        for i = 0 to sz - 2
+            for j = i + 1 to sz - 1
+                if array.get(prices, j) > array.get(prices, i)
+                    swapLevels(prices, texts, colors, i, j)
+
+clearUnusedLabels(array<label> lbls, int startIndex) =>
+    sz = array.size(lbls)
+    if startIndex < sz
+        for i = startIndex to sz - 1
+            oldLbl = array.get(lbls, i)
+            if not na(oldLbl)
+                label.delete(oldLbl)
+                array.set(lbls, i, na)
+
+SymmetrySignal(precision_) =>
+    max_ = math.max(high, high[1])
+    min_ = math.min(low, low[1])
+    rng_ = max_ - min_
+    high_ = rng_ != 0 ? math.abs(high - high[1]) / rng_ * 100 : 100
+    low_ = rng_ != 0 ? math.abs(low - low[1]) / rng_ * 100 : 100
+    SymmetryHigh = high_ <= precision_
+    SymmetryLow = low_ <= precision_
+    [SymmetryHigh, SymmetryLow]
+
+BaselineBoundPattern(rangeFactor_) =>
+    bullish = close >= high - math.abs(high[1] - low[1]) * rangeFactor_
+    bearish = close <= low + math.abs(high[1] - low[1]) * rangeFactor_
+    [bullish, bearish]
+
+BloomPatternFunc(bullishBaselineBound_, bearishBaselineBound_, SymmetryHigh_, SymmetryLow_) =>
+    prevRed = open[1] > close[1]
+    prevGreen = open[1] < close[1]
+    currentGreen = close > open
+    currentRed = close < open
+    embody = currentGreen and close > open[1] and open <= close[1] or currentRed and close < open[1] and open >= close[1]
+    bullishCondition = prevRed and currentGreen and embody and bullishBaselineBound_ and SymmetryLow_
+    bearishCondition = prevGreen and currentRed and embody and bearishBaselineBound_ and SymmetryHigh_
+    [bullishCondition, bearishCondition]
+
+PrecisionPinBarFunc(bullishBaselineBound_, bearishBaselineBound_, SymmetryHigh_, SymmetryLow_) =>
+    barRange = high - low
+    threshold = barRange / 3
+    bodyLen = math.abs(close - open)
+    tailLen = open > close ? close - low : open - low
+    longTail = tailLen > 3 * bodyLen
+    bullish = open >= high - threshold and close >= high - threshold and (longTail or close > open) and bullishBaselineBound_ and SymmetryLow_
+    bearish = open <= low + threshold and close <= low + threshold and (longTail or close < open) and bearishBaselineBound_ and SymmetryHigh_
+    [bullish, bearish]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fetch Data
+[o, h, l, t] = request.security(syminfo.tickerid, tf, [open[p_], high[p_], low[p_], time[p_]], lookahead = barmerge.lookahead_on)
+[o1, h1, l1, t1] = request.security(syminfo.tickerid, tf1, [open[p_1], high[p_1], low[p_1], time[p_1]], lookahead = barmerge.lookahead_on)
+[o2, h2, l2, t2] = request.security(syminfo.tickerid, tf2, [open[p_2], high[p_2], low[p_2], time[p_2]], lookahead = barmerge.lookahead_on)
+[o3, h3, l3, t3v] = request.security(syminfo.tickerid, tf3, [open[p_3], high[p_3], low[p_3], time[p_3]], lookahead = barmerge.lookahead_on)
+[o4, h4, l4, t4v] = request.security(syminfo.tickerid, tf4, [open[p_4], high[p_4], low[p_4], time[p_4]], lookahead = barmerge.lookahead_on)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables
+var array<line> lines = array.new_line(30)
+var array<label> zoneLabels = array.new_label(30)
+
+var array<float> lvlPrices = array.new_float()
+var array<string> lvlTexts = array.new_string()
+var array<color> lvlColors = array.new_color()
+
+mergeDistance = nz(ta.atr(100), syminfo.mintick) * mergeAtrMult
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Update Lines
+if barstate.islast and lines_
+    if Level_
+        lines.set(0, lineUpdate(lines.get(0), t, o, clr, sty(style)))
+        lines.set(1, lineUpdate(lines.get(1), t, h, clr, sty(style)))
+        lines.set(2, lineUpdate(lines.get(2), t, l, clr, sty(style)))
+
+    if Level_1
+        lines.set(3, lineUpdate(lines.get(3), t1, o1, clr1, sty(style1)))
+        lines.set(4, lineUpdate(lines.get(4), t1, h1, clr1, sty(style1)))
+        lines.set(5, lineUpdate(lines.get(5), t1, l1, clr1, sty(style1)))
+
+    if Level_2
+        lines.set(6, lineUpdate(lines.get(6), t2, o2, clr2, sty(style2)))
+        lines.set(7, lineUpdate(lines.get(7), t2, h2, clr2, sty(style2)))
+        lines.set(8, lineUpdate(lines.get(8), t2, l2, clr2, sty(style2)))
+
+    if Level_3
+        lines.set(9, lineUpdate(lines.get(9), t3v, o3, clr3, sty(style3)))
+        lines.set(10, lineUpdate(lines.get(10), t3v, h3, clr3, sty(style3)))
+        lines.set(11, lineUpdate(lines.get(11), t3v, l3, clr3, sty(style3)))
+
+    if Level_4
+        lines.set(12, lineUpdate(lines.get(12), t4v, o4, clr4, sty(style4)))
+        lines.set(13, lineUpdate(lines.get(13), t4v, h4, clr4, sty(style4)))
+        lines.set(14, lineUpdate(lines.get(14), t4v, l4, clr4, sty(style4)))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Update Labels With ATR Merge Zones
+if barstate.islast
+    array.clear(lvlPrices)
+    array.clear(lvlTexts)
+    array.clear(lvlColors)
+
+    addLevel(lvlPrices, lvlTexts, lvlColors, o, 'TF: ' + tf + ' Open ' + str.tostring(p_) + ': ' + str.tostring(o, format.mintick), clr, Level_ and labels_)
+    addLevel(lvlPrices, lvlTexts, lvlColors, h, 'TF: ' + tf + ' High ' + str.tostring(p_) + ': ' + str.tostring(h, format.mintick), clr, Level_ and labels_)
+    addLevel(lvlPrices, lvlTexts, lvlColors, l, 'TF: ' + tf + ' Low ' + str.tostring(p_) + ': ' + str.tostring(l, format.mintick), clr, Level_ and labels_)
+
+    addLevel(lvlPrices, lvlTexts, lvlColors, o1, 'TF: ' + tf1 + ' Open ' + str.tostring(p_1) + ': ' + str.tostring(o1, format.mintick), clr1, Level_1 and labels_1)
+    addLevel(lvlPrices, lvlTexts, lvlColors, h1, 'TF: ' + tf1 + ' High ' + str.tostring(p_1) + ': ' + str.tostring(h1, format.mintick), clr1, Level_1 and labels_1)
+    addLevel(lvlPrices, lvlTexts, lvlColors, l1, 'TF: ' + tf1 + ' Low ' + str.tostring(p_1) + ': ' + str.tostring(l1, format.mintick), clr1, Level_1 and labels_1)
+
+    addLevel(lvlPrices, lvlTexts, lvlColors, o2, 'TF: ' + tf2 + ' Open ' + str.tostring(p_2) + ': ' + str.tostring(o2, format.mintick), clr2, Level_2 and labels_2)
+    addLevel(lvlPrices, lvlTexts, lvlColors, h2, 'TF: ' + tf2 + ' High ' + str.tostring(p_2) + ': ' + str.tostring(h2, format.mintick), clr2, Level_2 and labels_2)
+    addLevel(lvlPrices, lvlTexts, lvlColors, l2, 'TF: ' + tf2 + ' Low ' + str.tostring(p_2) + ': ' + str.tostring(l2, format.mintick), clr2, Level_2 and labels_2)
+
+    addLevel(lvlPrices, lvlTexts, lvlColors, o3, 'TF: ' + tf3 + ' Open ' + str.tostring(p_3) + ': ' + str.tostring(o3, format.mintick), clr3, Level_3 and labels_3)
+    addLevel(lvlPrices, lvlTexts, lvlColors, h3, 'TF: ' + tf3 + ' High ' + str.tostring(p_3) + ': ' + str.tostring(h3, format.mintick), clr3, Level_3 and labels_3)
+    addLevel(lvlPrices, lvlTexts, lvlColors, l3, 'TF: ' + tf3 + ' Low ' + str.tostring(p_3) + ': ' + str.tostring(l3, format.mintick), clr3, Level_3 and labels_3)
+
+    addLevel(lvlPrices, lvlTexts, lvlColors, o4, 'TF: ' + tf4 + ' Open ' + str.tostring(p_4) + ': ' + str.tostring(o4, format.mintick), clr4, Level_4 and labels_4)
+    addLevel(lvlPrices, lvlTexts, lvlColors, h4, 'TF: ' + tf4 + ' High ' + str.tostring(p_4) + ': ' + str.tostring(h4, format.mintick), clr4, Level_4 and labels_4)
+    addLevel(lvlPrices, lvlTexts, lvlColors, l4, 'TF: ' + tf4 + ' Low ' + str.tostring(p_4) + ': ' + str.tostring(l4, format.mintick), clr4, Level_4 and labels_4)
+
+    sortLevelsDescending(lvlPrices, lvlTexts, lvlColors)
+
+    zoneIndex = 0
+    levelCount = array.size(lvlPrices)
+
+    if levelCount > 0
+        if mergeCloseLevels
+            i = 0
+            while i < levelCount
+                zoneHigh = array.get(lvlPrices, i)
+                zoneLow = array.get(lvlPrices, i)
+                zoneText = array.get(lvlTexts, i)
+                zoneColor = array.get(lvlColors, i)
+                count = 1
+                j = i + 1
+
+                while j < levelCount and math.abs(array.get(lvlPrices, j) - zoneLow) <= mergeDistance
+                    zoneLow := math.min(zoneLow, array.get(lvlPrices, j))
+                    zoneText += '\n' + array.get(lvlTexts, j)
+                    count += 1
+                    j += 1
+
+                zoneMid = (zoneHigh + zoneLow) / 2.0
+                header = count > 1 ? 'Merged Zone [' + str.tostring(count) + '] ' + str.tostring(zoneLow, format.mintick) + ' to ' + str.tostring(zoneHigh, format.mintick) + '\n' : ''
+
+                zoneLabels.set(zoneIndex, labelUpdate(zoneLabels.get(zoneIndex), zoneMid, header + zoneText, zoneColor))
+                zoneIndex += 1
+                i := j
+        else
+            for i = 0 to levelCount - 1
+                zoneLabels.set(i, labelUpdate(zoneLabels.get(i), array.get(lvlPrices, i), array.get(lvlTexts, i), array.get(lvlColors, i)))
+                zoneIndex += 1
+
+    clearUnusedLabels(zoneLabels, zoneIndex)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pattern Logic
+[SymmetryHigh, SymmetryLow] = SymmetrySignal(precision)
+[bullishBaselineBound, bearishBaselineBound] = BaselineBoundPattern(rangeFactor)
+[BullishBloom, BearishBloom] = BloomPatternFunc(bullishBaselineBound, bearishBaselineBound, SymmetryHigh, SymmetryLow)
+[BullishPrecisionPinBar, BearishPrecisionPinBar] = PrecisionPinBarFunc(bullishBaselineBound, bearishBaselineBound, SymmetryHigh, SymmetryLow)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plotting patterns
+plotshape(BloomPatternInput ? BullishBloom : false, title = 'Bullish Bloom', style = shape.triangleup, color = BloomUp, size = size.small, location = location.belowbar)
+plotshape(BloomPatternInput ? BearishBloom : false, title = 'Bearish Bloom', style = shape.triangledown, color = BloomDn, size = size.small, location = location.abovebar)
+
+plotshape(PinPattern ? BullishPrecisionPinBar : false, title = 'Bullish Precision PinBar', color = PinUp, style = shape.triangleup, size = size.small, location = location.belowbar)
+plotshape(PinPattern ? BearishPrecisionPinBar : false, title = 'Bearish Precision PinBar', color = PinDn, style = shape.triangledown, size = size.small, location = location.abovebar)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts
+alertcondition(BullishBloom, title = 'Bullish Bloom', message = 'Bullish Bloom')
+alertcondition(BearishBloom, title = 'Bearish Bloom', message = 'Bearish Bloom')
+
+alertcondition(BullishPrecisionPinBar, title = 'Bullish Precision PinBar', message = 'Bullish Precision PinBar')
+alertcondition(BearishPrecisionPinBar, title = 'Bearish Precision PinBar', message = 'Bearish Precision PinBar')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

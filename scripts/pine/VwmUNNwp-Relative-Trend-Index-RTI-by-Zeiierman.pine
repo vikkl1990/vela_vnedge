@@ -1,0 +1,73 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+//@version=5
+indicator('Relative Trend Index (RTI) by Zeiierman', shorttitle= "RTI", overlay=false, precision=0)
+
+// Inputs {
+trend_data_count             = input.int(100, step=4, minval=10, title="Trend Length", inline = "RT", group="Relative Trend Index [RTI]", tooltip="This variable determines the number of data points used in the calculation. \n\nIn short: A high value returns the long-term trend and a low value returns the short-term trend. \n\nIf a user increases the 'Trend Length', the trend will take into account a larger number of data points. This makes the trends smoother and more resistant to sudden changes in the market, as they're based on a broader set of data. It  also makes the trends slower to react to recent changes, as they're diluted by older data. \n\nOn the other hand, if a user decreases the 'Trend Length', the trend will take into account fewer data points. This could make the trends more responsive to recent market changes, as they're based on a narrower set of data. It also makes the trends more susceptible to noise and rapid fluctuations, as each new piece of data has a greater impact.")
+trend_sensitivity_percentage = input.int(95, step=1,minval=50, maxval=98,title='Sensitivity    ', inline = "RT1", group="Relative Trend Index [RTI]", tooltip="This variable determines the specific indices in the sorted trend arrays that are used for the upper and lower trend. It's used as a percentage of the 'Trend length'. \n\nIf a user increases the 'Sensitivity', the trend will be based on higher and lower positions in the sorted arrays, respectively. This makes the trend less sensitive.  \n\nConversely, if a user decreases the 'Sensitivity', the trend will be based on positions closer to the middle of the sorted arrays. This makes the trend more sensitive.")
+signal_length                = input.int(20, step=1,minval=1, maxval=200,title='Signal Length', inline = "", group="Signal Line", tooltip="Set the Ma period.")
+ob  = input.float(80, step=1, minval=0, maxval=100, title="", inline = "obos", group="Overbought/Oversold", tooltip="")
+os  = input.float(20,step=1, minval=0, maxval=100,title="", inline = "obos", group="Overbought/Oversold", tooltip="Set the OB/OS levels.")
+//~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Relative Trend Index Calculation {
+upper_trend = close + ta.stdev(close, 2)
+lower_trend = close - ta.stdev(close, 2)
+
+upper_array = array.new<float>(0)
+lower_array = array.new<float>(0)
+for i = 0 to trend_data_count - 1 
+    upper_array.push(upper_trend[i])
+    lower_array.push(lower_trend[i])
+upper_array.sort()
+lower_array.sort()
+
+upper_index  = math.round(trend_sensitivity_percentage / 100 * trend_data_count) - 1
+lower_index  = math.round((100 - trend_sensitivity_percentage) / 100 * trend_data_count) - 1
+UpperTrend   = upper_array.get(upper_index)
+LowerTrend   = lower_array.get(lower_index)
+RelativeTrendIndex = ((close - LowerTrend) / (UpperTrend - LowerTrend))*100
+//~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Plots {
+MA_RelativeTrendIndex = ta.ema(RelativeTrendIndex,signal_length)
+RT = plot(RelativeTrendIndex, 'Relative Trend Index (RTI)', color=color.new(color.teal, 0))
+plot(MA_RelativeTrendIndex, 'Ma Relative Trend Index', color=color.new(#00bcd4, 0))
+//~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Line plots {
+mid           = hline(50, 'Mid', color=#606060, linestyle=hline.style_dashed)
+overbought    = hline(ob, 'Overbought', color=#606060, linestyle=hline.style_dashed)
+oversold      = hline(os, 'Oversold', color=#606060, linestyle=hline.style_dashed)
+//~~~~~~~~~~~~~~~~~~~~~~~}
+
+// BG Fill {
+fill(overbought, oversold, color=color.new(color.teal, 90), title='Background')
+//~~~~~~~~~~~~~~~~~~~~~~~}
+
+// Overbought/Oversold Gradient Fill {
+midLinePlot = plot(50, color = na, editable = false, display = display.none)
+fill(RT, midLinePlot, 100, ob, top_color = color.new(color.green, 0), bottom_color = color.new(color.green, 100),  title = "Overbought Gradient Fill")
+fill(RT, midLinePlot, os,  0,  top_color = color.new(color.red, 100), bottom_color = color.new(color.red, 0),      title = "Oversold Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~}
+
+//Alerts {
+RT_OB_Over   = ta.crossover(RelativeTrendIndex,ob)
+RT_OB_Under  = ta.crossunder(RelativeTrendIndex,ob)
+RT_OS_Over   = ta.crossover(RelativeTrendIndex,os)
+RT_OS_Under  = ta.crossunder(RelativeTrendIndex,os)
+RT_Mid_Over  = ta.crossover(RelativeTrendIndex,50)
+RT_Mid_Under = ta.crossunder(RelativeTrendIndex,50)
+RT_MA_Over   = ta.crossover(RelativeTrendIndex,MA_RelativeTrendIndex)
+RT_MA_Under  = ta.crossunder(RelativeTrendIndex,MA_RelativeTrendIndex)
+
+alertcondition(RT_OB_Over,  title = "RTI Crossover OB",  message = "RTI Crossover OB")
+alertcondition(RT_OB_Under, title = "RTI Crossunder OB", message = "RTI Crossunder OB")
+alertcondition(RT_OS_Over,  title = "RTI Crossover OS",  message = "RTI Crossover OS")
+alertcondition(RT_OS_Under, title = "RTI Crossunder OS", message = "RTI Crossunder OS")
+alertcondition(RT_Mid_Over, title = "RTI Crossover 50",  message = "RTI Crossover 50")
+alertcondition(RT_Mid_Under,title = "RTI Crossunder 50", message = "RTI Crossunder 50")
+alertcondition(RT_MA_Over,  title = "RTI Crossover Ma",  message = "RTI Crossover Ma")
+alertcondition(RT_MA_Under, title = "RTI Crossunder Ma", message = "RTI Crossunder Ma")
+//~~~~~~~~~~~~~~~~~~~~~~~}

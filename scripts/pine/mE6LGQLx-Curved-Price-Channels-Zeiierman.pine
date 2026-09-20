@@ -1,0 +1,134 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=5
+indicator("Curved Price Channels (Zeiierman)",overlay=true, max_bars_back = 500)
+//~~}
+
+// ~~ Tooltips {
+string t1 = "Trend Length defines the number of bars (or candles) used to calculate the core trendline. A longer length, such as 200, smooths out the trend, making it more stable but slower to react to price changes. This is useful in identifying long-term trends. Conversely, a shorter length, such as 20, makes the trendline more responsive to recent price action, capturing short-term movements."
+string t2 = "Multiplier adjusts the width of the curved price channels by scaling the impact of the adaptive size. A higher multiplier tightens the channels, making them more sensitive to price movements and capturing smaller fluctuations. This setting is useful for detecting minor changes in trends or during low-volatility periods. Conversely, a lower multiplier widens the channels, making them more forgiving and focusing on larger price moves."
+string t3 = "Trendline toggles the display of the central trendline, which is the average of the upper and lower curved channels. This line serves as a visual representation of the trend's central tendency, helping traders identify the direction of the overall trend."
+string t4 = "Curved Channels option controls the visibility of the upper and lower bands that form the curved price channels."
+string t5 = "Trend Strength calculates the strength of the current trend by analyzing the range between the curved channels and the trendline. It normalizes this range to provide a percentage value indicating the trend's strength. A higher value suggests a stronger trend, while a lower value indicates a weaker trend. "
+string t6 = "Trend Strength Length defines the period over which the maximum and minimum ranges are calculated to normalize the trend strength. A longer length, such as 200, smooths the strength readings, making them more reliable for long-term analysis. A shorter length, like 50, makes the strength readings more sensitive to recent changes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// ~~ Inputs {
+length     = input.int(100,  minval=1, title="Trend Length", group="Curved Channels", inline="Curved", tooltip="")
+multiplier = input.float(6.0, minval=0.01, step=0.1, title="Multiplier", group="Curved Channels", inline="Curved", tooltip=t1+"\n\n"+t2)
+trend_     = input.bool(true,title="Trendline", group="Curved Channels", inline="channels", tooltip="")
+curvedpricechannel = input.bool(true,title="Curved Channels", group="Curved Channels" , inline="channels", tooltip=t3+"\n\n"+t4)
+upcurve = input.color(color.lime, title="", group="Curved Channels", inline="curvecolor")
+dncurve = input.color(color.red, title="", group="Curved Channels", inline="curvecolor")
+
+trendstrength = input.bool(true,title="Trend Strength", group="Trend Strength" , inline="Trend Strength", tooltip="")
+trend         = input.int(200, minval=1, step=5, title=" ", group="Trend Strength" , inline="Trend Strength", tooltip=t5+"\n\n"+t6)
+maxcol = input.color(#24ff99, title="", group="Trend Strength", inline="trendcolor")
+mincol = input.color(#e93e58, title="", group="Trend Strength", inline="trendcolor")
+
+// ~~ Curved Price Channels {
+// Initialize variables for bands and counters
+var float upperBand = 0
+var float lowerBand = 0
+var int barsSinceUpperIncrease = 0
+var int barsSinceLowerDecrease = 0
+
+// Calculate adaptive size
+adaptiveSize = ta.atr(length)
+
+// Calculate the square of the length for normalization
+lengthSquared = math.pow(length, 2)
+
+// Upper Band Calculation
+maxcloseUpper = math.max(high,na(upperBand)?close:upperBand) 
+barsSinceUpperIncrease := close>upperBand?0:barsSinceUpperIncrease+1 
+
+// Update the upper band
+upperAdjustmentFactor = adaptiveSize / lengthSquared * (barsSinceUpperIncrease + 1) * multiplier
+upperBand := maxcloseUpper - upperAdjustmentFactor
+
+// Lower Band Calculation
+mincloseLower = math.min(low,na(lowerBand)?close:lowerBand) 
+barsSinceLowerDecrease := close<lowerBand?0:barsSinceLowerDecrease+1 
+
+// Update the lower band
+lowerAdjustmentFactor = adaptiveSize / lengthSquared * (barsSinceLowerDecrease + 1) * multiplier
+lowerBand := mincloseLower + lowerAdjustmentFactor
+
+// ~~ Curved Trend Index {
+// ~~ Variables {
+var Up  = float(na)
+var Dn  = float(na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivots {
+Up   := upperBand
+Dn   := lowerBand
+pvtHi = ta.highest(upperBand,1)
+pvtLo = ta.lowest(lowerBand,1)
+if not na(pvtHi)
+    Up := pvtHi
+if not na(pvtLo)
+    Dn := pvtLo
+
+trendline = math.avg(Up,Dn)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Curved Price Channels Plots {
+Curvedcolor(x, col_)=>
+    color color_ = last_bar_index - bar_index < length 
+     ? (bar_index % x == 0 ? color.new(col_, 50) : na)
+     : col_
+
+upper_fill_color = Curvedcolor(1,upcurve)
+lower_fill_color = Curvedcolor(1,dncurve)
+trend_line_color = Curvedcolor(2,close > trendline ? upcurve : dncurve)
+
+r1    = plot(curvedpricechannel ? Up : na, "Curved High", color = upcurve)
+r2    = plot(curvedpricechannel ? Dn : na, "Curved Low", color = dncurve)
+t     = plot(trend_ ? trendline : na, color = trend_line_color, title = "Curved Trend")
+
+fill(r1, t, Up, ta.sma(trendline, 20), color.new(upper_fill_color, 60),na)
+fill(r2, t, Dn, ta.sma(trendline, 20), color.new(lower_fill_color, 60),na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range & Strength {
+// Calculate the distance of the close from the trendline relative to the range
+rangee           = upperBand - lowerBand
+relativePosition = (close - trendline) / rangee
+
+// Normalize the current range to get the trend strength
+maxRange        = ta.highest(rangee, trend)
+minRange        = ta.lowest(rangee, trend)
+normalizedRange = (rangee - minRange) / (maxRange - minRange)
+
+// Combine the relative position and the normalized range to calculate trend strength
+trendStrength    = relativePosition * normalizedRange * 100
+maxTrendStrength = ta.highest(trendStrength, trend)
+minTrendStrength = ta.lowest(trendStrength, trend)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}    
+
+// ~~ Lines & labels {
+col   = close > trendline ? maxcol : mincol
+n     = bar_index + 10
+
+if barstate.islast and trendstrength
+    line.delete(line.new(n, Dn, n, Up, xloc.bar_index, extend.none, color.new(chart.fg_color, 30))[1])
+    line.delete(line.new(n, trendline, n, close, xloc.bar_index, extend.none, col, width = 7)[1])
+
+    var Strength = label.new(x=na, y=na, text="", style=label.style_label_left, color = #00000000)
+    label.set_xy(Strength, n, math.avg(close,trendline))
+    label.set_text(Strength, str.tostring(trendStrength, format.percent))
+    label.set_textcolor(Strength,col)
+
+    var max = label.new(x=na, y=na, text="", style=label.style_label_left, color = #00000000)
+    label.set_xy(max, n, Up)
+    label.set_text(max, str.tostring(maxTrendStrength, "#.0"))
+    label.set_textcolor(max,maxcol)
+    
+    var min = label.new(x=na, y=na, text="", style=label.style_label_left, color = #00000000)
+    label.set_xy(min, n, Dn)
+    label.set_text(min, str.tostring(minTrendStrength, "#.0"))
+    label.set_textcolor(min,mincol)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}    

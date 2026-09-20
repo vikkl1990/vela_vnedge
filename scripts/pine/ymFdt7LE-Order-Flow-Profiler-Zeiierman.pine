@@ -1,0 +1,761 @@
+//@version=6
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+indicator("Order Flow Profiler (Zeiierman)", overlay = true, max_bars_back = 2500, max_lines_count = 200, max_labels_count = 200, max_boxes_count = 500, max_polylines_count = 50)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Number of chart bars used to build the profile. A larger window gives a broader auction view while a smaller window reacts faster to recent price and volume changes."
+var string t2  = "Number of price rows used inside the profile range. More rows increase vertical detail but also increase the amount of work and the number of delta boxes drawn."
+var string t3  = "Controls how strongly each candle's volume is pulled toward its estimated buy and sell activity centers. Higher values concentrate activity more tightly around those areas."
+var string t4  = "Includes the currently forming chart bar in the profile. Disable it when you only want completed bars to affect the calculation."
+var string t5  = "Percentage of total profile volume used to calculate the upper and lower acceptance levels shown in the Data Window. These levels are calculated but not drawn on the chart."
+var string t6  = "Minimum diagonal buy-versus-sell ratio required for a pressure marker. For example, 300% means one side must be at least three times the opposing neighboring row."
+var string t7  = "Filters pressure signals by activity. A row must contain at least this percentage of the profile's busiest row volume before it can qualify as pressure."
+var string t8  = "Horizontal space between the newest chart bar and the start of the profile. Increase it when you want more separation between price and the profile."
+var string t9  = "Maximum width of each buy or sell profile wing in chart bars. Sell volume extends left from the center spine and buy volume extends right."
+var string t10 = "Color used for the buy-side profile wing, positive delta rows, and bullish pressure markers."
+var string t11 = "Color used for the sell-side profile wing, negative delta rows, and bearish pressure markers."
+var string t12 = "Transparency of the main buy and sell profile fills. Higher values make the wings more transparent while keeping their outlines visible."
+var string t13 = "Fallback color for the control row when buy and sell activity are equal at the control price. Otherwise the dominant side's color is used."
+var string t14 = "Shows the nearest qualifying pressure row above and below the control price. Blue marks buy pressure and red marks sell pressure."
+var string t15 = "Shows row-by-row delta dominance inside the profile. Only the winning side is painted: positive delta extends right in blue and negative delta extends left in red."
+var string t16 = "Maximum horizontal width of the delta bars. Each row scales between one bar and this width according to the absolute buy-minus-sell difference at that price."
+var string t17 = "Shows dotted horizontal caps at the highest and lowest prices covered by the selected profile window."
+var string t18 = "Keeps complete historical auction profiles on the chart. Each snapshot uses only data available at its anchor bar and retains the same wings, delta cells, control level, caps, and pressure markers as the live profile."
+var string t19 = "Number of bars between complete historical profile snapshots. Larger spacing reduces overlap and calculation load."
+var string t20 = "Requested number of historical profiles to retain. When Delta Dominance is enabled, the script automatically caps this value when necessary so historical and live delta boxes stay inside Pine drawing limits."
+var string t21 = "Buy-side color used only for retained historical profile wings, delta cells, control levels, and buy-pressure markers. The live profile keeps its normal Buy Wing color."
+var string t22 = "Sell-side color used only for retained historical profile wings, delta cells, control levels, and sell-pressure markers. The live profile keeps its normal Sell Wing color."
+var string t23 = "Transparency used for historical profile wing fills. Higher values make old profiles visually quieter than the live profile."
+var string t24 = "Automatically separates nearby retained profiles horizontally. When two profiles would overlap, the older one is displaced backward and the newer one forward until the requested clearance is restored. The live profile participates in the same collision check."
+var string t25 = "Extra horizontal clearance, in chart bars, kept between neighboring profile wings after collision avoidance. Increase this if control labels still feel crowded."
+var string t26 = "Shows a segmented Buy versus Sell readout for the active profile only. The boxes span the full profile height. Each box measures the Buy Wing versus Sell Wing activity inside that price segment and displays only BUY x MORE, SELL x MORE, or BALANCED."
+var string t27 = "Number of vertical price segments used by the active-profile readout. More segments give more local detail while fewer segments provide a broader summary of the profile."
+var string t28 = "Text size used inside every active-profile segment box."
+var string t29 = "Treats very small Buy versus Sell differences inside a segment as balanced instead of printing a noisy directional advantage. For example, 1.05 means ratios below 1.05x display BALANCED."
+var string t30 = "Horizontal distance between the active profile's control tag area and the segmented readout."
+var string t31 = "Horizontal width of every active-profile segment box in chart bars."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Groups {
+var string gProf  = "Profile"
+var string gLvl   = "Levels"
+var string gHist  = "History"
+var string gRead  = "Readout"
+var string gStyle = "Style"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+lookback = input.int(80, "Lookback Bars", minval = 10, maxval = 500, group = gProf, tooltip = t1)
+rows     = input.int(84, "Price Cells", minval = 24, maxval = 220, group = gProf, tooltip = t2)
+focus    = input.float(2.15, "Cell Concentration", minval = 0.25, maxval = 6.0, step = 0.05, group = gProf, tooltip = t3)
+liveBar  = input.bool(true, "Include Live Bar", group = gProf, tooltip = t4)
+
+vaPct    = input.float(70.0, "Acceptance Area %", minval = 50.0, maxval = 99.0, step = 1.0, group = gLvl, tooltip = t5)
+pressPct = input.float(300.0, "Pressure Ratio %", minval = 100.0, maxval = 1000.0, step = 25.0, group = gLvl, tooltip = t6)
+pressMin = input.float(4.0, "Minimum Pressure Activity %", minval = 0.0, maxval = 50.0, step = 0.5, group = gLvl, tooltip = t7)
+
+showHistory   = input.bool(false, "Historical Profiles", group = gHist, tooltip = t18)
+histEvery     = input.int(80, "Snapshot Every Bars", minval = 10, maxval = 500, group = gHist, tooltip = t19)
+histKeep      = input.int(4, "Profiles To Keep", minval = 1, maxval = 12, group = gHist, tooltip = t20)
+histBuyCol    = input.color(#8E7CFF, "Historical Buy", inline = "histcol", group = gHist, tooltip = t21)
+histSellCol   = input.color(#D8A340, "Historical Sell", inline = "histcol", group = gHist, tooltip = t22)
+histFade      = input.int(84, "Historical Transparency", minval = 0, maxval = 100, group = gHist, tooltip = t23)
+avoidOverlap  = input.bool(true, "Avoid Profile Overlap", group = gHist, tooltip = t24)
+histClearance = input.int(16, "Profile Clearance", minval = 0, maxval = 80, group = gHist, tooltip = t25)
+
+showReadout     = input.bool(true, "Active Profile Readout", group = gRead, tooltip = t26)
+readoutSegments = input.int(6, "Segments", minval = 1, maxval = 12, group = gRead, tooltip = t27)
+readoutTextSize = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal", "Large"], group = gRead, tooltip = t28)
+balanceX        = input.float(1.05, "Balanced Below x", minval = 1.0, maxval = 1.5, step = 0.01, group = gRead, tooltip = t29)
+readoutGap      = input.int(14, "Readout Gap", minval = 4, maxval = 30, group = gRead, tooltip = t30)
+readoutWidth    = input.int(22, "Readout Width", minval = 12, maxval = 40, group = gRead, tooltip = t31)
+
+gap        = input.int(4, "Gap From Price", minval = 2, maxval = 40, group = gStyle, tooltip = t8)
+width      = input.int(18, "Wing Width", minval = 6, maxval = 80, group = gStyle, tooltip = t9)
+buyCol     = input.color(#45A3FF, "Buy Wing", inline = "wing", group = gStyle, tooltip = t10)
+sellCol    = input.color(#FF647B, "Sell Wing", inline = "wing", group = gStyle, tooltip = t11)
+fade       = input.int(80, "Wing Transparency", minval = 0, maxval = 100, group = gStyle, tooltip = t12)
+neutralCol = input.color(#F5B14C, "Neutral Control", group = gStyle, tooltip = t13)
+showPress  = input.bool(true, "Pressure Flags", group = gStyle, tooltip = t14)
+showDelta  = input.bool(true, "Delta Dominance", group = gStyle, tooltip = t15)
+deltaWidth = input.int(12, "Delta Max Width", minval = 2, maxval = 40, group = gStyle, tooltip = t16)
+showCaps   = input.bool(true, "Profile Range Caps", group = gStyle, tooltip = t17)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+fit(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+fitRow(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+priceTxt(v) =>
+    str.tostring(v, format.mintick)
+
+buyShare(o, h, l, c) =>
+    rng   = h - l
+    share = 0.5
+    if rng > 0.0
+        closePos  = fit((c - l) / rng, 0.0, 1.0)
+        body      = fit((c - o) / rng, -1.0, 1.0)
+        upperWick = math.max(h - math.max(o, c), 0.0) / rng
+        lowerWick = math.max(math.min(o, c) - l, 0.0) / rng
+        drive = 0.48 * (2.0 * closePos - 1.0) + 0.32 * body + 0.20 * (lowerWick - upperWick)
+        share := fit(0.5 + 0.43 * drive, 0.025, 0.975)
+    share
+
+rowWeight(mid, anchor, rng, touch, power) =>
+    dist  = rng > 0.0 ? math.min(math.abs(mid - anchor) / rng, 1.0) : 0.0
+    curve = math.pow(1.0 - dist, power)
+    touch * (1.0 + 2.6 * curve)
+
+pressure(array<float> buys, array<float> sells, row, ratio, minVol) =>
+    count   = buys.size()
+    buyNow  = buys.get(row)
+    sellNow = sells.get(row)
+    rowVol  = buyNow + sellNow
+
+    sellBelow = row > 0 ? sells.get(row - 1) : na
+    buyAbove  = row < count - 1 ? buys.get(row + 1) : na
+
+    buyHit  = rowVol >= minVol and not na(sellBelow) and sellBelow > 0.0 and buyNow > sellBelow * ratio
+    sellHit = rowVol >= minVol and not na(buyAbove) and buyAbove > 0.0 and sellNow > buyAbove * ratio
+
+    buyPower  = buyHit ? buyNow / sellBelow : 0.0
+    sellPower = sellHit ? sellNow / buyAbove : 0.0
+    buyHit or sellHit ? (buyPower >= sellPower ? 1 : -1) : 0
+
+clearLines(array<line> items) =>
+    if items.size() > 0
+        for item in items
+            line.delete(item)
+    items.clear()
+
+clearLabels(array<label> items) =>
+    if items.size() > 0
+        for item in items
+            label.delete(item)
+    items.clear()
+
+clearBoxes(array<box> items) =>
+    if items.size() > 0
+        for item in items
+            box.delete(item)
+    items.clear()
+
+clearPolys(array<polyline> items) =>
+    if items.size() > 0
+        for item in items
+            polyline.delete(item)
+    items.clear()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ State {
+var buyRows  = array.new<float>(rows, 0.0)
+var sellRows = array.new<float>(rows, 0.0)
+
+var polyline buyShape  = na
+var polyline sellShape = na
+var lines  = array.new<line>()
+var labels = array.new<label>()
+var boxes  = array.new<box>()
+
+// Historical snapshot data is stored separately from its drawings so the visual layout can be
+// collision-resolved later. This is necessary because Pine polylines cannot be repositioned in place.
+var histPolys  = array.new<polyline>()
+var histLines  = array.new<line>()
+var histLabels = array.new<label>()
+var histBoxes  = array.new<box>()
+
+var histAnchors   = array.new<int>()
+var histLos       = array.new<float>()
+var histHis       = array.new<float>()
+var histRowHs     = array.new<float>()
+var histMaxSides  = array.new<float>()
+var histMaxDeltas = array.new<float>()
+var histCtrlRows  = array.new<int>()
+var histCtrlPxs   = array.new<float>()
+var histUpRows    = array.new<int>()
+var histUpSides   = array.new<int>()
+var histDnRows    = array.new<int>()
+var histDnSides   = array.new<int>()
+var histBuyStore  = array.new<float>()
+var histSellStore = array.new<float>()
+var histDisplaySpines = array.new<int>()
+var int histRenderedBar = na
+var int liveLayoutPush = 0
+
+var float ctrlPlot = na
+var float vahPlot  = na
+var float valPlot  = na
+var float balPlot  = na
+var float biasPlot = na
+var float covPlot  = na
+var color ctrlColPlot = na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Profile {
+ctrlPlot := na
+vahPlot  := na
+valPlot  := na
+balPlot  := na
+biasPlot := na
+covPlot  := na
+ctrlColPlot := na
+
+readoutBoxReserve = showReadout ? readoutSegments : 0
+histCapByBoxes = showDelta ? math.max(1, int((480 - rows - readoutBoxReserve) / rows)) : histKeep
+histKeepEff    = math.min(histKeep, histCapByBoxes)
+histAnchor  = showHistory and barstate.isconfirmed and (not barstate.islast or barstate.isrealtime) and bar_index >= lookback and bar_index % histEvery == 0
+calcThisBar = barstate.islast or histAnchor
+
+if barstate.islast
+    if not na(buyShape)
+        polyline.delete(buyShape)
+        buyShape := na
+    if not na(sellShape)
+        polyline.delete(sellShape)
+        sellShape := na
+    clearLines(lines)
+    clearLabels(labels)
+    clearBoxes(boxes)
+
+if calcThisBar
+    buyRows.fill(0.0)
+    sellRows.fill(0.0)
+    start = liveBar ? 0 : 1
+    avail = math.max(bar_index - start + 1, 0)
+    bars  = math.min(lookback, avail)
+
+    float lo = na
+    float hi = na
+    good = 0
+
+    if bars > 0
+        for slot = 0 to bars - 1
+            back = start + slot
+            o  = open[back]
+            h  = high[back]
+            l  = low[back]
+            c  = close[back]
+            v  = volume[back]
+            ok = not na(o) and not na(h) and not na(l) and not na(c) and not na(v) and v > 0.0
+            if ok
+                lo := na(lo) ? l : math.min(lo, l)
+                hi := na(hi) ? h : math.max(hi, h)
+                good += 1
+
+    if good > 0 and not na(lo) and not na(hi)
+        if hi <= lo
+            pad = syminfo.mintick * rows * 0.5
+            lo -= pad
+            hi += pad
+
+        rowH = (hi - lo) / rows
+
+        for slot = 0 to bars - 1
+            back = start + slot
+            o  = open[back]
+            h  = high[back]
+            l  = low[back]
+            c  = close[back]
+            v  = volume[back]
+            ok = not na(o) and not na(h) and not na(l) and not na(c) and not na(v) and v > 0.0
+
+            if ok
+                rng    = h - l
+                bShare = buyShare(o, h, l, c)
+                bVol = v * bShare
+                sVol = v - bVol
+
+                if rng <= 0.0
+                    row = fitRow(int(math.floor((c - lo) / rowH)), 0, rows - 1)
+                    buyRows.set(row, buyRows.get(row) + bVol)
+                    sellRows.set(row, sellRows.get(row) + sVol)
+                else
+                    first = fitRow(int(math.floor((l - lo) / rowH)), 0, rows - 1)
+                    last  = fitRow(int(math.floor((h - lo) / rowH)), 0, rows - 1)
+
+                    buyAt   = fit(0.50 * c + 0.32 * h + 0.18 * o, l, h)
+                    sellAt  = fit(0.50 * c + 0.32 * l + 0.18 * o, l, h)
+                    bWeight = 0.0
+                    sWeight = 0.0
+
+                    for row   = first to last
+                        rowLo = lo + row * rowH
+                        rowHi = rowLo + rowH
+                        touched = math.max(0.0, math.min(h, rowHi) - math.max(l, rowLo))
+                        if touched > 0.0
+                            mid   = 0.5 * (rowLo + rowHi)
+                            touch = touched / rng
+                            bWeight += rowWeight(mid, buyAt, rng, touch, focus)
+                            sWeight += rowWeight(mid, sellAt, rng, touch, focus)
+
+                    if bWeight > 0.0 and sWeight > 0.0
+                        for row   = first to last
+                            rowLo = lo + row * rowH
+                            rowHi = rowLo + rowH
+                            touched = math.max(0.0, math.min(h, rowHi) - math.max(l, rowLo))
+                            if touched > 0.0
+                                mid   = 0.5 * (rowLo + rowHi)
+                                touch = touched / rng
+                                bw    = rowWeight(mid, buyAt, rng, touch, focus)
+                                sw    = rowWeight(mid, sellAt, rng, touch, focus)
+                                buyRows.set(row, buyRows.get(row) + bVol * bw / bWeight)
+                                sellRows.set(row, sellRows.get(row) + sVol * sw / sWeight)
+
+        buyTotal  = 0.0
+        sellTotal = 0.0
+        peak      = -1.0
+        maxSide   = 0.0
+        ctrlRow   = 0
+
+        for row = 0 to rows - 1
+            b    = buyRows.get(row)
+            s    = sellRows.get(row)
+            both = b + s
+            buyTotal += b
+            sellTotal += s
+            maxSide := math.max(maxSide, math.max(b, s))
+            if both > peak
+                peak := both
+                ctrlRow := row
+
+        total    = buyTotal + sellTotal
+        maxDelta = 0.0
+        for row  = 0 to rows - 1
+            d = buyRows.get(row) - sellRows.get(row)
+            maxDelta := math.max(maxDelta, math.abs(d))
+
+        if total > 0.0 and maxSide > 0.0
+            bal = 0.0
+            if buyTotal > 0.0 and sellTotal > 0.0
+                for row = 0 to rows - 1
+                    bShare = buyRows.get(row) / buyTotal
+                    sShare = sellRows.get(row) / sellTotal
+                    bal += math.min(bShare, sShare)
+
+            netDelta     = buyTotal - sellTotal
+            bias         = 100.0 * netDelta / total
+            cov          = bars > 0 ? 100.0 * good / bars : na
+            flowMultiple = math.max(buyTotal, sellTotal) / math.max(math.min(buyTotal, sellTotal), total * 0.000001)
+
+            vaGoal = total * vaPct / 100.0
+            vaLo   = ctrlRow
+            vaHi   = ctrlRow
+            vaVol  = buyRows.get(ctrlRow) + sellRows.get(ctrlRow)
+
+            while vaVol < vaGoal and (vaLo > 0 or vaHi < rows - 1)
+                above = vaHi < rows - 1 ? buyRows.get(vaHi + 1) + sellRows.get(vaHi + 1) : -1.0
+                below = vaLo > 0 ? buyRows.get(vaLo - 1) + sellRows.get(vaLo - 1) : -1.0
+                if above >= below
+                    vaHi += 1
+                    vaVol += math.max(above, 0.0)
+                else
+                    vaLo -= 1
+                    vaVol += math.max(below, 0.0)
+
+            ctrlPx = lo + (ctrlRow + 0.5) * rowH
+            vaHigh = lo + (vaHi + 1.0) * rowH
+            vaLow  = lo + vaLo * rowH
+
+            ctrlPlot := ctrlPx
+            vahPlot  := vaHigh
+            valPlot  := vaLow
+            balPlot  := bal
+            biasPlot := bias
+            covPlot  := cov
+            ctrlBuySeries  = buyRows.get(ctrlRow)
+            ctrlSellSeries = sellRows.get(ctrlRow)
+            ctrlColPlot   := ctrlBuySeries > ctrlSellSeries ? buyCol : ctrlSellSeries > ctrlBuySeries ? sellCol : neutralCol
+
+            ratio  = pressPct / 100.0
+            minVol = peak * pressMin / 100.0
+            upRow  = -1
+            upSide = 0
+            dnRow  = -1
+            dnSide = 0
+
+            if showPress
+                if ctrlRow < rows - 1
+                    for row  = ctrlRow + 1 to rows - 1
+                        side = pressure(buyRows, sellRows, row, ratio, minVol)
+                        if side != 0
+                            upRow := row
+                            upSide := side
+                            break
+
+                if ctrlRow > 0
+                    for dist = 1 to ctrlRow
+                        row  = ctrlRow - dist
+                        side = pressure(buyRows, sellRows, row, ratio, minVol)
+                        if side != 0
+                            dnRow := row
+                            dnSide := side
+                            break
+
+            if histAnchor and histKeepEff > 0
+                histAnchors.push(bar_index)
+                histLos.push(lo)
+                histHis.push(hi)
+                histRowHs.push(rowH)
+                histMaxSides.push(maxSide)
+                histMaxDeltas.push(maxDelta)
+                histCtrlRows.push(ctrlRow)
+                histCtrlPxs.push(ctrlPx)
+                histUpRows.push(upRow)
+                histUpSides.push(upSide)
+                histDnRows.push(dnRow)
+                histDnSides.push(dnSide)
+
+                for row = 0 to rows - 1
+                    histBuyStore.push(buyRows.get(row))
+                    histSellStore.push(sellRows.get(row))
+
+                while histAnchors.size() > histKeepEff
+                    histAnchors.shift()
+                    histLos.shift()
+                    histHis.shift()
+                    histRowHs.shift()
+                    histMaxSides.shift()
+                    histMaxDeltas.shift()
+                    histCtrlRows.shift()
+                    histCtrlPxs.shift()
+                    histUpRows.shift()
+                    histUpSides.shift()
+                    histDnRows.shift()
+                    histDnSides.shift()
+
+                    for row = 0 to rows - 1
+                        histBuyStore.shift()
+                        histSellStore.shift()
+
+            if barstate.islast
+                histDisplaySpines.clear()
+                liveLayoutPush := 0
+
+                histN = histAnchors.size()
+                minProfileSpacing = 2 * width + histClearance
+
+                if histN > 0
+                    spreadExtra = avoidOverlap ? math.max(0, minProfileSpacing - histEvery) : 0
+                    clusterCenter = 0.5 * (histN - 1)
+
+                    for histNo = 0 to histN - 1
+                        naturalSpine = histAnchors.get(histNo) + gap + width
+                        centeredPush = avoidOverlap ? int(math.round((histNo - clusterCenter) * spreadExtra)) : 0
+                        histDisplaySpines.push(naturalSpine + centeredPush)
+
+                    if avoidOverlap
+                        liveNaturalSpine = bar_index + gap + width
+                        newestHistSpine  = histDisplaySpines.get(histN - 1)
+                        liveDistance     = liveNaturalSpine - newestHistSpine
+
+                        if liveDistance < minProfileSpacing
+                            deficit      = minProfileSpacing - liveDistance
+                            histBackPush = int(math.floor(deficit * 0.5))
+                            liveLayoutPush := deficit - histBackPush
+                            histDisplaySpines.set(histN - 1, newestHistSpine - histBackPush)
+
+                            if histN > 1
+                                for backStep = 1 to histN - 1
+                                    histNo     = histN - 1 - backStep
+                                    rightSpine = histDisplaySpines.get(histNo + 1)
+                                    thisSpine  = histDisplaySpines.get(histNo)
+                                    if rightSpine - thisSpine < minProfileSpacing
+                                        histDisplaySpines.set(histNo, rightSpine - minProfileSpacing)
+
+                        liveFinalSpine = bar_index + gap + width + liveLayoutPush
+                        readoutReach   = showReadout ? 3 + readoutGap + readoutWidth : 3
+                        maxSafeSpine   = bar_index + 470 - width - readoutReach
+                        if liveFinalSpine > maxSafeSpine
+                            safeShift = liveFinalSpine - maxSafeSpine
+                            liveLayoutPush -= safeShift
+                            for histNo = 0 to histN - 1
+                                histDisplaySpines.set(histNo, histDisplaySpines.get(histNo) - safeShift)
+
+                redrawHistory = na(histRenderedBar) or histRenderedBar != bar_index or histAnchor
+
+                if redrawHistory
+                    clearPolys(histPolys)
+                    clearLines(histLines)
+                    clearLabels(histLabels)
+                    clearBoxes(histBoxes)
+
+                    histN = histAnchors.size()
+                    if showHistory and histN > 0
+                        histFrameCol = color.new(chart.fg_color, 72)
+                        histSpineCol = color.new(chart.fg_color, 88)
+
+                        for histNo = 0 to histN - 1
+                            histSpine  = histDisplaySpines.get(histNo)
+                            histLeftX  = histSpine - width
+                            histRightX = histSpine + width
+                            histTagX   = histRightX + 3
+
+                            snapLo       = histLos.get(histNo)
+                            snapHi       = histHis.get(histNo)
+                            snapRowH     = histRowHs.get(histNo)
+                            snapMaxSide  = histMaxSides.get(histNo)
+                            snapMaxDelta = histMaxDeltas.get(histNo)
+                            snapCtrlRow  = histCtrlRows.get(histNo)
+                            snapCtrlPx   = histCtrlPxs.get(histNo)
+                            snapUpRow    = histUpRows.get(histNo)
+                            snapUpSide   = histUpSides.get(histNo)
+                            snapDnRow    = histDnRows.get(histNo)
+                            snapDnSide   = histDnSides.get(histNo)
+                            rowBase      = histNo * rows
+
+                            if showCaps
+                                histLines.push(line.new(histLeftX, snapHi, histRightX, snapHi,
+                                     xloc = xloc.bar_index, color = histFrameCol, style = line.style_dotted, width = 1))
+                                histLines.push(line.new(histLeftX, snapLo, histRightX, snapLo,
+                                     xloc = xloc.bar_index, color = histFrameCol, style = line.style_dotted, width = 1))
+
+                            histLines.push(line.new(histSpine, snapLo, histSpine, snapHi,
+                                 xloc = xloc.bar_index, color = histSpineCol, width = 1))
+
+                            histSellPts = array.new<chart.point>()
+                            histSellPts.push(chart.point.from_index(histSpine, snapLo))
+                            for row = 0 to rows - 1
+                                y0  = snapLo + row * snapRowH
+                                y1  = y0 + snapRowH
+                                s   = histSellStore.get(rowBase + row)
+                                ext = snapMaxSide > 0.0 ? int(math.round(width * s / snapMaxSide)) : 0
+                                x   = histSpine - ext
+                                histSellPts.push(chart.point.from_index(x, y0))
+                                histSellPts.push(chart.point.from_index(x, y1))
+                            histSellPts.push(chart.point.from_index(histSpine, snapHi))
+                            histPolys.push(polyline.new(histSellPts, curved = false, closed = true, xloc = xloc.bar_index,
+                                 line_color = histSellCol, fill_color = color.new(histSellCol, histFade), line_width = 1))
+
+                            histBuyPts = array.new<chart.point>()
+                            histBuyPts.push(chart.point.from_index(histSpine, snapLo))
+                            for row = 0 to rows - 1
+                                y0  = snapLo + row * snapRowH
+                                y1  = y0 + snapRowH
+                                b   = histBuyStore.get(rowBase + row)
+                                ext = snapMaxSide > 0.0 ? int(math.round(width * b / snapMaxSide)) : 0
+                                x   = histSpine + ext
+                                histBuyPts.push(chart.point.from_index(x, y0))
+                                histBuyPts.push(chart.point.from_index(x, y1))
+                            histBuyPts.push(chart.point.from_index(histSpine, snapHi))
+                            histPolys.push(polyline.new(histBuyPts, curved = false, closed = true, xloc = xloc.bar_index,
+                                 line_color = histBuyCol, fill_color = color.new(histBuyCol, histFade), line_width = 1))
+
+                            if showDelta and snapMaxDelta > 0.0
+                                for row = 0 to rows - 1
+                                    y0 = snapLo + row * snapRowH
+                                    y1 = y0 + snapRowH
+                                    b  = histBuyStore.get(rowBase + row)
+                                    s  = histSellStore.get(rowBase + row)
+                                    d  = b - s
+
+                                    if d != 0.0
+                                        raw      = math.abs(d) / snapMaxDelta
+                                        strength = math.pow(raw, 0.72)
+                                        ext      = math.max(1, int(math.round(deltaWidth * strength)))
+                                        alpha    = 90 - int(math.round(70.0 * strength))
+                                        alpha := math.max(12, math.min(90, alpha))
+
+                                        buyWins = d > 0.0
+                                        fillCol = buyWins ? color.new(histBuyCol, alpha) : color.new(histSellCol, alpha)
+                                        edgeCol = buyWins ? color.new(histBuyCol, math.max(alpha - 18, 0)) : color.new(histSellCol, math.max(alpha - 18, 0))
+                                        x1 = buyWins ? histSpine : histSpine - ext
+                                        x2 = buyWins ? histSpine + ext : histSpine
+
+                                        histBoxes.push(box.new(left = x1, top = y1, right = x2, bottom = y0,
+                                             xloc = xloc.bar_index, border_color = edgeCol, border_width = 1, bgcolor = fillCol))
+
+                            histCtrlBuy  = histBuyStore.get(rowBase + snapCtrlRow)
+                            histCtrlSell = histSellStore.get(rowBase + snapCtrlRow)
+                            histCtrlCol  = histCtrlBuy > histCtrlSell ? histBuyCol : histCtrlSell > histCtrlBuy ? histSellCol : neutralCol
+
+                            histLines.push(line.new(histLeftX - 1, snapCtrlPx, histRightX + 1, snapCtrlPx,
+                                 xloc = xloc.bar_index, color = histCtrlCol, width = 2))
+
+                            histLabels.push(label.new(histSpine, snapCtrlPx, "C", xloc = xloc.bar_index,
+                                 style = label.style_circle, color = histCtrlCol, textcolor = chart.bg_color, size = size.tiny,
+                                 tooltip = "Historical control price: " + priceTxt(snapCtrlPx)))
+
+                            histLabels.push(label.new(histTagX, snapCtrlPx, "CONTROL\n" + priceTxt(snapCtrlPx), xloc = xloc.bar_index,
+                                 style = label.style_label_left, color = color.new(histCtrlCol, 86), textcolor = histCtrlCol, size = size.small,
+                                 tooltip = "Historical highest combined buy and sell activity inside this profile snapshot."))
+
+                            if showPress and snapUpRow >= 0
+                                p    = snapLo + (snapUpRow + 0.5) * snapRowH
+                                col  = snapUpSide > 0 ? histBuyCol : histSellCol
+                                vol  = snapUpSide > 0 ? histBuyStore.get(rowBase + snapUpRow) : histSellStore.get(rowBase + snapUpRow)
+                                edge = snapMaxSide > 0.0 ? int(math.round(width * vol / snapMaxSide)) : 0
+                                x    = snapUpSide > 0 ? histSpine + edge + 1 : histSpine - edge - 1
+                                mark = snapUpSide > 0 ? "▲" : "▼"
+                                histLabels.push(label.new(x, p, mark, xloc = xloc.bar_index, style = label.style_none,
+                                     textcolor = col, size = size.normal,
+                                     tooltip   = (snapUpSide > 0 ? "Historical buy pressure" : "Historical sell pressure") + " at " + priceTxt(p)))
+
+                            if showPress and snapDnRow >= 0
+                                p    = snapLo + (snapDnRow + 0.5) * snapRowH
+                                col  = snapDnSide > 0 ? histBuyCol : histSellCol
+                                vol  = snapDnSide > 0 ? histBuyStore.get(rowBase + snapDnRow) : histSellStore.get(rowBase + snapDnRow)
+                                edge = snapMaxSide > 0.0 ? int(math.round(width * vol / snapMaxSide)) : 0
+                                x    = snapDnSide > 0 ? histSpine + edge + 1 : histSpine - edge - 1
+                                mark = snapDnSide > 0 ? "▲" : "▼"
+                                histLabels.push(label.new(x, p, mark, xloc = xloc.bar_index, style = label.style_none,
+                                     textcolor = col, size = size.normal,
+                                     tooltip = (snapDnSide > 0 ? "Historical buy pressure" : "Historical sell pressure") + " at " + priceTxt(p)))
+
+                    histRenderedBar := bar_index
+
+            if barstate.islast
+                spine  = bar_index + gap + width + liveLayoutPush
+                leftX  = spine - width
+                rightX = spine + width
+                tagX   = rightX + 3
+                frameCol = color.new(chart.fg_color, 62)
+                spineCol = color.new(chart.fg_color, 84)
+
+                if showCaps
+                    lines.push(line.new(leftX, hi, rightX, hi, xloc = xloc.bar_index, color = frameCol, style = line.style_dotted, width = 1))
+                    lines.push(line.new(leftX, lo, rightX, lo, xloc = xloc.bar_index, color = frameCol, style = line.style_dotted, width = 1))
+
+                lines.push(line.new(spine, lo, spine, hi, xloc = xloc.bar_index, color = spineCol, width = 1))
+
+                if sellTotal > 0.0
+                    sellPts = array.new<chart.point>()
+                    sellPts.push(chart.point.from_index(spine, lo))
+                    for row = 0 to rows - 1
+                        y0  = lo + row * rowH
+                        y1  = y0 + rowH
+                        ext = int(math.round(width * sellRows.get(row) / maxSide))
+                        x   = spine - ext
+                        sellPts.push(chart.point.from_index(x, y0))
+                        sellPts.push(chart.point.from_index(x, y1))
+                    sellPts.push(chart.point.from_index(spine, hi))
+                    sellShape := polyline.new(sellPts, curved = false, closed = true, xloc = xloc.bar_index,
+                         line_color = sellCol, fill_color = color.new(sellCol, fade), line_width = 1)
+
+                if buyTotal > 0.0
+                    buyPts = array.new<chart.point>()
+                    buyPts.push(chart.point.from_index(spine, lo))
+                    for row = 0 to rows - 1
+                        y0  = lo + row * rowH
+                        y1  = y0 + rowH
+                        ext = int(math.round(width * buyRows.get(row) / maxSide))
+                        x   = spine + ext
+                        buyPts.push(chart.point.from_index(x, y0))
+                        buyPts.push(chart.point.from_index(x, y1))
+                    buyPts.push(chart.point.from_index(spine, hi))
+                    buyShape := polyline.new(buyPts, curved = false, closed = true, xloc = xloc.bar_index,
+                         line_color = buyCol, fill_color = color.new(buyCol, fade), line_width = 1)
+
+                if showDelta and maxDelta > 0.0
+                    for row = 0 to rows - 1
+                        y0  = lo + row * rowH
+                        y1  = y0 + rowH
+                        b   = buyRows.get(row)
+                        s   = sellRows.get(row)
+                        d   = b - s
+
+                        if d != 0.0
+                            raw = math.abs(d) / maxDelta
+                            strength = math.pow(raw, 0.72)
+                            ext = math.max(1, int(math.round(deltaWidth * strength)))
+                            alpha = 88 - int(math.round(74.0 * strength))
+                            alpha := math.max(8, math.min(88, alpha))
+
+                            buyWins = d > 0.0
+                            fillCol = buyWins ? color.new(buyCol, alpha) : color.new(sellCol, alpha)
+                            edgeCol = buyWins ? color.new(buyCol, math.max(alpha - 20, 0)) : color.new(sellCol, math.max(alpha - 20, 0))
+                            x1 = buyWins ? spine : spine - ext
+                            x2 = buyWins ? spine + ext : spine
+
+                            boxes.push(box.new(left = x1, top = y1, right = x2, bottom = y0,
+                                 xloc = xloc.bar_index, border_color = edgeCol, border_width = 1, bgcolor = fillCol))
+
+                ctrlBuy  = buyRows.get(ctrlRow)
+                ctrlSell = sellRows.get(ctrlRow)
+                ctrlCol  = ctrlBuy > ctrlSell ? buyCol : ctrlSell > ctrlBuy ? sellCol : neutralCol
+
+                lines.push(line.new(leftX - 1, ctrlPx, rightX + 1, ctrlPx,
+                     xloc = xloc.bar_index, color = ctrlCol, width = 2))
+
+                labels.push(label.new(spine, ctrlPx, "C", xloc = xloc.bar_index,
+                     style = label.style_circle, color = ctrlCol, textcolor = chart.bg_color, size = size.tiny,
+                     tooltip = "Control price: " + priceTxt(ctrlPx)))
+
+                labels.push(label.new(tagX, ctrlPx, "CONTROL\n" + priceTxt(ctrlPx), xloc = xloc.bar_index,
+                     style = label.style_label_left, color = color.new(ctrlCol, 84), textcolor = ctrlCol, size = size.small,
+                     tooltip = "Highest combined buy and sell activity inside the profile."))
+
+                if showPress and upRow >= 0
+                    p    = lo + (upRow + 0.5) * rowH
+                    col  = upSide > 0 ? buyCol : sellCol
+                    vol  = upSide > 0 ? buyRows.get(upRow) : sellRows.get(upRow)
+                    edge = int(math.round(width * vol / maxSide))
+                    x    = upSide > 0 ? spine + edge + 1 : spine - edge - 1
+                    mark = upSide > 0 ? "▲" : "▼"
+                    labels.push(label.new(x, p, mark, xloc = xloc.bar_index, style = label.style_none,
+                         textcolor = col, size = size.normal,
+                         tooltip = (upSide > 0 ? "Buy pressure" : "Sell pressure") + " at " + priceTxt(p)))
+
+                if showPress and dnRow >= 0
+                    p    = lo + (dnRow + 0.5) * rowH
+                    col  = dnSide > 0 ? buyCol : sellCol
+                    vol  = dnSide > 0 ? buyRows.get(dnRow) : sellRows.get(dnRow)
+                    edge = int(math.round(width * vol / maxSide))
+                    x    = dnSide > 0 ? spine + edge + 1 : spine - edge - 1
+                    mark = dnSide > 0 ? "▲" : "▼"
+                    labels.push(label.new(x, p, mark, xloc = xloc.bar_index, style = label.style_none,
+                         textcolor = col, size = size.normal,
+                         tooltip = (dnSide > 0 ? "Buy pressure" : "Sell pressure") + " at " + priceTxt(p)))
+
+                // ~~ Active Readout {
+                if showReadout
+                    readoutLeft  = tagX + readoutGap
+                    readoutRight = readoutLeft + readoutWidth
+                    readoutSize  = readoutTextSize == "Tiny" ? size.tiny : readoutTextSize == "Normal" ? size.normal : readoutTextSize == "Large" ? size.large : size.small
+
+                    for segment = 0 to readoutSegments - 1
+                        rowStart = int(math.floor(segment * rows / readoutSegments))
+                        rowStop  = int(math.floor((segment + 1) * rows / readoutSegments)) - 1
+                        rowStop := math.max(rowStop, rowStart)
+
+                        segmentBuy  = 0.0
+                        segmentSell = 0.0
+                        for row = rowStart to rowStop
+                            segmentBuy  += buyRows.get(row)
+                            segmentSell += sellRows.get(row)
+
+                        segmentTotal    = segmentBuy + segmentSell
+                        segmentNet      = segmentBuy - segmentSell
+                        segmentMultiple = segmentTotal > 0.0 ? math.max(segmentBuy, segmentSell) / math.max(math.min(segmentBuy, segmentSell), segmentTotal * 0.000001) : 1.0
+                        segmentSide     = segmentNet > 0.0 ? 1 : segmentNet < 0.0 ? -1 : 0
+                        segmentCol      = segmentSide > 0 ? buyCol : segmentSide < 0 ? sellCol : neutralCol
+                        segmentText     = segmentMultiple < balanceX or segmentSide == 0 ? "BALANCED" : (segmentSide > 0 ? "BUY " : "SELL ") + str.tostring(segmentMultiple, "0.00") + "x MORE"
+
+                        segmentBottom = lo + rowStart * rowH
+                        segmentTop    = lo + (rowStop + 1) * rowH
+
+                        boxes.push(box.new(left = readoutLeft, top = segmentTop, right = readoutRight, bottom = segmentBottom,
+                             xloc = xloc.bar_index, border_color = segmentCol, border_width = 1, bgcolor = color.new(segmentCol, 92),
+                             text = segmentText, text_size = readoutSize, text_color = segmentCol, text_halign = text.align_center, text_valign = text.align_center))
+                //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+    else
+        if barstate.islast
+            labels.push(label.new(bar_index + gap, close, "No usable volume in the selected window",
+                 xloc  = xloc.bar_index, style = label.style_label_left,
+                 color = color.new(sellCol, 84), textcolor = sellCol, size = size.small))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Data Window {
+plot(ctrlPlot, "ASP Control Price", display = display.data_window, editable = false)
+plot(vahPlot, "ASP Upper Acceptance", display = display.data_window, editable = false)
+plot(valPlot, "ASP Lower Acceptance", display = display.data_window, editable = false)
+plot(balPlot, "ASP Balance Index", display = display.data_window, editable = false, precision = 3)
+plot(biasPlot, "ASP Directional Bias %", display = display.data_window, editable = false, precision = 2)
+plot(covPlot, "ASP Source Coverage %", display = display.data_window, editable = false, precision = 1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

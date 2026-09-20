@@ -1,0 +1,238 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator('Heatmap Trailing Stop with Breakouts (Zeiierman)', overlay = true)
+//~~}
+
+// ~~ Tooltips {
+var string tStopLen   = "Defines the length of the ATR used to calculate the trailing stop. A higher value results in smoother stop levels but slower responsiveness."
+var string tStopMult  = "Multiplier applied to the ATR to determine how far the stop is placed from price. Increase to widen the stop and reduce sensitivity."
+var string tHeatATR   = "Controls the range used for heat level calculation. A longer ATR period captures a broader high/low range for color zones."
+var string tHeatLvls  = "Number of horizontal levels (bands) used in the heatmap. More levels give finer granularity but may introduce noise."
+var string tHeatThresh= "Defines how many bars must touch a level to consider it 'hot'. Lower values make the heatmap more reactive."
+var string tLineWidth = "Sets the thickness of the plotted Fibonacci and trailing stop lines. Adjust to improve visibility."
+var string tWeakBull  = "Color for weak bullish zones. Typically used for cooler, less-active areas in an uptrend."
+var string tStrongBull= "Color for strong bullish zones. Applied when activity clusters near heat levels during uptrends."
+var string tWeakBear  = "Color for weak bearish zones. Useful for identifying minor levels during downtrends."
+var string tStrongBear= "Color for strong bearish zones. Highlights heavy price activity in bearish pressure zones."
+var string tTF        = "Higher-timeframe (HTF) used to detect breakout candles. Leave blank to use the chart timeframe."
+var string tScore     = "Minimum heat-strength (1-10) the heatmap must show for a breakout signal to be valid. Raise it to filter weaker moves."
+var string tBreakUp   = "Color of the marker plotted when a bullish breakout (price breaks up) is confirmed."
+var string tBreakDown = "Color of the marker plotted when a bearish breakout (price breaks down) is confirmed."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+stopATRlen  = input.int(28, 'Stop Distance ATR Length', minval=2, group="Trailing Trend", tooltip = tStopLen)
+stopMult    = input.float(5 , 'Stop Distance Multiplier', minval=0.1, step=0.1,group="Trailing Trend", tooltip = tStopMult)
+
+heatATR     = input.int(50 , title='Heatmap Range ATR Length', group="Heat-map", tooltip = tHeatATR)
+levelsInp   = input.int(3 , title='Number of Heat Levels', minval = 2, maxval = 100, group="Heat-map", tooltip = tHeatLvls)                                                   
+heatThresh  = input.int(3 ,  title='Minimum Touches per Level', minval=1, group="Heat-map", tooltip = tHeatThresh)
+
+lineWidth       = input.int(2 , title='Fibonacci Line Thickness', minval=1, group="Style", tooltip = tLineWidth)
+weakbullish     = input.color(color.green, title="Weak Bullish Color", group="Style", inline="c", tooltip = tWeakBull)
+strongbullish   = input.color(#09ff00,      title="Strong Bullish Color", group="Style", inline="c", tooltip = tWeakBull + "\n\n" + tStrongBull)
+weakbearish     = input.color(color.maroon, title="Weak Bearish Color", group="Style", inline="c1", tooltip = tWeakBear)
+strongbearish   = input.color(color.rgb(255, 0, 0), title="Strong Bearish Color", group="Style", inline="c1", tooltip =tWeakBear + "\n\n" + tStrongBear)
+
+tf       = input.timeframe('', title='Timeframe',group="Breakout Signals", inline='tf',tooltip=tTF)
+scoreVal = input.int(6, minval=1, maxval=10, title='Heatmap Strength Threshold', group="Breakout Signals", inline='s',tooltip=tScore)
+BreakUp  = input.color(color.white, title='Break Up', group="Breakout Signals", inline='Break', tooltip=tBreakUp)
+BreakDn  = input.color(color.white, title='Break Down',group="Breakout Signals", inline='Break', tooltip=tBreakUp+ "\n\n" +tBreakDown)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Var {
+var float trendUp   = na
+var float trendDown = na
+var int   trendDir  = 1
+var float ex        = na
+// ~~ Level arrays
+var levelVals    = array.new_float(15, na)
+var levelColors  = array.new_color(15, na)
+var levelCounts  = array.new_int(15, na)
+a                = ta.atr(100)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Trailing Stop {
+atrTrail    = ta.ema(ta.tr, stopATRlen)
+stopOffset  = stopMult * atrTrail
+bullStop    = high - stopOffset
+bearStop    = low  + stopOffset
+
+trendUp   := close[1] > trendUp   ? math.max(bullStop, trendUp ) : bullStop
+trendDown := close[1] < trendDown ? math.min(bearStop, trendDown) : bearStop
+trendDir  := close > trendDown[1] ? 1 : close < trendUp[1] ? -1 : nz(trendDir[1], 1)
+bullFlip  = trendDir ==  1 and trendDir[1] == -1    
+bearFlip  = trendDir == -1 and trendDir[1] ==  1  
+trail     = trendDir == 1 ? trendUp : trendDown
+ex := trendDir != trendDir[1] ? (trendDir == 1 ? high : low)
+                              : trendDir == 1 ? math.max(nz(ex[1]), high)
+                                              : math.min(nz(ex[1]), low)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fibonacci levels from trailing-stop {
+fib1 = ex + (trail - ex) * 0.618
+fib2 = ex + (trail - ex) * 0.786
+fib3 = ex + (trail - ex) * 0.886
+l100 = trail
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Heatmap {
+hi    = ta.highest(high, heatATR)
+lo    = ta.lowest (low , heatATR)
+rng   = hi - lo
+step  = rng / (levelsInp) 
+
+// ~~ Dynamic trend-based colors
+coldTrendCol  = trendDir == 1 ? weakbullish : weakbearish
+hotTrendCol   = trendDir == 1 ? strongbullish : strongbearish
+noColorOnFlip = trendDir != trendDir[1]
+
+// ~~ Populate arrays  {
+for i = 0 to 14
+    if i <= levelsInp - 1
+        lvl   = lo + step * i
+        cnt   = 0
+        for j = 0 to heatATR
+            cnt += (high[j] >= lvl and low[j] <= lvl) ? 1 : 0
+        col = color.from_gradient(
+         cnt,
+         heatThresh,
+         heatThresh + 10,
+         color.new(coldTrendCol , 80 - cnt),
+         hotTrendCol
+         )
+        array.set(levelVals   , i, lvl)
+        array.set(levelColors , i, col)
+        array.set(levelCounts , i, cnt)
+    else
+        array.set(levelVals   , i, na)
+        array.set(levelColors , i, na)
+        array.set(levelCounts , i, na)
+
+getClosestHeatColor(val) =>
+    minD = 1e10
+    color best = na
+    for k = 0 to 14
+        lvl = array.get(levelVals  , k)
+        col = array.get(levelColors, k)
+        if not na(lvl)
+            d = math.abs(val - lvl)
+            if d < minD
+                minD  := d
+                best := col
+    best
+
+countToScore(cnt) =>
+    raw  = (float(cnt) - heatThresh) / 10.0
+    norm = math.min(math.max(raw, 0.0), 1.0)
+    math.round(1 + norm * 9)  // 1-10
+
+Score(val) =>
+    minD = 1e10
+    best = 1
+    for k = 0 to 14
+        lvl = array.get(levelVals  , k)
+        cnt = array.get(levelCounts, k)
+        if not na(lvl)
+            d = math.abs(val - lvl)
+            if d < minD
+                minD := d
+                best := countToScore(cnt)
+    best
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+score = math.avg(Score(trail),Score(fib1),Score(fib2),Score(fib3),Score(l100)) 
+
+// ~~ Plots {
+heat_fib1  = noColorOnFlip ? na : getClosestHeatColor(fib1)
+heat_fib2  = noColorOnFlip ? na : getClosestHeatColor(fib2)
+heat_fib3  = noColorOnFlip ? na : getClosestHeatColor(fib3)
+heat_trail = noColorOnFlip ? na : getClosestHeatColor(trail)
+
+FIB61  = plot(fib1 , 'Fib 61.8',heat_fib1 , linewidth = lineWidth)
+FIB78  = plot(fib2 , 'Fib 78.6',heat_fib2 , linewidth = lineWidth)
+FIB88  = plot(fib3 , 'Fib 88.6',heat_fib3 , linewidth = lineWidth)
+TRAIL  = plot(trail, 'Trailing Stop', heat_trail, linewidth = 2)
+fill(FIB61, TRAIL, fib1, trail, color.new(heat_trail, 50),na)
+
+plotshape(bullFlip?trail:na, title = 'Bull Flip', location = location.absolute,style = shape.circle,  color = color.lime,   size = size.tiny)
+plotshape(bullFlip?trail:na, title = 'Bull Flip', location = location.absolute,style = shape.circle,  color = color.new(color.lime,50),   size = size.small)
+plotshape(bearFlip?trail:na, title = 'Bear Flip', location = location.absolute, style = shape.circle, color = color.red,    size = size.tiny)
+plotshape(bearFlip?trail:na, title = 'Bear Flip', location = location.absolute, style = shape.circle, color = color.new(color.red,50),    size = size.small)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Breakout Signals {
+// ~~ HTF Prices {
+o = request.security(syminfo.tickerid, tf, open , lookahead = barmerge.lookahead_off)
+h = request.security(syminfo.tickerid, tf, high , lookahead = barmerge.lookahead_off)
+l = request.security(syminfo.tickerid, tf, low  , lookahead = barmerge.lookahead_off)
+c = request.security(syminfo.tickerid, tf, close, lookahead = barmerge.lookahead_off)
+//~~}
+
+// ~~ Intrabar Index Sim {
+var int lastL = na
+var int lastS = na
+barNow = bar_index
+//~~}
+
+// ~~ Price Action {
+bull = c > o and c - o > (h - l) * 0.5
+bear = c < o and o - c > (h - l) * 0.5
+momUp = c > h[1] and c > h[2]
+momDn = c < l[1] and c < l[2]
+//~~}
+
+// ~~ Entry Triggers {
+rawL = bull and momUp and trendDir == 1
+rawS = bear and momDn and trendDir == -1
+//~~}
+
+// ~~ Cooldown Logic {
+cdL = na(lastL) or barNow - lastL > 20 or nz(lastS) > nz(lastL)
+cdS = na(lastS) or barNow - lastS > 20 or nz(lastL) > nz(lastS)
+//~~}
+
+// ~~ Final Entry Signals {
+sigL = rawL and cdL and score > scoreVal
+sigS = rawS and cdS and score > scoreVal
+//~~}
+
+// ~~ Cooldown State Update {
+if sigL
+    lastL := barNow
+if sigS
+    lastS := barNow
+//~~}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+plotshape(sigL?low-a:na, title = 'Break Up Signal',  location = location.absolute,  style = shape.triangleup,   size = size.tiny, color = BreakUp)
+plotshape(sigS?high+a:na, title = 'Break Down Signal', location = location.absolute,  style = shape.triangledown, size = size.tiny, color = BreakDn)
+plotshape(sigL?low-a:na, title = 'Break Up Signal',  location = location.absolute,  style = shape.triangleup,   size = size.small, color = color.new(BreakUp,50))
+plotshape(sigS?high+a:na, title = 'Break Down Signal', location = location.absolute,  style = shape.triangledown, size = size.small, color = color.new(BreakDn,50))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+var table heatTable = table.new(position.top_right, 11, 1, border_width = 0)
+blueGradient = array.from(
+ color.rgb(173, 216, 230),
+ color.rgb(135, 206, 250),
+ color.rgb(100, 149, 237),
+ color.rgb(70 , 130, 180),
+ color.rgb(65 , 105, 225),
+ color.rgb(30 , 144, 255),
+ color.rgb(0  , 120, 255),
+ color.rgb(0  , 90 , 200),
+ color.rgb(0  , 60 , 150),
+ color.rgb(0  , 40 , 100)
+ )
+
+if barstate.islast
+    table.cell(heatTable, 0, 0, "Heatmap Strength: " + str.tostring(score), text_color=chart.fg_color)
+    blkChar = "█"
+    for i = 0 to 9
+        show = i < score
+        col = array.get(blueGradient, i)
+        table.cell(heatTable, i + 1, 0, show ? blkChar : "", text_color=col)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}        

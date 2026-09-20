@@ -1,0 +1,489 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=5
+indicator("Empirical Mode Decomposition (EMD) Composite Oscillator (Zeiierman)", shorttitle = "EMD (Zeiierman)", overlay = false, precision = 1, max_bars_back = 500)
+//~~}
+
+// ~~ Tooltips {
+string t1 = "Defines the number of historical bars considered for Empirical Mode Decomposition (EMD) analysis. A larger window length provides a broader historical context but may slow down performance."
+string t2 = "Sets the number of Intrinsic Mode Functions (IMFs) to extract. IMFs are components derived from the data, each representing different frequency components. Higher numbers allow finer decomposition."
+string t3 = "Determines the window length used for calculating instantaneous amplitude. This affects the smoothness and responsiveness of the amplitude calculation, with larger values providing smoother results."
+string t4 = "Specifies the starting IMF for analysis. A value of -1 starts from the first IMF. IMFs closer to the beginning capture higher-frequency movements, useful for high-frequency component analysis."
+string t5 = "Specifies the ending IMF for analysis. A value of -1 uses the last IMF. Higher IMFs capture broader, slower-moving trends in the data, influencing the trend representation."
+string t6 = "Sets the stopping criterion for the sifting process, a key part of EMD. Higher S-numbers yield more accurate decompositions but take longer to compute. Lower values may be faster but less precise."
+string t7 = "Limits the number of sifting iterations per IMF extraction, controlling the refinement process. A higher max sifting number provides better precision but may reduce performance."
+string t8 = "Defines the price source data for EMD analysis. Typical sources include close, open, high, low, or adjusted values. This data serves as the basis for decomposition and analysis."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  User Inputs {
+N = input.int(64, "Window length", minval=14, tooltip=t1)
+M = input.int(4, "# IMFs", minval=1, tooltip=t2)
+L = input.int(32, "Amplitude window", minval=1, tooltip=t3)
+S_number = input.int(4, "S-number", minval=1, tooltip=t6)
+
+// Additional settings to enable
+src       = close //input.source(close, "Source", tooltip=t8)
+IMF_start = -1    //input.int(-1, "Extraction - starting IMF", minval=-1, tooltip=t4)
+IMF_end   = -1    //input.int(-1, "Extraction - ending IMF", minval=-1, tooltip=t5)
+num_siftings = 5  //input.int(10, "Max Sifting", minval=1, tooltip=t7)
+
+// Styling
+channel_fill_upper = input.color(color.lime, title="Channel", group="Styling",inline="channel")
+chanel_fill_lower  = input.color(color.red, title="", group="Styling",inline="channel")
+s_emd_up = input.color(color.lime, title="Trend Line", group="Styling",inline="s_emd")
+s_emd_dn = input.color(color.red, title="", group="Styling",inline="s_emd")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Spline Interpolation Function {
+spline_interp(x, y, x2) =>
+    n = array.size(x)
+    n2 = array.size(x2)
+    y2 = array.new_float(n2, na)  // Initialize y2 with na
+    
+    if (n < 2 or n2 < 1)
+        // Insufficient data points; return y2 as na
+        y2
+    else if (n == 2)
+        // With only two points, perform linear interpolation (natural spline reduces to linear)
+        x0 = array.get(x, 0)
+        x1 = array.get(x, 1)
+        y0 = array.get(y, 0)
+        y1 = array.get(y, 1)
+        slope = (y1 - y0) / (x1 - x0)
+        for i = 0 to n2 - 1
+            xi = array.get(x2, i)
+            t = (xi - x0) / (x1 - x0)
+            yi = y0 + t * (y1 - y0)
+            array.set(y2, i, yi)
+        y2
+    else
+        // Proceed with natural cubic spline interpolation
+        // Initialize arrays for the tridiagonal system
+        a1 = array.new_float(n, 0.0)  // Lower diagonal
+        a2 = array.new_float(n, 0.0)  // Main diagonal
+        a3 = array.new_float(n, 0.0)  // Upper diagonal
+        b_arr = array.new_float(n, 0.0)  // Right-hand side
+        d = array.new_float(n, 0.0)  // Solution array (second derivatives)
+        
+        // Step 1: Build the tridiagonal system for internal points
+        for i = 1 to n - 2
+            h_i = array.get(x, i + 1) - array.get(x, i)          // h_i = x[i+1] - x[i]
+            h_i_1 = array.get(x, i) - array.get(x, i - 1)      // h_i-1 = x[i] - x[i-1]
+            array.set(a1, i, h_i_1)                             // Lower diagonal
+            array.set(a2, i, 2 * (h_i + h_i_1))                // Main diagonal
+            array.set(a3, i, h_i)                               // Upper diagonal
+            
+            dy_i = (array.get(y, i + 1) - array.get(y, i)) / h_i          // Slope between i and i+1
+            dy_i_1 = (array.get(y, i) - array.get(y, i - 1)) / h_i_1      // Slope between i-1 and i
+            array.set(b_arr, i, 3 * (dy_i * h_i_1 + dy_i_1 * h_i))        // RHS
+        
+        // Step 2: Set boundary conditions for natural spline
+        // Natural spline: second derivatives at endpoints are zero
+        // First boundary (i = 0)
+        array.set(a1, 0, 0.0)                                       // Lower diagonal is zero
+        array.set(a2, 0, 2.0)                                       // Main diagonal
+        array.set(a3, 0, 1.0)                                       // Upper diagonal
+        h0 = array.get(x, 1) - array.get(x, 0)
+        array.set(b_arr, 0, 3 * (array.get(y, 1) - array.get(y, 0)) / h0)
+        
+        // Last boundary (i = n-1)
+        array.set(a1, n - 1, 1.0)                                   // Lower diagonal
+        array.set(a2, n - 1, 2.0)                                   // Main diagonal
+        array.set(a3, n - 1, 0.0)                                   // Upper diagonal is zero
+        hn_1 = array.get(x, n - 1) - array.get(x, n - 2)
+        array.set(b_arr, n - 1, 3 * (array.get(y, n - 1) - array.get(y, n - 2)) / hn_1)
+        
+        // Step 3: Forward Elimination
+        for i = 1 to n - 1
+            denom = array.get(a2, i - 1)
+            t = (denom != 0) ? array.get(a1, i) / denom : 0.0
+            array.set(a2, i, array.get(a2, i) - t * array.get(a3, i - 1))
+            array.set(b_arr, i, array.get(b_arr, i) - t * array.get(b_arr, i - 1))
+        
+        // Step 4: Back Substitution
+        // Solve for d[n-1]
+        if (array.get(a2, n - 1) != 0)
+            array.set(d, n - 1, array.get(b_arr, n - 1) / array.get(a2, n - 1))
+        else
+            array.set(d, n - 1, 0.0)
+        
+        // Solve for d[i] from i = n-2 downto 0
+        for i = 0 to n - 2
+            idx = n - 2 - i  // Reverse index
+            denom = array.get(a2, idx)
+            if (denom != 0)
+                array.set(d, idx, (array.get(b_arr, idx) - array.get(a3, idx) * array.get(d, idx + 1)) / denom)
+            else
+                array.set(d, idx, 0.0)
+        
+        // Step 5: Evaluate the spline at points x2
+        intervalindex = -1  // Initialize interval index
+        c0 = 0.0
+        c1 = 0.0
+        c2 = 0.0
+        c3 = 0.0
+        
+        for pointindex = 0 to n2 - 1
+            t = array.get(x2, pointindex)
+            havetoadvance = false
+            if (intervalindex == -1)
+                havetoadvance := true
+            else if (intervalindex < n - 2)
+                havetoadvance := (t >= array.get(x, intervalindex + 1))
+            
+            if (havetoadvance)
+                intervalindex += 1
+                a = array.get(x, intervalindex)
+                bb = array.get(x, intervalindex + 1)
+                w = bb - a
+                w2 = w * w
+                w3 = w * w2
+                fa = array.get(y, intervalindex)
+                fb = array.get(y, intervalindex + 1)
+                da = array.get(d, intervalindex)
+                db = array.get(d, intervalindex + 1)
+                c0 := fa
+                c1 := da
+                c2 := (3 * (fb - fa) - 2 * da * w - db * w) / w2
+                c3 := (2 * (fa - fb) + da * w + db * w) / w3
+            
+            // Compute the spline value if within valid interval
+            if (intervalindex >= 0 and intervalindex < n - 1)
+                t_local = t - array.get(x, intervalindex)
+                yi = c0 + t_local * (c1 + t_local * (c2 + t_local * c3))
+                array.set(y2, pointindex, yi)
+            else
+                array.set(y2, pointindex, na)  // Outside interpolation range
+        
+        y2  // Return the interpolated values
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Extrema Finding Function {
+// Function: Linear Extrapolation
+linear_extrapolate(x0, y0, x1, y1, x_target) =>
+    (x1 != x0) ? y0 + (y1 - y0) * (x_target - x0) / (x1 - x0) : y0
+    
+find_extrema(input_arr, maxx_arr, maxy_arr, minx_arr, miny_arr) =>
+    // Clear previous extrema
+    array.clear(maxx_arr)
+    array.clear(maxy_arr)
+    array.clear(minx_arr)
+    array.clear(miny_arr)
+    
+    // Initialize counts
+    _nmax = 0
+    _nmin = 0
+    _nzc = 0
+    N_local = array.size(input_arr)
+    
+    if N_local == 0
+        [ _nmax, _nmin, _nzc ]
+    else
+        // Add the first data point as both max and min
+        array.push(maxx_arr, 0)
+        array.push(maxy_arr, array.get(input_arr, 0))
+        _nmax += 1
+        
+        array.push(minx_arr, 0)
+        array.push(miny_arr, array.get(input_arr, 0))
+        _nmin += 1
+        
+        if N_local == 1
+            [ _nmax, _nmin, _nzc ]
+        else
+            // Initialize slope and sign
+            slope = "NONE"
+            val0 = array.get(input_arr, 0)
+            sign_prev = val0 < 0 ? "NEG" : (val0 > 0 ? "POS" : "ZERO")
+            flat_counter = 0
+            
+            // Main Loop to Find Extrema and Zero Crossings
+            for i = 0 to N_local - 2
+                current = array.get(input_arr, i)
+                next_val = array.get(input_arr, i + 1)
+                
+                if next_val > current
+                    // Going Up
+                    if slope == "DOWN"
+                        // Local Minimum Found
+                        min_pos = float(i) - float(flat_counter) / 2.0
+                        min_val = current
+                        array.push(minx_arr, min_pos)
+                        array.push(miny_arr, min_val)
+                        _nmin += 1
+                        
+                    // Check for Zero Crossing from NEG to POS
+                    if sign_prev == "NEG" and next_val > 0
+                        _nzc += 1
+                        sign_prev := "POS"
+                    else if sign_prev == "ZERO" and next_val > 0
+                        // Handle special case
+                        sign_prev := "POS"
+                        
+                    slope := "UP"
+                    flat_counter := 0
+                else if next_val < current
+                    // Going Down
+                    if slope == "UP"
+                        // Local Maximum Found
+                        max_pos = float(i) - float(flat_counter) / 2.0
+                        max_val = current
+                        array.push(maxx_arr, max_pos)
+                        array.push(maxy_arr, max_val)
+                        _nmax += 1
+                        
+                    // Check for Zero Crossing from POS to NEG
+                    if sign_prev == "POS" and next_val < 0
+                        _nzc += 1
+                        sign_prev := "NEG"
+                    else if sign_prev == "ZERO" and next_val < 0
+                        // Handle special case
+                        sign_prev := "NEG"
+                        
+                    slope := "DOWN"
+                    flat_counter := 0
+                else
+                    // Flat Slope
+                    flat_counter += 1
+                
+            // Add the last data point as both max and min
+            array.push(maxx_arr, N_local - 1)
+            array.push(maxy_arr, array.get(input_arr, N_local - 1))
+            _nmax += 1
+            
+            array.push(minx_arr, N_local - 1)
+            array.push(miny_arr, array.get(input_arr, N_local - 1))
+            _nmin += 1
+            
+            // Linear Extrapolation for Maxima
+            if _nmax >= 4
+                // Ensure there are enough elements to perform extrapolation
+                // Indices: 0 to _nmax-1
+                // Extrapolate at x=0 using maxx[1], maxy[1] and maxx[2], maxy[2]
+                maxx1 = array.get(maxx_arr, 1)
+                maxy1 = array.get(maxy_arr, 1)
+                maxx2 = array.get(maxx_arr, 2)
+                maxy2 = array.get(maxy_arr, 2)
+                max_el = linear_extrapolate(maxx1, maxy1, maxx2, maxy2, 0)
+                
+                if max_el > array.get(maxy_arr, 0)
+                    array.set(maxy_arr, 0, max_el)
+                
+                // Extrapolate at x=N-1 using maxx[_nmax-3], maxy[_nmax-3] and maxx[_nmax-2], maxy[_nmax-2]
+                maxx_end1 = array.get(maxx_arr, _nmax - 3)
+                maxy_end1 = array.get(maxy_arr, _nmax - 3)
+                maxx_end2 = array.get(maxx_arr, _nmax - 2)
+                maxy_end2 = array.get(maxy_arr, _nmax - 2)
+                max_er = linear_extrapolate(maxx_end1, maxy_end1, maxx_end2, maxy_end2, N_local - 1)
+                
+                if max_er > array.get(maxy_arr, _nmax - 1)
+                    array.set(maxy_arr, _nmax - 1, max_er)
+            
+            // Linear Extrapolation for Minima
+            if _nmin >= 4
+                // Extrapolate at x=0 using minx[1], miny[1] and minx[2], miny[2]
+                minx1 = array.get(minx_arr, 1)
+                miny1 = array.get(miny_arr, 1)
+                minx2 = array.get(minx_arr, 2)
+                miny2 = array.get(miny_arr, 2)
+                min_el = linear_extrapolate(minx1, miny1, minx2, miny2, 0)
+                
+                if min_el < array.get(miny_arr, 0)
+                    array.set(miny_arr, 0, min_el)
+                
+                // Extrapolate at x=N-1 using minx[_nmin-3], miny[_nmin-3] and minx[_nmin-2], miny[_nmin-2]
+                minx_end1 = array.get(minx_arr, _nmin - 3)
+                miny_end1 = array.get(miny_arr, _nmin - 3)
+                minx_end2 = array.get(minx_arr, _nmin - 2)
+                miny_end2 = array.get(miny_arr, _nmin - 2)
+                min_er = linear_extrapolate(minx_end1, miny_end1, minx_end2, miny_end2, N_local - 1)
+                
+                if min_er < array.get(miny_arr, _nmin - 1)
+                    array.set(miny_arr, _nmin - 1, min_er)
+        
+        [ _nmax, _nmin, _nzc ]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Sifting Procedure Function {
+sift(input_arr, S_number, num_siftings, x2) =>
+    // Initialize IMF as a copy of the input array
+    imf = array.copy(input_arr)
+    
+    // Initialize workspace arrays for each sifting iteration
+    temp_maxx = array.new_float()
+    temp_maxy = array.new_float()
+    temp_minx = array.new_float()
+    temp_miny = array.new_float()
+    
+    // Initialize counters
+    sift_counter = 0
+    S_counter = 0
+    prev_num_max = 0
+    prev_num_min = 0
+    prev_num_zc = 0
+    
+    // Start Sifting Loop
+    for s = 0 to (num_siftings - 1)
+        sift_counter += 1
+        
+        // Find extrema in the current IMF
+        [num_max, num_min, num_zc] = find_extrema(imf, temp_maxx, temp_maxy, temp_minx, temp_miny)
+        
+        // Check for convergence based on S_number
+        if (S_number != 0 and not na(prev_num_max) and not na(prev_num_min) and not na(prev_num_zc))
+            max_diff = math.abs(num_max - prev_num_max)
+            min_diff = math.abs(num_min - prev_num_min)
+            zc_diff = math.abs(num_zc - prev_num_zc)
+            
+            if (max_diff + min_diff + zc_diff <= 1)
+                S_counter += 1
+                if (S_counter >= S_number)
+                    num_diff = num_min + num_max - 4 - num_zc
+                    if (math.abs(num_diff) <= 1)
+                        break  // Converged
+            else
+                S_counter := 0
+        else
+            // Initialize S_counter on the first iteration
+            S_counter := 0
+        
+        // Update previous counts
+        prev_num_max := num_max
+        prev_num_min := num_min
+        prev_num_zc := num_zc
+        
+        // Perform spline interpolation
+        spline_y2_max = spline_interp(temp_maxx, temp_maxy, x2)// spline_interp(spline_x_max, spline_y_max, x2)
+        spline_y2_min = spline_interp(temp_minx, temp_miny, x2)// spline_interp(spline_x_min, spline_y_min, x2)
+        
+        // Subtract mean envelope from current input
+        for i = 0 to array.size(imf) - 1
+            current_val = array.get(imf, i)
+            mu = .5 * (array.get(spline_y2_min, i) + array.get(spline_y2_max, i))
+            array.set(imf, i, current_val - mu)
+        
+        // Clear temporary arrays for the next iteration
+        array.clear(temp_maxx)
+        array.clear(temp_maxy)
+        array.clear(temp_minx)
+        array.clear(temp_miny)
+    
+    // Return the extracted IMF
+    imf
+
+emd(input_arr, M, S_number, num_siftings) =>
+    // Mirror the signal
+    n = array.size(input_arr)
+    n_half = 10
+    n_total = n + n_half * 2
+    mirror = array.new_float(n_total, na)
+    for i = 0 to n_total-1
+        if i < n_half
+            array.set(mirror, i, array.get(input_arr, n_half-1-i))
+        else if i >= n_half and i < n_half + n
+            array.set(mirror, i, array.get(input_arr, i-n_half))
+        else
+            array.set(mirror, i, array.get(input_arr, (n_total-2)-(i-(n_half))))
+
+    // Initialize residual as a copy of the input signal
+    residual = array.copy(mirror)
+    input_len = array.size(mirror)
+    n_imfs = 0
+    imfs = matrix.new<float>(0, 0, 0.0)
+
+    // Define x2 for spline interpolation (all indices from 0 to N-1)
+    x2 = array.new_float()
+    for i = 0 to array.size(mirror) - 1
+        array.push(x2, float(i))
+
+    if N < 6
+        [imfs, array.slice(residual, n_half, n_half + n - 1)]
+    else
+        // Loop over the number of IMFs to extract
+        for imf_i = 0 to M-1
+            // Perform the sifting procedure on the current residual
+            imf_result = sift(residual, S_number, num_siftings, x2)
+            imf_slice = array.slice(imf_result, n_half, n_half + n - 1)
+            // Add IMF to results
+            matrix.add_col(imfs, n_imfs, imf_slice)
+            n_imfs += 1
+
+            // Subtract imf from residual
+            for i = 0 to input_len-1
+                array.set(residual, i, array.get(residual, i) - array.get(imf_result, i))
+
+    [imfs, residual]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Buffer and lines prep {
+var src_buffer = array.new_float()
+float emd_osc = na
+
+if barstate.isconfirmed
+    if array.size(src_buffer) > N
+        array.shift(src_buffer)
+    src_buffer.push(src)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Run entire EMD procedure {
+if array.size(src_buffer) > N and barstate.isconfirmed 
+    [imfs, _] = emd(src_buffer, M, S_number, num_siftings)
+    n_imfs = imfs.columns()
+
+    _idx_start = IMF_start-1
+    if IMF_start <= 0
+        _idx_start := 0
+    _idx_end = IMF_end-1
+    if IMF_end <= 0
+        _idx_end := n_imfs
+
+    if _idx_end >= n_imfs
+        _idx_end := n_imfs
+
+    if _idx_start > 0 and _idx_end > 0 and _idx_start >= _idx_end
+        runtime.error("Start index of IMF extraction must be strictly smaller than its end index")
+    
+    imfs_sum = array.new_float(N)
+    
+    for i = 0 to N-1
+        s = 0.0
+        for j = _idx_start to _idx_end-1
+            s += matrix.get(imfs, i, j)
+        array.set(imfs_sum, i, s)
+
+    A = array.slice(imfs_sum.abs(), N-L, N-1).max()
+    emd_osc := array.get(imfs_sum, N-1)/A
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plotting {
+emd_osc_smooth = ta.wma(emd_osc, 99)
+capped_osc     = math.min(math.max(emd_osc, -1.0), 1.0)
+blend_factor   = (capped_osc + 1) / 2 
+osc_color      = color.rgb(int(255 * (1 - blend_factor)), int(255 * blend_factor), 100)
+shadow_color   = color.rgb(int(255 * (1 - blend_factor)), int(255 * blend_factor), 100, 0)
+
+p1 = plot(emd_osc, color=osc_color, style=plot.style_line, title="EMD Osc")
+p2 = plot(emd_osc_smooth, color=emd_osc_smooth>0?s_emd_up:s_emd_dn, style=plot.style_line, title="Smoothed EMD Osc")
+
+channel_mid       = plot(0, color = na, editable = false, display = display.none)
+upper_line        = plot(1, title="1",display=display.none)
+lower_line        = plot(-1, title="-1",display=display.none)
+upper_limit       = plot(2, title="2", display=display.none)
+lower_limit       = plot(-2, title="-2", display=display.none)
+start_upper_limit = plot(0.75, title="0.75", display=display.none)
+start_lower_limit = plot(-0.75, title="-0.75", display=display.none)
+end_upper_limit   = plot(1.25, title="1.25",display=display.none)
+end_lower_limit   = plot(-1.25, title="-1.25", display=display.none)
+zero_line         = hline(0.0, title="0")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Osc Shadow Gradient Fill {
+fill(p1, p2, emd_osc, emd_osc_smooth, shadow_color, na, title="Osc shadow")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+// ~~ Channel Gradient Fill {
+fill(channel_mid, end_upper_limit, top_value =  1.25, bottom_value = -1.25, bottom_color = na, top_color = color.new(channel_fill_upper,75),title = "Channel Gradient Fill")
+fill(channel_mid, end_lower_limit, top_value =  1.25, bottom_value = -1.25, bottom_color = color.new(chanel_fill_lower,75) , top_color = na,title = "Channel Gradient Fill")
+
+fill(upper_line, upper_limit, top_value =  2, bottom_value = 0, bottom_color = na, top_color = color.new(channel_fill_upper,75),title = "Upper Gradient Fill")
+fill(lower_line, lower_limit, top_value =  0, bottom_value = -2, bottom_color = color.new(chanel_fill_lower,75) , top_color = na,title = "Lower Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

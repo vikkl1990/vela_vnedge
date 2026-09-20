@@ -1,0 +1,62 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman
+//@version=5
+indicator("Analyst Table (Zeiierman)", overlay=true)
+
+// ~~ Settings {
+hiEst  = input.bool(true, "Highest Target", inline="hi"), hicol = input.color(#089981, "", inline="hi"), hix = input.int(3, "", minval=1, inline="hi")
+avgEst = input.bool(true, "Price Target", inline="avg"), avgcol = input.color(color.new(#176cff,60), "", inline="avg")
+loEst  = input.bool(true, "Lowest Target", inline="lo"), locol = input.color(#f23645, "", inline="lo"), lox = input.int(3, "", minval=1, inline="lo")
+
+tbl_pos  = input.string(position.bottom_right, "Table Position", [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_center, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right],group="Anaylst Table")
+tbl_size = input.string(size.auto, "Table Size", [size.auto, size.tiny, size.small, size.normal, size.large, size.huge],group="Anaylst Table")
+
+avg_col    = input.color(color.rgb(65, 150, 255), "Average Price Target", group="Anaylst Table")
+median_col = input.color(color.rgb(65, 150, 255), "Median Price Target", group="Anaylst Table")
+high_col   = input.color(color.teal, "Highest Price Estimation", group="Anaylst Table")
+low_col    = input.color(color.teal, "Lowest Price Estimation", group="Anaylst Table")
+strong_buy_col  = input.color(color.lime, "Strong Buy Recommendations", group="Anaylst Table")
+buy_col         = input.color(#51ba54, "Buy Recommendations", group="Anaylst Table")
+hold_col        = input.color(color.orange, "Hold Recommendations", group="Anaylst Table")
+sell_col        = input.color(#fb5555, "Sell Recommendations", group="Anaylst Table")
+strong_sell_col = input.color(#ff2525, "Strong Sell Recommendations", group="Anaylst Table")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+highEstimate   = line.new(chart.point.from_index(na, na), chart.point.from_index(na, na), extend=extend.right, color=hicol, style=line.style_dotted, width=hix)
+lowEstimate    = line.new(chart.point.from_index(na, na), chart.point.from_index(na, na), extend=extend.right, color=locol, style=line.style_dotted, width=lox)
+targetEstimate = box.new(chart.point.from_index(na, na), chart.point.from_index(na, na), na, na, line.style_dotted, extend.right, bgcolor=avgcol)
+
+var Rektable = table.new(tbl_pos, 2, 10, frame_color=color.new(#176cff, 50), frame_width=3, border_width=2, border_color=color.new(color.white, 100))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+if barstate.islast
+    // Lines {
+    if not na(syminfo.target_price_high) and hiEst
+        highEstimate.set_first_point(chart.point.from_index(bar_index, syminfo.target_price_high))
+        highEstimate.set_second_point(chart.point.from_index(bar_index + 1, syminfo.target_price_high))
+    if not na(syminfo.target_price_low) and loEst
+        lowEstimate.set_first_point(chart.point.from_index(bar_index, syminfo.target_price_low))
+        lowEstimate.set_second_point(chart.point.from_index(bar_index + 1, syminfo.target_price_low))
+    if not na(syminfo.target_price_average) and not na(syminfo.target_price_median) and avgEst
+        targetEstimate.set_top_left_point(chart.point.from_index(bar_index, syminfo.target_price_average))
+        targetEstimate.set_bottom_right_point(chart.point.from_index(bar_index + 1, syminfo.target_price_median))
+    //}
+    // Table {
+    variables = array.from(syminfo.target_price_average, syminfo.target_price_median, syminfo.target_price_high, syminfo.target_price_low,
+     syminfo.recommendations_buy_strong, syminfo.recommendations_buy, syminfo.recommendations_hold, syminfo.recommendations_sell, syminfo.recommendations_sell_strong)
+
+    desc = array.from("Price Target Average", "Price Target Median", "Highest Price Estimation", "Lowest Price Estimation",
+     "Strong Buy Recs", "Buy Recs", "Hold Recs", "Sell Recs", "Strong Sell Recs")
+
+    cols = array.from(avg_col, median_col, high_col, low_col, strong_buy_col, buy_col, hold_col, sell_col, strong_sell_col)
+
+    Rektable.cell(0, 0, "Analyst Rating", bgcolor=color.new(#176cff, 0), text_halign=text.align_center, text_color=color.white, text_size=tbl_size)
+    Rektable.merge_cells(0, 0, 1, 0)
+    for [i, v] in variables
+        Rektable.cell(0, i + 1, desc.get(i), bgcolor=cols.get(i), text_halign=text.align_center, text_color=color.white, text_size=tbl_size)
+        Rektable.cell(1, i + 1, str.tostring(v, "#.##"), bgcolor=cols.get(i), text_halign=text.align_center, text_color=color.white, text_size=tbl_size)
+    //}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

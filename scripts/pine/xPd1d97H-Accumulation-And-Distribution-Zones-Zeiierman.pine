@@ -1,0 +1,374 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator('Accumulation And Distribution Zones (Zeiierman)', overlay = true, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Toggle drawing of Accumulation / Distribution zones on the chart."
+var string t2  = "Show the swing pattern structure that forms each zone."
+var string t3  = "[Quick] detects compact ranges.\n[Slow] detects more extended range structures."
+var string t4  = "Bars on each side used to confirm swing highs and lows (pivots)."
+var string t5  = "Fill color for Distribution (distribution) zones."
+var string t6  = "Fill color for Accumulation (accumulation) zones."
+
+var string t7  = "Show a mini volume profile inside each detected zone."
+var string t8  = "Number of horizontal volume rows used to slice the zone."
+var string t9  = "Flip the horizontal order of bullish / bearish volume bars."
+var string t10 = "Choose how the POC and profile levels extend into the future."
+var string t11 = "Base color for bullish volume rows inside the profile."
+var string t12 = "Base color for bearish volume rows inside the profile."
+
+var string t13 = "Enable or disable background fill for Acc/Dist zones."
+var string t14 = "Enable or disable the border outline for Acc/Dist zones."
+var string t15 = "Thickness of the Acc/Dist zone border lines."
+var string t16 = "Border line style used for Acc/Dist zones."
+
+var string t17 = "Show text labels (Accumulation / Distribution) inside the zones."
+var string t18 = "Text size used for the zone labels."
+var string t19 = "Horizontal alignment of the zone label text."
+var string t20 = "Vertical alignment of the zone label text."
+var string t21 = "Use the chart foreground color for zone label text."
+var string t22 = "Custom text color for zone labels when chart FG color is disabled."
+// ~~ Tooltips }
+
+// Inputs {
+// Accumulation / Distribution zone logic
+displayZones    = input.bool(true, 'Acc/Dist Ranges', group = 'Accumulation And Distribution Zones', inline="enable", tooltip = t1)
+displayPattern  = input.bool(false, 'Pattern', group = 'Accumulation And Distribution Zones', inline="enable", tooltip = t2)
+detectionType   = input.string('Quick', 'Pattern Sensitivity', options = ['Slow', 'Quick'], group = 'Accumulation And Distribution Zones', tooltip = t3)
+swingWindow     = input.int(5, 'Swing Detection Window', minval = 2, group = 'Accumulation And Distribution Zones', tooltip = t4)
+distColor       = input.color(color.new(#f23645, 60), '', group = 'Accumulation And Distribution Zones', inline="accdist", tooltip = t5)
+accColor        = input.color(color.new(#089981, 60), '', group = 'Accumulation And Distribution Zones', inline="accdist", tooltip = t6)
+
+// Volume profile
+showProfile     = input.bool(true, "Volume Profile", inline="profile", tooltip = t7)
+rows            = input.int(10, "Rows", 2, 100, inline="profile", tooltip = t8)
+order           = input.bool(false,"Switch Order",inline="profile", tooltip = t9)
+extendProfile   = input.string("Faded Zones", "Extend Zones",["None","Faded Zones","Regular Zones"],inline="prof_set", tooltip = t10)
+bull_color      = input.color(color.new(color.blue, 30),"",inline="prof_set", tooltip = t11)
+bear_color      = input.color(color.new(color.orange, 30),"",inline="prof_set", tooltip = t12)
+
+// Zone style
+zoneBoxBgOn       = input.bool(false,  "Background", group = "Accumulation And Distribution Zones Style", inline = "zbg", tooltip = t13)
+zoneBoxBorderOn   = input.bool(true,   "Border",     group = "Accumulation And Distribution Zones Style", inline = "zbg", tooltip = t14)
+zoneBoxBorderW    = input.int(1,       "Width",      minval = 1, maxval = 5, group = "Accumulation And Distribution Zones Style", inline = "zborder", tooltip = t15)
+zoneBoxBorderStr  = input.string("Solid", "Style",   options = ["Solid","Dashed","Dotted"], group = "Accumulation And Distribution Zones Style", inline = "zborder", tooltip = t16)
+
+zoneBoxBorderStyle = zoneBoxBorderStr == "Solid"  ? line.style_solid :
+     zoneBoxBorderStr == "Dashed" ? line.style_dashed :
+                                 line.style_dotted
+
+// Zone label
+zoneLabelShow      = input.bool(true, "Accumulation And Distribution Zones Name", group = "Zone Label", inline = "zlbl", tooltip = t17)
+zoneLabelSizeStr   = input.string("Normal", "Size", options = ["Auto","Tiny","Small","Normal","Large","Huge"], group = "Zone Label", inline = "zalign", tooltip = t18)
+zoneLabelHAlignStr = input.string("Center", "H Align", options = ["Left","Center","Right"], group = "Zone Label", inline = "zalign", tooltip = t19)
+zoneLabelVAlignStr = input.string("Bottom", "V Align", options = ["Top","Middle","Bottom"], group = "Zone Label", inline = "zalign", tooltip = t20)
+
+zoneLabelUseChartFg = input.bool(true,  "Use Chart FG Color", group = "Zone Label Color", inline = "zcolor", tooltip = t21)
+zoneLabelCustomCol  = input.color(color.white, "", group = "Zone Label Color", inline = "zcolor", tooltip = t22)
+
+// Derived label settings
+zoneLabelSize = zoneLabelSizeStr == "Auto"   ? size.auto  :
+     zoneLabelSizeStr == "Tiny"   ? size.tiny  :
+     zoneLabelSizeStr == "Small"  ? size.small :
+     zoneLabelSizeStr == "Large"  ? size.large :
+     zoneLabelSizeStr == "Huge"   ? size.huge  :
+                                 size.normal
+
+zoneLabelHAlign = zoneLabelHAlignStr == "Left"   ? "left"   :
+     zoneLabelHAlignStr == "Right"              ? "right"  :
+                                                 "center"
+
+zoneLabelVAlign = zoneLabelVAlignStr == "Top"    ? "top"    :
+     zoneLabelVAlignStr == "Middle"             ? "middle" :
+                                                 "bottom"
+zoneLabelWrap  = "none"
+zoneLabelColor = zoneLabelUseChartFg ? chart.fg_color : zoneLabelCustomCol
+//}
+
+// ~~ Types {
+type swingData
+    chart.point location
+    float level
+    int trend // 1 for peak, -1 for trough
+    int timestamp
+    int barIndex
+
+type Zones
+    float upper
+    float lower
+    int idx
+    color c
+//}
+
+// ~~  Array to hold swing data {
+var swingSequence = array.new<swingData>()
+
+// Array to hold the POCs
+var pocs = array.new<box>()
+var poc  = array.new<Zones>()
+
+if barstate.isfirst
+    for i=0 to 4
+        poc.push(Zones.new(float(na),float(na),int(na)))
+//}
+// ~~ Swing Detection {
+addSwing(int window) =>
+    float peakLevel   = ta.pivothigh(high, window, window)
+    float troughLevel = ta.pivotlow(low, window, window)
+    bool isPeak       = not na(peakLevel)
+    bool isTrough     = not na(troughLevel)
+
+    if isPeak or isTrough
+        newSwing = swingData.new(chart.point.from_time(time[window], isPeak ? high[window] : low[window]), isPeak ? high[window] : low[window], isPeak ? 1 : -1, time[window], bar_index[window])
+        swingSequence.push(newSwing)
+
+    // Handle consecutive swings of the same type by keeping the extreme one
+    while swingSequence.size() > 1
+        swingData latest   = swingSequence.last()
+        swingData previous = swingSequence.get(swingSequence.size() - 2)
+        if latest.trend != previous.trend
+            break
+        if latest.trend == 1 // Peaks: keep the higher one
+            if latest.level > previous.level
+                swingSequence.remove(swingSequence.size() - 2)
+            else
+                swingSequence.pop()
+        else // Troughs: keep the lower one
+            if latest.level < previous.level
+                swingSequence.remove(swingSequence.size() - 2)
+            else
+                swingSequence.pop()
+//}
+// ~~ Pattern Checks {
+checkaccumulationPattern(int requiredCount) =>
+    int seqSize = array.size(swingSequence)
+    if seqSize <= requiredCount
+        false
+    else
+        if detectionType == 'Slow'
+            swingSequence.get(seqSize - 6).trend == 1 and swingSequence.get(seqSize - 5).trend == -1 
+             and swingSequence.get(seqSize - 4).trend == 1 and swingSequence.get(seqSize - 3).trend == -1 
+             and swingSequence.get(seqSize - 2).trend == 1 and swingSequence.get(seqSize - 1).trend == -1 
+             and swingSequence.get(seqSize - 1).level > swingSequence.get(seqSize - 3).level 
+             and swingSequence.get(seqSize - 3).level > swingSequence.get(seqSize - 5).level 
+             and swingSequence.get(seqSize - 2).level < swingSequence.get(seqSize - 4).level 
+             and swingSequence.get(seqSize - 4).level < swingSequence.get(seqSize - 6).level
+        else
+            swingSequence.get(seqSize - 4).trend == 1 and swingSequence.get(seqSize - 3).trend == -1 
+             and swingSequence.get(seqSize - 2).trend == 1 and swingSequence.get(seqSize - 1).trend == -1 
+             and swingSequence.get(seqSize - 1).level > swingSequence.get(seqSize - 3).level 
+             and swingSequence.get(seqSize - 2).level < swingSequence.get(seqSize - 4).level
+
+checkdistributionPattern(int requiredCount) =>
+    int seqSize = swingSequence.size()
+    if seqSize <= requiredCount
+        false
+    else
+        if detectionType == 'Slow'
+            swingSequence.get(seqSize - 6).trend == -1 and swingSequence.get(seqSize - 5).trend == 1 
+             and swingSequence.get(seqSize - 4).trend == -1 and swingSequence.get(seqSize - 3).trend == 1 
+             and swingSequence.get(seqSize - 2).trend == -1 and swingSequence.get(seqSize - 1).trend == 1 
+             and swingSequence.get(seqSize - 2).level > swingSequence.get(seqSize - 4).level 
+             and swingSequence.get(seqSize - 4).level > swingSequence.get(seqSize - 6).level 
+             and swingSequence.get(seqSize - 1).level < swingSequence.get(seqSize - 3).level 
+             and swingSequence.get(seqSize - 3).level < swingSequence.get(seqSize - 5).level
+        else
+            swingSequence.get(seqSize - 4).trend == -1 and swingSequence.get(seqSize - 3).trend == 1 
+             and swingSequence.get(seqSize - 2).trend == -1 and swingSequence.get(seqSize - 1).trend == 1 
+             and swingSequence.get(seqSize - 2).level > swingSequence.get(seqSize - 4).level 
+             and swingSequence.get(seqSize - 1).level < swingSequence.get(seqSize - 3).level
+
+// ~~ Helpers {
+fadedColor(pocBarIndex, baseColor) =>
+    age = bar_index - pocBarIndex
+    age > 200 ? na : color.new(baseColor, age * 100 / 200)
+
+Gradient(a,i,d)=>
+    sort = a.copy()
+    sort.sort()
+    val  = a.get(i)
+    idx  = sort.indexof(val)
+    out  = d ? color.from_gradient(idx,0,a.size()-1, color.new(bull_color,80), color.new(bull_color,20)) : 
+     color.from_gradient(idx,0,a.size()-1, color.new(bear_color,80), color.new(bear_color,20))
+//}
+// ~~ Render Range & Accumulation And Distribution Zonese {
+renderRange(bool isaccumulation, int pointCount) =>
+    int seqSize = swingSequence.size()
+    color rangeHue = isaccumulation ? accColor : distColor
+
+    if displayPattern
+        pathPoints = array.new<chart.point>()
+        for i = seqSize - pointCount to seqSize - 1 by 1
+            pathPoints.push(swingSequence.get(i).location)
+        polyline.new(pathPoints, xloc = xloc.bar_time, line_color = chart.fg_color, line_width = 2)
+
+    float upper = na
+    float lower = na
+    int startTime = na
+    int endTime = na
+
+    if isaccumulation
+        if detectionType == 'Slow'
+            upper     := swingSequence.get(seqSize - 6).level
+            lower     := swingSequence.get(seqSize - 5).level
+            startTime := swingSequence.get(seqSize - 6).timestamp
+            endTime   := swingSequence.get(seqSize - 1).timestamp
+            endTime
+        else
+            upper     := swingSequence.get(seqSize - 4).level
+            lower     := swingSequence.get(seqSize - 3).level
+            startTime := swingSequence.get(seqSize - 4).timestamp
+            endTime   := swingSequence.get(seqSize - 1).timestamp
+            endTime
+    else
+        if detectionType == 'Slow'
+            upper     := swingSequence.get(seqSize - 5).level
+            lower     := swingSequence.get(seqSize - 6).level
+            startTime := swingSequence.get(seqSize - 6).timestamp
+            endTime   := swingSequence.get(seqSize - 1).timestamp
+            endTime
+        else
+            upper     := swingSequence.get(seqSize - 3).level
+            lower     := swingSequence.get(seqSize - 4).level
+            startTime := swingSequence.get(seqSize - 4).timestamp
+            endTime   := swingSequence.get(seqSize - 1).timestamp
+            endTime
+
+    // Accumulation And Distribution Zones 
+    if displayZones
+        zoneBgColor   = zoneBoxBgOn     ? rangeHue               : color.new(rangeHue, 100)
+        zoneBorderCol = zoneBoxBorderOn ? color.new(rangeHue, 0) : na
+
+        string zoneText = zoneLabelShow ? (isaccumulation ? "Accumulation" : "Distribution") : ""
+
+        box.new(
+             left   = startTime,
+             right  = endTime,
+             top    = upper,
+             bottom = lower,
+             xloc   = xloc.bar_time,
+             bgcolor      = zoneBgColor,
+             border_color = zoneBorderCol,
+             border_style = zoneBoxBorderStyle,
+             border_width = zoneBoxBorderW,
+             text         = zoneText,
+             text_size    = zoneLabelSize,
+             text_color   = zoneLabelColor,
+             text_halign  = zoneLabelHAlign,
+             text_valign  = zoneLabelVAlign,
+             text_wrap    = zoneLabelWrap
+         )
+
+    // Volume Profile
+    if showProfile
+        levels = array.new<float>()
+        step = (upper-lower)/rows
+        for i=0 to rows by 1
+            levels.push(lower+step*i)
+
+        vol_g = array.new<float>(rows,0.0)
+        vol_r = array.new<float>(rows,0.0)
+        for i=swingSequence.get(seqSize-4).barIndex to swingSequence.get(seqSize-1).barIndex by 1
+            price = hlc3[bar_index-i]
+            for x=0 to levels.size()-2 by 1
+                dn = levels.get(x)
+                up = levels.get(x+1)
+                if price>dn and price<up
+                    if close[bar_index-i] > open[bar_index-i]
+                        vol_g.set(x,vol_g.get(x)+volume[bar_index-i])
+                    else
+                        vol_r.set(x,vol_r.get(x)+volume[bar_index-i])
+                    break
+        maxVol = 0.0
+        maxIdx = 0
+        for [i,v] in vol_g
+            norm_g = v == 0 ? 0 : int((v / (vol_g.max()+vol_r.max())) * (swingSequence.get(seqSize-1).barIndex - swingSequence.get(seqSize-4).barIndex))
+            norm_r = vol_r.get(i) == 0 ? 0 : int((vol_r.get(i) / (vol_g.max()+vol_r.max())) * (swingSequence.get(seqSize-1).barIndex - swingSequence.get(seqSize-4).barIndex))
+            maxVol := v+vol_r.get(i) > maxVol ? v+vol_r.get(i) : maxVol
+            maxIdx := v+vol_r.get(i) >= maxVol ? i : maxIdx
+            col_g = Gradient(vol_g,i,true)
+            col_r = Gradient(vol_r,i,false)
+
+            box.new(order ? swingSequence.get(seqSize-4).barIndex : swingSequence.get(seqSize-4).barIndex+norm_r,
+                 levels.get(i+1),
+                 order ? swingSequence.get(seqSize-4).barIndex+norm_g : swingSequence.get(seqSize-4).barIndex+norm_r+norm_g,
+                 levels.get(i),
+                 col_g,
+                 border_style=line.style_dotted,
+                 bgcolor=col_g,
+                 text=str.tostring(v,format.volume),
+                 text_color=chart.fg_color)
+            box.new(order ? swingSequence.get(seqSize-4).barIndex+norm_g : swingSequence.get(seqSize-4).barIndex,
+                 levels.get(i+1),
+                 order ? swingSequence.get(seqSize-4).barIndex+norm_g+norm_r : swingSequence.get(seqSize-4).barIndex+norm_r,
+                 levels.get(i),
+                 col_r,
+                 border_style=line.style_dotted,
+                 bgcolor=col_r,
+                 text=str.tostring(vol_r.get(i),format.volume),
+                 text_color=chart.fg_color)
+
+        if extendProfile!="None"
+            if extendProfile=="Faded Zones"
+                poc.push(Zones.new(levels.get(maxIdx+1),levels.get(maxIdx),bar_index,rangeHue))
+            else
+                poxBox = box.new(swingSequence.get(seqSize-1).barIndex,levels.get(maxIdx),bar_index,levels.get(maxIdx+1),
+                 rangeHue,border_style=line.style_dashed,bgcolor=color.new(rangeHue,75),
+                 text="POC",text_color=chart.fg_color)
+                pocs.push(poxBox)
+//}
+// ~~ Main Logic {
+bool accumulationTrigger      = false
+bool distributionTrigger      = false
+bool insideZoneTrigger  = false
+
+if displayZones or showProfile
+    addSwing(swingWindow)
+    int minPoints = detectionType == 'Slow' ? 5 : 3
+    if checkaccumulationPattern(minPoints)
+        renderRange(true, minPoints + 1)
+        accumulationTrigger := true
+        swingSequence.clear()
+    if checkdistributionPattern(minPoints)
+        renderRange(false, minPoints + 1)
+        distributionTrigger := true
+        swingSequence.clear()
+    if showProfile and extendProfile!="None"
+        for [i,e] in pocs
+            e.set_right(bar_index)
+            if high>=e.get_top() and high[1]<e.get_top() or low<=e.get_bottom() and low[1]>e.get_bottom()
+                e.delete()
+                pocs.remove(i)
+            else if high>=e.get_bottom() and e.get_top()>high or low<=e.get_top() and e.get_bottom()<low
+                insideZoneTrigger := true
+        if poc.size()>4
+            poc.shift()
+//}
+// ~~ Faded POC Lines {
+upper0Color = fadedColor(poc.get(0).idx, poc.get(0).c)
+lower0Color = fadedColor(poc.get(0).idx, poc.get(0).c)
+upper1Color = fadedColor(poc.get(1).idx, poc.get(1).c)
+lower1Color = fadedColor(poc.get(1).idx, poc.get(1).c)
+upper2Color = fadedColor(poc.get(2).idx, poc.get(2).c)
+lower2Color = fadedColor(poc.get(2).idx, poc.get(2).c)
+upper3Color = fadedColor(poc.get(3).idx, poc.get(3).c)
+lower3Color = fadedColor(poc.get(3).idx, poc.get(3).c)
+
+faded = extendProfile == "Faded Zones"
+plotchar(faded ? poc.get(0).upper : na, "First Upper", "━", location.absolute, color=upper0Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(0).lower : na, "First Lower", "━", location.absolute, color=lower0Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(1).upper : na, "Second Upper", "━", location.absolute, color=upper1Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(1).lower : na, "Second Lower", "━", location.absolute, color=lower1Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(2).upper : na, "Third Upper", "━", location.absolute, color=upper2Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(2).lower : na, "Third Lower", "━", location.absolute, color=lower2Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(3).upper : na, "Fourth Upper", "━", location.absolute, color=upper3Color, offset = -swingWindow, editable = false)
+plotchar(faded ? poc.get(3).lower : na, "Fourth Lower", "━", location.absolute, color=lower3Color, offset = -swingWindow, editable = false)
+//}
+// ~~ Alerts {
+alertcondition(accumulationTrigger,  'Accumulation Zone Identified',  'An Accumulation zone has been detected')
+alertcondition(distributionTrigger,  'Distribution Zone Identified',  'A Distribution zone has been detected')
+alertcondition(insideZoneTrigger, 'Price Inside Acc/Dist POC Zone', 'Price is inside an Accumulation/Distribution POC Zone')
+//}

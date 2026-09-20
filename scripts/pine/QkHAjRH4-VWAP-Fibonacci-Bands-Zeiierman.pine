@@ -1,0 +1,144 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator('VWAP Fibonacci Bands (Zeiierman)', overlay = true)
+//~~}
+
+// ~~ Tooltips {
+string t1 = "Anchor Method determines the starting point of the MIDAS calculation. 'Timeframe' resets calculations at the start of each chosen timeframe, making it dynamic. 'Date' anchors calculations to a fixed starting date, ensuring consistent results regardless of chart timeframe."
+string t2 = "Anchor Timeframe specifies the periodicity for resetting calculations when 'Timeframe' is selected as the Anchor Method. For example, setting this to 'D' resets calculations at the start of each day. This is useful for aligning calculations with specific trading sessions or strategies."
+string t3 = "Anchor Date sets a fixed date and time as the starting point for the MIDAS calculation. This is ideal for anchoring calculations to significant historical events, such as market turning points or news releases."
+string t4 = "Std Dev Multiplier scales the standard deviation used to calculate the upper and lower bands. A higher value creates wider bands, capturing more price fluctuations and reducing false signals. A lower value creates tighter bands, useful in low-volatility environments or for aggressive strategies."
+string t5 = "Fibonacci Levels are user-defined ratios used to plot additional support and resistance bands. Adjust these values based on preferred Fibonacci retracement or extension levels to align with your trading style."
+string t6 = "Fib Labels toggles the visibility of numerical labels for Fibonacci levels on the chart. This helps traders visually identify specific levels without manual calculations."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+anchorMethod     = input.string('Timeframe', title = 'Anchor Method', options = ['Timeframe', 'Date'], inline = 'Method', group = 'Set Anchor Method', tooltip=t1)
+anchorTimeframe  = input.timeframe('D', title = 'Anchor Timeframe', inline = 'Method1', group = 'Set Anchor Method', tooltip=t2)
+anchorDate       = input.time(timestamp('01 Jan 2025 00:00 UTC'), title = 'Anchor Date', inline = 'Method2', group = 'Set Anchor Method', tooltip=t3)
+stdDevMultiplier = input.float(2.0, minval = 0.1, step = 0.1, title = 'Std Dev Multiplier', group = 'Set Std Dev Multiplier', tooltip=t4)
+fibLevelsInput   = input.string('0.236, 0.382, 0.5, 0.618, 0.786', title = 'Fibonacci Levels (comma-separated)', group = 'Set Fibonacci Levels', tooltip=t5)
+showlabels       = input.bool(true, title = 'Fib Lables', group = 'Set Fibonacci Levels', tooltip=t6)
+
+upcolor  = input.color(color.red, title = '', inline = 'Col', group = 'Style')
+midcolor = input.color(color.blue, title = '', inline = 'Col', group = 'Style')
+dncolor  = input.color(color.lime, title = '', inline = 'Col', group = 'Style')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ PARSE FIBONACCI LEVELS {
+fibStrings = str.split(str.replace_all(fibLevelsInput, ' ', ''), ',') 
+fibLevels  = array.new_float(0)
+
+// Convert user-provided Fibonacci levels into a constant array of floats
+for i = 0 to fibStrings.size() - 1 by 1
+    fibLevels.push(str.tonumber(array.get(fibStrings, i)))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ PRICE SELECTION {
+price = (high + low + close) / 3.0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ RESET CALCULATION LOGIC {
+var bool resetCalculation = false
+if anchorMethod == "Timeframe"
+    resetCalculation := ta.change(time(anchorTimeframe)) != 0
+    resetCalculation
+else if anchorMethod == 'Date'
+    resetCalculation := time == anchorDate 
+    resetCalculation
+
+// Variables for accumulation
+var float sumPV   = na
+var float sumPSqV = na
+var float sumVol  = na
+
+// Reset accumulation variables based on the chosen method
+if resetCalculation
+    sumPV := 0.0
+    sumPSqV := 0.0
+    sumVol := 0.0
+    sumVol
+
+// Accumulate data only after the anchor date has passed
+if anchorMethod == 'Date' and time >= anchorDate
+    sumPV := sumPV + price * volume
+    sumPSqV := sumPSqV + price * price * volume
+    sumVol := sumVol + volume
+    sumVol
+else if anchorMethod == 'Timeframe'
+    sumPV := sumPV + price * volume
+    sumPSqV := sumPSqV + price * price * volume
+    sumVol := sumVol + volume
+    sumVol
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MIDAS + STANDARD DEVIATION {
+midas = sumVol != 0.0 ? sumPV / sumVol : na
+weightedMeanOfSquares = sumVol != 0.0 ? sumPSqV / sumVol : na
+variance  = not na(midas) and not na(weightedMeanOfSquares) ? weightedMeanOfSquares - midas * midas : na
+stdDev    = variance > 0 ? math.sqrt(variance) : na
+upperBand = not na(midas) and not na(stdDev) ? midas + stdDevMultiplier * stdDev : na
+lowerBand = not na(midas) and not na(stdDev) ? midas - stdDevMultiplier * stdDev : na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ FIBONACCI BANDS CALCULATION {
+fibUpBands   = array.new_float(array.size(fibLevels), na)
+fibDownBands = array.new_float(array.size(fibLevels), na)
+
+// Precompute Fibonacci bands for global scope plotting
+for i = 0 to fibLevels.size() - 1 by 1
+    fib = fibLevels.get(i)
+    if not na(upperBand)
+        fibUp = midas + fib * (upperBand - midas)
+        fibUpBands.set(i, fibUp)
+    if not na(lowerBand)
+        fibDown = midas - fib * (midas - lowerBand)
+        fibDownBands.set(i, fibDown)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ FINAL PLOTS {
+plotMid  =plot(midas, color = midcolor, title = 'MIDAS', linewidth = 1, style = plot.style_linebr)
+plotUpper=plot(upperBand, color = dncolor, title = 'Upper Band', linewidth = 1, style = plot.style_linebr)
+plotLower=plot(lowerBand, color = upcolor, title = 'Lower Band', linewidth = 1, style = plot.style_linebr)
+fill(plotUpper, plotMid, upperBand, ta.sma(midas, 20), color.new(dncolor, 60),na)
+fill(plotLower, plotMid, lowerBand, ta.sma(midas, 20), color.new(upcolor, 60),na)
+
+plot(fibUpBands.get(0), color = color.new(dncolor, 40), title = 'Fib Up 0.236', linewidth = 1, style = plot.style_linebr)
+plot(fibUpBands.get(1), color = color.new(dncolor, 40), title = 'Fib Up 0.382', linewidth = 1, style = plot.style_linebr)
+plot(fibUpBands.get(2), color = color.new(dncolor, 40), title = 'Fib Up 0.5', linewidth = 1, style = plot.style_linebr)
+plot(fibUpBands.get(3), color = color.new(dncolor, 40), title = 'Fib Up 0.618', linewidth = 1, style = plot.style_linebr)
+plot(fibUpBands.get(4), color = color.new(dncolor, 40), title = 'Fib Up 0.786', linewidth = 1, style = plot.style_linebr)
+
+plot(fibDownBands.get(0), color = color.new(upcolor, 40), title = 'Fib Down 0.236', linewidth = 1, style = plot.style_linebr)
+plot(fibDownBands.get(1), color = color.new(upcolor, 40), title = 'Fib Down 0.382', linewidth = 1, style = plot.style_linebr)
+plot(fibDownBands.get(2), color = color.new(upcolor, 40), title = 'Fib Down 0.5', linewidth = 1, style = plot.style_linebr)
+plot(fibDownBands.get(3), color = color.new(upcolor, 40), title = 'Fib Down 0.618', linewidth = 1, style = plot.style_linebr)
+plot(fibDownBands.get(4), color = color.new(upcolor, 40), title = 'Fib Down 0.786', linewidth = 1, style = plot.style_linebr)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Labels for Fibonacci levels {
+var array<label> fibUpLabels   = array.new_label(fibLevels.size(), na)
+var array<label> fibDownLabels = array.new_label(fibLevels.size(), na)
+
+// Loop to handle labels for Fibonacci levels
+for i = 0 to fibLevels.size() - 1
+    if not na(fibUpLabels.get(i))
+        label.delete(fibUpLabels.get(i))
+    if not na(fibDownLabels.get(i))
+        label.delete(fibDownLabels.get(i))
+
+    fibUp   = fibUpBands.get(i)
+    fibDown = fibDownBands.get(i)
+
+    if not na(fibUp) and showlabels
+        fibUpLabels.set(i, label.new(bar_index + 1, fibUp, str.tostring(fibLevels.get(i), '0.000'), style = label.style_label_left, color = color.new(upcolor, 40), textcolor = color.white))
+    else
+        fibUpLabels.set(i, na)
+
+    if not na(fibDown) and showlabels
+        fibDownLabels.set(i, label.new(bar_index + 1, fibDown, str.tostring(fibLevels.get(i), '0.000'), style = label.style_label_left, color = color.new(dncolor, 40), textcolor = color.white))
+    else
+        fibDownLabels.set(i, na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

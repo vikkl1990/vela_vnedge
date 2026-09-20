@@ -1,0 +1,86 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("3D Candles (Zeiierman)", overlay=true, max_polylines_count=100, max_lines_count=500)
+//}
+
+// ~~ Tooltips {
+var string t1 = "How many 3D candles to draw (most recent first). Higher values draw more shapes and can slow the chart. Range: 1–100."
+var string t2 = "Visual width (in bars) of each 3D candle block. Larger values look thicker but increase overlap and CPU work."
+var string t3 = "Tilt/offset control for the top face.\n• Negative = tilt downward\n• Positive = tilt upward\nThe magnitude scales the effect; 0 disables tilt."
+var string t4 = "3D thickness as a percent of each candle’s own high–low range. Larger values exaggerate the top face."
+var string t5 = "Fill color used when Close > Open (bullish bodies, wicks, and edges)."
+var string t6 = "Fill color used when Close ≤ Open (bearish bodies, wicks, and edges)."
+var string t7 = "Outline color for the 3D polygon edges."
+//~~}
+
+// ~~ Inputs {
+candles  = input.int(100, maxval=100, group="3D Candles", tooltip = t1)
+width    = 3
+dev      = input.float(0.1, "Up/Down", step=.1, minval=0, maxval=10, inline="direction", group="Visualization & 3D Effect", tooltip = t3)
+depthPct = input.float(0.05, "3D depth (% of range)", step=0.05, minval=0.0, maxval=1.0, group="Visualization & 3D Effect", tooltip = t4)
+
+bullCol     = input.color(color.new(color.lime, 10), "", inline = "coloring", tooltip = t5, group = "Coloring")
+bearCol     = input.color(color.new(color.red, 10), "", inline = "coloring", tooltip = t6, group = "Coloring")
+lineCol     = input.color(color.new(color.black,  10), "", inline = "coloring", tooltip = t7, group = "Coloring")
+//~~}
+
+// ~~ Variables {
+n = bar_index
+//~~}
+
+// ~~ Main {
+if barstate.islast
+    for e in line.all
+        e.delete()
+    for e in polyline.all
+        e.delete()
+
+    b = n - (width * candles)
+
+    slope      = (4.0 * math.abs(dev)) / width
+    factorMag  = math.pow(math.min(1.0, slope), 0.5)
+    factorSign = dev == 0 ? 0.0 : math.sign(dev)
+
+    for i = candles to 0
+        pts = array.new<chart.point>()
+
+        oBody = math.min(open[i], close[i])
+        cBody = math.max(open[i], close[i])
+
+        rng      = math.max(1e-10, high[i] - low[i])
+        depthMag = rng * depthPct * factorMag
+        depth    = depthMag * factorSign   
+
+        xA = array.from(b, b, b + width, b + width, b, b,
+                     b + width/2, b + width + (width/2),
+                     b + width, b + width + (width/2), b + width + (width/2), b + width)
+
+        yA = array.from(oBody, cBody, cBody, oBody, oBody, cBody,
+                     cBody + depth, cBody + depth,
+                     cBody, cBody + depth, oBody + depth, oBody)
+
+        for [j, x] in xA
+            pts.push(chart.point.from_index(x, yA.get(j)))
+
+        bull = close[i] > open[i]
+
+        polyline.new(
+         pts,
+         xloc       = xloc.bar_index,
+         line_color = lineCol,
+         fill_color = bull ? bullCol : bearCol
+         )
+
+        line.new(chart.point.from_index(b + 2, cBody + depth/2),
+                 chart.point.from_index(b + 2, high[i]),
+                 color = bull ? bullCol : bearCol,
+                 width = 3)
+        line.new(chart.point.from_index(b + 2, oBody),
+                 chart.point.from_index(b + 2, low[i]),
+                 color = bull ? bullCol : bearCol,
+                 width = 3)
+
+        b += width
+//~~}        

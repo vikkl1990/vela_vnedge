@@ -1,0 +1,324 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Change in State of Delivery [CISD] (Zeiierman)", overlay=true, max_lines_count=500, max_labels_count=500, behind_chart = false)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Minimum number of consecutive delivery candles required before a CISD setup can form."
+var string t2  = "Maximum number of bars a CISD setup can stay active before it expires."
+var string t3  = "Minimum number of bars required between the delivery start and CISD confirmation."
+var string t4  = "Pivot length used to detect MSS break levels."
+var string t5  = "Show confirmed and active CISD lines."
+var string t6  = "Show MSS dots on the chart."
+var string t7  = "Size used for the CISD label text."
+var string t8  = "Size used for the confirmation arrow text."
+var string t9  = "Bullish CISD color."
+var string t10 = "Bearish CISD color."
+var string t11 = "MSS dot color."
+var string t12 = "Line width used for CISD levels."
+var string t13 = "Color candles based on the latest confirmed CISD trend."
+var string t14 = "Candle color used after bullish CISD confirmation."
+var string t15 = "Candle color used after bearish CISD confirmation."
+var string t16 = "Show liquidity sweep lines when price sweeps a confirmed swing high or swing low and closes back inside."
+var string t17 = "Swing length used to detect liquidity sweep highs and lows."
+var string t18 = "Color used for bearish sweep lines above swing highs."
+var string t19 = "Color used for bullish sweep lines below swing lows."
+var string t20 = "Line width used for the horizontal sweep level."
+var string t21 = "Line width used for the sweep wick marker."
+var string t22 = "Show a live label on the current active pending CISD level."
+var string t23 = "Number of bars to offset the pending CISD label into the future."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+showCISD    = input.bool(true, "Show CISD", tooltip=t5, group="True CISD")
+minDelivery = input.int(3, "Minimum Delivery Candles", minval=1, tooltip=t1, active=showCISD, group="True CISD")
+maxSeq      = input.int(100, "Maximum CISD Validity", minval=10, maxval=1000, tooltip=t2, active=showCISD, group="True CISD")
+minSeq      = input.int(1, "Minimum CISD Duration", minval=0, tooltip=t3, active=showCISD, group="True CISD")
+
+labelSizeInput = input.string("Small", "Label Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="True CISD", tooltip=t7, active=showCISD, inline="s")
+arrowSizeInput = input.string("Normal", "Arrow Size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group="True CISD", tooltip=t8, active=showCISD, inline="s")
+
+cBull     = input.color(#089981, "", group="True CISD", tooltip=t9, active=showCISD, inline="c")
+cBear     = input.color(#f23645, "", group="True CISD", tooltip=t10, active=showCISD, inline="c")
+cisdWidth = input.int(2, "", minval=1, maxval=5, group="True CISD", tooltip=t12, active=showCISD, inline="c")
+
+showPendingLabel = input.bool(true, "Show Pending CISD Label", group="True CISD", tooltip=t22, active=showCISD)
+pendingOffset    = input.int(2, "Pending Label Offset", minval=0, maxval=50, group="True CISD", tooltip=t23, active=showPendingLabel)
+
+showMSS     = input.bool(false, "Show MSS Dots", tooltip=t6, inline="showMSS", group="MSS")
+mssLen      = input.int(3, "", minval=1, tooltip=t4, inline="showMSS", active=showMSS, group="MSS")
+cMSS        = input.color(#787b86, "", tooltip=t11, active=showMSS, group="MSS", inline="showMSS")
+
+showSweeps     = input.bool(true, "Show Liquidity Sweeps", group="Liquidity Sweeps", tooltip=t16)
+swingLen       = input.int(10, "Sweep Swing Length", minval=1, group="Liquidity Sweeps", tooltip=t17, active=showSweeps)
+cSweepH        = input.color(#787b8684, "Sweep High", group="Liquidity Sweeps", tooltip=t18, active=showSweeps)
+cSweepL        = input.color(#787b8684, "Sweep Low", group="Liquidity Sweeps", tooltip=t19, active=showSweeps)
+sweepWidth     = input.int(1, "Sweep Level Width", minval=1, maxval=5, group="Liquidity Sweeps", tooltip=t20, active=showSweeps)
+sweepWickWidth = input.int(10, "Sweep Wick Width", minval=1, maxval=20, group="Liquidity Sweeps", tooltip=t21, active=showSweeps)
+
+colorCandles = input.bool(false, "Color Candles by CISD Trend", group="Candle Coloring", tooltip=t13, active=showCISD)
+bullCandle   = input.color(color.new(#089981, 0), "", group="Candle Coloring", tooltip=t14, active=showCISD, inline="c")
+bearCandle   = input.color(color.new(#f23645, 0), "", group="Candle Coloring", tooltip=t15, active=showCISD, inline="c")
+
+INV = color(na)
+n   = bar_index
+
+labelSize = labelSizeInput == "Tiny" ? size.tiny : labelSizeInput == "Small" ? size.small : labelSizeInput == "Normal" ? size.normal : labelSizeInput == "Large" ? size.large : size.huge
+arrowSize = arrowSizeInput == "Tiny" ? size.tiny : arrowSizeInput == "Small" ? size.small : arrowSizeInput == "Normal" ? size.normal : arrowSizeInput == "Large" ? size.large : size.huge
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Types {
+type cisdSetup
+    line ln
+    label pendingLbl
+    float level
+    int x1
+    bool active
+    int direction
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+var cisdSetup bullSetup = cisdSetup.new(na, na, na, na, false, 1)
+var cisdSetup bearSetup = cisdSetup.new(na, na, na, na, false, -1)
+
+var int trend = 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+newCisdLine(int x1, float y, color col, int width) =>
+    line.new(x1, y, bar_index, y, color=color.new(col, 40), width=width)
+
+updateLine(line ln, int width) =>
+    line.set_x2(ln, bar_index)
+    line.set_width(ln, width)
+
+confirmLine(line ln, color col, int width, bool dashed) =>
+    line.set_color(ln, col)
+    line.set_width(ln, width)
+    if dashed
+        line.set_style(ln, line.style_dashed)
+
+drawCisdLabels(int x1, int x2, float level, bool isBull, color col, string lblSize, string arrSize) =>
+    int mid = math.ceil(math.avg(x1, x2))
+    label.new(mid, level, "CISD", style=isBull ? label.style_label_down : label.style_label_up, textcolor=col, color=INV, size=lblSize)
+    label.new(x2, isBull ? low : high, isBull ? "▲" : "▼", style=isBull ? label.style_label_up : label.style_label_down, textcolor=col, color=INV, size=arrSize)
+
+drawSweep(int x1, float level, int x2, float wickLevel, color col, int levelWidth, int wickWidth) =>
+    line.new(x1, level, x2, level, color=col, width=levelWidth)
+    line.new(x2, level, x2, wickLevel, color=col, width=wickWidth)
+
+deleteSetupLine(cisdSetup setup) =>
+    if setup.active and not na(setup.ln)
+        line.delete(setup.ln)
+
+deletePendingLabel(label lbl) =>
+    if not na(lbl)
+        label.delete(lbl)
+
+newPendingLabel(float level, color col) =>
+    label.new(bar_index + pendingOffset, level, "Pending CISD", style=label.style_label_left, textcolor=color.new(col, 40), color=INV, size=labelSize)
+
+updatePendingLabel(label lbl, float level, color col) =>
+    label.set_x(lbl, bar_index + pendingOffset)
+    label.set_y(lbl, level)
+    label.set_textcolor(lbl, color.new(col, 40))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Delivery Engine {
+bull = close > open
+bear = close < open
+
+var int bullSeq = 0
+var int bearSeq = 0
+
+var float bullDeliveryOpen = na
+var float bearDeliveryOpen = na
+
+var int bullDeliveryStart = na
+var int bearDeliveryStart = na
+
+if bull
+    if not bull[1]
+        bullDeliveryOpen := open
+        bullDeliveryStart := n
+        bullSeq := 1
+    else
+        bullSeq += 1
+    bearSeq := 0
+
+if bear
+    if not bear[1]
+        bearDeliveryOpen := open
+        bearDeliveryStart := n
+        bearSeq := 1
+    else
+        bearSeq += 1
+    bullSeq := 0
+
+if not bull and not bear
+    bullSeq := 0
+    bearSeq := 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Liquidity Sweeps {
+ph = ta.pivothigh(high, swingLen, 1)
+pl = ta.pivotlow(low, swingLen, 1)
+
+var float swingHigh = na
+var float swingLow = na
+var int swingHighBar = na
+var int swingLowBar = na
+
+if not na(ph)
+    swingHigh := ph
+    swingHighBar := n - 1
+
+if not na(pl)
+    swingLow := pl
+    swingLowBar := n - 1
+
+bearSweep = not na(swingHigh) and high > swingHigh and close < swingHigh
+bullSweep = not na(swingLow) and low < swingLow and close > swingLow
+
+if showSweeps and bearSweep
+    drawSweep(swingHighBar, swingHigh, n, high, cSweepH, sweepWidth, sweepWickWidth)
+
+if showSweeps and bullSweep
+    drawSweep(swingLowBar, swingLow, n, low, cSweepL, sweepWidth, sweepWickWidth)
+
+if not na(swingHigh) and close > swingHigh
+    swingHigh := na
+    swingHighBar := na
+
+if not na(swingLow) and close < swingLow
+    swingLow := na
+    swingLowBar := na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ MSS {
+mssHigh = ta.pivothigh(high, mssLen, mssLen)
+mssLow  = ta.pivotlow(low, mssLen, mssLen)
+
+var float lastMssHigh = na
+var float lastMssLow = na
+
+if not na(mssHigh)
+    lastMssHigh := mssHigh
+
+if not na(mssLow)
+    lastMssLow := mssLow
+
+bullMSS = not na(lastMssHigh) and close > lastMssHigh and close[1] <= lastMssHigh
+bearMSS = not na(lastMssLow) and close < lastMssLow and close[1] >= lastMssLow
+
+plotshape(showMSS and bullMSS, title="Bullish MSS", style=shape.circle, location=location.belowbar, color=cMSS, size=size.tiny)
+plotshape(showMSS and bearMSS, title="Bearish MSS", style=shape.circle, location=location.abovebar, color=cMSS, size=size.tiny)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ CISD Setup Conditions {
+newBullSetup = bearSeq >= minDelivery
+newBearSetup = bullSeq >= minDelivery
+
+if showCISD and newBullSetup
+    deleteSetupLine(bullSetup)
+    deletePendingLabel(bullSetup.pendingLbl)
+
+    bullSetup.level := bearDeliveryOpen
+    bullSetup.x1 := bearDeliveryStart
+    bullSetup.ln := newCisdLine(bullSetup.x1, bullSetup.level, cBull, cisdWidth)
+    bullSetup.pendingLbl := showPendingLabel ? newPendingLabel(bullSetup.level, cBull) : na
+    bullSetup.active := true
+    bullSetup.direction := 1
+
+if showCISD and newBearSetup
+    deleteSetupLine(bearSetup)
+    deletePendingLabel(bearSetup.pendingLbl)
+
+    bearSetup.level := bullDeliveryOpen
+    bearSetup.x1 := bullDeliveryStart
+    bearSetup.ln := newCisdLine(bearSetup.x1, bearSetup.level, cBear, cisdWidth)
+    bearSetup.pendingLbl := showPendingLabel ? newPendingLabel(bearSetup.level, cBear) : na
+    bearSetup.active := true
+    bearSetup.direction := -1
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Confirm CISD {
+bullConfirm = bullSetup.active and close > bullSetup.level and n - bullSetup.x1 >= minSeq
+bearConfirm = bearSetup.active and close < bearSetup.level and n - bearSetup.x1 >= minSeq
+
+bullExpired = bullSetup.active and n - bullSetup.x1 > maxSeq
+bearExpired = bearSetup.active and n - bearSetup.x1 > maxSeq
+
+if bullSetup.active
+    if n - bullSetup.x1 <= maxSeq
+        updateLine(bullSetup.ln, cisdWidth)
+
+        if showPendingLabel and not na(bullSetup.pendingLbl)
+            updatePendingLabel(bullSetup.pendingLbl, bullSetup.level, cBull)
+
+        if bullConfirm
+            confirmLine(bullSetup.ln, cBull, cisdWidth, trend == 1)
+            drawCisdLabels(bullSetup.x1, n, bullSetup.level, true, cBull, labelSize, arrowSize)
+            deletePendingLabel(bullSetup.pendingLbl)
+            bullSetup.pendingLbl := na
+
+            trend := 1
+            bullSetup.active := false
+    else
+        line.delete(bullSetup.ln)
+        deletePendingLabel(bullSetup.pendingLbl)
+        bullSetup.pendingLbl := na
+        bullSetup.active := false
+
+if bearSetup.active
+    if n - bearSetup.x1 <= maxSeq
+        updateLine(bearSetup.ln, cisdWidth)
+
+        if showPendingLabel and not na(bearSetup.pendingLbl)
+            updatePendingLabel(bearSetup.pendingLbl, bearSetup.level, cBear)
+
+        if bearConfirm
+            confirmLine(bearSetup.ln, cBear, cisdWidth, trend == -1)
+            drawCisdLabels(bearSetup.x1, n, bearSetup.level, false, cBear, labelSize, arrowSize)
+            deletePendingLabel(bearSetup.pendingLbl)
+            bearSetup.pendingLbl := na
+
+            trend := -1
+            bearSetup.active := false
+    else
+        line.delete(bearSetup.ln)
+        deletePendingLabel(bearSetup.pendingLbl)
+        bearSetup.pendingLbl := na
+        bearSetup.active := false
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Candle Coloring {
+barColor = colorCandles ? trend == 1 ? bullCandle : trend == -1 ? bearCandle : na : na
+barcolor(barColor)
+plotcandle(open, high, low, close, color=barColor, wickcolor=barColor, bordercolor=barColor, title="Candle color")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(newBullSetup, "New Bullish CISD Setup", "New bullish CISD setup formed")
+alertcondition(newBearSetup, "New Bearish CISD Setup", "New bearish CISD setup formed")
+
+alertcondition(bullConfirm, "Bullish CISD Confirmed", "Bullish CISD confirmed")
+alertcondition(bearConfirm, "Bearish CISD Confirmed", "Bearish CISD confirmed")
+
+alertcondition(bullSweep, "Bullish Liquidity Sweep", "Bullish liquidity sweep detected")
+alertcondition(bearSweep, "Bearish Liquidity Sweep", "Bearish liquidity sweep detected")
+
+alertcondition(bullMSS, "Bullish MSS", "Bullish MSS detected")
+alertcondition(bearMSS, "Bearish MSS", "Bearish MSS detected")
+
+alertcondition(bullConfirm and trend[1] != 1, "Bullish CISD Trend Shift", "CISD trend shifted bullish")
+alertcondition(bearConfirm and trend[1] != -1, "Bearish CISD Trend Shift", "CISD trend shifted bearish")
+
+alertcondition(bullExpired, "Bullish CISD Expired", "Bullish CISD setup expired")
+alertcondition(bearExpired, "Bearish CISD Expired", "Bearish CISD setup expired")
+
+alertcondition(colorCandles and trend == 1 and trend[1] != 1, "Candle Color Shift Bullish", "Candle coloring shifted bullish")
+alertcondition(colorCandles and trend == -1 and trend[1] != -1, "Candle Color Shift Bearish", "Candle coloring shifted bearish")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,97 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+// ~~ © Zeiierman {
+//@version=5
+indicator(title="Harmonic Rolling VWAP (Zeiierman)", overlay=true,max_bars_back = 500)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Tooltips {
+var t1 = "The source input defines the price data used for calculations. The typical options are close, open, high, low, hl2 (average of high and low), hlc3 (average of high, low, and close), and ohlc4 (average of open, high, low, and close). This setting affects the VWAP calculations and the resulting bands."
+var t2 = "The window input sets the number of bars used for the rolling calculations. A larger window smooths the VWAP and standard deviation bands, making the indicator less sensitive to short-term price fluctuations. A smaller window makes the indicator more responsive to recent price changes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+src = input(hlc3, title="Vwap Source", tooltip=t1)
+win = input.int(100, title="Window", tooltip=t2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  True Range Calculation {
+tr(h, l, c) =>
+    tr1 = h - l
+    tr2 = math.abs(h - c[1])
+    tr3 = math.abs(l - c[1])
+    math.max(tr1, tr2, tr3)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  DFT {
+dft(data, len) =>
+    re = 0.0
+    im = 0.0
+    for n = 0 to len - 1
+        ang = 2.0 * math.pi * n / len
+        re += array.get(data, n) * math.cos(ang)
+        im -= array.get(data, n) * math.sin(ang)
+    [re / len, im / len]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Rolling VWAP and Standard Deviation {
+rvwap = ta.vwma(src, win)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Adjusted Price based on True Range {
+volAdj = ta.ema(tr(high, low, close), 100)
+dev    = math.avg(volAdj, ta.stdev(src, win))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Apply DFT on VWAP {
+vwap_data = array.new_float(win, 0.0)
+for i = 0 to win - 1
+    array.set(vwap_data, i, ta.vwma(src, i + 1))
+[re, im] = dft(vwap_data, win)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Transformed VWAP {
+tf_vwap = re
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Standard Deviation Bands {
+ub1 = rvwap + dev * 2.0
+lb1 = rvwap - dev * 2.0
+ub2 = rvwap + dev * 2.5
+lb2 = rvwap - dev * 2.5
+ub3 = rvwap + dev * 3.0
+lb3 = rvwap - dev * 3.0
+ub4 = rvwap + dev * 3.5
+lb4 = rvwap - dev * 3.5
+ub5 = rvwap + dev * 4.0
+lb5 = rvwap - dev * 4.0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Plot {
+RVWAP  = plot(rvwap, "Rolling VWAP", color=color.blue)
+TFvwap = plot(tf_vwap, "Fourier Transform VWAP", color=color.new(#FF5722, 100), editable=false)
+Close  = plot(close, color=color.new(color.white, 100), editable=false)
+
+ub1_p = plot(ub1, title="UB1", color=color.new(color.gray, 35), editable=false)
+lb1_p = plot(lb1, title="LB1", color=color.new(color.gray, 35), editable=false)
+ub2_p = plot(ub2, title="UB2", color=color.new(#f23645, 35), editable=false)
+lb2_p = plot(lb2, title="LB2", color=color.new(#089981, 35), editable=false)
+ub3_p = plot(ub3, title="UB3", color=color.new(#f23645, 35), editable=false)
+lb3_p = plot(lb3, title="LB3", color=color.new(#089981, 35), editable=false)
+ub4_p = plot(ub4, title="UB4", color=color.new(#f23645, 35), editable=false)
+lb4_p = plot(lb4, title="LB4", color=color.new(#089981, 35), editable=false)
+ub5_p = plot(ub5, title="UB5", color=color.new(#f23645, 35), editable=false)
+lb5_p = plot(lb5, title="LB5", color=color.new(#089981, 35), editable=false)
+
+fill(TFvwap, ub1_p, title="UB1_Fill", color=color.new(color.gray, 100), editable=false)
+fill(TFvwap, lb1_p, title="LB1_Fill", color=color.new(color.gray, 100), editable=false)
+fill(ub1_p, ub2_p, title="UB2_Fill", color=color.new(#f23645, 90), editable=false)
+fill(lb1_p, lb2_p, title="LB2_Fill", color=color.new(#089981, 90), editable=false)
+fill(ub2_p, ub3_p, title="UB3_Fill", color=color.new(#f23645, 85), editable=false)
+fill(lb2_p, lb3_p, title="LB3_Fill", color=color.new(#089981, 85), editable=false)
+fill(ub3_p, ub4_p, title="UB4_Fill", color=color.new(#f23645, 80), editable=false)
+fill(lb3_p, lb4_p, title="LB4_Fill", color=color.new(#089981, 80), editable=false)
+fill(ub4_p, ub5_p, title="UB5_Fill", color=color.new(#f23645, 75), editable=false)
+fill(lb4_p, lb5_p, title="LB5_Fill", color=color.new(#089981, 75), editable=false)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,148 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("ICT Donchian Smart Money Structure",overlay=true,max_bars_back=5000,max_labels_count=500,max_lines_count=500)
+
+// ~~ Tooltips {
+string t1 = "Set the pivot period"
+string t2 = "Set the response period. A low value returns a short-term structure and a high value returns a long-term structure. If you disable this option the pivot length above will be used."
+string t3 = "Enable the Donchian Channel."
+string t4 = "A high value returns the long-term structure and a low value returns the short-term structure."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+prd    = input.int(20,minval=1,title="Structure Period",tooltip=t1)
+s1     = input.bool(true,title="Structure Response  ", inline="resp")
+resp   = input.int(7,minval=1,title="",inline="resp",tooltip=t2)
+bull   = input.bool(true,"Bullish Structure     ",inline="Bullish"), bull2 = input.color(color.rgb(8, 236, 126),"",inline="Bullish"), bull3 = input.color(color.rgb(8, 236, 126),"",inline="Bullish")
+bear   = input.bool(true,"Bearish Structure    ",inline="Bearish"), bear2 = input.color(color.rgb(255, 34, 34),"",inline="Bearish"), bear3 = input.color(color.rgb(255, 34, 34),"",inline="Bearish")
+showPD = input.bool(true,"Premium & Discount",inline="pd"), prem = input.color(color.new(color.rgb(255, 34, 34),80),"",inline="pd"), disc = input.color(color.new(color.rgb(8, 236, 126),80),"",inline="pd")
+don    = input.bool(false,"Donchian Channel", tooltip=t3)
+Candle = input.bool(true, "Structure Candles", inline="", group="Structure Candles")
+length = input.int(40, minval=1,title="Structure Response", inline="", group="Structure Candles", tooltip=t4)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b       = bar_index
+var Up  = float(na)
+var Dn  = float(na)
+var iUp = int(na)
+var iDn = int(na)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+//Labels
+CreateLabel(x,y,txt,col,z)=>
+    label.new(x,y,txt,textcolor=col,style=z?label.style_label_down:label.style_label_up,color=color(na))
+//Lines
+CreateLine(x1,x2,y,col)=>
+    line.new(x1,x2,b,y,color=col)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivots {
+Up   := math.max(Up[1],high)
+Dn   := math.min(Dn[1],low)
+pvtHi = ta.pivothigh(high,prd,prd)
+pvtLo = ta.pivotlow(low,prd,prd)
+if pvtHi
+    Up := pvtHi
+if pvtLo
+    Dn := pvtLo
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Structure {
+var pos = 0
+if Up>Up[1]
+    iUp := b
+    centerBull = math.round(math.avg(iUp[1],b))
+    if pos<=0
+        if bull
+            CreateLabel(centerBull,Up[1],"CHoCH",bull3,true)
+            CreateLine(iUp[1],Up[1],Up[1],bull2)
+        pos := 1
+    else if pos==1 and Up>Up[1] and Up[1]==Up[s1?resp:prd]
+        if bull
+            CreateLabel(centerBull,Up[1],"SMS",bull3,true)
+            CreateLine(iUp[1],Up[1],Up[1],bull2)
+        pos := 2
+    else if pos>1 and Up>Up[1] and Up[1]==Up[s1?resp:prd]
+        if bull
+            CreateLabel(centerBull,Up[1],"BMS",bull3,true)
+            CreateLine(iUp[1],Up[1],Up[1],bull2)
+        pos := pos + 1
+else if Up<Up[1]
+    iUp := b-prd
+if Dn<Dn[1]
+    iDn := b
+    centerBear = math.round(math.avg(iDn[1],b))
+    if pos>=0
+        if bear
+            CreateLabel(centerBear,Dn[1],"CHoCH",bear3,false)
+            CreateLine(iDn[1],Dn[1],Dn[1],bear2)
+        pos := -1
+    else if pos==-1 and Dn<Dn[1] and Dn[1]==Dn[s1?resp:prd]
+        if bear
+            CreateLabel(centerBear,Dn[1],"SMS",bear3,false)
+            CreateLine(iDn[1],Dn[1],Dn[1],bear2)
+        pos := -2
+    else if pos<-1 and Dn<Dn[1] and Dn[1]==Dn[s1?resp:prd]
+        if bear
+            CreateLabel(centerBear,Dn[1],"BMS",bear3,false)
+            CreateLine(iDn[1],Dn[1],Dn[1],bear2)
+        pos := pos - 1
+else if Dn>Dn[1]
+    iDn := b-prd
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Premium & Discount {
+PremiumTop   = Up-(Up-Dn)*.1
+PremiumBot   = Up-(Up-Dn)*.25
+DiscountTop  = Dn+(Up-Dn)*.25
+DiscountBot  = Dn+(Up-Dn)*.1
+MidTop       = Up-(Up-Dn)*.45
+MidBot       = Dn+(Up-Dn)*.45
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+r1 = plot(don?Up:na,"Range High",bear2)
+r2 = plot(don?Dn:na,"Range Low",bull2)
+p1 = plot(showPD?PremiumTop:na,"Premium",na)
+p2 = plot(showPD?PremiumBot:na,"Premium",na)
+d1 = plot(showPD?DiscountTop:na,"Discount",na)
+d2 = plot(showPD?DiscountBot:na,"Discount",na)
+m1 = plot(showPD?MidTop:na,"Equilibrium",na)
+m2 = plot(showPD?MidBot:na,"Equilibrium",na)
+
+fill(p1,p2,color=prem)
+fill(d1,d2,color=disc)
+fill(m1,m2,color=color.new(color.gray,75))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+DonCandles(high_, low_, close_,src_,factor_,candle_,length_)=>
+    initial   = 0.0
+    Don_High  = ta.highest(high_,length_)
+    Don_Low   = ta.lowest(low_,length_)
+    Norm      = ((close_ - Don_Low) / (Don_High - Don_Low))
+    initial  := candle_?(Norm * close + ((1 - Norm)) * nz(initial[1], close)): (Norm * close + ((1 - Norm*2)) * nz(initial[1], close))
+    Factor    = candle_?(1-Norm)* nz(initial[1], src_) :(factor_? (1-Norm*2):(1-Norm/2)) * nz(initial[1], src_)
+    output    = (Norm * src_)  + Factor 
+
+// Return Trend Candles
+O   = Candle?DonCandles(Up,Dn,close,open,true,false,length):na
+H   = Candle?DonCandles(Up,Dn,close,high,false,false,length):na
+L   = Candle?DonCandles(Up,Dn,close,low,false,false,length):na
+C   = Candle?DonCandles(Up,Dn,close,close,true,false,length):na
+
+// Return Color Sign
+pricewick(h_,a)=>
+    cond = h_>a
+    cond
+cond_open  = pricewick(H,open)
+cond_high  = pricewick(H,high)
+cond_low   = pricewick(H,low)
+cond_close = pricewick(H,close)
+sign       = (cond_open or cond_high or cond_low or cond_close)?color.lime:color.red
+
+// Plot Structure Candles
+plotcandle(open, high,low,close, color=Candle?sign:na,bordercolor=Candle?sign:na, wickcolor=Candle?sign:na, title="Structure Candles")

@@ -1,0 +1,127 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// ~~ © Zeiierman {
+//@version=6
+indicator('Timely Opening Range Breakout Strategy [TORB] (Zeiierman)', shorttitle = 'TORB (Zeiierman)', overlay = true)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Tooltips {
+t1 = 'Defines the specific time range for the trading session. Adjusting this setting changes the period during which the Timely Opening Range Breakout (TORB) strategy is applied.'
+t2 = 'Specifies the time zone for the trading session input. Changing this setting will shift the session window according to the selected time zone, allowing the strategy to align with the trading hours of different global markets.'
+t3 = 'Enables or disables the highlighting of the high and low range during the specified session. Turning this on visualizes the session\'s price range, aiding in identifying potential breakout levels. '
+t4 = 'Activates the volume analysis component of the strategy. Enabling this setting incorporates volume data into the breakout signals, aiming to add confirmation to the strength of breakouts. Increasing the sensitivity to volume can highlight significant moves, while decreasing it may result in a broader set of signals.'
+t5 = 'Sets the lookback period for calculating the average volume, which influences the volume moving average (PMMV). A longer period smoothens the volume curve, potentially filtering out noise but also delaying response to volume spikes. A shorter period makes the volume indicator more responsive to recent changes.'
+t6 = 'Determines the weight given to the volume in the strategy\'s calculations. Increasing this value amplifies the impact of volume on the PMMV, making the strategy more sensitive to volume changes. Decreasing it reduces the influence of volume.'
+t7 = 'Adjusts the sensitivity of the volume component by setting the bounds for volume oscillation. \n\nEnable \'Stocks\' and lower the \'volume sensitivity\' if you don\'t get any signals.'
+t8 = 'Enables or disables the generation of breakout signals based on the strategy\'s criteria. Activating this feature will allow the indicator to highlight potential breakout points above or below the defined session range, based on volume and price movement.'
+t9 = 'The threshold level, calculated as a percentage of the session\'s high-low range, serves as a criterion for assessing market activity. If the PMMV exceeds this threshold, it suggests heightened market activity. Increasing this percentage raises the activity level required to signal potential breakouts, making the strategy more selective. Decreasing it lowers the activity threshold, potentially increasing the frequency of breakout signals but with a risk of including less significant movements.'
+t10 = 'Turns on or off the visualization of the breakout threshold level on the chart. Enabling this setting helps to identify the price level at which a breakout signal would be generated, providing a clear target for observing potential breakouts'
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+session = input.session('0900-1000', 'Session', inline = 'sess', group = 'Session', tooltip = t1)
+utc = input.string('UTC+1', '', inline = 'sess', group = 'Session', tooltip = t2)
+hilo = input.bool(true, 'Session Range', inline = 'range', group = 'Session', tooltip = t3)
+sessionVol = input.bool(false, 'Session Volume', inline = 'range', group = 'Session')
+up = input.color(color.new(color.red, 0), '', inline = 'range', group = 'Session')
+dn = input.color(color.new(color.lime, 0), '', inline = 'range', group = 'Session')
+bgcol = input.color(color.new(color.blue, 0), '', inline = 'range', group = 'Session')
+
+vol = input.bool(true, 'Volume', inline = 'volc', group = 'PMMV', tooltip = t4)
+volc = input.color(color.rgb(64, 204, 209), '', inline = 'volc', group = 'PMMV')
+style = input.string('Line', '', ['Line', 'Area'], inline = 'volc', group = 'PMMV')
+
+N = input.int(20, title = 'Volume Period', minval = 1, inline = '', group = 'PMMV', tooltip = t5)
+pow = input.float(5.0, title = 'Volume Significance', minval = 1, inline = '', group = 'PMMV', tooltip = t6)
+sig = input.int(10, minval = 1, step = 2, maxval = 100, title = 'Volume Sensitivity', inline = 'sig', group = 'PMMV') * 100
+stocks = input.bool(false, title = 'Stocks', inline = 'sig', group = 'PMMV', tooltip = t7)
+
+br = input.bool(true, 'Breakout', inline = 'br', group = 'Breakout Signals', tooltip = t8)
+percentage = input.float(30, title = 'Breakout Thresold %', minval = 0, maxval = 100, group = 'Breakout Signals', inline = 'percentage', tooltip = t9) / 100
+BreakoutThresold = input.bool(false, title = '', group = 'Breakout Signals', inline = 'percentage')
+bt = input.color(color.blue, '', group = 'Breakout Signals', inline = 'percentage')
+bu = input.color(color.lime, '', inline = 'br', group = 'Breakout Signals')
+bd = input.color(color.red, '', inline = 'br', group = 'Breakout Signals')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b = bar_index
+sess = not na(time(timeframe.period, session, utc))
+SignalUp = false
+SignalDn = false
+var hi = float(na)
+var lo = float(na)
+var res = 1
+var box openingBox = na
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Function {
+conditionloop(cond_) =>
+    conditionMet = true
+    for i = 1 to 20 by 1
+        if cond_[i]
+            conditionMet := false
+            conditionMet
+    conditionMet
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Session {
+if sess and not sess[1]
+    hi := high
+    lo := low
+    res := 1
+    openingBox := box.new(left = bar_index, top = hi, right = bar_index + 1, bottom = lo, bgcolor = color.new(bgcol, 85), border_color = bgcol, border_width = 1)
+    openingBox
+
+if sess
+    hi := math.max(hi, high)
+    lo := math.min(lo, low)
+    res := res + 1
+    box.set_right(openingBox, bar_index + 1)
+    box.set_top(openingBox, hi)
+    box.set_bottom(openingBox, lo)
+    //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Calculate PMMV as the average volume over the last N days {
+nVol = math.sum(volume, N) / N
+d = stocks ? math.avg(ta.lowest(nVol * nVol, sig), ta.highest(nVol * nVol, sig)) : ta.highest(nVol * nVol, sig)
+PMMV = lo + nVol * nVol * (lo - (lo - (hi - lo) * .15)) * pow / d
+avgMa = ta.sma(PMMV, res)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ TORB Signal Conditions {
+closehi= ta.crossover(close, hi)
+closelo= ta.crossunder(close, lo)
+level = lo + (hi - lo) * percentage
+breakUp = PMMV > avgMa and PMMV >= level and closehi
+breakDn = PMMV > avgMa and PMMV >= level and closelo
+
+condUpOk = conditionloop(breakUp)
+condDnOk = conditionloop(breakDn)
+
+SignalUp := breakUp and condUpOk
+SignalDn := breakDn and condDnOk
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+nosess = not sess
+
+v1 = plot(vol ? ta.wma(PMMV, 5) : na, title = 'PMMV', style = plot.style_stepline, color = sessionVol ? volc : nosess ? volc : na)
+v2 = plot(BreakoutThresold ? level : na, title = 'Breakout Thresold Level', color = nosess ? bt : na)
+p1 = plot(hilo ? hi : na, 'Range High', color = nosess ? up : na, offset = +1)
+p2 = plot(hilo ? lo : na, 'Range Low', color = nosess ? dn : na, offset = +1)
+fill(v1, p2, vol and style == 'Area' and nosess ? color.new(volc, 50) : na)
+
+plotshape(br ? SignalUp : false, 'TORB - Break Up', shape.triangleup, location.belowbar, bu, size = size.small)
+plotshape(br ? SignalDn : false, 'TORB - Break Dn', shape.triangledown, location.abovebar, bd, size = size.small)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+//Session
+alertcondition(sess and not sess[1], 'Session Start', 'Session has started!')
+alertcondition(sess[1] and not sess, 'Session End', 'Session has ended!')
+
+//Breakout
+alertcondition(breakUp, 'TORB - Break Up', 'TORB - Break Up')
+alertcondition(breakDn, 'TORB - Break Dn', 'TORB - Break Dn')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

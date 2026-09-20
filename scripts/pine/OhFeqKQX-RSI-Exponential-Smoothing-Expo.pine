@@ -1,0 +1,184 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("RSI Exponential Smoothing (Expo)", overlay=true)
+
+// ~~ Inputs {
+rsiperiod = input.int(14,minval=2, title="RSI Period", inline="RSI")
+ob        = input.int(70,minval=50, maxval=100, title="Overbought", inline="obos")
+os        = input.int(30,minval=0, maxval=50, title="Oversold", inline="obos")
+obosbands = input.bool(true, title="OBOS Band", inline="RSI")
+fibbands  = input.bool(false, title="FIB Band", inline="RSI")
+labels    = input.bool(true, title="RSI Labels", inline="RSI")
+// ~~ Line Colors {
+ema_col    = input.color(color.rgb(0, 0, 255), title="EMA",inline="c")
+ema_ob_col = input.color(color.rgb(77, 255, 41), title="OB",inline="c")
+ema_os_col = input.color(color.rgb(255, 65, 47), title="OS",inline="c")
+ema_fib_col= input.color(color.blue, title="FIB",inline="c")
+//~~~}
+// ~~ Table Inputs {
+showTable      = input.bool(true,title="Show Table", inline="tbl", group="Table")
+validity_check = input.bool(false,title="Show Validity check", inline="tbl", group="Table")
+TblSize        = input.string(size.normal,title="",options=[size.auto,size.tiny,size.small,size.normal,size.large,size.huge],inline="tbl", group="Table")
+pos            = input.string(position.top_right, title="",options =[position.top_right,position.top_center,
+ position.top_left,position.bottom_right,position.bottom_center,position.bottom_left,position.middle_right,position.middle_left],inline="tbl", group="Table")
+textcolor      = input.color(color.white, title="Text",inline="tbl_col", group="Table")
+bgcolor        = input.color(color.new(color.blue,30), title="Bg",inline="tbl_col", group="Table")
+postrend       = input.color(color.new(color.lime,0), title="Trend",inline="tbl_col", group="Table")
+negtrend       = input.color(color.new(color.red,0), title="",inline="tbl_col", group="Table")
+ob_col         = input.color(color.new(color.lime,0), title="OB/OS",inline="tbl_col", group="Table")
+os_col         = input.color(color.new(color.red,0), title="",inline="tbl_col", group="Table")
+//~~~}
+//~~~~~~}
+
+// ~~ EMA RSI Approx Calculation { 
+// ~~ Exponential Smoothing Coefficient Calculation {   
+exponential_period    = 2 * rsiperiod - 1 // "exponential_period" is the length of the moving average, represented as "2 * rsiperiod - 1", where "rsiperiod" is a user-defined value.
+smoothing_coefficient = 2 / (exponential_period + 1) // "smoothing_coefficient" is a value used to calculate the EMA, represented as "2 / (exponential_period + 1)". This value determines the weight given to the current observation versus the previous average in the calculation.
+//~~~}
+
+// ~~ Exponential Smoothing RSI Calculation {  
+// The code calculates two running averages, "averageUp" and "averageDown", using the exponential smoothing formula with the smoothing coefficient value defined in the previous code snippet.
+// The "netValue" variable is then calculated as the weighted difference between the "averageUp" and "averageDown" values, with a factor determined by the user-defined "rsiperiod" value.
+// The "result" variable is calculated based on the sign of "netValue". If "netValue" is positive, the result is equal to the current close price plus "netValue". If "netValue" is negative, the result is equal to the close price plus a fraction of "netValue" determined by the "level" parameter
+emaresult(level)=>
+    averageUp   = 0.0
+    averageDown = 0.0
+    averageUp   := close > close[1] ? smoothing_coefficient* (close - close[1]) + (1 - smoothing_coefficient) * (averageUp[1] ? averageUp[1] : 1) : (1-smoothing_coefficient) * (averageUp[1] ? averageUp[1] : 1)
+    averageDown := close > close[1] ? (1-smoothing_coefficient) * (averageDown[1] ? averageDown[1] : 1) : smoothing_coefficient * (close[1] - close) + (1 - smoothing_coefficient) * (averageDown[1] ? averageDown[1] : 1)
+    netValue    = (rsiperiod - 1) * (averageDown * level / (100 - level) - averageUp)
+    result      = netValue >= 0 ? close + netValue : close + netValue * (100 - level) / level
+//~~~}
+
+// ~~ Return EMA {  
+ema_result = emaresult(50)
+// Plot the Optimal EMA based on the RSI value
+plot(ema_result, color=ema_col, title="Optimal EMA")
+//~~~}
+//~~~~~~}
+
+// ~~ Calculate RSI Standard Deviation, in order to calculate the Deviation {  
+StandardDeviation(src, period)=>
+    mean              = ta.sma(src, period)
+    squared_diff      = ((src - mean) * (src - mean))
+    sum_squared_diff  = math.sum(squared_diff, period)
+    std_dev           = math.sqrt(sum_squared_diff/period)
+//~~~}
+
+// ~~ Return RSI Standard Deviation  {  
+rsi     = ta.rsi(close,rsiperiod)
+std_dev = StandardDeviation(rsi, rsiperiod)
+//~~~}
+
+// ~~ Calculate Deviation  {  
+//It calculates the difference between the RSI value of (level) and the RSI mean value, then divides that difference by the standard deviation. 
+//This number represents how many standard deviations away the RSI Level is from its mean.
+dev(obos)=>
+    deviating = (obos-ema_result)/std_dev
+//~~~}
+
+// ~~ Hull Moving Average Calculation, in order to smooth the Upper OB and Lower OS lines  {  
+hma(src,len)=>
+    wma1 = ta.wma(2 * ta.wma(src, len/2) - ta.wma(src, len), math.round(math.sqrt(0.5)))
+    wma2 = ta.wma(2 * ta.wma(wma1, len/2) - ta.wma(wma1, len), math.round(math.sqrt(0.5)))
+//~~~}
+
+// ~~ Return EMA OB/OS Lines { 
+// Deviation refers to how far a data point is from the mean (average) of the data set. It is calculated as the difference between the data point and the mean.
+// Standard deviation is a measure of how much the values in a data set vary around the mean. It provides a summary of the distribution of the data.
+// When the deviation of a data point is multiplied by the standard deviation, it gives us a measure of how many standard deviations away from the mean the data point is. 
+// This measure is useful in understanding the level of variation in the data set and making predictions about the data.
+// The deviation * stdev is used to add an offset to the EMA calculation
+// It returns the Upper Overbougth and Lower Oversold levels on the chart.
+ob_dev = dev(emaresult(ob)) // The deviation of the OB level from the mean. This number represents how many standard deviations away the OB Level is from its mean.
+os_dev = dev(emaresult(os)) // The deviation of the OS level from the mean. This number represents how many standard deviations away the OS Level is from its mean.
+upper  = hma(ta.rma(ema_result + (ob_dev*std_dev),3),10) // Returns the upper OB line on the chart. 
+lower  = hma(ta.rma(ema_result + (os_dev*std_dev),3),10) // Returns the upper OS line on the chart.
+
+// ~~ Plot Upper OB and Lower OS lines on the chart { 
+plot(obosbands?upper:na, "Upper OB", color=ema_ob_col)
+plot(obosbands?lower:na, "Lower OS", color=ema_os_col)
+plot(obosbands?upper - ta.stdev(upper,2):na, "Upper OB", color=ema_ob_col)
+plot(obosbands?lower + ta.stdev(lower,2):na, "Lower OS", color=ema_os_col)
+//~~~}
+//~~~~~~}
+
+// ~~ Calculate fib 50% from OB to 50 level and OS to 50 level { 
+fib(src)=>
+    fib = ema_result + (src-ema_result)*0.5
+
+// ~~ Plot the Fib lines on the chart { 
+plot(fibbands?fib(upper):na, "Upper Fib 50%", color=ema_fib_col)
+plot(fibbands?fib(lower):na, "Lower Fib 50%", color=ema_fib_col)
+//~~~}
+//~~~~~~}
+
+// ~~ Validity Checks { 
+// ~~ Store crossover values to check Validity { 
+// ~~ Optimal EMA Length { 
+emavalue  =  2*rsiperiod-1
+ema       =  ta.ema(close,emavalue)
+//~~~}
+var occurrence     = 0
+var non_occurrence = 0
+if (ta.crossover(rsi,50) and ta.crossover(close,ema)) or (ta.crossunder(rsi,50) and ta.crossunder(close,ema))
+    occurrence += 1
+if (ta.crossover(rsi,50) and not ta.crossover(close,ema)) or (ta.crossunder(rsi,50) and not ta.crossunder(close,ema))
+    non_occurrence += 1
+//~~~~~~}
+
+// ~~ Precentage Check { 
+//The resulting value tells you how many occurrences there are relative to the total number of events, expressed as a percentage.
+percent = ((math.abs(occurrence)/(occurrence + non_occurrence) * 100))
+//~~~}
+
+// ~~ Inputs to Table { 
+// ~~ Trend Direction { 
+dir   = rsi>50?true:false
+sign  = dir == true?" > 50 ":" < 50"
+trend = dir == true?"Bullish":"Bearish"
+col   = dir == true?postrend:negtrend
+//~~~}
+
+// ~~ Overbought & Oversold { 
+ob_       = rsi>ob ?true:false
+os_       = rsi<os?true:false
+obos_sign = ob_? " > " + str.tostring(ob):os_? " < " + str.tostring(os):""
+obos_text = ob_? "Overbought":os_? "Oversold":""
+obos_col  = ob_?ob_col:os_?os_col:color.white
+//~~~}
+//~~~~~~}
+
+// ~~ Table { 
+tbl            = table.new(pos, 2, 11, frame_color=chart.bg_color, frame_width=2, border_width=2, border_color=chart.bg_color)
+if barstate.islast and showTable
+    tbl.cell(0, 0, text="RSI Value", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+    tbl.cell(0, 1, text=str.tostring(rsiperiod), text_halign=text.align_center, bgcolor=bgcolor, text_color=textcolor, text_size=TblSize)
+    tbl.cell(1, 0, text="EMA Value", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+    tbl.cell(1, 1, text=str.tostring(emavalue), text_halign=text.align_center, bgcolor=bgcolor, text_color=textcolor, text_size=TblSize)
+    tbl.cell(0, 2, text="RSI" + sign + "", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+    tbl.cell(1, 2, text=trend, text_halign=text.align_center, bgcolor=col, text_color=textcolor, text_size=TblSize)
+    if (ob_) or (os_)
+        tbl.cell(0, 3, text="RSI" + obos_sign + "", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+        tbl.cell(1, 3, text=obos_text, text_halign=text.align_center, bgcolor=obos_col, text_color=textcolor, text_size=TblSize)
+    if validity_check    
+        tbl.cell(0, 4, text="Validity Check", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+        tbl.cell(1, 4, text=str.tostring(percent,format.percent), text_halign=text.align_center, bgcolor=color.new(color.lime,30), text_color=textcolor, text_size=TblSize)    
+        tbl.cell(0, 5, text="RSI Stdev", text_color=textcolor, bgcolor=bgcolor, text_size=TblSize)
+        tbl.cell(1, 5, text=str.tostring(math.round(std_dev)), text_halign=text.align_center, bgcolor=color.new(color.lime,30), text_color=textcolor, text_size=TblSize) 
+
+
+// ~~ Labels { 
+labelfunc(bool_,n, line_, text_, label_col, text_col, size_)=>
+    label l = bool_?label.new(bar_index + n,line_,text=text_,color=label_col,
+      style=label.style_label_left,textcolor=text_col,size=size_,
+      textalign=text.align_left):na
+    label.delete(l[1])
+
+labelfunc(labels,5, ema_result, "RSI 50" , color.blue, color.white, size.small)
+labelfunc(labels,5, upper, "RSI " + str.tostring(ob) , color.green, color.white, size.small)   
+labelfunc(labels,5, lower, "RSI " + str.tostring(os) , color.red, color.white, size.small)    
+labelfunc(fibbands and labels,1, fib(upper), "FIB 50 %" , color.blue, color.white, size.tiny) 
+labelfunc(fibbands and labels,1, fib(lower), "FIB 50 %" , color.blue, color.white, size.tiny)     
+//~~~}

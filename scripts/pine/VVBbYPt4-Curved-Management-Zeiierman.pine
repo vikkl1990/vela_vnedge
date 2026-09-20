@@ -1,0 +1,87 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("Curved Management (Zeiierman)",overlay=true)
+//~~}
+
+// ~~ Tooltip {
+t1="Select the trade direction"
+t2="Sets the ratio for take profit relative to stop loss. Increasing this value will set your take profit further from the entry, and decreasing will bring it closer."
+t3="Choose the curve style for take profit visualization. 'Rounded' gives a curved edge, 'Plane' gives a straight edge, and 'Rounded Intersection' combines Entry & TP. \n\nSelect the color of the take profit visualization. \n\nAdjust the transparency level of the take profit visualization. A higher value increases transparency, making it more see-through."
+t4="Multiplier for calculating stop loss based on the ATR value. Increasing this makes your stop loss further from the entry, while decreasing brings it closer."
+t5="Choose the curve style for stop loss visualization. 'Rounded' gives a curved edge, 'Plane' gives a straight edge, and 'Rounded Intersection' combines Entry & SL. \n\nSelect the color of the stop loss visualization. \n\nAdjust the transparency level of the stop loss visualization. A higher value increases transparency, making it more see-through."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+los   = input.string("Long","Trade Direction",options=["Long","Short"],group="Trade Direction",tooltip=t1)
+
+rr       = input.float(1.5,"Reward Multiplier",step=.1,group="Take Profit",tooltip=t2)
+tpc      = input.string("Plane","",options=["Rounded","Plane","Rounded Intersection"],group="Take Profit",inline="tp")
+tpcol    = input.color(color.lime,"",group="Take Profit",inline="tp")
+tptransp = input.int(75,"",group="Take Profit",inline="tp",tooltip=t3)
+
+mult     = input.float(1.5,"Risk Multiplier",step=.1,group="Trade",inline="mult",tooltip=t4)
+slc      = input.string("Rounded","",options=["Rounded","Plane","Rounded Intersection"],group="Trade",inline="sl")
+slcol    = input.color(color.red,"",group="Trade",inline="sl")
+sltransp = input.int(75,"",group="Trade",inline="sl",tooltip=t5)
+
+entLab = input.bool(true,"Entry Label",group="Appearance",inline="Appearance")
+tpLab  = input.bool(true,"TP Label",group="Appearance",inline="Appearance")
+slLab  = input.bool(true,"Stop Label",group="Appearance",inline="Appearance")
+width  = input.int(20,"Width of Trade Management",group="Appearance",inline="Appearance")
+
+x = input.time(0, "Entry & Time Info",confirm=true,group="Entry & Time",inline="xy")
+y = input.price(0,"Entry & Time Info",confirm=true,group="Entry & Time",inline="xy")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+atr = ta.atr(10)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+TimeToIndex()=>
+    d = 86400000
+    t = switch
+        timeframe.isseconds => 1000
+        timeframe.isminutes => 60000
+        timeframe.isdaily   => d
+        timeframe.isweekly  => d*7
+        timeframe.ismonthly => d*30
+    output = timeframe.multiplier*t
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Calculate trade management {
+if barstate.islastconfirmedhistory
+    var stop = array.new<chart.point>()
+    var tp   = array.new<chart.point>()
+
+    t   = TimeToIndex()*width
+    x1  = los=="Long"?x-t:x+t
+    x2  = los=="Long"?x+t:x-t
+    sly = los=="Long"?y-atr*mult:y+atr*mult
+    tpy = los=="Long"?y+(y-sly)*rr:y-(sly-y)*rr
+
+    stop.push(chart.point.from_time(x1,y))
+    stop.push(chart.point.from_time(x,sly))
+    stop.push(chart.point.from_time(x2,y))
+
+    tp.push(chart.point.from_time(x1,y))
+    tp.push(chart.point.from_time(x1,tpy))
+    tp.push(chart.point.from_time(x2,tpy))
+    tp.push(chart.point.from_time(x2,y))
+
+    polyline.new(stop,slc!="Plane"?true:false,slc=="Rounded Intersection"?true:false,xloc.bar_time,slcol,color.new(slcol,sltransp))
+    polyline.new(tp,tpc!="Plane"?true:false,tpc=="Rounded Intersection"?true:false,xloc.bar_time,tpcol,color.new(tpcol,tptransp))
+
+    //Labels
+    if entLab
+        label.new(chart.point.from_time(x+t*2,y),"Entry: "+str.tostring(y,format.mintick),xloc.bar_time,
+         style=label.style_label_right,color=na,textcolor=chart.fg_color)
+    if tpLab
+        label.new(chart.point.from_time(x+t*2,tpy),"TP: "+str.tostring(tpy,format.mintick),xloc.bar_time,
+         style=label.style_label_right,color=na,textcolor=chart.fg_color)
+    if slLab
+        label.new(chart.point.from_time(x+t*2,sly),"Stoploss: "+str.tostring(sly,format.mintick),xloc.bar_time,
+         style=label.style_label_right,color=na,textcolor=chart.fg_color)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

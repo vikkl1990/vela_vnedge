@@ -1,0 +1,130 @@
+
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+
+//@version=5
+indicator("Average Down [Zeiierman]", overlay=true)
+
+//Number Of Open Positions
+size = input.int(2, title = "Number Of Open Positions", minval=1, maxval=5, confirm=true, tooltip="Enter how many open postions you have.")
+
+//Entry Price
+var float [] positions = array.from(
+ size > 0 ? input.price(0.0, title="Entry 1", confirm=true, group="Entries", inline="1") : na,
+ size > 1 ? input.price(0.0, title="Entry 2", confirm=true, group="Entries", inline="2") : na,
+ size > 2 ? input.price(0.0, title="Entry 3", confirm=true, group="Entries", inline="3") : na,
+ size > 3 ? input.price(0.0, title="Entry 4", confirm=true, group="Entries", inline="4") : na,
+ size > 4 ? input.price(0.0, title="Entry 5", confirm=true, group="Entries", inline="5") : na)
+
+//Number Of Contracts
+var float [] contracts = array.from(
+ size > 0 ? input.float(1.0, minval=1, title="Contracts", confirm=true, group="Entries", inline="1") : na,
+ size > 1 ? input.float(1.0, minval=1,title="Contracts", confirm=true, group="Entries", inline="2") : na,
+ size > 2 ? input.float(1.0, minval=1,title="Contracts", confirm=true, group="Entries", inline="3") : na,
+ size > 3 ? input.float(1.0, minval=1,title="Contracts", confirm=true, group="Entries", inline="4") : na,
+ size > 4 ? input.float(1.0, minval=1,title="Contracts", confirm=true, group="Entries", inline="5") : na)
+
+//String Label
+bool txt_ = input.bool(true, title="Label Description", group="Label")
+var bool [] str_bool = array.from(
+ input.bool(true, title="Average Entry Price", group="Label"),
+ input.bool(true, title="Number of Contracts", group="Label"),
+ input.bool(true, title="Profit & Loss",       group="Label"))
+
+//Label Coloring
+color p_col = input.color(color.new(color.green,0),    title="Profit", group="Label", inline="col") //#38E100
+color l_col = input.color(color.new(color.red,0),    title="Loss", group="Label", inline="col") //#E10004
+color text_ = input.color(color.new(color.white,0), title="Text", group="Label", inline="col")
+
+//Linestyle
+bool pos       = input.bool(true, title="Entries", group="Linestyle")
+bool ext       = input.bool(false, title="Extend", group="Linestyle", inline="style")
+string style_  = input.string("Dotted", title="Linestyle", options=["Solid", "Dashed", "Dotted"], group="Linestyle", inline="style")
+int width      = input.int(3, title="Width", minval=1, maxval=10, group="Linestyle", inline="style")
+bool live      = input.bool(false, title="Live Line Coloring", group="Linestyle")
+
+style = style_=="Solid" ? line.style_solid :
+     style_=="Dashed" ? line.style_dashed : 
+     style_=="Dotted" ? line.style_dotted : 
+     na
+
+//Var
+e1  = array.get(positions,0)
+e2  = array.get(positions,1)
+sum = array.new_float(0)
+ll  = array.new_line(0)
+var label [] la  = array.new_label(5,label(na))
+
+//Calculation
+LONG = e1>e2
+SHORT = e2>e1
+for i = 0 to (size - 1)
+    x = array.get(positions,i)*array.get(contracts,i)
+    array.push(sum,x)
+    y = array.get(positions,i)
+    if LONG and ta.crossover(close,y) or SHORT and ta.crossunder(close,y)
+        alert("You're in Profit with: " + str.tostring(array.get(contracts,i)) + " contracts on: " + str.tostring(syminfo.ticker), alert.freq_once_per_bar)
+    col = LONG and close>y?p_col : SHORT and close<y?p_col : l_col 
+    if pos
+        array.push(ll, line.new(bar_index[live?1:5],y,bar_index,y, extend=ext?extend.right:extend.none, color=col, style=line.style_solid, width=1))
+    if txt_ and barstate.islast
+        str = "E"+str.tostring(i+1)+": "+str.tostring(math.round_to_mintick(y))
+        lab_pos = close<=y?label.style_label_lower_right:label.style_label_upper_right
+        label.delete(array.get(la,i))
+        array.set(la, i, label.new(bar_index+5, y, str, color=color.new(color.black,100), style=ext?lab_pos:label.style_label_left, textcolor=col, textalign=text.align_left))
+avg = array.sum(sum)/array.sum(contracts)
+
+//Coloring
+col = LONG and close>avg ? p_col : 
+      LONG and close<avg ? l_col :
+      SHORT and close<avg ? p_col : 
+      SHORT and close>avg ? l_col :
+     color.new(color.blue,50)
+
+//Line
+l = line.new(bar_index+28,avg,bar_index,avg, extend=ext?extend.both:extend.none, color=col, style=style, width=1)
+line.delete(l[1])
+
+//Label
+if array.includes(str_bool, true)
+    string [] txt = array.from("Average Price: ", "Open Contracts: ", "Current PnL: ")
+    float [] str_vals = array.from(math.round_to_mintick(avg),array.sum(contracts),math.round_to_mintick(LONG?close-avg:avg-close))
+    str = array.new_string()
+    for i=0 to array.size(str_bool)-1
+        if array.get(str_bool,i)
+            array.push(str,txt_?array.get(txt,i) + str.tostring(array.get(str_vals,i)) : str.tostring(array.get(str_vals,i)))
+    la = label.new(bar_index+30,avg, text=array.join(str,'\n'), color=col, textcolor=text_, style=label.style_label_left, textalign=text.align_center, size=size.small)
+    label.delete(la[1])
+
+//Alerts
+if LONG and ta.crossover(close,avg) or SHORT and ta.crossunder(close,avg)
+    alert("You're in Profit with: " + str.tostring(array.sum(contracts)) + " contracts on: " + str.tostring(syminfo.ticker), alert.freq_once_per_bar)
+
+
+// Input Table 
+tc       = input.bool(true, title="Show Active Position Table", group="Show Table")
+position_    =   input.string("Bottom Right", "Table Position", options=["Bottom Right", "Bottom Left", "Top Right"], group="Show Table")
+
+position = position_=="Bottom Right" ? position.bottom_right:
+     position_=="Bottom Left" ? position.bottom_left : 
+     position_=="Top Right" ? position.top_right : 
+     na
+
+t = LONG?"LONG":"SHORT"
+c = LONG?color.new(color.lime,0):color.new(color.red,0)
+
+// Table 
+var table position_table = table.new(position,1,1,color.new(color.blue,100),tc?c:na,1,tc?c:na)
+table_(x,y,z) =>
+    table.cell(position_table, x, y, z, text_color=c, bgcolor=color.new(#11132d,50),text_size= size.small)
+if tc
+    table_(0,0,t)
+
+
+
+
+
+
+
+

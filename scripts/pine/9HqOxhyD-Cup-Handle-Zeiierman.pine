@@ -1,0 +1,229 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator("Cup & Handle (Zeiierman)", overlay=true, max_lines_count=500, max_labels_count=500, max_polylines_count=100)
+//}
+
+// ~~ Tooltips {
+var string t1  = "Pivot span:\nControls how many bars are used to confirm swing highs/lows.\nHigher = fewer but stronger pivots.\nLower = more signals but more noise."
+var string t2  = "Rim similarity tolerance (%):\nHow close the left rim and right rim must be.\nLower = stricter, cleaner cups.\nHigher = more patterns detected."
+var string t3  = "Handle retrace min:\nMinimum depth of the handle pullback relative to cup depth.\nToo small = weak handle.\nTypical: 0.10–0.15."
+var string t4  = "Handle retrace max:\nMaximum depth of the handle pullback.\nToo large = messy structure.\nTypical: 0.45–0.60."
+var string t5  = "Invalidation (handle max retrace %):\nDefines when the pattern fails.\nLower = tighter stop.\nHigher = looser stop."
+var string t6  = "Require breakout confirmation:\nIf enabled, pattern triggers only after price breaks above (bull) or below (bear) the rim.\nOff = earlier detection.\nOn = higher quality confirmation."
+var string t7  = "Target multiplier (× cup depth):\nControls how far the projection target is.\n1.0 = classic rim ± depth.\n0.3–0.7 = closer targets."
+var string t8  = "Show pattern name:\nDisplays a label on the cup structure."
+var string t9  = "Bullish fill:\nBackground fill color for bullish cup & handle."
+var string t10 = "Bullish border:\nOutline color for bullish cup & handle."
+var string t11 = "Bearish fill:\nBackground fill color for inverted (bearish) cup & handle."
+var string t12 = "Bearish border:\nOutline color for inverted (bearish) cup & handle."
+var string t13 = "Width:\nLine thickness of the cup and handle curves."
+var string t14 = "Style:\nLine style of the cup and handle curves."
+var string t15 = "Show target line:\nDraws the projected price target line for the pattern."
+var string t16 = "Target width:\nThickness of the target projection line."
+var string t17 = "Target style:\nLine style of the target projection line."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Settings {
+pivotSpan    = input.int(10, "Pivot span", minval=2, step=1, group="Cup & Handle", tooltip=t1)
+rimTolPct    = input.int(18, "Rim similarity tolerance (%)", minval=0, maxval=50, step=1, group="Cup & Handle", tooltip=t2)
+hMin         = input.float(0.12, "Handle retrace min", minval=0.01, step=0.01, group="Cup & Handle", tooltip=t3)
+hMax         = input.float(0.55, "Handle retrace max", minval=0.05, step=0.01, group="Cup & Handle", tooltip=t4)
+killAtFib    = input.float(61.8, "Invalidation (handle max retrace %) ", minval=10, maxval=100, step=0.1, group="Cup & Handle", tooltip=t5) / 100.0
+needConfirm  = input.bool(false, "Require breakout confirmation", group="Cup & Handle", tooltip=t6)
+targetMult   = input.float(0.5, "Target multiplier (× cup depth)", minval=0.1, maxval=3.0, step=0.05, group="Cup & Handle", tooltip=t7)
+
+showName     = input.bool(true, "Show pattern name", group="Style", tooltip=t8)
+
+bgBull       = input.color(color.new(color.lime, 82), "Bullish fill", group="Style", inline="bull", tooltip=t9)
+lnBull       = input.color(color.new(color.lime, 35), "Bullish border", group="Style", inline="bull", tooltip=t10)
+
+bgBear       = input.color(color.new(color.red, 82), "Bearish fill", group="Style", inline="bear", tooltip=t11)
+lnBear       = input.color(color.new(color.red, 35), "Bearish border", group="Style", inline="bear", tooltip=t12)
+
+wOk          = input.int(2, "Width", minval=1, group="Style", inline="w1", tooltip=t13)
+stOk         = input.string("Solid", "Style", options=["Solid","Dashed","Dotted"], group="Style", inline="w1", tooltip=t14)
+
+showTarget   = input.bool(true, "Show target line", group="Style", tooltip=t15)
+targetWidth  = input.int(2, "Target width", minval=1, group="Style", inline="t1", tooltip=t16)
+targetStyle  = input.string("Dashed", "Target style", options=["Solid","Dashed","Dotted"], group="Style", inline="t1", tooltip=t17)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Helpers {
+f_lineStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+f_near(float a, float b, float tolPct) =>
+    a == 0 or b == 0 ? false : math.abs(a - b) / math.abs(a) <= tolPct / 100.0
+
+f_depth(float rim, float bowl) =>
+    math.abs(rim - bowl)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Pivot stream {
+type Swing
+    float p
+    int   i
+    int   d   // +1 = high pivot, -1 = low pivot
+
+var Swing[] swings = array.new<Swing>()
+
+f_pushSwing(float price, int idx, int dir) =>
+    if array.size(swings) == 0
+        array.push(swings, Swing.new(price, idx, dir))
+    else
+        last = array.get(swings, array.size(swings) - 1)
+        if last.d == dir
+            better = dir == 1 ? price > last.p : price < last.p
+            if better
+                array.set(swings, array.size(swings) - 1, Swing.new(price, idx, dir))
+        else
+            array.push(swings, Swing.new(price, idx, dir))
+    if array.size(swings) > 12
+        array.shift(swings)
+
+ph = ta.pivothigh(high, pivotSpan, pivotSpan)
+pl = ta.pivotlow(low, pivotSpan, pivotSpan)
+
+if not na(ph)
+    f_pushSwing(ph, bar_index - pivotSpan, +1)
+if not na(pl)
+    f_pushSwing(pl, bar_index - pivotSpan, -1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Pattern record + storage {
+type BrewPattern
+    chart.point[] cupPts
+    chart.point[] hdlPts
+    polyline cupLine
+    polyline hdlLine
+    line tgtLine
+    label nameTag
+    int   side
+    int   state      // 1 active, -1 invalid, 2 target hit
+    float rimPrice
+    float invPrice
+    float tgtPrice
+    int   rimBar
+
+var BrewPattern[] found = array.new<BrewPattern>()
+
+f_kill(BrewPattern pat) =>
+    polyline.delete(pat.cupLine)
+    polyline.delete(pat.hdlLine)
+    if not na(pat.tgtLine)
+        line.delete(pat.tgtLine)
+    if not na(pat.nameTag)
+        label.delete(pat.nameTag)
+
+f_isDuplicate(int rimIdx, float rimPx) =>
+    if array.size(found) == 0
+        false
+    else
+        last = array.get(found, array.size(found) - 1)
+        rimIdx == last.rimBar or f_near(rimPx, last.rimPrice, 0.15)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Detection {
+Swing s0 = na
+Swing s1 = na
+Swing s2 = na
+Swing s3 = na
+
+int n = array.size(swings)
+if n >= 4
+    s0 := array.get(swings, n - 4)
+    s1 := array.get(swings, n - 3)
+    s2 := array.get(swings, n - 2)
+    s3 := array.get(swings, n - 1)
+
+bool newSignal = false
+int  newSide   = 0
+
+if not na(s0) and not na(s1) and not na(s2) and not na(s3)
+    isSeqNorm = (s0.d == +1 and s1.d == -1 and s2.d == +1 and s3.d == -1)
+    isSeqInv  = (s0.d == -1 and s1.d == +1 and s2.d == -1 and s3.d == +1)
+
+    if isSeqNorm or isSeqInv
+        side = isSeqNorm ? +1 : -1
+
+        Lp = s0.p, Li = s0.i
+        Bp = s1.p, Bi = s1.i
+        Rp = s2.p, Ri = s2.i
+        Hp = s3.p, Hi = s3.i
+
+        useFill = side == +1 ? bgBull : bgBear
+        useLine = side == +1 ? lnBull : lnBear
+
+        rimPrice = side == +1 ? math.min(Lp, Rp) : math.max(Lp, Rp)
+        depth    = f_depth(rimPrice, Bp)
+        rimOk    = f_near(Lp, Rp, rimTolPct)
+        hRet     = depth == 0 ? 10.0 : math.abs(rimPrice - Hp) / depth
+        handleOk = (hRet >= hMin and hRet <= hMax)
+        sideOk   = side == +1 ? Hp < rimPrice : Hp > rimPrice
+        invPrice = side == +1 ? (Rp - depth * killAtFib) : (Rp + depth * killAtFib)
+        tgtPrice  = side == +1 ? (Rp + depth * targetMult) : (Rp - depth * targetMult)
+        confirmOk = not needConfirm ? true : (side == +1 ? close > rimPrice : close < rimPrice)
+        ok        = rimOk and handleOk and sideOk and confirmOk
+
+        if ok and not f_isDuplicate(Li, rimPrice)
+            midBar = Ri - (Ri - Li) / 2
+
+            cupPts = array.new<chart.point>()
+            array.push(cupPts, chart.point.from_index(Li, rimPrice))
+            array.push(cupPts, chart.point.from_index(midBar, Bp))
+            array.push(cupPts, chart.point.from_index(Ri, rimPrice))
+
+            hdlPts = array.new<chart.point>()
+            projBar = Hi + (Hi - Ri)
+            array.push(hdlPts, chart.point.from_index(Ri, rimPrice))
+            array.push(hdlPts, chart.point.from_index(Hi, Hp))
+            array.push(hdlPts, chart.point.from_index(projBar, rimPrice))
+
+            cupPL = polyline.new(cupPts, line_color=useLine, fill_color=useFill, line_width=wOk, line_style=f_lineStyle(stOk), curved=true)
+            hdlPL = polyline.new(hdlPts, line_color=useLine, fill_color=useFill, line_width=wOk, line_style=f_lineStyle(stOk), curved=true)
+
+            // target line
+            extendBars = 25
+            line tgtLn = na
+            if showTarget
+                tgtCol = side == +1 ? color.new(color.lime, 0) : color.new(color.red, 0)
+                tgtLn := line.new(Ri, tgtPrice, Hi + extendBars, tgtPrice, color=tgtCol, width=targetWidth, style=f_lineStyle(targetStyle))
+
+            label tag = na
+            if showName
+                txt = side == +1 ? "Cup+Handle" : "Inv Cup+Handle"
+                tagCol = side == +1 ? color.new(color.lime, 70) : color.new(color.red, 70)
+                tag := label.new(midBar, rimPrice, txt, style=label.style_label_center, textcolor=color.white, color=tagCol, size=size.small)
+
+            rec = BrewPattern.new(
+                 cupPts, hdlPts,
+                 cupPL, hdlPL,
+                 tgtLn,
+                 tag,
+                 side, 1,
+                 rimPrice, invPrice, tgtPrice,
+                 Li
+            )
+            array.push(found, rec)
+
+            newSignal := true
+            newSide   := side
+
+if array.size(found) > 0
+    last = array.get(found, array.size(found)-1)
+
+    if last.state == 1
+        invHit = (last.side == +1 and low <= last.invPrice) or
+                 (last.side == -1 and high >= last.invPrice)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Alerts {
+alertcondition(newSignal and newSide == +1, title="Cup & Handle (Brewed)", message="Cup & Handle detected on {{ticker}}")
+alertcondition(newSignal and newSide == -1, title="Inverted Cup & Handle (Brewed)", message="Inverted Cup & Handle detected on {{ticker}}")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,174 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+//@version=6
+indicator('Absolute Strength Index [ASI] (Zeiierman)', overlay = false, precision = 1)
+//~~}
+
+//~~ Tooltips {
+string t1 = 'Returns Lookback: Sets the number of previous bars to consider when calculating returns. A higher value makes the oscillator smoother, reducing sensitivity to short-term price changes.'
+string t2 = 'Top Percentile (Winners): Defines the percentile threshold for identifying top-performing returns. Determines the cutoff for considering returns as winners.'
+string t3 = 'Bottom Percentile (Losers): Defines the percentile threshold for identifying bottom-performing returns. Determines the cutoff for considering returns as losers.'
+string t4 = 'MA Type: Select the type of moving average to apply to the ASI. Options include:\n\n• None: No Moving Average.\n• SMA: Simple Moving Average.\n• EMA: Exponential Moving Average.\n• WMA: Weighted Moving Average.\n• RMA: Running Moving Average.\n• HMA: Hull Moving Average.'
+string t5 = 'MA Length: Sets the length for the selected moving average type. A longer length results in a smoother moving average, while a shorter length makes it more responsive to recent changes.'
+string t6 = 'Divergence: Enables or disables the divergence detection feature. When enabled, the indicator will plot bullish and bearish divergence signals based on ASI and price action.'
+string t7 = 'Lookback: Sets the number of bars used to detect divergences. A larger lookback period makes divergence detection less sensitive, filtering out minor fluctuations, while a smaller period increases sensitivity to recent changes.'
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Enum Definition {
+enum MA_Type
+    SMA = "SMA"
+    EMA = "EMA"
+    WMA = "WMA"
+    RMA = "RMA"
+    HMA = "HMA"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+returnLookback   = input.int(15, 'Returns Lookback', minval=3, group="Absolute Strength Index [ASI]", inline="", tooltip=t1)
+topPercentile    = input.float(0.15, 'Top Percentile (Winners)', minval = 0.05, maxval = 0.3, step=0.01, group="Absolute Strength Index [ASI]", inline="", tooltip=t2)
+bottomPercentile = input.float(0.15, 'Bottom Percentile (Losers)', minval = 0.05, maxval = 0.3, step=0.01, group="Absolute Strength Index [ASI]", inline="", tooltip=t3)
+
+maTypeInput   = input.enum(MA_Type.SMA, title="Signal Line", group="Absolute Strength Index [ASI]", inline="", tooltip=t4)
+maLengthInput = input.int(14, "Signal Length", group="Absolute Strength Index [ASI]", inline="", tooltip=t5)
+
+asiColor   = input.color(color.blue, title="", group="Absolute Strength Index [ASI]", inline="ASI style")
+maAsiColor = input.color(color.yellow, title="", group="Absolute Strength Index [ASI]", inline="ASI style")
+fillColor  = input.color(#94def0, title="", group="Absolute Strength Index [ASI]", inline="ASI style")
+
+obColor  = input.color(color.lime, title="", group="Absolute Strength Index [ASI]", inline="ASI style")
+osColor  = input.color(color.red, title="", group="Absolute Strength Index [ASI]", inline="ASI style")
+
+calculateDivergence = input.bool(false, title="Divergence", group="Divergence", inline="", tooltip=t6)
+lookback            = input.int(20, title="lookback", minval=1, group="Divergence", inline="", tooltip=t7)
+bearColor = input.color(color.red, title="", group="Divergence", inline="style")
+bullColor = input.color(color.green, title="", group="Divergence", inline="style")
+textColor = input.color(color.white, title="", group="Divergence", inline="style")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Calculate Returns {
+Returns = array.new_float()
+
+for i = 1 to returnLookback
+    if not na(close[i]) and not na(close[i + 1])
+        ret = close[i] / close[i + 1] - 1
+        Returns.push(ret)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Calculate ASI {
+ASI  = 0.0
+if Returns.size() > 0
+    sortedReturns = Returns.copy()
+    sortedReturns.sort(order.ascending)
+
+    // Determine Thresholds for Winners and Losers
+    thresholdWinnerIndex = math.ceil(sortedReturns.size() * (1 - topPercentile)) - 1
+    thresholdLoserIndex  = math.ceil(sortedReturns.size() * bottomPercentile) - 1
+
+    // Handle edge cases
+    thresholdWinner = thresholdWinnerIndex >= 0 and thresholdWinnerIndex < sortedReturns.size() ? sortedReturns.get(thresholdWinnerIndex) : 0
+    thresholdLoser  = thresholdLoserIndex >= 0 and thresholdLoserIndex < sortedReturns.size()  ? sortedReturns.get(thresholdLoserIndex)  : 0
+
+    // Current Return based on the oldest close in the lookback
+    currentReturn = close / close[returnLookback] - 1
+
+    // Normalize Oscillator Value
+    if not na(currentReturn) and (thresholdWinner - thresholdLoser) != 0
+        ASI := (currentReturn - thresholdLoser) / (thresholdWinner - thresholdLoser) * 2 - 1
+    else
+        ASI := 0
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Smoothing MA Calculation {
+smoothingMA = 0.0
+smoothingMA := switch maTypeInput
+    MA_Type.SMA => ta.sma(ASI, maLengthInput)
+    MA_Type.EMA => ta.ema(ASI, maLengthInput)
+    MA_Type.WMA => ta.wma(ASI, maLengthInput)
+    MA_Type.RMA => ta.rma(ASI, maLengthInput)
+    MA_Type.HMA => ta.hma(ASI, maLengthInput)
+    => na 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Divergence {
+var float prevASILow    = na
+var float prevPriceLow  = na
+var float prevASIHigh   = na
+var float prevPriceHigh = na
+
+plFound = false
+phFound = false
+
+bullCond = false
+bearCond = false
+
+if calculateDivergence
+    // --- Bullish Divergence Detection ---
+    // Check if current ASI is the lowest in the lookback period
+    isASILow = ASI == ta.lowest(ASI, lookback)
+    plFound := isASILow
+    
+    if (isASILow)
+        // Check if previous ASI low exists and current ASI low is higher
+        if (not na(prevASILow) and ASI > prevASILow and low < prevPriceLow)
+            bullCond := true
+            // Update previous lows
+            prevASILow := ASI
+            prevPriceLow := low
+        else
+            // Initialize or reset previous lows
+            prevASILow := ASI
+            prevPriceLow := low
+            bullCond := false
+    else
+        bullCond := false
+
+    // --- Bearish Divergence Detection ---
+    // Check if current ASI is the highest in the lookback period
+    isASIHigh = ASI == ta.highest(ASI, lookback)
+    phFound := isASIHigh
+    
+    if (isASIHigh)
+        // Check if previous ASI high exists and current ASI high is lower
+        if (not na(prevASIHigh) and ASI < prevASIHigh and high > prevPriceHigh)
+            bearCond := true
+            // Update previous highs
+            prevASIHigh := ASI
+            prevPriceHigh := high
+        else
+            // Initialize or reset previous highs
+            prevASIHigh := ASI
+            prevPriceHigh := high
+            bearCond := false
+    else
+        bearCond := false
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Plot ASI {
+ASIPlot      = plot(ASI, "ASI", color=asiColor)
+ASIMAPlot    = plot(smoothingMA, "ASI-based MA", color=maAsiColor)
+ASIUpperBand = hline(8, "ASI Upper Band", color=fillColor)
+midline      = hline(0, "ASI Middle Band", color=color.new(fillColor, 50))
+ASILowerBand = hline(-8, "ASI Lower Band", color=fillColor)
+midLinePlot  = plot(0, color = na, editable = false, display = display.none)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Fill {
+fill(ASIUpperBand, ASILowerBand, color=color.new(fillColor,90),title="ASI Background Fill")
+fill(ASIPlot, midLinePlot, 8, 5, top_color = color.new(obColor, 0), bottom_color = color.new(obColor, 100),title = "Overbought Gradient Fill")
+fill(ASIPlot, midLinePlot, -5,  -8,  top_color = color.new(osColor, 100), bottom_color = color.new(osColor, 0),title = "Oversold Gradient Fill")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Plot Bullish Divergence {
+plot(plFound?ASI:na, title="ASI Bullish Divergence", linewidth=2,color=(bullCond ? bullColor : na), display = display.pane)
+plotshape(bullCond?ASI:na,  title="ASI Bullish Divergence Label",text="Bull",  style=shape.labelup,location=location.absolute,color=bullColor, textcolor=textColor)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~  Plot Bearish Divergence {
+plot(phFound?ASI:na, title="ASI Bearish Divergence", linewidth=2, color=(bearCond?bearColor:na),display = display.pane)
+plotshape(bearCond?ASI:na,title="ASI Bearish Divergence Label", text="Bear", style=shape.labeldown,location=location.absolute,color=bearColor,textcolor=textColor)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Divergence Alerts {
+alertcondition(bullCond, title='Regular Bullish Divergence', message="Found a new Regular Bullish Divergence")
+alertcondition(bearCond, title='Regular Bearish Divergence', message='Found a new Regular Bearish Divergence')
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

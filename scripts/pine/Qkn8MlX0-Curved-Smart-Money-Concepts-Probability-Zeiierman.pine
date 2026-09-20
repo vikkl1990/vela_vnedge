@@ -1,0 +1,429 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman {
+
+//@version=5
+indicator("Curved Smart Money Concepts Probability (Zeiierman)",overlay=true,max_bars_back=5000,max_labels_count=500,max_polylines_count=100)
+//~~}
+
+// ~~ Tooltips {
+string t1 = "This input determines the length of the trend used to calculate the adaptive size of the structure. Increasing the length will make the structure capture longer-term trends, providing a smoother and less reactive curve. Decreasing the length will make the structure more sensitive to recent price movements, allowing it to react quickly to short-term changes. Traders can adjust this setting based on their trading horizon and preference for trend sensitivity."
+string t2 = "This value is used to scale the adjustment factors for the upper and lower bands. Increasing the multiplier will widen the bands, making the structure less sensitive to price changes. This can be useful in volatile markets to avoid frequent signals. Decreasing the multiplier will narrow the bands, making the structure more sensitive and reactive to price movements. Traders can adjust the multiplier to balance between noise reduction and responsiveness."
+string t3 = "Set the pivot period. Increasing this value will capture broader trends, making the structure more representative of long-term movements. Decreasing this value will focus on shorter-term trends, increasing sensitivity."
+string t4 = "Set the response period. A low value returns a short-term structure and a high value returns a long-term structure. If you disable this option, the pivot length above will be used. Increasing this value smoothens the structure, making it less reactive to short-term fluctuations. Decreasing this value makes the structure more responsive to short-term changes."
+string t5 = "Choose between displaying the active range or the previous range. 'Active Range' shows real-time premium, discount, and mid-range levels based on the current structure. 'Previous Range' displays past ranges, useful for analyzing historical support/resistance levels."
+string t6 = "Enabling this option will display curved structure candles on the chart. These candles represent a modified view of the price action, taking into account the curved structure settings. Traders can use these candles to visualize the underlying structure and make informed decisions based on the modified price action. Disabling this option will hide the structure candles from the chart."
+string t7 = "This setting determines the length of the response period used for calculating the structure candles. Increasing the response period will smooth out the candles, making them less responsive to short-term price fluctuations. Decreasing the response period will make the candles more sensitive to recent price changes. Traders can adjust this setting to match their preference for short-term or long-term trend analysis."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+length1    = input.int(100, "Curved Trend Length", minval=1, group="Curved Structure", inline="", tooltip=t1)
+multiplier = input.float(3.0,step=0.1, minval=0.01, title="Curved Multiplier", group="Curved Structure", inline="", tooltip=t2)
+
+prd    = input.int(20,minval=1,title="Period",group="Structure",inline="resp")
+s1     = input.bool(true,title="Response  ",group="Structure", inline="resp")
+resp   = input.int(7,minval=1,title="",group="Structure",inline="resp",tooltip=t3+"\n\n"+t4)
+bull   = input.bool(true,"Bullish Structure     ",group="Structure", inline="Bullish"), bull2 = input.color(#089981,"", group="Structure",inline="Bullish"), bull3 = input.color(color.rgb(8, 236, 126),"",group="Structure",inline="Bullish")
+bear   = input.bool(true,"Bearish Structure    ",group="Structure", inline="Bearish"), bear2 = input.color(#f23645,"",group="Structure",inline="Bearish"), bear3 = input.color(color.rgb(255, 34, 34),"",group="Structure",inline="Bearish")
+
+don    = input.string("Active Range", "Premium/Discount Range",["Active Range","Previous Range"],group="Range", tooltip=t5)
+showPD = input.bool(true,"Premium & Discount",group="Range", inline="pd")
+prem   = input.color(color.new(#f23645,70),"",group="Range",inline="pd")
+disc   = input.color(color.new(#089981,70),"",group="Range",inline="pd")
+mid    = input.color(#105cb34d,"",group="Range",inline="pd")
+
+Candle = input.bool(true, "Structure Candles", inline="", group="Structure Candles", tooltip=t6)
+length = input.int(40, minval=1,title="Structure Response", inline="", group="Structure Candles",tooltip=t7)
+
+table_pos  = input.string(position.top_right, "", [position.top_left, position.top_center, position.top_right, position.middle_left, position.middle_center, position.middle_right, position.bottom_left, position.bottom_center, position.bottom_right],group="Table", inline="Table")
+table_size = input.string(size.auto, "", [size.auto, size.tiny, size.small, size.normal, size.large, size.huge],group="Table", inline="Table")
+win_col    = input.color(color.teal, title="", group="Table",inline="tbl")
+loss_col   = input.color(color.red, title="", group="Table",inline="tbl")
+profit_col = input.color(color.lime, title="", group="Table",inline="tbl")
+frame_col  = input.color(color.blue, title="", group="Table",inline="tbl")
+
+var bool [] alert_bool  = array.from(
+ input.bool(true,title="Ticker ID",group="Any alert() function call"),
+ input.bool(true,title="Timeframe",group="Any alert() function call"),
+ input.bool(true,title="Probability Percentages",group="Any alert() function call"))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Initialize variables for bands and counters {
+var float upperBand = 0
+var float lowerBand = 0
+var int barsSinceUpperIncrease = 0
+var int barsSinceLowerDecrease = 0
+
+// Calculate adaptive size
+adaptiveSize = ta.atr(length1)
+
+// Calculate the square of the length for normalization
+lengthSquared = math.pow(length1, 2)
+
+// Upper Band Calculation
+maxcloseUpper = math.max(high,na(upperBand)?close:upperBand) 
+barsSinceUpperIncrease := close>upperBand?0:barsSinceUpperIncrease+1 
+
+// Update the upper band
+upperAdjustmentFactor = adaptiveSize / lengthSquared * (barsSinceUpperIncrease + 1) * multiplier
+upperBand := maxcloseUpper - upperAdjustmentFactor
+
+// Lower Band Calculation
+mincloseLower = math.min(low,na(lowerBand)?close:lowerBand) 
+barsSinceLowerDecrease := close<lowerBand?0:barsSinceLowerDecrease+1
+
+// Update the lower band
+lowerAdjustmentFactor = adaptiveSize / lengthSquared * (barsSinceLowerDecrease + 1) * multiplier
+lowerBand := mincloseLower + lowerAdjustmentFactor
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Variables {
+b       = bar_index
+var Up  = float(na)
+var Dn  = float(na)
+var iUp = int(na)
+var iDn = int(na)
+var xu1 = int(na)
+var xd1 = int(na)
+dev = ta.atr(100)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Matrix & Array {
+var vals = matrix.new<float>(9,4,0.0)
+var string [] txt = array.new<string>(2,"")
+var tbl    = matrix.new<table>(1,1,table.new(table_pos,2,3,
+ frame_color=color.new(frame_col,0),frame_width=2,
+ border_color=chart.bg_color,border_width=-2))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Functions {
+//Labels
+CreateLabel(x,y,txt,col,z)=>
+    label.new(x,y,txt,textcolor=col,style=z?label.style_label_down:label.style_label_up,color=color(na))
+//Lines
+CreateLine(x1,x2,y,col)=>
+    pts = array.new<chart.point>()
+    pts.push(chart.point.from_index(x1,x2))
+    //pts.push(chart.point.from_index(int(math.avg(x1,b)),col==bull2?x2+dev:x2-dev))
+    pts.push(chart.point.from_index(b,y))
+    polyline.new(pts,false,false,line_color=col)
+//Current
+Current(v)=>
+    str = ""
+    val1 = float(na)
+    val2 = float(na)
+    if v>=0
+        if v==1
+            str  := "SMS: "
+            val1 := matrix.get(vals,0,1)
+            val2 := matrix.get(vals,0,3) 
+        else if v==2
+            str  := "BMS: "
+            val1 := matrix.get(vals,1,1)
+            val2 := matrix.get(vals,1,3) 
+        else if v>2
+            str  := "BMS: "
+            val1 := matrix.get(vals,2,1)
+            val2 := matrix.get(vals,2,3) 
+    else if v<=0
+        if v==-1
+            str  := "SMS: "
+            val1 := matrix.get(vals,3,1)
+            val2 := matrix.get(vals,3,3) 
+        else if v==-2
+            str  := "BMS: "
+            val1 := matrix.get(vals,4,1)
+            val2 := matrix.get(vals,4,3) 
+        else if v<-2
+            str  := "BMS: "
+            val1 := matrix.get(vals,5,1)
+            val2 := matrix.get(vals,5,3)
+    [str,val1,val2]
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Pivots {
+Up   := upperBand
+Dn   := lowerBand
+pvtHi = ta.highest(upperBand,prd)
+pvtLo = ta.lowest(lowerBand,prd)
+if not na(pvtHi)
+    Up := pvtHi
+if not na(pvtLo)
+    Dn := pvtLo
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Structure {
+var pos = 0
+if Up>Up[1]
+    iUp := b
+    xu1 := b
+    centerBull = math.round(math.avg(iUp[1],b))
+    centerBully= math.avg(Up[b-iUp[1]],Up[1])
+    if pos<=0
+        if bull
+            CreateLabel(centerBull,centerBully,"CHoCH",bull3,true)
+            CreateLine(iUp[1],Up[b-iUp[1]],Up[1],bull2)
+        pos := 1
+        matrix.set(vals,6,0,matrix.get(vals,6,0)+1)
+    else if pos==1 and Up>Up[1] and Up[1]==Up[s1?resp:prd]
+        if bull
+            CreateLabel(centerBull,centerBully,"SMS",bull3,true)
+            CreateLine(iUp[1],Up[b-iUp[1]],Up[1],bull2)
+        pos := 2
+        matrix.set(vals,6,1,matrix.get(vals,6,1)+1)
+    else if pos>1 and Up>Up[1] and Up[1]==Up[s1?resp:prd]
+        if bull
+            CreateLabel(centerBull,centerBully,"BMS",bull3,true)
+            CreateLine(iUp[1],Up[b-iUp[1]],Up[1],bull2)
+        pos := pos + 1
+        matrix.set(vals,6,2,matrix.get(vals,6,2)+1)
+else if Up<Up[1]
+    xu1 := b-prd
+if Dn<Dn[1]
+    iDn := b
+    xu1 := b
+    centerBear = math.round(math.avg(iDn[1],b))
+    centerBeary= math.avg(Dn[b-iDn[1]],Dn[1])
+    if pos>=0
+        if bear
+            CreateLabel(centerBear,centerBeary,"CHoCH",bear3,false)
+            CreateLine(iDn[1],Dn[b-iDn[1]],Dn[1],bear2)
+        pos := -1
+        matrix.set(vals,7,0,matrix.get(vals,7,0)+1)
+    else if pos==-1 and Dn<Dn[1] and Dn[1]==Dn[s1?resp:prd]
+        if bear
+            CreateLabel(centerBear,centerBeary,"SMS",bear3,false)
+            CreateLine(iDn[1],Dn[b-iDn[1]],Dn[1],bear2)
+        pos := -2
+        matrix.set(vals,7,1,matrix.get(vals,7,1)+1)
+    else if pos<-1 and Dn<Dn[1] and Dn[1]==Dn[s1?resp:prd]
+        if bear
+            CreateLabel(centerBear,centerBeary,"BMS",bear3,false)
+            CreateLine(iDn[1],Dn[b-iDn[1]],Dn[1],bear2)
+        pos := pos - 1
+        matrix.set(vals,7,2,matrix.get(vals,7,2)+1)
+else if Dn>Dn[1]
+    xd1 := b-prd
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Probability Calculation {
+if pos!=pos[1]
+    //Results
+    if pos>0 and pos[1]>0 or pos<0 and pos[1]<0
+        if matrix.get(vals,8,0)<matrix.get(vals,8,1)
+            matrix.set(vals,8,2,matrix.get(vals,8,2)+1)
+        else
+            matrix.set(vals,8,3,matrix.get(vals,8,3)+1)
+    else
+        if matrix.get(vals,8,0)>matrix.get(vals,8,1)
+            matrix.set(vals,8,2,matrix.get(vals,8,2)+1)
+        else
+            matrix.set(vals,8,3,matrix.get(vals,8,3)+1)
+
+    //Score Calulation
+    //Variables
+    buC0 = matrix.get(vals,0,0)
+    buC1 = matrix.get(vals,0,2)
+    buS0 = matrix.get(vals,1,0)
+    buS1 = matrix.get(vals,1,2)
+    buB0 = matrix.get(vals,2,0)
+    buB1 = matrix.get(vals,2,2)
+    beC0 = matrix.get(vals,3,0)
+    beC1 = matrix.get(vals,3,2)
+    beS0 = matrix.get(vals,4,0)
+    beS1 = matrix.get(vals,4,2)
+    beB0 = matrix.get(vals,5,0)
+    beB1 = matrix.get(vals,5,2)
+    tbuC = matrix.get(vals,6,0)
+    tbuS = matrix.get(vals,6,1)
+    tbuB = matrix.get(vals,6,2)
+    tbeC = matrix.get(vals,7,0)
+    tbeS = matrix.get(vals,7,1)
+    tbeB = matrix.get(vals,7,2)
+
+    //Bull
+    if (pos[1]==1 or pos[1]==0) and pos<0
+        matrix.set(vals,0,0,buC0+1)
+        matrix.set(vals,0,1,math.round(((buC0+1)/tbuC)*100,2))
+    if (pos[1]==1 or pos[1]==0) and pos==2
+        matrix.set(vals,0,2,buC1+1)
+        matrix.set(vals,0,3,math.round(((buC1+1)/tbuC)*100,2))
+    if pos[1]==2 and pos<0
+        matrix.set(vals,1,0,buS0+1)
+        matrix.set(vals,1,1,math.round(((buS0+1)/tbuS)*100,2))
+    if pos[1]==2 and pos>2
+        matrix.set(vals,1,2,buS1+1)
+        matrix.set(vals,1,3,math.round(((buS1+1)/tbuS)*100,2))
+    if pos[1]>2 and pos<0
+        matrix.set(vals,2,0,buB0+1)
+        matrix.set(vals,2,1,math.round(((buB0+1)/tbuB)*100,2))
+    if pos[1]>2 and pos>pos[1]
+        matrix.set(vals,2,2,buB1+1)
+        matrix.set(vals,2,3,math.round(((buB1+1)/tbuB)*100,2))
+    //Bear
+    if (pos[1]==-1 or pos[1]==0) and pos>0
+        matrix.set(vals,3,0,beC0+1)
+        matrix.set(vals,3,1,math.round(((beC0+1)/tbeC)*100,2))
+    if (pos[1]==-1 or pos[1]==0) and pos==-2
+        matrix.set(vals,3,2,beC1+1)
+        matrix.set(vals,3,3,math.round(((beC1+1)/tbeC)*100,2))
+    if pos[1]==-2 and pos>0
+        matrix.set(vals,4,0,beS0+1)
+        matrix.set(vals,4,1,math.round(((beS0+1)/tbeS)*100,2))
+    if pos[1]==-2 and pos<-2
+        matrix.set(vals,4,2,beS1+1)
+        matrix.set(vals,4,3,math.round(((beS1+1)/tbeS)*100,2))
+    if pos[1]<-2 and pos>0
+        matrix.set(vals,5,0,beB0+1)
+        matrix.set(vals,5,1,math.round(((beB0+1)/tbeB)*100,2))
+    if pos[1]<-2 and pos<pos[1]
+        matrix.set(vals,5,2,beB1+1)
+        matrix.set(vals,5,3,math.round(((beB1+1)/tbeB)*100,2))
+    [str,val1,val2] = Current(pos)
+    array.set(txt,0,"CHoCH: "+str.tostring(val1,format.percent))
+    array.set(txt,1,str+str.tostring(val2,format.percent))
+    matrix.set(vals,8,0,val1)
+    matrix.set(vals,8,1,val2)
+    //Alerts
+    if array.includes(alert_bool,true)
+        st1 = syminfo.ticker
+        st2 = timeframe.period 
+        st3 = str.tostring(array.join(txt,'\n'))
+        string [] str_vals = array.from(st1,st2,st3)
+        output = array.new_string()
+        for x=0 to array.size(alert_bool)-1
+            if array.get(alert_bool,x)
+                array.push(output,array.get(str_vals,x))
+        alert(array.join(output,'\n'),alert.freq_once_per_bar_close)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Premium & Discount {
+PremiumTop   = ta.wma(Up-(Up-Dn)*.1,5)
+PremiumBot   = ta.wma(Up-(Up-Dn)*.25,5)
+DiscountTop  = ta.wma(Dn+(Up-Dn)*.25,5)
+DiscountBot  = ta.wma(Dn+(Up-Dn)*.1,5)
+MidTop       = ta.wma(Up-(Up-Dn)*.45,5)
+MidBot       = ta.wma(Dn+(Up-Dn)*.45,5)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Range {
+var UpperRange    = array.new<chart.point>()
+var LowerRange    = array.new<chart.point>()
+var PremiumRange  = array.new<chart.point>()
+var DiscountRange = array.new<chart.point>()
+var MidRange      = array.new<chart.point>()
+
+polyline a1 = na
+polyline a2 = na
+polyline pZone = na
+polyline dZone = na
+polyline mZone = na
+
+if true
+    if Up>Up[1]
+        UpperRange.clear()
+        PremiumRange.clear()
+        DiscountRange.clear()
+        MidRange.clear()
+    if Dn<Dn[1]
+        LowerRange.clear()
+        PremiumRange.clear()
+        DiscountRange.clear()
+        MidRange.clear()
+
+    UpperRange.unshift(chart.point.from_index(b,Up))
+    LowerRange.unshift(chart.point.from_index(b,Dn))
+
+    if showPD
+        PremiumRange.unshift(chart.point.from_index(b,PremiumTop))
+        PremiumRange.push(chart.point.from_index(b,PremiumBot))
+        DiscountRange.unshift(chart.point.from_index(b,DiscountTop))
+        DiscountRange.push(chart.point.from_index(b,DiscountBot))
+        MidRange.unshift(chart.point.from_index(b,MidTop))
+        MidRange.push(chart.point.from_index(b,MidBot))
+
+    a1 := polyline.new(UpperRange,line_color=bear2)
+    a2 := polyline.new(LowerRange,line_color=bull2)
+    pZone := polyline.new(PremiumRange,false,true,line_color=prem,fill_color=prem)
+    dZone := polyline.new(DiscountRange,false,true,line_color=disc,fill_color=disc)
+    mZone := polyline.new(MidRange,false,true,line_color=mid,fill_color=mid)
+
+    (a1[1]).delete()
+    (a2[1]).delete()
+    (pZone[1]).delete()
+    (dZone[1]).delete()
+    (mZone[1]).delete()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots Premium & Discount {
+plot(na,"Range High",bear2)
+plot(na,"Range Low",bull2)
+p1 = plot(showPD and don=="Previous Range"?PremiumTop:na,"Premium",na)
+p2 = plot(showPD and don=="Previous Range"?PremiumBot:na,"Premium",na)
+d1 = plot(showPD and don=="Previous Range"?DiscountTop:na,"Discount",na)
+d2 = plot(showPD and don=="Previous Range"?DiscountBot:na,"Discount",na)
+m1 = plot(showPD and don=="Previous Range"?MidTop:na,"Equilibrium",na)
+m2 = plot(showPD and don=="Previous Range"?MidBot:na,"Equilibrium",na)
+
+fill(p1,p2,color=prem)
+fill(d1,d2,color=disc)
+fill(m1,m2,color=mid)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Probability {
+var prob1 = label.new(na,na,na,color=color(na),textcolor=chart.fg_color,style=label.style_label_left)
+var prob2 = label.new(na,na,na,color=color(na),textcolor=chart.fg_color,style=label.style_label_left)
+
+if barstate.islast
+    str1 = pos<0?array.get(txt,0):array.get(txt,1)
+    str2 = pos>0?array.get(txt,0):array.get(txt,1)
+    label.set_xy(prob1,b,Up)
+    label.set_text(prob1,str1)
+    label.set_xy(prob2,b,Dn)
+    label.set_text(prob2,str2)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Curved Structure Candles {
+DonCandles(high_, low_, close_,src_,factor_,candle_,length_)=>
+    initial   = 0.0
+    Don_High  = ta.highest(high_,length_)
+    Don_Low   = ta.lowest(low_,length_)
+    Norm      = ((close_ - Don_Low) / (Don_High - Don_Low))
+    initial  := candle_?(Norm * close + ((1 - Norm)) * nz(initial[1], close)): (Norm * close + ((1 - Norm*2)) * nz(initial[1], close))
+    Factor    = candle_?(1-Norm)* nz(initial[1], src_) :(factor_? (1-Norm*2):(1-Norm/2)) * nz(initial[1], src_)
+    output    = (Norm * src_)  + Factor 
+
+// Return Trend Candles
+O   = Candle?DonCandles(Up,Dn,close,open,true,false,length):na
+H   = Candle?DonCandles(Up,Dn,close,high,false,false,length):na
+L   = Candle?DonCandles(Up,Dn,close,low,false,false,length):na
+C   = Candle?DonCandles(Up,Dn,close,close,true,false,length):na
+
+// Return Color Sign
+pricewick(h_,a)=>
+    cond = h_>a
+    cond
+cond_open  = pricewick(H,open)
+cond_high  = pricewick(H,high)
+cond_low   = pricewick(H,low)
+cond_close = pricewick(H,close)
+sign       = (cond_open or cond_high or cond_low or cond_close)?color.lime:color.red
+
+// Plot Structure Candles
+plotcandle(open, high,low,close, color=Candle?sign:na,bordercolor=Candle?sign:na, wickcolor=Candle?sign:na, title="Curved Structure Candles")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Table {
+if barstate.islast
+    //Calulate WinRatio
+    W  = matrix.get(vals,8,2)
+    L  = matrix.get(vals,8,3)
+    WR = math.round(W/(W+L)*100,2)
+    string [] tbl_vals = array.from("WIN: "+str.tostring(W),
+     "LOSS: "+str.tostring(L),
+     "Profitability: "+str.tostring(WR,format.percent))
+    color [] tbl_col = array.from(win_col,loss_col,profit_col)
+    for i=0 to 2
+        table.cell(matrix.get(tbl,0,0),0,i,array.get(tbl_vals,i),
+         text_halign=text.align_center,bgcolor=chart.bg_color,
+         text_color=array.get(tbl_col,i),text_size=table_size)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

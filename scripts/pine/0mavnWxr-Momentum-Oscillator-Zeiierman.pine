@@ -1,0 +1,160 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+// © Zeiierman {
+//@version=6
+indicator("Momentum Oscillator (Zeiierman)", overlay=false, precision=1)
+//}
+
+// ~~ Tooltips {
+var string t1  = "How far back to measure momentum (in cycles). Higher = slower, more stable."
+var string t2  = "How many bars make up one cycle for your chart/timeframe (daily≈21). Used to convert cycles → bars."
+var string t3  = "EMA smoothing applied to the raw momentum series before normalization."
+
+var string t4  = "Lookback window used for normalization (Z-score or Min/Max)."
+var string t5  = "If enabled, normalizes using Z-score for more stable scaling across regimes."
+var string t6  = "Limits extreme Z-scores to reduce spikes (higher = less clamping)."
+
+var string t7  = "First threshold level for Greed/Fear lines and markers."
+var string t8  = "Second (more extreme) threshold level for Greed/Fear lines and markers."
+
+var string t9  = "Show/hide the histogram columns."
+var string t10 = "Show/hide the signal line."
+
+var string t11 = "Base color for neutral values (near 0)."
+var string t12 = "Base color for positive values (greed side)."
+var string t13 = "Base color for negative values (fear side)."
+var string t14 = "Color for the signal line."
+var string t15 = "Color for the zero (neutral) line."
+var string t16 = "Transparency for the histogram (0 = solid, 100 = invisible)."
+var string t17 = "Transparency for the Level 1 lines."
+var string t18 = "Transparency for the Level 2 lines."
+var string t19 = "Marker size for event shapes."
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Inputs {
+grp1 = "Core"
+rankCycles    = input.int(12, "Ranking Period (Cycles)", minval=1, group=grp1, tooltip=t1)
+barsPerCycle  = input.int(21, "Bars per Cycle", minval=5, group=grp1, tooltip=t2)
+smoothLen     = input.int(10, "Smoothing", minval=1, group=grp1, tooltip=t3)
+
+grp2 = "Normalization"
+normLookback  = input.int(252, "Lookback", minval=30, group=grp2, tooltip=t4)
+useZscore     = input.bool(true, "Use Z-Score", group=grp2, tooltip=t5)
+zClamp        = input.float(2.5, "Z-Score Clamp", minval=0.5, step=0.1, group=grp2, tooltip=t6)
+
+grp3 = "Levels"
+L1            = input.int(25, "Level 1", minval=1, maxval=99, group=grp3, tooltip=t7)
+L2            = input.int(60, "Level 2", minval=1, maxval=99, group=grp3, tooltip=t8)
+
+grp4 = "Style"
+showHistogram = input.bool(true, "Show Momentum Histogram", group=grp4, tooltip=t9)
+showSignal    = input.bool(true, "Show Signal Line", group=grp4, tooltip=t10)
+
+// All colors as inputs (under Style)
+colNeutralIn  = input.color(color.blue,   "Neutral Color",  group=grp4, tooltip=t11)
+colPositiveIn = input.color(color.lime,   "Positive Color", group=grp4, tooltip=t12)
+colNegativeIn = input.color(#FC6C85,      "Negative Color", group=grp4, tooltip=t13)
+colSignalIn   = input.color(color.white,  "Signal Color",   group=grp4, tooltip=t14)
+colZeroIn     = input.color(color.gray,   "Zero Line Color",group=grp4, tooltip=t15)
+
+histTransp    = input.int(35, "Histogram Transparency", minval=0, maxval=100, group=grp4, tooltip=t16)
+lvl1Transp    = input.int(30, "Level 1 Transparency",    minval=0, maxval=100, group=grp4, tooltip=t17)
+lvl2Transp    = input.int(0,  "Level 2 Transparency",    minval=0, maxval=100, group=grp4, tooltip=t18)
+
+markerSizeOpt = input.string("Tiny", "Marker Size", options=["Tiny","Small","Normal"], group=grp4, tooltip=t19)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Core momentum {
+int lookbackBars = rankCycles * barsPerCycle
+float roc = na
+roc := bar_index >= lookbackBars ? (close / close[lookbackBars] - 1.0) * 100.0 : na
+float rocSm = ta.ema(roc, smoothLen)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Turn ROC into a stable oscillator {
+float oscRaw = na
+if useZscore
+    float mu = ta.sma(rocSm, normLookback)
+    float sd = ta.stdev(rocSm, normLookback)
+    float z  = (rocSm - mu) / math.max(sd, 1e-6)
+    float zc = math.max(-zClamp, math.min(zClamp, z))
+    oscRaw := (zc / zClamp) * 100.0
+else
+    float hi = ta.highest(rocSm, normLookback)
+    float lo = ta.lowest(rocSm, normLookback)
+    float denom = math.max(hi - lo, 1e-6)
+    float u = (rocSm - lo) / denom
+    oscRaw := (u * 2.0 - 1.0) * 100.0
+
+float osc = ta.ema(oscRaw, math.max(1, smoothLen / 2))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Signal line {
+float sig = ta.ema(osc, math.max(2, smoothLen))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Colors {
+color neu = color.new(colNeutralIn, 0)
+color pos = color.new(colPositiveIn, 0)
+color neg = color.new(colNegativeIn, 0)
+
+float gradMax = 60.0
+color colOsc =
+     osc > 0 ? color.from_gradient(osc, 0.0, gradMax, neu, pos) :
+     osc < 0 ? color.from_gradient(osc, -gradMax, 0.0, neg, neu) :
+     neu
+
+color colHist = color.new(colOsc, histTransp)
+color colSig  = color.new(colSignalIn, 35)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Plots {
+hline(0,   "Neutral",  color=color.new(colZeroIn, 70))
+hline(L1,  "Greed L1", color=color.new(pos, lvl1Transp))
+hline(-L1, "Fear L1",  color=color.new(neg, lvl1Transp))
+hline(L2,  "Greed L2", color=color.new(pos, lvl2Transp))
+hline(-L2, "Fear L2",  color=color.new(neg, lvl2Transp))
+
+plot(showHistogram ? osc : na, "Momentum Osc (Hist)", style=plot.style_columns, color=colHist)
+plot(osc, "Momentum Osc", linewidth=2, color=colOsc)
+plot(showSignal ? sig : na, "Signal", linewidth=2, color=colSig)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Marker size handling (const-safe) {
+bool isTiny   = markerSizeOpt == "Tiny"
+bool isSmall  = markerSizeOpt == "Small"
+bool isNormal = markerSizeOpt == "Normal"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Event markers {
+bool crossUp0  = ta.crossover(osc, 0)
+bool crossDn0  = ta.crossunder(osc, 0)
+bool crossUpL2 = ta.crossover(osc, L2)
+bool crossDnL2 = ta.crossunder(osc, -L2)
+
+// Cross 0
+plotshape(isTiny   and crossUp0  ? 0 : na, title="Cross Up 0",   style=shape.circle,      location=location.absolute, size=size.tiny,   color=color.new(pos, 0))
+plotshape(isSmall  and crossUp0  ? 0 : na, title="Cross Up 0",   style=shape.circle,      location=location.absolute, size=size.small,  color=color.new(pos, 0))
+plotshape(isNormal and crossUp0  ? 0 : na, title="Cross Up 0",   style=shape.circle,      location=location.absolute, size=size.normal, color=color.new(pos, 0))
+
+plotshape(isTiny   and crossDn0  ? 0 : na, title="Cross Down 0", style=shape.circle,      location=location.absolute, size=size.tiny,   color=color.new(neg, 0))
+plotshape(isSmall  and crossDn0  ? 0 : na, title="Cross Down 0", style=shape.circle,      location=location.absolute, size=size.small,  color=color.new(neg, 0))
+plotshape(isNormal and crossDn0  ? 0 : na, title="Cross Down 0", style=shape.circle,      location=location.absolute, size=size.normal, color=color.new(neg, 0))
+
+// Extreme levels
+plotshape(isTiny   and crossUpL2 ? L2  : na, title="Enter Extreme Greed", style=shape.triangleup,   location=location.absolute, size=size.tiny,   color=color.new(pos, 0))
+plotshape(isSmall  and crossUpL2 ? L2  : na, title="Enter Extreme Greed", style=shape.triangleup,   location=location.absolute, size=size.small,  color=color.new(pos, 0))
+plotshape(isNormal and crossUpL2 ? L2  : na, title="Enter Extreme Greed", style=shape.triangleup,   location=location.absolute, size=size.normal, color=color.new(pos, 0))
+
+plotshape(isTiny   and crossDnL2 ? -L2 : na, title="Enter Extreme Fear",  style=shape.triangledown, location=location.absolute, size=size.tiny,   color=color.new(neg, 0))
+plotshape(isSmall  and crossDnL2 ? -L2 : na, title="Enter Extreme Fear",  style=shape.triangledown, location=location.absolute, size=size.small,  color=color.new(neg, 0))
+plotshape(isNormal and crossDnL2 ? -L2 : na, title="Enter Extreme Fear",  style=shape.triangledown, location=location.absolute, size=size.normal, color=color.new(neg, 0))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+// ~~ Alerts {
+alertcondition(crossUp0,  "Momentum Osc: Cross Up 0",      "Momentum oscillator crossed UP through 0.")
+alertcondition(crossDn0,  "Momentum Osc: Cross Down 0",    "Momentum oscillator crossed DOWN through 0.")
+alertcondition(crossUpL2, "Momentum Osc: Extreme Greed",   "Momentum oscillator entered Extreme Greed.")
+alertcondition(crossDnL2, "Momentum Osc: Extreme Fear",    "Momentum oscillator entered Extreme Fear.")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

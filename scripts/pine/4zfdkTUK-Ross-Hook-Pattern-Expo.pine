@@ -1,0 +1,131 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Zeiierman
+
+//@version=5
+indicator("Ross Hook Pattern (Expo)",overlay=true,max_bars_back=5000,max_labels_count=500,max_lines_count=500)
+
+// ~~ ToolTips {
+t1 = "Set the Ross Hook Period - A high value returns long-term patterns, and a low value returns short-term patterns"
+t2 = "Set the minimum distance between point 2 and point 3. A high value indicates a bigger price correction before the price takes off again. A low value indicates a shorter price correction before the price takes off again."
+t3 = "Show pattern break, set the size, and coloring"
+t4 = "Show the Ross Hook"
+t5 = "Show the Ross Hook pattern"
+t6 = "Enable the HH/HL/LL/LH labels"
+// ~~}
+// ~~ Inputs {
+prd = input.int(20, minval=1,title="Set Period",tooltip=t1)
+dst = input.int(20,minval=0, title="Set Hook Distance",tooltip=t2)
+
+showBreak   = input.bool(true,"Show Break", inline="break")
+showHook    = input.bool(true,"Show Hook",tooltip=t4)
+showPattern = input.bool(false,"Show Pattern",tooltip=t5)
+showPvts    = input.bool(false,"Show Pivots",tooltip=t6)
+
+visuell = input.string("Diamond","",options=["Diamond","XCross","Cross","Flag","Square"],inline="break")
+colBull = input.color(color.new(#31be0c,0),"",inline="break")
+colBear = input.color(color.new(#df3d3d,0),"",inline="break")
+size    = input.string(size.tiny,"",options=[size.tiny,size.small,size.normal,size.large,size.huge],inline="break",tooltip=t3)
+
+shape = switch visuell
+    "Diamond" => label.style_diamond
+    "XCross"  => label.style_xcross
+    "Cross"   => label.style_cross
+    "Flag"    => label.style_flag
+    "Square"  => label.style_square
+// ~~ }
+// ~~ Arrays {
+var pvts = array.new<float>(5,0.0)
+var idx  = array.new<int>(5,0)
+// ~~ }
+// ~~ Pivots {
+pvtHi = ta.pivothigh(high,prd,prd)
+pvtLo = ta.pivotlow(low,prd,prd)
+var pos = 0
+if not na(pvtHi) and pos<=0
+    if showPvts
+        label.new(bar_index-prd,high[prd],text=pvtHi>array.get(pvts,1)?"HH":"LH",style=label.style_label_down,color=color(na),textcolor=chart.fg_color)
+    array.pop(pvts)
+    array.pop(idx)
+    array.unshift(pvts,high[prd])
+    array.unshift(idx,bar_index-prd)
+    pos := 1
+if not na(pvtLo) and pos>=0
+    if showPvts
+        label.new(bar_index-prd,low[prd],text=pvtLo>array.get(pvts,1)?"HL":"LL",style=label.style_label_up,color=color(na),textcolor=chart.fg_color)
+    array.pop(pvts)
+    array.pop(idx)
+    array.unshift(pvts,low[prd])
+    array.unshift(idx,bar_index-prd)
+    pos := -1
+// ~~ }
+// ~~ Identify RossHook Pattern & Alerts {
+var Hook = true
+if ta.crossover(high,array.get(pvts,1)) and Hook
+    if array.get(pvts,0)<array.get(pvts,1)
+        if array.get(pvts,1)>array.get(pvts,3) and array.get(pvts,0)>array.get(pvts,2) and array.get(pvts,2)>array.get(pvts,4) and array.get(pvts,3)>array.get(pvts,2)
+            first = bar_index-array.get(idx,4)
+            sec   = bar_index-array.get(idx,3)
+            if bar_index-array.get(idx,1)>=prd
+                for i=first to sec
+                    if close[i]>array.get(pvts,2) and array.get(idx,2)-bar_index[i]>=dst
+                        if showPattern
+                            line.new(bar_index-i,array.get(pvts,2),array.get(idx,2),array.get(pvts,2),color=chart.fg_color,style=line.style_dashed)
+                            mid = math.round(math.avg(bar_index-i,array.get(idx,2)))
+                            label.new(mid,array.get(pvts,2),text="First Hook",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+                        Hook := true
+                        break
+                    else
+                        Hook := false
+                if Hook
+                    if showBreak
+                        label.new(bar_index,high,style=shape,color=colBull,size=size)
+                    if showHook
+                        line.new(array.get(idx,3),array.get(pvts,3),bar_index,array.get(pvts,3),color=chart.fg_color,style=line.style_dashed)
+                        label.new(math.round(math.avg(bar_index,array.get(idx,3))),array.get(pvts,3),text="Ross Hook",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+                    if showPattern
+                        line.new(array.get(idx,1),array.get(pvts,1),bar_index,array.get(pvts,1),color=chart.fg_color,style=line.style_dashed)
+                        label.new(math.round(math.avg(bar_index,array.get(idx,1))),array.get(pvts,1),text="Second Hook",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+                        label.new(array.get(idx,4),array.get(pvts,4),text="1",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+                        label.new(array.get(idx,3),array.get(pvts,3),text="2",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+                        label.new(array.get(idx,2),array.get(pvts,2),text="3",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+                        for i=array.size(pvts)-2 to 2
+                            line.new(array.get(idx,i),array.get(pvts,i),array.get(idx,i+1),array.get(pvts,i+1),color=chart.fg_color)
+                    alert("Bullish Ross Hook Pattern Identified on: "+syminfo.ticker,alert.freq_once_per_bar_close)
+                Hook := false
+if ta.crossunder(low,array.get(pvts,1)) and Hook
+    if array.get(pvts,0)>array.get(pvts,1)
+        if array.get(pvts,1)<array.get(pvts,3) and array.get(pvts,0)<array.get(pvts,2) and array.get(pvts,2)<array.get(pvts,4) and array.get(pvts,3)<array.get(pvts,2)
+            first = bar_index-array.get(idx,4)
+            sec   = bar_index-array.get(idx,3)
+            if bar_index-array.get(idx,1)>=prd
+                for i=first to sec
+                    if close[i]<array.get(pvts,2) and array.get(idx,2)-bar_index[i]>=dst
+                        if showPattern
+                            line.new(bar_index-i,array.get(pvts,2),array.get(idx,2),array.get(pvts,2),color=chart.fg_color,style=line.style_dashed)
+                            mid = math.round(math.avg(bar_index-i,array.get(idx,2)))
+                            label.new(mid,array.get(pvts,2),text="First Hook",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+                        Hook := true
+                        break
+                    else
+                        Hook := false
+                if Hook
+                    if showBreak
+                        label.new(bar_index,low,style=shape,color=colBear,size=size)
+                    if showHook
+                        line.new(array.get(idx,3),array.get(pvts,3),bar_index,array.get(pvts,3),color=chart.fg_color,style=line.style_dashed)
+                        label.new(math.round(math.avg(bar_index,array.get(idx,3))),array.get(pvts,3),text="Ross Hook",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+                    if showPattern
+                        line.new(array.get(idx,1),array.get(pvts,1),bar_index,array.get(pvts,1),color=chart.fg_color,style=line.style_dashed)
+                        label.new(math.round(math.avg(bar_index,array.get(idx,1))),array.get(pvts,1),text="Second Hook",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+                        label.new(array.get(idx,4),array.get(pvts,4),text="1",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+                        label.new(array.get(idx,3),array.get(pvts,3),text="2",color=color(na),textcolor=chart.fg_color,style=label.style_label_up)
+                        label.new(array.get(idx,2),array.get(pvts,2),text="3",color=color(na),textcolor=chart.fg_color,style=label.style_label_down)
+                        for i=array.size(pvts)-2 to 2
+                            line.new(array.get(idx,i),array.get(pvts,i),array.get(idx,i+1),array.get(pvts,i+1),color=chart.fg_color)
+                    alert("Bearish Ross Hook Pattern Identified on: "+syminfo.ticker,alert.freq_once_per_bar_close)
+                Hook := false
+// ~~ }
+// ~~ Debugger only check break once {
+if ta.change(array.get(pvts,1))
+    Hook := true
+// ~~ }

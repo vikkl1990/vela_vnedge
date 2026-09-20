@@ -1,0 +1,145 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator("Price Action Color Forecast (Expo)",overlay=true,max_boxes_count=5000,max_lines_count=500)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Tooltips {
+string t1 = "The candle lookback length refers to the number of bars, starting from the current one, that will be examined in order to find a similar event in the past."
+string t2 = "The amount of Forecast candles that should be displayed in the future."
+string t3 = "Background color divider between price and forecast."
+string t4 = "Displays the current events found"
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Inputs {
+Series   = input.int(7,"Candle Series",1,20,tooltip=t1)
+Forecast = input.int(100,"Forecast Candles",1,166,tooltip=t2)
+Divider  = input.bool(true,"Forecast Divider",t3)
+Display  = input.bool(true,"Display Event",t4)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Types {
+type Event
+    box currentEvent
+    box pastEvent
+    box prediction
+    array<box>  candle
+    array<line> wick
+type Data
+    array<int>   b 
+    array<int>   d
+    array<float> o
+    array<float> h
+    array<float> l
+    array<float> c
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Variables & Arrays {
+b = bar_index
+var data  = Data.new(array.new<int>(),
+                     array.new<int>(),
+                     array.new<float>(),
+                     array.new<float>(),
+                     array.new<float>(),
+                     array.new<float>())
+var event = Event.new(box.new(na,na,na,na,chart.fg_color,border_style=line.style_dashed,bgcolor=color(na)),
+                     box.new(na,na,na,na,chart.fg_color,border_style=line.style_dashed,bgcolor=color(na)),
+                     box.new(na,na,na,na,chart.fg_color,border_style=line.style_dotted,
+                      bgcolor=color.new(color.teal,75)),
+                     array.new<box>(Forecast),
+                     array.new<line>(Forecast))
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Methods {
+//Store Data
+method Store(Data x)=>
+    int   B = b
+    int bin = close>open?1:close<open?-1:0
+    float O = open
+    float H = high
+    float L = low
+    float C = close
+    x.b.unshift(B)
+    x.d.unshift(bin)
+    x.o.unshift(O)
+    x.h.unshift(H)
+    x.l.unshift(L)
+    x.c.unshift(C)
+
+//Candle Plots
+method Candle(Event e,x,i)=>
+    int dist   = 1
+    float prev = x.c.get(i)
+    float diff = ((close-prev)/prev)+1
+    for j=i-1 to i-Forecast
+        idx = j-i+Forecast
+        if j<0
+            break
+        else
+            pos = x.d.get(j)
+            top = (pos>0?x.c.get(j):x.o.get(j))*diff
+            bot = (pos>0?x.o.get(j):x.c.get(j))*diff
+            hi  = (x.h.get(j))*diff
+            lo  = (x.l.get(j))*diff
+            col = pos==1?#26a69a:pos==-1?#ef5350:chart.fg_color
+            candle = e.candle.get(idx)
+            if na(candle)
+                e.candle.set(idx,box.new(b+dist,top,b+dist+2,bot,na,bgcolor=col))
+                e.wick.set(idx,line.new(b+dist+1,hi,b+dist+1,lo,color=col))
+            else
+                box.set_lefttop(e.candle.get(idx),b+dist,top)
+                box.set_rightbottom(e.candle.get(idx),b+dist+2,bot)
+                box.set_bgcolor(e.candle.get(idx),col)
+                line.set_xy1(e.wick.get(idx),b+dist+1,hi)
+                line.set_xy2(e.wick.get(idx),b+dist+1,lo)
+                line.set_color(e.wick.get(idx),col)
+        dist += 3
+
+//Events Display
+method Events(Event e,idx,h1,l1,h2,l2,fh,fl)=>
+    int start = idx.get(Series-1)
+    int end   = idx.get(0)
+    e.currentEvent.set_lefttop(b-Series+1,h1.max())
+    e.currentEvent.set_rightbottom(b,l1.min())
+    e.pastEvent.set_lefttop(start,h2.max())
+    e.pastEvent.set_rightbottom(end,l2.min())
+    e.prediction.set_lefttop(end+1,fh.max())
+    e.prediction.set_rightbottom(math.min(b,end+Forecast),fl.min())
+
+//Current Event
+method Series(Data x)=>
+    data.Store()
+    bool found = false
+    if barstate.islast
+        events = x.d.slice(0,Series)
+        for i=Series to x.d.size()-Series
+            elements = x.d.slice(i,i+Series)
+            equal = 0
+            for [k,this] in elements
+                if this==events.get(k)
+                    equal += 1
+            if equal==Series
+                found := true
+                event.Candle(data,i)
+                if Display
+                    bar = x.b.slice(i,i+Series)
+                    h1  = x.h.slice(0,Series)
+                    l1  = x.l.slice(0,Series)
+                    h2  = x.h.slice(i,i+Series)
+                    l2  = x.l.slice(i,i+Series)
+                    fh  = i-Forecast<0?x.h.slice(0,i-1):x.h.slice(i-Forecast,i-1)
+                    fl  = i-Forecast<0?x.l.slice(0,i-1):x.l.slice(i-Forecast,i-1)
+                    event.Events(bar,h1,l1,h2,l2,fh,fl)
+                break
+    if barstate.islast and not found
+        runtime.error("Couldn't find similar candle series event. \nFix: Decrease Candle Series length")
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Divider {
+bgcolor(Divider and barstate.islast?color.new(chart.fg_color,80):na,1)
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}
+
+//~~ Run Code {
+data.Series()
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~}

@@ -1,0 +1,58 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © Zeiierman
+
+//@version=5
+indicator('GreedZone indicator (Zeiierman) - Contrarian Indicator', overlay=true, shorttitle='GreedZone (Zeiierman)')
+
+// Input Settings
+source       = input.source(ohlc4, title='Source', group='Source', tooltip='Select the source for calculations')
+Low_period   = input.int(30, title='Low Period', group='GreedZone Settings', tooltip='Number of bars for the lowest low calculation')
+Stdev_period = input.int(50, title='Stdev Period', group='GreedZone Settings', tooltip='Number of bars for standard deviation calculation')
+matype       = input.string("WMA", options = ["SMA","EMA","WMA","HMA","RMA"], title="Select Moving Average",group="Average Type", inline="", tooltip="Choose the average")
+
+// Function to calculate moving average based on selected type
+average(src_,len_)=>
+    ma = switch matype
+        "SMA" => ta.sma(src_, len_)
+        "EMA" => ta.ema(src_, len_)
+        "WMA" => ta.wma(src_, len_)
+        "HMA" => ta.hma(src_, len_)
+        "RMA" => ta.rma(src_, len_)
+
+// Function to calculate GZ1 values
+calc_GZ1(source, Low_period, Stdev_period) =>
+    GZ1      = (ta.lowest(source, Low_period) - source) / ta.lowest(source, Low_period)
+    AVG1     = average(GZ1,Stdev_period)
+    STDEV1   = ta.stdev(GZ1, Stdev_period)
+    GZ1Limit = AVG1 - STDEV1
+    [GZ1, GZ1Limit]
+
+// Function to calculate GZ2 values
+calc_GZ2(source, Low_period, Stdev_period) =>
+    GZ2      = average(source,Low_period)
+    AVG2     = average(GZ2,Stdev_period)
+    STDEV2   = ta.stdev(GZ2, Stdev_period)
+    GZ2Limit = AVG2 + STDEV2
+    [GZ2, GZ2Limit]
+
+// Calculate GZ1 and GZ2
+[GZ1, GZ1Limit] = calc_GZ1(source, Low_period, Stdev_period)
+[GZ2, GZ2Limit] = calc_GZ2(source, Low_period, Stdev_period)
+
+// GreedZone Condition
+Greedzone_Con  = GZ1 < GZ1Limit and GZ2 > GZ2Limit
+GreedZoneOpen  = Greedzone_Con ? low + ta.tr : na
+GreedZoneClose = Greedzone_Con ? low + 2 * ta.tr : na
+
+// Plot GreedZone Candlesticks
+plotcandle(GreedZoneOpen, GreedZoneOpen, GreedZoneClose, GreedZoneClose, color=#90EE90, bordercolor=color.green, title='GreedZone Candlesticks')
+
+// Alerts Settings
+AlertCircle = input.bool(true, title='Show Alert Circle?', group='Alerts', tooltip='Enable or disable alert circles on the chart')
+Alert_Col   = Greedzone_Con != Greedzone_Con[1] and AlertCircle ? #90EE90 : na
+
+// Plot Alert Circles
+plotshape(Greedzone_Con, style=shape.circle, location=location.abovebar, size=size.tiny, color=Alert_Col, title='Alert Circle')
+
+// Alert Condition
+alertcondition(Greedzone_Con != Greedzone_Con[1], title='GreedZone', message='GreedZone detected')
