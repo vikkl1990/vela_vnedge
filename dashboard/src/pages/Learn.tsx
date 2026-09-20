@@ -43,7 +43,7 @@ export function Learn() {
             <button className="btn btn-cta" onClick={() => train.mutate()} disabled={train.isPending || d.samples < 30}>
               {train.isPending ? 'Training…' : 'Train now'}
             </button>
-            <span className="muted small">Models retrain automatically 30 s after new samples arrive. Gate and score usage live in Settings → Machine learning.</span>
+            <span className="muted small">Models retrain automatically within 30 s of new samples arriving. Gate and score usage live in Settings → Machine learning.</span>
           </div>
 
           <div className="grid-2">

@@ -121,7 +121,7 @@ export class ScannerEngine extends EventEmitter {
     const cfg = this.cfgRef();
     const required = this.requiredSeries();
     await Promise.all(required.map(r => this.candles.track(r.symbol, r.tf, cfg.historyBars)));
-    for (const s of new Set([...this.symbolsRef(), ...required.map(r => r.symbol)])) await this.candles.track(s, '1m', 300); // fill engine price feed
+    for (const s of new Set([...this.symbolsRef(), ...required.map(r => r.symbol), ...this.paper.openPositions().map(p => p.symbol)])) await this.candles.track(s, '1m', 300); // fill engine price feed
     const jobs: Promise<void>[] = [];
     for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) jobs.push(this.warm(s, symbol, tf));
     log.info(`warming ${jobs.length} scanner runs`);
@@ -133,7 +133,7 @@ export class ScannerEngine extends EventEmitter {
   async refresh(): Promise<void> {
     const cfg = this.cfgRef();
     for (const r of this.requiredSeries()) if (!this.candles.has(r.symbol, r.tf)) await this.candles.track(r.symbol, r.tf, cfg.historyBars);
-    for (const s of new Set([...this.symbolsRef(), ...this.requiredSeries().map(r => r.symbol)])) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
+    for (const s of new Set([...this.symbolsRef(), ...this.requiredSeries().map(r => r.symbol), ...this.paper.openPositions().map(p => p.symbol)])) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
     const jobs: Promise<void>[] = [];
     for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) {
       if (!this.warmed.has(`${s.id}:${symbol}:${tf}`)) jobs.push(this.warm(s, symbol, tf));

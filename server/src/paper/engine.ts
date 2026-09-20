@@ -65,7 +65,12 @@ export class PaperEngine extends EventEmitter {
   openPositions(): Position[] { return [...this.open.values()]; }
   position(id: number): Position | undefined { return this.open.get(id) ?? (this.db.get<any>('SELECT * FROM positions WHERE id=?', id) ? rowToPosition(this.db.get<any>('SELECT * FROM positions WHERE id=?', id)) : undefined); }
 
-  setMark(symbol: string, price: number) { this.marks.set(symbol, price); }
+  setMark(symbol: string, price: number) {
+    if (!Number.isFinite(price) || price <= 0) return;
+    this.marks.set(symbol, price);
+    // Removed scanners restored after restart need a fresh quote before closing.
+    for (const p of [...this.open.values()]) if (p.symbol === symbol && this.cfgRef().scanners[p.scannerId]?.hidden) this.closeManual(p.id, 'removed');
+  }
   mark(symbol: string): number | undefined { return this.marks.get(symbol); }
 
   // ---- signals → positions ----
@@ -123,7 +128,7 @@ export class PaperEngine extends EventEmitter {
   onBar(symbol: string, bar: PriceBar, observedAt = Date.now()): void {
     if (bar.time < (this.priceBars.get(symbol)?.time ?? -Infinity)) return;
     this.priceBars.set(symbol, { ...bar });
-    this.marks.set(symbol, bar.close);
+    this.setMark(symbol, bar.close);
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
       const previous = pos.lastPriceBar;
@@ -145,7 +150,7 @@ export class PaperEngine extends EventEmitter {
   /** Close every open position that belongs to one scanner (used when a scanner is removed/disabled). */
   closeScanner(scannerId: string, reason = 'removed'): number {
     let n = 0;
-    for (const p of [...this.open.values()]) if (p.scannerId === scannerId && this.closeManual(p.id, reason)) n++;
+    for (const p of [...this.open.values()]) if (p.scannerId === scannerId && (reason !== 'removed' || this.marks.has(p.symbol)) && this.closeManual(p.id, reason)) n++;
     return n;
   }
 

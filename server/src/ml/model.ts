@@ -62,12 +62,23 @@ export function predict(model: LogRegModel, f: Features): number {
   return sigmoid(z);
 }
 
-function rankAuc(p: number[], y: number[]): number {
-  const pos = p.filter((_, i) => y[i] === 1), neg = p.filter((_, i) => y[i] === 0);
-  if (!pos.length || !neg.length) return 0.5;
-  let s = 0;
-  for (const a of pos) for (const b of neg) s += a > b ? 1 : a === b ? 0.5 : 0;
-  return s / (pos.length * neg.length);
+export function rankAuc(p: number[], y: number[]): number {
+  const rows = p.map((score, i) => ({ score, positive: y[i] === 1 })).sort((a, b) => a.score - b.score);
+  const positives = rows.filter(r => r.positive).length;
+  const negatives = rows.length - positives;
+  if (!positives || !negatives) return 0.5;
+  let negativeBefore = 0, concordant = 0;
+  for (let i = 0; i < rows.length;) {
+    let j = i, groupPositive = 0, groupNegative = 0;
+    while (j < rows.length && rows[j].score === rows[i].score) {
+      if (rows[j].positive) groupPositive++; else groupNegative++;
+      j++;
+    }
+    concordant += groupPositive * (negativeBefore + groupNegative * 0.5);
+    negativeBefore += groupNegative;
+    i = j;
+  }
+  return concordant / (positives * negatives);
 }
 
 // ---------- bucket lift analysis → rules ----------

@@ -17,3 +17,17 @@ test('simulation upgrade discards obsolete backtests and models but preserves li
   assert.equal(db.kvGet('ml.model'), undefined);
   assert.equal(db.kvGet('ml.simulationVersion'), SIMULATION_VERSION);
 });
+
+test('continuous samples cannot postpone scheduled training indefinitely', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const db = new Db(':memory:');
+  t.after(() => db.db.close());
+  const ml = new MlService(db, () => ({}));
+  for (let i = 0; i < 3; i++) {
+    t.mock.timers.tick(9_000);
+    ml.addLiveSample('s', 'BTCUSD', '1m', i, {} as any, true, 1, 1, 'tp1');
+  }
+  assert.equal(ml.insights(), null);
+  t.mock.timers.tick(3_000);
+  assert.equal(ml.insights()?.samples, 3);
+});

@@ -105,7 +105,7 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
     source = source === 'script' ? 'mixed' : 'atr-fallback';
   }
   sl = roundTick(sl!, tick);
-  tp = [...new Set(tp.slice(0, 3).map(v => roundTick(v, tick)))];
+  tp = tp.slice(0, 3).map(v => roundTick(v, tick)); // Preserve TP indices even when rounded prices coincide.
   if (!validSl(sl)) return { error: 'stop invalid after tick rounding' };
   if (!tp.length || tp.some(v => !Number.isFinite(v) || v <= 0 || (req.side === 'long' ? v <= entry : v >= entry))) return { error: 'target invalid after tick rounding' };
   return { sl, tp, source };
@@ -272,6 +272,11 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
     fills.push(fillExit(pos, pos.tp[i], q, `tp${i + 1}`, at, cfg, false));
     if (pos.qtyOpen <= 0) return fills;
     if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
+  }
+  // The close is observed after any intrabar target touch. Unlike the bar's low/high,
+  // it can establish a subsequent crossing of a newly raised break-even stop.
+  if (pos.breakEven && pos.sl !== null && (long ? bar.close <= pos.sl : bar.close >= pos.sl)) {
+    fills.push(fillExit(pos, pos.sl, pos.qtyOpen, 'be', at, cfg, true));
   }
   return fills;
 }

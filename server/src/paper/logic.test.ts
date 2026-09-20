@@ -164,3 +164,25 @@ test('partial target P&L and maker fees reconcile exactly with closed-trade stat
   assert.equal(stats.wins, 1);
   assert.equal(stats.losses, 0);
 });
+
+test('rounded target prices preserve script TP indices and allocations', () => {
+  const lv = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [105.1, 105.2, 110] }, cfg, 0.5);
+  assert.ok(!('error' in lv));
+  assert.deepEqual(lv.tp, [105, 105, 110]);
+  const p = openPosition({ ...pos(), entryPrice: 100, at: 0, sl: lv.sl, tp: lv.tp, cfg });
+  const fills = applyScriptExit(p, 'tp2', 105, 1, cfg, 'both', 105);
+  assert.deepEqual(fills.map(f => f.qty), [4, 3]);
+  assert.equal(p.qtyOpen, 3);
+  assert.equal(p.tp[2], 110);
+});
+
+test('a candle closing past a newly raised BE stop closes the remainder after TP1', () => {
+  for (const side of ['long', 'short'] as const) {
+    const p = pos(side);
+    const bar = side === 'long' ? { high: 106, low: 99, close: 99 } : { high: 101, low: 94, close: 101 };
+    const fills = applyBar(p, { time: 1, ...bar }, cfg);
+    assert.deepEqual(fills.map(f => f.reason), ['tp1', 'be']);
+    assert.deepEqual(fills.map(f => f.qty), [4, 6]);
+    assert.equal(p.qtyOpen, 0);
+  }
+});

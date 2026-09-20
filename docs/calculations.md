@@ -8,7 +8,7 @@ Risk sizing budgets the expected loss at the stop, including adverse entry/stop 
 
 `leverage` remains notional / account equity for account exposure. `marginLeverage` is the selected isolated leverage: maxLeverage in risk mode and the score-derived leverage in quality mode. Initial position margin is filled entry notional / marginLeverage. Existing margin is reserved before another entry, and unrealized gains do not create available wallet cash. Partial exits release margin proportionally; realized P&L and fees update the wallet. The position table shows isolated leverage.
 
-Existing persisted positions retain their historical leverage, margin assumptions, and liquidation levels. New entries use the corrected model. Simulation cache version 3 forces historical simulations and ML models to rebuild.
+Existing persisted positions retain their historical leverage, margin assumptions, and liquidation levels. New entries use the corrected model. Simulation cache version 4 forces historical simulations and ML models to rebuild.
 
 ## Liquidation
 
@@ -32,3 +32,5 @@ Gross P&L = (exit − filled entry) × underlying quantity for longs, with rever
 SL and TP levels must remain positive and on the correct side after tick rounding. Zero-quantity target allocations neither fill nor activate break-even. Backtests ignore exits explicitly addressed to the opposite side.
 
 Statistics are based on closed trades. Reported maximum drawdown is closed-trade equity drawdown, not full intratrade drawdown; backtest equity curves likewise omit open-position unrealized swings. Trade pnlPct is return on original notional, not return on margin. These definitions should be considered when comparing results to exchange reports.
+
+A TP touch followed by a close beyond a newly raised break-even stop closes the remainder on that candle. Rounded targets retain their original TP indices even when their prices coincide. Removed scanners restored after restart wait for a valid quote before closing; open-position symbols remain subscribed even outside the active scanner universe.

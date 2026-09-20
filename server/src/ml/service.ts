@@ -70,7 +70,7 @@ export class MlService {
   }
 
   private scheduleTrain() {
-    if (this.trainTimer) clearTimeout(this.trainTimer);
+    if (this.trainTimer) return; // Bound delay even while new samples keep arriving.
     this.trainTimer = setTimeout(() => { this.trainTimer = null; try { this.train(); } catch (e: any) { log.error(`train failed: ${e?.message ?? e}`); } }, 30_000);
     this.trainTimer.unref();
   }
@@ -90,6 +90,7 @@ export class MlService {
 
   /** Train global + per-scanner models and derive rules. */
   train(): MlSnapshot {
+    if (this.trainTimer) { clearTimeout(this.trainTimer); this.trainTimer = null; }
     const t0 = Date.now();
     const all = this.samples(undefined, 100_000);
     const names = this.names();

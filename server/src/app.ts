@@ -81,12 +81,11 @@ export class App {
   }
 
   async start(): Promise<void> {
-    this.feed.start();
-    // positions left behind by scanners that were removed while the server was down
-    for (const p of this.paper.openPositions()) { const c = this.config.get().scanners[p.scannerId]; if (c?.hidden) { this.paper.closeManual(p.id, 'removed'); log.info(`closed stale position #${p.id} of removed scanner ${p.scannerId}`); } }
-    await this.resolveUniverse();
-    this.feed.subscribe('v2/ticker', this.resolvedSymbols);
+    // Attach the mirror before fresh quotes can close restored positions.
     if (this.testnet) await this.testnet.start();
+    await this.resolveUniverse();
+    this.feed.subscribe('v2/ticker', [...new Set([...this.resolvedSymbols, ...this.paper.openPositions().map(p => p.symbol)])]);
+    this.feed.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
   }

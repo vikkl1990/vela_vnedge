@@ -26,3 +26,18 @@ test('logistic regression learns a score→win relationship and rules surface it
   assert.ok(baseline.n === 300);
   assert.ok(rules.some(r => r.feature === 'score' && r.kind === 'prefer'), JSON.stringify(rules.slice(0, 3)));
 });
+
+test('rank AUC matches pairwise results including tied scores', async () => {
+  const { rankAuc } = await import('./model.ts');
+  for (let seed = 1; seed <= 20; seed++) {
+    const p = Array.from({ length: 30 }, (_, i) => ((i * seed + i * i) % 7) / 7);
+    const y = p.map((_, i) => i % 3 === 0 ? 1 : 0);
+    let pairs = 0, wins = 0;
+    for (let i = 0; i < p.length; i++) for (let j = 0; j < p.length; j++) if (y[i] === 1 && y[j] === 0) {
+      pairs++; wins += p[i] > p[j] ? 1 : p[i] === p[j] ? 0.5 : 0;
+    }
+    assert.equal(rankAuc(p, y), wins / pairs);
+  }
+  assert.equal(rankAuc([0.5, 0.5], [0, 1]), 0.5);
+  assert.equal(rankAuc([0.1, 0.2], [1, 1]), 0.5);
+});

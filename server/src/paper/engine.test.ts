@@ -81,3 +81,17 @@ test('isolated margin cannot be reused and is released pro-rata after TP, across
   const reserved = resumed.openPositions().reduce((sum, p) => sum + p.qtyOpen * p.entryPrice * p.contractValue / p.marginLeverage!, 0);
   assert.ok(reserved <= resumed.initialEquity + resumed.realizedPnl());
 });
+
+test('removed restored positions wait for a valid quote instead of exiting at entry', t => {
+  const { db, cfg, open } = setup(t);
+  const p = open();
+  cfg.scanners.s = { enabled: false, hidden: true, symbols: null, timeframes: null, exitMode: 'both' };
+  const resumed = new PaperEngine(db, () => cfg);
+  assert.equal(resumed.closeScanner('s', 'removed'), 0);
+  resumed.setMark('BTCUSD', NaN);
+  assert.equal(resumed.openPositions().length, 1);
+  resumed.setMark('BTCUSD', 103);
+  assert.equal(resumed.openPositions().length, 0);
+  assert.equal(resumed.position(p.id)?.exitPrice, 103);
+  assert.equal(resumed.position(p.id)?.exitReason, 'removed');
+});
