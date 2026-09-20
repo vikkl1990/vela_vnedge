@@ -162,7 +162,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     fallbackAtrSl: 1.5,
     fallbackRR: [1, 2, 3],
     maxOpenPositions: 20,
-    fillSource: 'tape',
+    fillSource: 'candles',
     limitFill: 'through',
     depthUsdPerBp: 0,
     latencyMs: 1500,

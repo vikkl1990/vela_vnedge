@@ -182,9 +182,19 @@ export function feeFor(price: number, qty: number, contractValue: number, cfg: P
   return price * qty * contractValue * (rate / 100);
 }
 
-export function slip(price: number, side: 'buy' | 'sell', cfg: PaperConfig): number {
-  const f = cfg.slippageBps / 10_000;
+/**
+ * Market-order fill price. Fixed `slippageBps` plus, when `depthUsdPerBp` > 0 and the order's USD
+ * notional is known, `notional / depthUsdPerBp` bps of impact (a linear book-depth assumption).
+ */
+export function slip(price: number, side: 'buy' | 'sell', cfg: PaperConfig, notionalUsd = 0): number {
+  const f = slippageBpsFor(cfg, notionalUsd) / 10_000;
   return side === 'buy' ? price * (1 + f) : price * (1 - f);
+}
+
+export function slippageBpsFor(cfg: PaperConfig, notionalUsd = 0): number {
+  const depth = cfg.depthUsdPerBp ?? 0;
+  const impact = depth > 0 && notionalUsd > 0 ? notionalUsd / depth : 0;
+  return cfg.slippageBps + impact;
 }
 
 export function pnlOf(pos: Pick<Position, 'side' | 'entryPrice' | 'contractValue'>, exitPrice: number, qty: number): number {
@@ -212,7 +222,7 @@ export interface OpenParams {
 }
 
 export function openPosition(p: OpenParams): Position {
-  const fillPrice = slip(p.entryPrice, p.side === 'long' ? 'buy' : 'sell', p.cfg);
+  const fillPrice = slip(p.entryPrice, p.side === 'long' ? 'buy' : 'sell', p.cfg, p.entryPrice * p.qty * p.contractValue);
   const fee = feeFor(fillPrice, p.qty, p.contractValue, p.cfg);
   const legs = splitLegs(p.qty, p.cfg.tpSplit, p.tp.length);
   return {
@@ -231,7 +241,7 @@ export function fillExit(pos: Position, price: number, qty: number, reason: stri
   let q = Math.min(qty, pos.qtyOpen);
   // an exchange would have liquidated before any exit could print beyond the liquidation price
   if (pos.liqPrice !== null && (pos.side === 'long' ? price <= pos.liqPrice : price >= pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; q = pos.qtyOpen; withSlippage = true; }
-  let px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg) : price;
+  let px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg, price * q * pos.contractValue) : price;
   const marginLeverage = pos.marginLeverage ?? pos.leverage;
   const margin = marginLeverage > 0 ? pos.entryPrice * q * pos.contractValue / marginLeverage : Infinity;
   if (reason === 'liquidation' && marginLeverage > 0) {
@@ -310,6 +320,72 @@ export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, obs
   }
   pos.lastPriceBar = { ...bar };
   return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg);
+}
+
+export interface TapePrint { time: number; price: number; qty?: number }
+
+/**
+ * Apply one tape print (phase 2). Liquidation is checked against `markPrice` when known (Delta
+ * liquidates on mark), stops trigger on the last trade and fill at that print with slippage
+ * (a stop-market can fill through a gap), take-profit legs are resting limits that fill at their
+ * level: with `limitFill: 'through'` only once a print goes beyond the level, with `'touch'` on
+ * a print at the level. Prints before the entry are ignored.
+ */
+export function applyTrade(pos: Position, t: TapePrint, cfg: PaperConfig, markPrice?: number): Fill[] {
+  if (pos.status !== 'open' || t.time < pos.entryAt || !(t.price > 0)) return [];
+  const fills: Fill[] = [];
+  const long = pos.side === 'long';
+  const at = t.time;
+  // 0. liquidation on mark (falls back to the print when no mark is known)
+  const liqRef = markPrice && markPrice > 0 ? markPrice : t.price;
+  if (pos.liqPrice !== null && (long ? liqRef <= pos.liqPrice : liqRef >= pos.liqPrice)) {
+    fills.push(fillExit(pos, pos.liqPrice, pos.qtyOpen, 'liquidation', at, cfg, true));
+    return fills;
+  }
+  // 1. stop-loss: triggered by the print, filled at the print (never better than the stop)
+  if (pos.sl !== null && (long ? t.price <= pos.sl : t.price >= pos.sl)) {
+    const reason = pos.breakEven ? 'be' : 'sl';
+    const px = long ? Math.min(t.price, pos.sl) : Math.max(t.price, pos.sl);
+    fills.push(fillExit(pos, px, pos.qtyOpen, reason, at, cfg, true));
+    return fills;
+  }
+  // 2. resting take-profit limits, sequential legs
+  const through = (cfg.limitFill ?? 'through') === 'through';
+  for (let i = 0; i < pos.tp.length; i++) {
+    if (pos.tpHit[i] || pos.legs[i] <= 0) continue;
+    const hit = through ? (long ? t.price > pos.tp[i] : t.price < pos.tp[i]) : (long ? t.price >= pos.tp[i] : t.price <= pos.tp[i]);
+    if (!hit) break;
+    pos.tpHit[i] = true;
+    const isLast = i === pos.tp.length - 1;
+    const q = isLast ? pos.qtyOpen : Math.min(pos.legs[i], pos.qtyOpen);
+    fills.push(fillExit(pos, pos.tp[i], q, `tp${i + 1}`, at, cfg, false));
+    if (pos.qtyOpen <= 0) return fills;
+    if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
+  }
+  return fills;
+}
+
+/** Mark-price liquidation check without a print (used when a new mark arrives between trades). */
+export function applyMark(pos: Position, markPrice: number, at: number, cfg: PaperConfig): Fill[] {
+  if (pos.status !== 'open' || pos.liqPrice === null || !(markPrice > 0) || at < pos.entryAt) return [];
+  const long = pos.side === 'long';
+  if (long ? markPrice <= pos.liqPrice : markPrice >= pos.liqPrice) return [fillExit(pos, pos.liqPrice, pos.qtyOpen, 'liquidation', at, cfg, true)];
+  return [];
+}
+
+/**
+ * Funding charge at a realization timestamp: rate (percent) × open notional at `markPrice`,
+ * paid by longs when positive and received by shorts (and vice versa). Recorded as a zero-qty
+ * fill with reason `funding`; the amount flows through realizedPnl (fees untouched).
+ */
+export function applyFunding(pos: Position, ratePct: number, markPrice: number, at: number): Fill | null {
+  if (pos.status !== 'open' || pos.qtyOpen <= 0 || !Number.isFinite(ratePct) || ratePct === 0 || !(markPrice > 0) || at < pos.entryAt) return null;
+  const notional = pos.qtyOpen * pos.contractValue * markPrice;
+  const pnl = -(ratePct / 100) * notional * (pos.side === 'long' ? 1 : -1);
+  pos.realizedPnl += pnl;
+  const fill: Fill = { at, price: markPrice, qty: 0, reason: 'funding', fee: 0, pnl };
+  pos.fills.push(fill);
+  return fill;
 }
 
 /** Script-emitted exit event applied according to the scanner's exit mode. */
