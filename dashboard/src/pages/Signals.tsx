@@ -70,10 +70,10 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
     {
       key: 'msg',
       header: 'Message',
-      value: (s) => s.message,
+      value: (s) => s.summary || s.message,
       render: (s) => (
         <span className="msg" title={s.message}>
-          {truncate(s.message, 70)}
+          {truncate(s.summary || s.message, 90)}
         </span>
       ),
     },

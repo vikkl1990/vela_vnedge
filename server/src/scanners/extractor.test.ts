@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAlert, extractEvents, shapeSide } from './extractor.ts';
+import { parseAlert, extractEvents, shapeSide, describeEvent } from './extractor.ts';
 
 const A = (message: string, time = 1_000) => ({ barIndex: 10, time, type: 'alert' as const, message });
 
@@ -74,4 +74,17 @@ test('parses STRAT JSON webhook alerts', () => {
   assert.equal(x?.kind, 'exit'); assert.equal(x?.exitType, 'sl'); assert.equal(x?.side, 'long');
   const t3 = parseAlert(A('{"ind":"STRAT","action":"tp3_close","entry":1,"level":2,"dir":"short","result":"win"}'));
   assert.equal(t3?.exitType, 'tp3'); assert.equal(t3?.price, 2);
+});
+
+test('describeEvent produces readable summaries', () => {
+  const e = parseAlert(A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 78777.5 | SL: 78402 | TP1: 79152.2 | TP2: 79527 | TP3: 79901 | R:R: 1 | Score: 77'))!;
+  assert.equal(describeEvent(e), 'LONG entry at 78,777.5 · stop 78,402 · targets 79,152.2 / 79,527 / 79,901 · score 77');
+  const x = parseAlert(A('🎯🎯 TP2 HIT | DELTA:BTCUSD | TP2: 78171.7'))!;
+  assert.equal(describeEvent(x), 'Take-profit 2 hit at 78,171.7');
+  const j = parseAlert(A('{"ind":"STRAT","v":"1.9.0","sym":"ETHUSD","tf":"15","action":"setup_bull","pattern":"2-1-2 Rev","price":2574.7,"trig":2577.05,"stop":2571.35,"ftc":"30+1H-4H-D+W-M+"}'))!;
+  assert.equal(describeEvent(j), 'STRAT: setup bull · pattern 2-1-2 Rev · price 2,574.7 · trigger 2,577.05 · stop 2,571.35 · HTF continuity 30+1H-4H-D+W-M+');
+  const i = parseAlert(A('🟢 POC CROSS UP | DELTA:BTCUSD | TF: 15 | Price: 80432.5'))!;
+  assert.equal(describeEvent(i), 'POC CROSS UP · price 80432.5');
+  const sh = extractEvents([], [{ title: 'Bull Cross', times: [1] }])[0];
+  assert.equal(describeEvent(sh), 'LONG entry · (Bull Cross marker drawn by the script; stop/targets from ATR)');
 });

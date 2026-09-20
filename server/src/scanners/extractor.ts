@@ -15,6 +15,8 @@ export type ExitType = 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'flip' | 'close';
 
 export interface ScanEvent {
   kind: EventKind;
+  /** Plain-English description for the UI (derived, see describeEvent). */
+  summary?: string;
   side?: Side;
   /** For exits: which leg was hit. */
   exitType?: ExitType;
@@ -119,7 +121,9 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
     const side: Side | undefined = /\bLONG\b/i.test(msg) ? 'long' : /\bSHORT\b/i.test(msg) ? 'short' : undefined;
     // "REVERSAL → LONG" means the previous (short) trade was closed
     const revSide: Side | undefined = exitType === 'flip' && side ? (side === 'long' ? 'short' : 'long') : side;
-    return { ...base, kind: 'exit', exitType, side: revSide, price, sl, tp: cleanTp, score };
+    const tpIdx = tpHit ? Number(tpHit[1]) - 1 : -1;
+    const exitPrice = price ?? (tpIdx >= 0 ? tp[tpIdx] : undefined) ?? cleanTp[0] ?? (exitType === 'sl' || exitType === 'be' ? sl : undefined);
+    return { ...base, kind: 'exit', exitType, side: revSide, price: exitPrice, sl, tp: cleanTp, score };
   }
 
   // ----- entries -----
@@ -176,4 +180,48 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
   }
   events.sort((a, b) => a.barTime - b.barTime || (a.kind === 'exit' ? -1 : 1));
   return events;
+}
+
+const fmtN = (v: number | undefined) => (v === undefined || !Number.isFinite(v) ? undefined : v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 2 }) : String(Number(v.toFixed(4))));
+
+/** Turn a raw script message into a sentence a trader can read at a glance. */
+export function describeEvent(ev: ScanEvent): string {
+  const side = ev.side ? ev.side.toUpperCase() : '';
+  const price = fmtN(ev.price);
+  const parts: string[] = [];
+  if (ev.kind === 'entry') {
+    parts.push(`${side} entry${price ? ` at ${price}` : ''}`);
+    if (ev.sl !== undefined) parts.push(`stop ${fmtN(ev.sl)}`);
+    if (ev.tp.length) parts.push(`targets ${ev.tp.map(fmtN).join(' / ')}`);
+    if (ev.score !== undefined) parts.push(`score ${fmtN(ev.score)}`);
+    if (ev.source === 'shape') parts.push(`(${ev.label} marker drawn by the script; stop/targets from ATR)`);
+    else if (ev.sl === undefined) parts.push('(no stop published; ATR fallback)');
+    return parts.join(' · ');
+  }
+  if (ev.kind === 'exit') {
+    const what: Record<string, string> = { tp1: 'Take-profit 1 hit', tp2: 'Take-profit 2 hit', tp3: 'Take-profit 3 hit', sl: 'Stop-loss hit', be: 'Stopped out at break-even', flip: 'Trend flipped — trade closed', close: 'Trade closed by script' };
+    parts.push(`${what[ev.exitType ?? 'close']}${side ? ` on ${side}` : ''}${price ? ` at ${price}` : ''}`);
+    return parts.join(' · ');
+  }
+  // info: JSON payloads
+  const m = ev.message.trim();
+  if (m.startsWith('{')) {
+    try {
+      const j: any = JSON.parse(m);
+      const action = String(j.action ?? '').replace(/_/g, ' ');
+      const bits = [`${String(j.ind ?? 'Script')}: ${action}`];
+      if (j.pattern) bits.push(`pattern ${j.pattern}`);
+      if (j.price !== undefined) bits.push(`price ${fmtN(Number(j.price))}`);
+      if (j.trig !== undefined) bits.push(`trigger ${fmtN(Number(j.trig))}`);
+      if (j.stop !== undefined) bits.push(`stop ${fmtN(Number(j.stop))}`);
+      if (j.level !== undefined) bits.push(`level ${fmtN(Number(j.level))}`);
+      if (j.ftc) bits.push(`HTF continuity ${j.ftc}`);
+      return bits.join(' · ');
+    } catch { /* fall through */ }
+  }
+  // info: strip the "DELTA:SYMBOL | TF: 15" boilerplate the scripts add for webhooks
+  const cleaned = m.split('|').map(x => x.trim()).filter(x => x && !/^DELTA:/i.test(x) && !/^TF:\s*\S+$/i.test(x) && !/^ID:\s*\d+$/i.test(x));
+  const head = cleaned.shift() ?? ev.label;
+  const rest = cleaned.map(x => x.replace(/^Price:\s*/i, 'price ').replace(/^Score:\s*/i, 'score ').replace(/^Level:\s*/i, 'level ').replace(/^Entry:\s*/i, 'entry '));
+  return [head.replace(/^[^\w(]+/, '').trim(), ...rest].join(' · ');
 }

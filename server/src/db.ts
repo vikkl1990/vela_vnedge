@@ -6,7 +6,7 @@ import { DATA_DIR } from './config.ts';
 export interface SignalRow {
   id: number; at: number; barTime: number; scannerId: string; scannerName: string; symbol: string; tf: string;
   kind: string; side: string | null; price: number | null; sl: number | null; tp: number[]; score: number | null;
-  label: string; message: string; source: string; levelsSource: string | null; action: string; positionId: number | null;
+  label: string; message: string; summary: string; source: string; levelsSource: string | null; action: string; positionId: number | null;
 }
 
 const SCHEMA = `
@@ -60,6 +60,9 @@ export class Db {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
+    // additive migrations
+    const cols = this.db.prepare('PRAGMA table_info(signals)').all() as Array<{ name: string }>;
+    if (!cols.some(c => c.name === 'summary')) this.db.exec("ALTER TABLE signals ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
   }
 
   run(sql: string, ...params: any[]) { return this.db.prepare(sql).run(...params); }
@@ -77,9 +80,9 @@ export class Db {
   insertSignal(s: Omit<SignalRow, 'id'>): number | null {
     try {
       const r = this.run(
-        `INSERT INTO signals(at, bar_time, scanner_id, scanner_name, symbol, tf, kind, side, price, sl, tp, score, label, message, source, levels_source, action, position_id)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        s.at, s.barTime, s.scannerId, s.scannerName, s.symbol, s.tf, s.kind, s.side, s.price, s.sl, JSON.stringify(s.tp), s.score, s.label, s.message, s.source, s.levelsSource, s.action, s.positionId,
+        `INSERT INTO signals(at, bar_time, scanner_id, scanner_name, symbol, tf, kind, side, price, sl, tp, score, label, message, summary, source, levels_source, action, position_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        s.at, s.barTime, s.scannerId, s.scannerName, s.symbol, s.tf, s.kind, s.side, s.price, s.sl, JSON.stringify(s.tp), s.score, s.label, s.message, s.summary, s.source, s.levelsSource, s.action, s.positionId,
       );
       return Number(r.lastInsertRowid);
     } catch (e: any) {
@@ -108,7 +111,7 @@ export class Db {
 export function rowToSignal(r: any): SignalRow {
   return {
     id: r.id, at: r.at, barTime: r.bar_time, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, kind: r.kind, side: r.side,
-    price: r.price, sl: r.sl, tp: JSON.parse(r.tp || '[]'), score: r.score, label: r.label, message: r.message, source: r.source, levelsSource: r.levels_source,
+    price: r.price, sl: r.sl, tp: JSON.parse(r.tp || '[]'), score: r.score, label: r.label, message: r.message, summary: r.summary ?? '', source: r.source, levelsSource: r.levels_source,
     action: r.action, positionId: r.position_id,
   };
 }

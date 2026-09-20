@@ -46,7 +46,7 @@ export function AlertsFeed({ signals, limit = 15, title = 'VNEdge Bot' }: { sign
             </div>
             {s.message && (
               <div className="alert-msg" title={s.message}>
-                {truncate(s.message, 110)}
+                {truncate(s.summary || s.message, 110)}
               </div>
             )}
             <div className="alert-foot">

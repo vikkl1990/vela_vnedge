@@ -14,7 +14,7 @@ import type { PaperEngine, MarketInfo } from '../paper/engine.ts';
 import { runBacktest, type BacktestResult } from '../paper/backtest.ts';
 import type { PinePool } from '../pine/pool.ts';
 import type { WorkerResult } from '../pine/worker.ts';
-import { extractEvents, type ScanEvent } from './extractor.ts';
+import { extractEvents, describeEvent, type ScanEvent } from './extractor.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 
 const log = logger.scoped('scanner');
@@ -45,6 +45,12 @@ export class ScannerEngine extends EventEmitter {
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
     for (const r of this.db.all<any>('SELECT * FROM backtests')) { try { this.backtests.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, JSON.parse(r.result)); } catch { /* ignore */ } }
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar }) => this.onBarClosed(e.symbol, e.tf, e.bar));
+    // one-off backfill of readable summaries for signals stored before the column existed
+    for (const r of this.db.all<any>("SELECT * FROM signals WHERE summary = '' OR summary IS NULL")) {
+      const ev: ScanEvent = { kind: r.kind, side: r.side ?? undefined, exitType: undefined, price: r.price ?? undefined, sl: r.sl ?? undefined, tp: JSON.parse(r.tp || '[]'), score: r.score ?? undefined, label: r.label, message: r.message, source: r.source, barTime: r.bar_time, barIndex: -1 };
+      if (ev.kind === 'exit') { const m = String(r.label).match(/TP\s?(\d)/i); ev.exitType = m ? (`tp${m[1]}` as any) : /SL/i.test(r.label) ? 'sl' : /BE/i.test(r.label) ? 'be' : /REVERSAL|FLIP/i.test(r.label) ? 'flip' : 'close'; }
+      this.db.run('UPDATE signals SET summary=? WHERE id=?', describeEvent(ev), r.id);
+    }
   }
 
   // ---- configuration helpers ----
@@ -201,7 +207,7 @@ export class ScannerEngine extends EventEmitter {
     const now = Date.now();
     let action = 'none'; let positionId: number | null = null;
     const levelsSource = ev.kind === 'entry' ? (ev.sl && ev.tp.length ? 'script' : ev.sl || ev.tp.length ? 'mixed' : 'atr-fallback') : null;
-    const sigId = this.db.insertSignal({ at: now, barTime: ev.barTime, scannerId: s.id, scannerName: s.name, symbol, tf, kind: ev.kind, side: ev.side ?? null, price: ev.price ?? null, sl: ev.sl ?? null, tp: ev.tp, score: ev.score ?? null, label: ev.label, message: ev.message, source: ev.source, levelsSource, action, positionId });
+    const sigId = this.db.insertSignal({ at: now, barTime: ev.barTime, scannerId: s.id, scannerName: s.name, symbol, tf, kind: ev.kind, side: ev.side ?? null, price: ev.price ?? null, sl: ev.sl ?? null, tp: ev.tp, score: ev.score ?? null, label: ev.label, message: ev.message, summary: describeEvent(ev), source: ev.source, levelsSource, action, positionId });
     if (sigId === null) return;
 
     if (ev.kind === 'entry' && ev.side) {

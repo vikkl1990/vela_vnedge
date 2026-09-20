@@ -199,6 +199,8 @@ export interface Signal {
   score: number | null
   label: string
   message: string
+  /** Plain-English description of the signal. */
+  summary?: string
   source: string
   levelsSource: string
   action: string
