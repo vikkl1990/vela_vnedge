@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice } from './logic.ts';
+import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice, roundTick } from './logic.ts';
 
 const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
 
@@ -73,4 +73,11 @@ test('quality sizing scales leverage with score and models liquidation', () => {
   const p = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 500, contractValue: 0.001, entryPrice: 100, at: 0, sl: 97, tp: [105], riskAmount: 1.5, levelsSource: 'script', signalId: null, cfg: q, bt: true, leverage: 50 });
   const f = applyBar(p, { time: 1, high: 100, low: 98, close: 99 }, q);
   assert.equal(f[0].reason, 'liquidation'); assert.equal(p.status, 'closed');
+});
+
+
+test('roundTick preserves fractional tick precision including scientific notation', () => {
+  for (const [price, tick, expected] of [[100.25, 0.25, 100.25], [100.37, 0.25, 100.25], [100.38, 0.25, 100.5], [10.125, 0.125, 10.125], [2.5, 2.5, 2.5], [0.000000025, 2.5e-8, 2.5e-8], [100.5, 0.5, 100.5]]) {
+    assert.equal(roundTick(price, tick), expected);
+  }
 });

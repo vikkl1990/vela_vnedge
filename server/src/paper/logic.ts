@@ -49,6 +49,8 @@ export interface Position {
   /** Entry-time ML features (see ml/features.ts); optional. */
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** Last cumulative live candle observed; retained across restarts. */
+  lastPriceBar?: PriceBar;
 }
 
 export interface EntryRequest {
@@ -72,7 +74,8 @@ export interface LevelResult { sl: number; tp: number[]; source: Position['level
 export function roundTick(p: number, tick: number): number {
   if (!tick || tick <= 0) return p;
   const d = Math.round(p / tick) * tick;
-  const decimals = Math.min(8, Math.max(0, Math.ceil(-Math.log10(tick))));
+  const [coefficient, exponent = '0'] = tick.toString().toLowerCase().split('e');
+  const decimals = Math.min(15, Math.max(0, (coefficient.split('.')[1]?.length ?? 0) - Number(exponent)));
   return Number(d.toFixed(decimals));
 }
 
@@ -176,6 +179,8 @@ export interface OpenParams {
   leverage?: number;
   features?: Record<string, number>;
   mlProb?: number | null;
+  /** Last cumulative live candle observed; retained across restarts. */
+  lastPriceBar?: PriceBar;
 }
 
 export function openPosition(p: OpenParams): Position {
@@ -187,7 +192,7 @@ export function openPosition(p: OpenParams): Position {
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
     levelsSource: p.levelsSource, leverage: p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
-    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null,
+    fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt, features: p.features, mlProb: p.mlProb ?? null, lastPriceBar: p.lastPriceBar,
   };
 }
 
@@ -243,10 +248,33 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
     const isLast = i === pos.tp.length - 1;
     const q = isLast ? pos.qtyOpen : Math.min(pos.legs[i], pos.qtyOpen);
     fills.push(fillExit(pos, pos.tp[i], q, `tp${i + 1}`, at, cfg, false));
-    if (pos.status === 'closed') return fills;
+    if (pos.qtyOpen <= 0) return fills;
     if (i === 0 && cfg.breakEvenAfterTp1 && !pos.breakEven) { pos.sl = pos.entryPrice; pos.breakEven = true; }
   }
   return fills;
+}
+
+export interface PriceBar { time: number; high: number; low: number; close: number }
+
+/** Process only price information newly observed since entry/the previous update.
+ * OHLC extremes are cumulative; replaying an old low after TP1 must not hit the new BE stop.
+ * In an entry minute without a baseline, only the current close is known to be post-entry.
+ */
+export function applyLiveBar(pos: Position, bar: PriceBar, cfg: PaperConfig, observedAt: number): Fill[] {
+  const previous = pos.lastPriceBar;
+  if (pos.status !== 'open' || observedAt < pos.entryAt || bar.time + 60_000 <= pos.entryAt) return [];
+  if (previous && bar.time < previous.time) return [];
+  const sameBar = previous?.time === bar.time;
+  if (sameBar && previous.high === bar.high && previous.low === bar.low && previous.close === bar.close) return [];
+  let high = bar.high, low = bar.low;
+  if (sameBar) {
+    high = bar.high > previous.high ? Math.max(bar.high, bar.close) : bar.close;
+    low = bar.low < previous.low ? Math.min(bar.low, bar.close) : bar.close;
+  } else if (bar.time < pos.entryAt) {
+    high = low = bar.close;
+  }
+  pos.lastPriceBar = { ...bar };
+  return applyBar(pos, { time: observedAt, high, low, close: bar.close }, cfg);
 }
 
 /** Script-emitted exit event applied according to the scanner's exit mode. */

@@ -4,7 +4,7 @@ import type { AppConfig, ExitMode, PaperConfig } from '../config.ts';
 import type { Side, ExitType, ScanEvent } from '../scanners/extractor.ts';
 import { logger } from '../log.ts';
 import {
-  type Position, type Fill, applyBar, applyScriptExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
+  type Position, type Fill, type PriceBar, applyLiveBar, applyScriptExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, unrealized, notionalOf, rMultiple, type TradeStats,
 } from './logic.ts';
 
 const log = logger.scoped('paper');
@@ -28,6 +28,7 @@ export class PaperEngine extends EventEmitter {
   private open = new Map<number, Position>();
   private closedCache: Position[] | null = null;
   private marks = new Map<string, number>();
+  private priceBars = new Map<string, PriceBar>();
   private lastEquityPoint = 0;
   private lastEquityValue = NaN;
 
@@ -95,7 +96,7 @@ export class PaperEngine extends EventEmitter {
     const id = this.nextId();
     const pos = openPosition({
       id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue,
-      entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, cfg, bt: false, leverage: size.leverage, features: ctx.features, mlProb: ctx.mlProb ?? null,
+      entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, cfg, bt: false, leverage: size.leverage, features: ctx.features, mlProb: ctx.mlProb ?? null, lastPriceBar: this.priceBars.get(ctx.symbol),
     });
     this.open.set(id, pos);
     this.persist(pos);
@@ -118,13 +119,16 @@ export class PaperEngine extends EventEmitter {
   }
 
   /** Feed a price bar (1m candle or tick) for a symbol; checks SL/TP on every open position of that symbol. */
-  onBar(symbol: string, bar: { time: number; high: number; low: number; close: number }): void {
+  onBar(symbol: string, bar: PriceBar, observedAt = Date.now()): void {
+    if (bar.time < (this.priceBars.get(symbol)?.time ?? -Infinity)) return;
+    this.priceBars.set(symbol, { ...bar });
     this.marks.set(symbol, bar.close);
     for (const pos of [...this.open.values()]) {
       if (pos.symbol !== symbol) continue;
-      if (bar.time < pos.entryAt) continue; // don't fill on the signal bar itself
-      const fills = applyBar(pos, bar, this.paper);
+      const previous = pos.lastPriceBar;
+      const fills = applyLiveBar(pos, bar, this.paper, observedAt);
       if (fills.length) this.applyFills(pos, fills);
+      else if (pos.lastPriceBar !== previous) this.persist(pos);
     }
     this.recordEquity(false);
   }
@@ -220,7 +224,7 @@ export class PaperEngine extends EventEmitter {
       `UPDATE positions SET status=?, scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, qty=?, qty_open=?, contract_value=?, entry_price=?, entry_at=?, sl=?, sl_original=?, tp=?, tp_hit=?, break_even=?,
        realized_pnl=?, fees=?, risk_amount=?, levels_source=?, exit_at=?, exit_price=?, exit_reason=?, signal_id=?, fills=?, bt=? WHERE id=?`,
       p.status, p.scannerId, p.scannerName, p.symbol, p.tf, p.side, p.qty, p.qtyOpen, p.contractValue, p.entryPrice, p.entryAt, p.sl, p.slOriginal, JSON.stringify(p.tp), JSON.stringify(p.tpHit), p.breakEven ? 1 : 0,
-      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb }), p.bt ? 1 : 0, p.id,
+      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, liqPrice: p.liqPrice, features: p.features, mlProb: p.mlProb, lastPriceBar: p.lastPriceBar }), p.bt ? 1 : 0, p.id,
     );
   }
 
@@ -273,7 +277,7 @@ export function rowToPosition(r: any): Position {
   return {
     id: r.id, status: r.status, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, side: r.side, qty: r.qty, qtyOpen: r.qty_open,
     contractValue: r.contract_value, entryPrice: r.entry_price, entryAt: r.entry_at, sl: r.sl, slOriginal: r.sl_original, tp: safe(r.tp, []), tpHit: safe(r.tp_hit, []),
-    legs: extra.legs ?? [], leverage: extra.leverage ?? 0, liqPrice: extra.liqPrice ?? null, features: extra.features, mlProb: extra.mlProb ?? null, breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
+    legs: extra.legs ?? [], leverage: extra.leverage ?? 0, liqPrice: extra.liqPrice ?? null, features: extra.features, mlProb: extra.mlProb ?? null, lastPriceBar: extra.lastPriceBar, breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
     exitAt: r.exit_at, exitPrice: r.exit_price, exitReason: r.exit_reason, signalId: r.signal_id, fills: extra.fills ?? [], bt: Boolean(r.bt),
   };
 }
