@@ -1,0 +1,600 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//@version=6
+// ══════════════════════════════════════════════════════════
+// TRADE STRATEGY CALCULATOR [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 3.3.1
+
+indicator(
+    title      = "Trade Strategy Calculator [WillyAlgoTrader]",
+    shorttitle = "Trade Strategy Calculator",
+    overlay    = true)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_STRAT  = "⚙️ My Strategy"
+GRP_TRADE  = "🎯 Trade Setup"
+GRP_TP     = "🎯 Multi Take-Profit"
+GRP_GROWTH = "📈 Growth Projection"
+GRP_DASH   = "📊 Dashboard"
+GRP_VISUAL = "🎨 Visual"
+
+INDICATOR_VERSION = "v3.3.1"
+OVERFLOW_LOG      = 23.0  // ln-threshold for compound projections: e^23 ≈ 9.7e9× → display "∞"
+
+// ══════════════════════════════════════
+// INPUTS — My Strategy
+// ══════════════════════════════════════
+depositInput      = input.float(1000.0, "Deposit ($)", minval = 1, step = 100, group = GRP_STRAT, tooltip = "Your total trading account balance in USD.\nThis is the base for all position sizing and risk calculations.")
+riskPctInput      = input.float(1.0, "Risk per Trade (%)", minval = 0.1, maxval = 100, step = 0.5, group = GRP_STRAT, tooltip = "Percentage of deposit risked on each trade.\n• 1-2% recommended for conservative trading\n• Higher = faster growth but higher drawdowns")
+winrateInput      = input.float(55.0, "Winrate (%)", minval = 1, maxval = 99, step = 1, group = GRP_STRAT, tooltip = "Your historical win rate.\n• Below 40%: need high R:R to be profitable\n• 50-60%: solid with R:R >= 1.5\n• Above 70%: very rare, verify your data")
+avgRrInput        = input.float(2.0, "Average R:R (wins)", minval = 0.1, maxval = 50, step = 0.5, group = GRP_STRAT, tooltip = "Average reward-to-risk ratio on winning trades.\n• 1.5: moderate\n• 2.0: standard target\n• 3.0+: aggressive, fewer wins needed")
+tradesPerDayInput = input.int(3, "Trades per Day", minval = 1, maxval = 50, step = 1, group = GRP_STRAT, tooltip = "Average number of trades you take daily.\nUsed for Growth projection and daily risk limits.")
+leverageInput     = input.int(1, "Leverage", minval = 1, maxval = 125, step = 1, group = GRP_STRAT, tooltip = "1 = spot (no leverage).\nFor futures, enter your leverage multiplier.\nHigher leverage = lower margin but higher liquidation risk.")
+commissionInput   = input.float(0.04, "Exchange Commission (%)", minval = 0, maxval = 5, step = 0.01, group = GRP_STRAT, tooltip = "Commission per side (open or close).\n• Binance Futures taker: 0.04%\n• Binance Spot: 0.1%\nBoth sides are accounted for automatically.")
+
+// ══════════════════════════════════════
+// INPUTS — Trade Setup
+// ══════════════════════════════════════
+directionInput   = input.string("Long", "Direction", options = ["Long", "Short"], group = GRP_TRADE, tooltip = "Trade direction for position calculation.")
+slPctInput       = input.float(1.0, "Stop Loss (% from entry)", minval = 0.01, maxval = 50, step = 0.1, group = GRP_TRADE, tooltip = "Distance of stop loss from entry price in percent.\n• Tighter SL = larger position size but more stop-outs\n• Wider SL = smaller position but more room")
+rrInput          = input.float(2.0, "Risk : Reward", minval = 0.1, maxval = 50, step = 0.5, group = GRP_TRADE, tooltip = "Target reward-to-risk ratio for this trade.\n2.0 = profit target is 2x the stop loss distance.")
+slippageInput    = input.float(0.05, "Slippage (%)", minval = 0, maxval = 5, step = 0.01, group = GRP_TRADE, tooltip = "Expected slippage on order execution.\nAdded to stop loss distance for realistic position SIZING.\nThe displayed SL price stays at your actual order level.")
+entryModeInput   = input.string("Manual", "Entry Price Mode", options = ["Manual", "Auto (chart)"], group = GRP_TRADE, tooltip = "Manual: enter price below.\nAuto: uses current chart price.")
+entryManualInput = input.float(100.0, "Entry Price (manual)", minval = 0.0001, step = 1, group = GRP_TRADE, tooltip = "Enter your planned entry price.\nOnly used when Entry Price Mode = Manual.")
+
+// ══════════════════════════════════════
+// INPUTS — Multi Take-Profit
+// ══════════════════════════════════════
+multiTpInput = input.bool(false, "Enable Multi Take-Profit", group = GRP_TP, tooltip = "Split exit into 2 or 3 take-profit levels.\nAllows partial profit-taking and breakeven management.")
+tpCountInput = input.int(2, "Number of TPs", minval = 2, maxval = 3, step = 1, group = GRP_TP, tooltip = "2 or 3 take-profit targets.")
+rrTp1Input   = input.float(1.0, "R:R for TP1", minval = 0.1, maxval = 50, step = 0.5, group = GRP_TP, tooltip = "Risk:Reward ratio for the first take-profit.")
+rrTp2Input   = input.float(2.0, "R:R for TP2", minval = 0.1, maxval = 50, step = 0.5, group = GRP_TP, tooltip = "Risk:Reward ratio for the second take-profit.")
+rrTp3Input   = input.float(3.0, "R:R for TP3", minval = 0.1, maxval = 50, step = 0.5, group = GRP_TP, tooltip = "Risk:Reward ratio for the third take-profit.\nOnly used when Number of TPs = 3.")
+volTp1Input  = input.int(50, "Volume on TP1 (%)", minval = 1, maxval = 99, group = GRP_TP, tooltip = "Percentage of position to close at TP1.\nRemaining volume goes to TP2 (and TP3).")
+volTp2Input  = input.int(30, "Volume on TP2 (%)", minval = 1, maxval = 99, group = GRP_TP, tooltip = "Percentage of position to close at TP2.\nOnly relevant when using 3 TPs.\nWith 2 TPs, remainder after TP1 goes entirely to TP2.")
+
+// ══════════════════════════════════════
+// INPUTS — Growth Projection
+// ══════════════════════════════════════
+presetInput    = input.string("Custom", "Preset", options = ["Beginner", "Moderate", "Aggressive", "Custom"], group = GRP_GROWTH, tooltip = "Quick presets override WR, R:R, and Risk:\n• Beginner: WR 45%, R:R 1:2, Risk 1%\n• Moderate: WR 55%, R:R 1:2, Risk 2%\n• Aggressive: WR 50%, R:R 1:3, Risk 3%\n• Custom: uses your My Strategy values")
+projDaysInput  = input.int(30, "Projection Period (days)", minval = 1, maxval = 365, step = 5, group = GRP_GROWTH, tooltip = "Number of trading days to project forward.\n• 30: monthly view\n• 90: quarterly\n• 365: annual")
+reinvestInput  = input.bool(true, "Compound (reinvest profits)", group = GRP_GROWTH, tooltip = "ON = risk calculated from current balance (compound growth).\nOFF = risk always from initial deposit (linear growth).")
+targetInput    = input.float(0, "Target Deposit ($)", minval = 0, step = 500, group = GRP_GROWTH, tooltip = "Set a goal amount to see how many days to reach it.\n0 = disabled.")
+dailyRiskInput = input.float(3.0, "Max Daily Risk (%)", minval = 0.1, maxval = 100, step = 0.5, group = GRP_GROWTH, tooltip = "If daily losses reach this %, stop trading for the day.\nProtects against tilt and overtrading.")
+maxDdInput     = input.float(20.0, "Max Drawdown (%)", minval = 1, maxval = 100, step = 1, group = GRP_GROWTH, tooltip = "Maximum acceptable drawdown from peak equity.\nUsed in risk analysis and ruin probability.")
+
+// ══════════════════════════════════════
+// INPUTS — Dashboard
+// ══════════════════════════════════════
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Toggle dashboard visibility.")
+
+// ══════════════════════════════════════
+// INPUTS — Visual
+// ══════════════════════════════════════
+themeInput         = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+fontSizeInput      = input.string("Normal", "Font Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_VISUAL, tooltip = "Base font size for all table text.\n• Tiny: compact, fits more on screen\n• Small: moderate\n• Normal: default\n• Large: easy to read")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark.")
+
+// ══════════════════════════════════════
+// THEME DETECTION & PALETTE
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    // FIX-10 (v3.3.1): luminance (ITU-R BT.601) instead of red channel only —
+    // red-only detection misclassifies green/blue chart backgrounds.
+    =>         0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0                : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0)  : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5)  : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0)  : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0)  : color.new(#F0F4F8, 0)
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80)  : color.new(#000000, 80)
+
+COLOR_GREEN  = isDark ? #00E676 : #16A34A
+COLOR_RED    = isDark ? #FF5252 : #DC2626
+COLOR_YELLOW = isDark ? #FFEB3B : #CA8A04
+COLOR_BLUE   = #42A5F5
+COLOR_WHITE  = #FFFFFF
+
+HDR_TRADE  = color.new(#2962FF, 0)
+HDR_RISK   = color.new(#FF6D00, 0)
+HDR_GROWTH = color.new(#00C853, 0)
+HDR_KELLY  = color.new(#AA00FF, 0)
+HDR_MASTER = isDark ? color.new(#1A1A2E, 0) : color.new(#2C2C54, 0)
+
+DIV_COLOR = isDark ? color.new(#3A3F4B, 0) : color.new(#B0B0B0, 0)
+
+// Font size resolution: base + accent (one step up)
+SZ_BASE = switch fontSizeInput
+    "Tiny"  => size.tiny
+    "Small" => size.small
+    "Large" => size.large
+    => size.normal
+
+SZ_ACCENT = switch fontSizeInput
+    "Tiny"  => size.small
+    "Small" => size.normal
+    "Large" => size.huge
+    => size.large
+
+SZ_HEADER = switch fontSizeInput
+    "Tiny"  => size.small
+    "Small" => size.normal
+    "Large" => size.huge
+    => size.large
+
+// ══════════════════════════════════════
+// UTILITY FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+fmtUsd(float val) =>
+    na(val) ? "—" : "$" + str.tostring(math.round(val, 2))
+
+fmtPct(float val) =>
+    na(val) ? "—" : str.tostring(math.round(val, 2)) + "%"
+
+fmtPctSigned(float val) =>
+    na(val) ? "—" : (val >= 0 ? "+" : "") + str.tostring(math.round(val, 2)) + "%"
+
+fmtUsdSigned(float val) =>
+    na(val) ? "—" : (val >= 0 ? "+$" : "-$") + str.tostring(math.abs(math.round(val, 2)))
+
+fmtPrice(float val) =>
+    na(val) ? "—" : str.tostring(val, format.mintick)
+
+// ══════════════════════════════════════
+// TABLE — global scope
+// 11 columns x 50 rows
+//   col 0-1  = TRADE
+//   col 2    = divider
+//   col 3-4  = RISK
+//   col 5    = divider
+//   col 6-7  = GROWTH
+//   col 8    = divider
+//   col 9-10 = KELLY
+// ══════════════════════════════════════
+var mainTable = table.new(position.middle_center, 11, 50, TABLE_BG, TABLE_BORDER, 2, TABLE_BORDER, 2)
+var wmTable   = table.new(position.bottom_center, 1, 1, color.new(color.black, 100), color.new(color.black, 100), 0, color.new(color.black, 100), 0)
+
+plot(na, display = display.none)
+
+// ══════════════════════════════════════
+// SECTION ARRAYS — global scope
+// (var = persist across bars, cleared each render)
+// ══════════════════════════════════════
+var tL = array.new_string(), var tV = array.new_string()
+var tLc = array.new_color(), var tVc = array.new_color()
+var tVbg = array.new_color(), var tVsz = array.new_string(), var tSep = array.new_bool()
+
+var rL = array.new_string(), var rV = array.new_string()
+var rLc = array.new_color(), var rVc = array.new_color()
+var rVbg = array.new_color(), var rVsz = array.new_string(), var rSep = array.new_bool()
+
+var gL = array.new_string(), var gV = array.new_string()
+var gLc = array.new_color(), var gVc = array.new_color()
+var gVbg = array.new_color(), var gVsz = array.new_string(), var gSep = array.new_bool()
+
+var kL = array.new_string(), var kV = array.new_string()
+var kLc = array.new_color(), var kVc = array.new_color()
+var kVbg = array.new_color(), var kVsz = array.new_string(), var kSep = array.new_bool()
+
+// ══════════════════════════════════════
+// HELPERS: fill empty / divider cells
+// ══════════════════════════════════════
+fillPair(tbl, int c0, int row) =>
+    table.cell(tbl, c0, row, "", bgcolor = TABLE_BG, text_size = SZ_BASE)
+    table.cell(tbl, c0 + 1, row, "", bgcolor = TABLE_BG, text_size = SZ_BASE)
+
+fillAllDividers(tbl, int row) =>
+    table.cell(tbl, 2, row, "", bgcolor = DIV_COLOR, text_size = SZ_BASE)
+    table.cell(tbl, 5, row, "", bgcolor = DIV_COLOR, text_size = SZ_BASE)
+    table.cell(tbl, 8, row, "", bgcolor = DIV_COLOR, text_size = SZ_BASE)
+
+// ══════════════════════════════════════
+// RENDER a section's row into cols c0, c0+1
+// ══════════════════════════════════════
+renderRow(tbl, int c0, int row, arrL, arrV, arrLc, arrVc, arrVbg, arrVsz, arrSep, int idx) =>
+    bool isSep = array.get(arrSep, idx)
+    if isSep
+        table.cell(tbl, c0, row, array.get(arrL, idx), text_color = array.get(arrLc, idx), bgcolor = array.get(arrVbg, idx), text_size = SZ_BASE, text_halign = text.align_center)
+        table.merge_cells(tbl, c0, row, c0 + 1, row)
+    else
+        string sz = array.get(arrVsz, idx) == "l" ? SZ_ACCENT : SZ_BASE
+        table.cell(tbl, c0, row, array.get(arrL, idx), text_color = array.get(arrLc, idx), bgcolor = TABLE_BG, text_size = SZ_BASE)
+        table.cell(tbl, c0 + 1, row, array.get(arrV, idx), text_color = array.get(arrVc, idx), bgcolor = array.get(arrVbg, idx), text_size = sz)
+
+// ═══════════════════════════════════════════════════
+// HELPER: push row into section arrays (reduces repetition)
+// ═══════════════════════════════════════════════════
+pushRow(arrL, arrV, arrLc, arrVc, arrVbg, arrVsz, arrSep, string lab, string val, color lc, color vc, color vbg, string sz, bool sep) =>
+    array.push(arrL, lab),  array.push(arrV, val)
+    array.push(arrLc, lc),  array.push(arrVc, vc)
+    array.push(arrVbg, vbg), array.push(arrVsz, sz)
+    array.push(arrSep, sep)
+
+// ══════════════════════════════════════
+// ALL CALCULATIONS + RENDERING
+// ══════════════════════════════════════
+if barstate.islast
+
+    // ── Preset resolution ───────────
+    float dWr   = presetInput == "Beginner" ? 45.0 : presetInput == "Moderate" ? 55.0 : presetInput == "Aggressive" ? 50.0 : winrateInput
+    float dRr   = presetInput == "Beginner" ? 2.0  : presetInput == "Moderate" ? 2.0  : presetInput == "Aggressive" ? 3.0  : avgRrInput
+    float dRisk = presetInput == "Beginner" ? 1.0  : presetInput == "Moderate" ? 2.0  : presetInput == "Aggressive" ? 3.0  : riskPctInput
+
+    // ── Shared calculations ─────────
+    float entryPrice     = entryModeInput == "Auto (chart)" ? close : entryManualInput
+    // slPctAdj: SIZING ONLY — slippage widens the effective loss distance,
+    // so the position is sized against SL% + slippage.
+    float slPctAdj       = slPctInput * (1.0 + slippageInput / 100.0)
+    // FIX-4 (v3.2.1): displayed SL = actual order level, WITHOUT slippage.
+    // Slippage is execution overshoot beyond this level, not the order itself.
+    // Keeps SL price consistent with TP prices (also computed from raw slPctInput).
+    float slDistance     = entryPrice * (slPctInput / 100.0)
+    float slPrice        = directionInput == "Long" ? entryPrice - slDistance : entryPrice + slDistance
+    float riskAmount     = depositInput * (riskPctInput / 100.0)
+    float commFactor     = commissionInput / 100.0 * 2.0
+    float positionUsd    = safeDiv(riskAmount, slPctAdj / 100.0 + commFactor)
+    float positionQty    = safeDiv(positionUsd, entryPrice)
+    float marginRequired = safeDiv(positionUsd, leverageInput * 1.0)
+    bool  marginOk       = marginRequired <= depositInput
+    float totalComm      = positionUsd * commFactor
+    float wr             = winrateInput / 100.0
+
+    int    riskLevel = riskPctInput <= 2 and leverageInput <= 10 ? 1 : riskPctInput <= 5 and leverageInput <= 50 ? 2 : 3
+    color  riskColor = riskLevel == 1 ? COLOR_GREEN : riskLevel == 2 ? COLOR_YELLOW : COLOR_RED
+    string riskBadge = riskLevel == 1 ? "✅ SAFE" : riskLevel == 2 ? "⚠️ ELEVATED" : "🚨 DANGER"
+
+    // Single TP
+    float singleTpDist   = entryPrice * (slPctInput / 100.0) * rrInput
+    float singleTpPrice  = directionInput == "Long" ? entryPrice + singleTpDist : entryPrice - singleTpDist
+    float singleTpProfit = positionUsd * (slPctInput / 100.0) * rrInput - totalComm
+    float singleTpPct    = safeDiv(singleTpProfit, depositInput) * 100.0
+    float netRrSingle    = safeDiv(singleTpProfit, riskAmount)
+
+    // Multi TP
+    float vol1Pct      = volTp1Input / 100.0
+    float vol2Pct      = tpCountInput == 2 ? (1.0 - vol1Pct) : volTp2Input / 100.0
+    float vol3Pct      = tpCountInput == 2 ? 0.0 : math.max(0.0, 1.0 - vol1Pct - vol2Pct)
+    // FIX-14 (v3.3.1): warn at >= 100, not only > 100 — at exactly 100%
+    // TP3 silently received 0% volume with no indication to the user.
+    bool  tpVolWarning = tpCountInput == 3 and (volTp1Input + volTp2Input >= 100)
+    float slMovePct    = slPctInput / 100.0
+    float tp1Profit    = positionUsd * vol1Pct * slMovePct * rrTp1Input - positionUsd * vol1Pct * commFactor
+    float tp2Profit    = positionUsd * vol2Pct * slMovePct * rrTp2Input - positionUsd * vol2Pct * commFactor
+    float tp3Profit    = positionUsd * vol3Pct * slMovePct * rrTp3Input - positionUsd * vol3Pct * commFactor
+    float tp1Price     = directionInput == "Long" ? entryPrice + entryPrice * slMovePct * rrTp1Input : entryPrice - entryPrice * slMovePct * rrTp1Input
+    float tp2Price     = directionInput == "Long" ? entryPrice + entryPrice * slMovePct * rrTp2Input : entryPrice - entryPrice * slMovePct * rrTp2Input
+    float tp3Price     = directionInput == "Long" ? entryPrice + entryPrice * slMovePct * rrTp3Input : entryPrice - entryPrice * slMovePct * rrTp3Input
+    float totalMultiProfit = tpCountInput == 3 ? tp1Profit + tp2Profit + tp3Profit : tp1Profit + tp2Profit
+    float totalMultiPct    = safeDiv(totalMultiProfit, depositInput) * 100.0
+    float netRrMulti       = safeDiv(totalMultiProfit, riskAmount)
+    float remainingUsd     = positionUsd * (1.0 - vol1Pct)
+    float beOffset         = remainingUsd > 0 ? safeDiv(tp1Profit, remainingUsd) * entryPrice : 0.0
+    float bePrice          = directionInput == "Long" ? entryPrice - beOffset : entryPrice + beOffset
+    float liqPrice         = leverageInput > 1 ? (directionInput == "Long" ? entryPrice * (1.0 - 0.95 / leverageInput) : entryPrice * (1.0 + 0.95 / leverageInput)) : na
+
+    // Risk calculations
+    // FIX-5 (v3.3.0): loss limits and stress test follow the Compound toggle.
+    // Compound ON:  each loss = r% of CURRENT balance → dep*(1-r)^N,
+    //               limit N = floor( ln(1 - limit%) / ln(1 - r) ).
+    // Compound OFF: each loss = r% of INITIAL deposit → dep*(1 - N*r),
+    //               limit N = floor( limit% / r% ).
+    float rFrac          = riskPctInput / 100.0
+    float logOneMinusR   = math.log(math.max(1.0 - rFrac, 0.0001))
+    int   maxLosingDaily = reinvestInput ? math.floor(safeDiv(math.log(math.max(1.0 - dailyRiskInput / 100.0, 0.0001)), logOneMinusR)) : math.floor(safeDiv(dailyRiskInput, riskPctInput))
+    int   maxLosingTotal = reinvestInput ? math.floor(safeDiv(math.log(math.max(1.0 - maxDdInput / 100.0, 0.0001)), logOneMinusR)) : math.floor(safeDiv(maxDdInput, riskPctInput))
+    // FIX-1 (v3.2.1): EV consistent with the sizing model.
+    // Loss at SL costs EXACTLY riskAmount — commission is already baked into
+    // positionUsd = riskAmount / (slPctAdj% + commFactor). Do NOT subtract
+    // totalComm again. Win leg = actual position profit at avg R:R, net of comm.
+    float winProfitAvg   = positionUsd * (slPctInput / 100.0) * avgRrInput - totalComm
+    float evPerTrade     = wr * winProfitAvg - (1.0 - wr) * riskAmount
+    float evPer100       = evPerTrade * 100.0
+    float lossRate       = 1.0 - winrateInput / 100.0
+    float prob5Losses    = math.pow(lossRate, 5) * 100.0
+    float prob7Losses    = math.pow(lossRate, 7) * 100.0
+    float prob10Losses   = math.pow(lossRate, 10) * 100.0
+    float depoAfter5     = reinvestInput ? depositInput * math.pow(1.0 - rFrac, 5)  : math.max(depositInput * (1.0 - 5.0  * rFrac), 0.0)
+    float depoAfter7     = reinvestInput ? depositInput * math.pow(1.0 - rFrac, 7)  : math.max(depositInput * (1.0 - 7.0  * rFrac), 0.0)
+    float depoAfter10    = reinvestInput ? depositInput * math.pow(1.0 - rFrac, 10) : math.max(depositInput * (1.0 - 10.0 * rFrac), 0.0)
+    // DD derived from the deposit values — single source of truth, no drift
+    float ddAfter5       = (1.0 - safeDiv(depoAfter5,  depositInput)) * 100.0
+    float ddAfter7       = (1.0 - safeDiv(depoAfter7,  depositInput)) * 100.0
+    float ddAfter10      = (1.0 - safeDiv(depoAfter10, depositInput)) * 100.0
+
+    // Growth calculations
+    // FIX-3 (v3.2.1): commission drag included, consistent with EV/Trade.
+    // Position fraction of equity per trade (uses current trade's SL setup as
+    // the sizing reference): dPosFrac = risk% / (slAdj% + commFactor).
+    // Win return  = dPosFrac * (SL% * RR - commFactor)
+    // Loss return = -risk% (commission baked into sizing, as in FIX-1).
+    // Sanity: with commission = 0 and slippage = 0 this reduces exactly to the
+    // old formula (dWr * dRisk * dRr - (1-dWr) * dRisk).
+    float dPosFrac       = safeDiv(dRisk / 100.0, slPctAdj / 100.0 + commFactor)
+    float dWinFrac       = dPosFrac * (slPctInput / 100.0 * dRr - commFactor)
+    float dEvPct         = (dWr / 100.0) * dWinFrac - (1.0 - dWr / 100.0) * (dRisk / 100.0)
+    int   totalTrades    = tradesPerDayInput * projDaysInput
+    // FIX-8 (v3.3.0): overflow is only possible when compounding — linear
+    // growth stays bounded — so guards apply in compound mode only.
+    float dLogGrowth     = totalTrades * math.log(math.max(1.0 + dEvPct, 0.0001))
+    bool  dOverflow      = reinvestInput and dLogGrowth > OVERFLOW_LOG
+    float dFinalCompound = dOverflow ? na : depositInput * math.pow(1.0 + dEvPct, totalTrades)
+    float dFinalSimple   = math.max(depositInput + depositInput * dEvPct * totalTrades, 0.0)
+    float dFinal         = reinvestInput ? dFinalCompound : dFinalSimple
+    float dGrowthPct     = na(dFinal) ? na : safeDiv(dFinal - depositInput, depositInput) * 100.0
+    float dDailyReturn   = reinvestInput and not na(dFinal) and dFinal > 0 and projDaysInput > 0 ? (math.pow(safeDiv(dFinal, depositInput, 1.0), 1.0 / projDaysInput) - 1.0) * 100.0 : safeDiv(nz(dGrowthPct), math.max(projDaysInput, 1))
+    float dWrOpt         = math.min(dWr + 10.0, 99.0)
+    float dWrPes         = math.max(dWr - 10.0, 1.0)
+    // FIX-3 (v3.2.1): scenarios share the same commission-aware win/loss legs.
+    float dEvOpt         = (dWrOpt / 100.0) * dWinFrac - (1.0 - dWrOpt / 100.0) * (dRisk / 100.0)
+    float dEvPes         = (dWrPes / 100.0) * dWinFrac - (1.0 - dWrPes / 100.0) * (dRisk / 100.0)
+    float dLogOpt        = totalTrades * math.log(math.max(1.0 + dEvOpt, 0.0001))
+    float dLogPes        = totalTrades * math.log(math.max(1.0 + dEvPes, 0.0001))
+    bool  optOverflow    = reinvestInput and dLogOpt > OVERFLOW_LOG
+    bool  pesOverflow    = reinvestInput and dLogPes > OVERFLOW_LOG
+    float dFinalOpt      = optOverflow ? na : math.max(nz(reinvestInput ? depositInput * math.pow(1.0 + dEvOpt, totalTrades) : depositInput + depositInput * dEvOpt * totalTrades), 0.0)
+    float dFinalPes      = pesOverflow ? na : math.max(nz(reinvestInput ? depositInput * math.pow(math.max(1.0 + dEvPes, 0.0001), totalTrades) : depositInput + depositInput * dEvPes * totalTrades), 0.0)
+    // FIX-6 (v3.3.0): goal horizons follow the Compound toggle.
+    // Compound: k× after ln(k)/ln(1+EV) trades.
+    // Linear:   k× after (k-1)/EV trades (balance = dep*(1 + EV*n)).
+    float logEvPct       = dEvPct > 0 ? math.log(1.0 + dEvPct) : 0.0
+    bool  goalsOk        = dEvPct > 0 and tradesPerDayInput > 0
+    int   dDaysX2        = goalsOk ? (reinvestInput ? math.ceil(safeDiv(math.log(2.0), logEvPct * tradesPerDayInput)) : math.ceil(safeDiv(1.0, dEvPct * tradesPerDayInput))) : 0
+    int   dDaysX3        = goalsOk ? (reinvestInput ? math.ceil(safeDiv(math.log(3.0), logEvPct * tradesPerDayInput)) : math.ceil(safeDiv(2.0, dEvPct * tradesPerDayInput))) : 0
+    float targetRatio    = safeDiv(targetInput, depositInput, 1.0)
+    int   dDaysTarget    = targetInput > depositInput and goalsOk ? (reinvestInput ? math.ceil(safeDiv(math.log(targetRatio), logEvPct * tradesPerDayInput)) : math.ceil(safeDiv(targetRatio - 1.0, dEvPct * tradesPerDayInput))) : 0
+    // FIX-7 (v3.3.0): expected max losing streak over N trades ≈ ln(N)/ln(1/q).
+    // The old heuristic (1.5 × expected daily losses) ignored the horizon:
+    // at WR 55% / 3 trades/day it gave ~2, while over 90 trades the expected
+    // worst streak is ~6. Max DD estimate follows the Compound toggle (FIX-5 logic).
+    float qLoss          = math.max(1.0 - dWr / 100.0, 0.0001)
+    int   dWorstStreak   = math.max(1, math.ceil(safeDiv(math.log(math.max(totalTrades, 2)), math.log(1.0 / qLoss))))
+    float dMaxDdPct      = reinvestInput ? (1.0 - math.pow(1.0 - dRisk / 100.0, dWorstStreak)) * 100.0 : math.min(dWorstStreak * dRisk, 100.0)
+    float dEdge          = (dWr / 100.0) * dRr - (1.0 - dWr / 100.0)
+    int   dBankrollUnits = math.floor(safeDiv(100.0, dRisk, 1.0))
+    float dRuinRaw       = dEdge > 0 ? math.pow(math.max(safeDiv(1.0 - dWr / 100.0, (dWr / 100.0) * dRr, 0.999), 0.001), dBankrollUnits) * 100.0 : 99.9
+    float dRuinProb      = math.min(nz(dRuinRaw, 99.9), 99.9)
+
+    // Kelly calculations
+    float kellyEdge       = wr * avgRrInput - (1.0 - wr)
+    float kellyPct        = kellyEdge > 0 ? safeDiv(kellyEdge, avgRrInput) * 100.0 : 0.0
+    float halfKelly       = kellyPct / 2.0
+    float quarterKelly    = kellyPct / 4.0
+    string kellyStatus    = kellyPct <= 0 ? "🔴 No edge" : riskPctInput > kellyPct * 2.0 ? "🚨 >2x Kelly" : riskPctInput > kellyPct ? "🔴 Over-bet" : riskPctInput >= halfKelly ? "🟢 Optimal" : "🟡 Conservative"
+    color kellyStatusColor = kellyPct <= 0 ? COLOR_RED : riskPctInput > kellyPct * 2.0 ? COLOR_RED : riskPctInput > kellyPct ? COLOR_RED : riskPctInput >= halfKelly ? COLOR_GREEN : COLOR_YELLOW
+    float kellyRiskAmt     = depositInput * math.max(kellyPct, 0.0) / 100.0
+    float kellyPositionUsd = safeDiv(kellyRiskAmt, slPctAdj / 100.0 + commFactor)
+    float growthRateKelly  = kellyPct > 0 ? (wr * math.log(1.0 + kellyPct / 100.0 * avgRrInput) + (1.0 - wr) * math.log(math.max(1.0 - kellyPct / 100.0, 0.001))) * 100.0 : 0.0
+    float growthRateYours  = riskPctInput > 0 ? (wr * math.log(1.0 + riskPctInput / 100.0 * avgRrInput) + (1.0 - wr) * math.log(math.max(1.0 - riskPctInput / 100.0, 0.001))) * 100.0 : 0.0
+    // FIX-2 (v3.2.1): break-even winrate re-derived from the corrected EV model.
+    // BE condition: wr * winProfitAvg = (1 - wr) * riskAmount
+    //             → wr = riskAmount / (winProfitAvg + riskAmount)
+    // Clamped at 100%: if winProfitAvg <= 0 no winrate can be profitable.
+    float beWinrate        = math.min(safeDiv(riskAmount, winProfitAvg + riskAmount, 1.0) * 100.0, 100.0)
+
+    // ══════════════════════════════════════════════════════
+    // BUILD SECTION ARRAYS
+    // ══════════════════════════════════════════════════════
+
+    if showDashInput
+        table.clear(mainTable, 0, 0, 10, 49)
+
+        // ── TRADE arrays ────────────────
+        array.clear(tL), array.clear(tV), array.clear(tLc), array.clear(tVc), array.clear(tVbg), array.clear(tVsz), array.clear(tSep)
+
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "Direction",       directionInput,                                  TEXT_MUTED, COLOR_WHITE, directionInput == "Long" ? COLOR_GREEN : COLOR_RED, "n", false)
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "Entry Price",     fmtPrice(entryPrice),                            TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "Stop Loss",       fmtPrice(slPrice),                               TEXT_MUTED, COLOR_RED,   TABLE_BG,      "n", false)
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "",                "",                                               TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "💰 Position Size", fmtUsd(positionUsd),                            TEXT_COLOR, COLOR_BLUE,  TABLE_BG,      "l", false)
+
+        if leverageInput > 1
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  Margin Required", fmtUsd(marginRequired),                    TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  Quantity",      str.tostring(math.round(nz(positionQty), 6)),     TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "🔴 Risk (loss)",  "-" + fmtUsd(riskAmount) + " (" + fmtPct(riskPctInput) + ")", TEXT_COLOR, COLOR_RED, TABLE_BG, "l", false)
+
+        if multiTpInput
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "", "", TEXT_MUTED, TEXT_MUTED, TABLE_ROW_ALT, "n", true)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "TP1 x" + str.tostring(rrTp1Input, "#.#") + " (" + str.tostring(math.round(vol1Pct * 100)) + "%)", fmtUsdSigned(tp1Profit) + " → " + fmtPrice(tp1Price), TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "TP2 x" + str.tostring(rrTp2Input, "#.#") + " (" + str.tostring(math.round(vol2Pct * 100)) + "%)", fmtUsdSigned(tp2Profit) + " → " + fmtPrice(tp2Price), TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+            if tpCountInput == 3
+                pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "TP3 x" + str.tostring(rrTp3Input, "#.#") + " (" + str.tostring(math.round(vol3Pct * 100)) + "%)", fmtUsdSigned(tp3Profit) + " → " + fmtPrice(tp3Price), TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+            if tpVolWarning
+                pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "⚠️ TP1+TP2 ≥ 100% — TP3 gets 0!", "", COLOR_YELLOW, COLOR_YELLOW, TABLE_BG, "n", true)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "🟢 Total Profit", fmtUsdSigned(totalMultiProfit) + " (" + fmtPctSigned(totalMultiPct) + ")", TEXT_COLOR, COLOR_GREEN, TABLE_BG, "l", false)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  Net R:R",       "1 : " + str.tostring(math.round(nz(netRrMulti), 2)),                     TEXT_MUTED, TEXT_COLOR,  TABLE_BG, "n", false)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  BE after TP1",  fmtPrice(bePrice),                                                        TEXT_MUTED, COLOR_YELLOW,TABLE_BG, "n", false)
+        else
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "🟢 Profit (TP)", fmtUsdSigned(singleTpProfit) + " (" + fmtPctSigned(singleTpPct) + ")",     TEXT_COLOR, COLOR_GREEN, TABLE_BG, "l", false)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  TP Price",      fmtPrice(singleTpPrice),                                                  TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  Net R:R",       "1 : " + str.tostring(math.round(nz(netRrSingle), 2)),                    TEXT_MUTED, TEXT_COLOR,  TABLE_BG, "n", false)
+
+        if commissionInput > 0
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  Commission", "-" + fmtUsd(totalComm), TEXT_MUTED, TEXT_MUTED, TABLE_BG, "n", false)
+        if leverageInput > 1 and not na(liqPrice)
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "  Liquidation ≈", fmtPrice(liqPrice), TEXT_MUTED, COLOR_RED, TABLE_BG, "n", false)
+        if not marginOk
+            pushRow(tL,tV,tLc,tVc,tVbg,tVsz,tSep, "🚨 INSUFFICIENT MARGIN", "", COLOR_WHITE, COLOR_WHITE, COLOR_RED, "n", true)
+
+        // ── RISK arrays ─────────────────
+        array.clear(rL), array.clear(rV), array.clear(rLc), array.clear(rVc), array.clear(rVbg), array.clear(rVsz), array.clear(rSep)
+
+        color levColor = leverageInput > 20 ? COLOR_RED : leverageInput > 10 ? COLOR_YELLOW : TEXT_COLOR
+        color evColor  = evPerTrade > 0 ? COLOR_GREEN : COLOR_RED
+
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "Deposit",          fmtUsd(depositInput),                                           TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "Risk / Trade",     fmtUsd(riskAmount) + " (" + fmtPct(riskPctInput) + ")",           TEXT_MUTED, riskColor,   TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "Leverage",         str.tostring(leverageInput) + "x",                               TEXT_MUTED, levColor,    TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "",                 "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "Daily limit",      str.tostring(maxLosingDaily) + " losses",                        TEXT_MUTED, COLOR_YELLOW,TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "Max DD limit",     str.tostring(maxLosingTotal) + " losses",                        TEXT_MUTED, COLOR_RED,   TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "── Stress Test ──","",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "5 losses in a row", "-" + fmtPct(ddAfter5) + " (" + fmtUsd(depoAfter5) + ") P=" + fmtPct(prob5Losses),  TEXT_MUTED, COLOR_YELLOW,TABLE_BG, "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "7 losses in a row", "-" + fmtPct(ddAfter7) + " (" + fmtUsd(depoAfter7) + ") P=" + fmtPct(prob7Losses),  TEXT_MUTED, COLOR_YELLOW,TABLE_BG, "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "10 losses in a row","-" + fmtPct(ddAfter10) + " (" + fmtUsd(depoAfter10) + ") P=" + fmtPct(prob10Losses),TEXT_MUTED, COLOR_RED,   TABLE_BG, "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "",                 "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "📈 EV / Trade",    fmtUsdSigned(evPerTrade),                                       TEXT_COLOR, evColor,     TABLE_BG,      "l", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "  EV / 100 Trades",fmtUsdSigned(evPer100),                                         TEXT_MUTED, evColor,     TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "  BE Winrate",     fmtPct(beWinrate),                                               TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(rL,rV,rLc,rVc,rVbg,rVsz,rSep, "  WR / R:R",       str.tostring(math.round(winrateInput)) + "% / 1:" + str.tostring(math.round(avgRrInput, 1)), TEXT_MUTED, TEXT_MUTED, TABLE_BG, "n", false)
+
+        // ── GROWTH arrays ───────────────
+        array.clear(gL), array.clear(gV), array.clear(gLc), array.clear(gVc), array.clear(gVbg), array.clear(gVsz), array.clear(gSep)
+
+        color dFinalColor = dOverflow or (not na(dFinal) and dFinal >= depositInput) ? COLOR_GREEN : COLOR_RED
+        string dFinalStr  = dOverflow ? "∞ (overflow)" : fmtUsd(dFinal)
+        color pesColor    = pesOverflow or nz(dFinalPes) >= depositInput ? COLOR_YELLOW : COLOR_RED
+        color ruinColor   = dRuinProb < 5 ? COLOR_GREEN : dRuinProb < 25 ? COLOR_YELLOW : COLOR_RED
+
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "WR / R:R / Risk",  fmtPct(dWr) + " / 1:" + str.tostring(math.round(dRr, 1)) + " / " + fmtPct(dRisk), TEXT_MUTED, TEXT_COLOR, TABLE_BG, "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "Total Trades",     str.tostring(totalTrades) + " (" + str.tostring(projDaysInput) + "d x " + str.tostring(tradesPerDayInput) + ")", TEXT_MUTED, TEXT_COLOR, TABLE_BG, "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "── Forecast ──",   "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "💰 Projected",     dFinalStr,                                                       TEXT_COLOR, dFinalColor, TABLE_BG,      "l", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Growth",         dOverflow ? "∞" : fmtPctSigned(dGrowthPct),                      TEXT_MUTED, dFinalColor, TABLE_BG,      "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Daily Avg",      dOverflow ? "∞" : fmtPctSigned(dDailyReturn),                    TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "── Scenarios (WR ±10%) ──", "",                                                    TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "🟢 WR " + fmtPct(dWrOpt), optOverflow ? "∞" : fmtUsd(dFinalOpt),                   TEXT_MUTED, COLOR_GREEN, TABLE_BG,      "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "🔴 WR " + fmtPct(dWrPes), pesOverflow ? "∞" : fmtUsd(dFinalPes),                   TEXT_MUTED, pesColor,    TABLE_BG,      "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "── Goals ──",      "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+
+        if dEvPct > 0
+            pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Deposit x2", str.tostring(dDaysX2) + " days", TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+            pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Deposit x3", str.tostring(dDaysX3) + " days", TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+            if targetInput > depositInput
+                pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Target " + fmtUsd(targetInput), str.tostring(dDaysTarget) + " days", TEXT_MUTED, COLOR_GREEN, TABLE_BG, "n", false)
+        else
+            pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "⚠️ Negative EV!", "", COLOR_RED, COLOR_RED, TABLE_BG, "n", true)
+
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "── Risks ──",     "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Max DD est.",    "-" + fmtPct(dMaxDdPct),                                         TEXT_MUTED, COLOR_RED,   TABLE_BG,      "n", false)
+        pushRow(gL,gV,gLc,gVc,gVbg,gVsz,gSep, "  Ruin Prob.",     fmtPct(dRuinProb),                                               TEXT_MUTED, ruinColor,   TABLE_BG,      "n", false)
+
+        // ── KELLY arrays ────────────────
+        array.clear(kL), array.clear(kV), array.clear(kLc), array.clear(kVc), array.clear(kVbg), array.clear(kVsz), array.clear(kSep)
+
+        color edgeColor = kellyEdge > 0 ? COLOR_GREEN : COLOR_RED
+
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "Winrate",          fmtPct(winrateInput),                                            TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "Avg R:R",          "1 : " + str.tostring(math.round(avgRrInput, 1)),                TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "BE Winrate",       fmtPct(beWinrate),                                               TEXT_MUTED, winrateInput > beWinrate ? COLOR_GREEN : COLOR_RED, TABLE_BG, "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "",                 "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "📐 Edge / $1",     fmtUsdSigned(kellyEdge),                                         TEXT_COLOR, edgeColor,   TABLE_BG,      "l", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "── Kelly % ──",    "",                                                              TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Full Kelly",     kellyPct > 0 ? fmtPct(kellyPct) : "N/A (no edge)",               TEXT_MUTED, kellyPct > 0 ? TEXT_COLOR : COLOR_RED, TABLE_BG, "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Half Kelly ✦",   kellyPct > 0 ? fmtPct(halfKelly) : "N/A",                        TEXT_MUTED, kellyPct > 0 ? COLOR_GREEN : TEXT_MUTED, TABLE_BG, "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Quarter Kelly",  kellyPct > 0 ? fmtPct(quarterKelly) : "N/A",                     TEXT_MUTED, TEXT_MUTED,  TABLE_BG,      "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "── Your Position ──","",                                                            TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Your Risk",      fmtPct(riskPctInput),                                            TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+        pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Status",         kellyStatus,                                                     TEXT_MUTED, kellyStatusColor, TABLE_BG, "n", false)
+
+        if kellyPct > 0
+            pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "── If Kelly ──",   "",                                                          TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+            pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Risk Amt",       fmtUsd(kellyRiskAmt),                                        TEXT_MUTED, COLOR_BLUE,  TABLE_BG,      "n", false)
+            pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  Position",       fmtUsd(kellyPositionUsd),                                    TEXT_MUTED, COLOR_BLUE,  TABLE_BG,      "n", false)
+            pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "── Growth Rate ──","",                                                          TEXT_MUTED, TEXT_MUTED,  TABLE_ROW_ALT, "n", true)
+            pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  At Kelly %",     fmtPctSigned(growthRateKelly) + " /trade",                   TEXT_MUTED, COLOR_GREEN, TABLE_BG,      "n", false)
+            pushRow(kL,kV,kLc,kVc,kVbg,kVsz,kSep, "  At Your %",      fmtPctSigned(growthRateYours) + " /trade",                   TEXT_MUTED, TEXT_COLOR,  TABLE_BG,      "n", false)
+
+        // ══════════════════════════════════════════════════
+        // ROW 0: BANNER (full width)
+        // ══════════════════════════════════════════════════
+        table.cell(mainTable, 0, 0, "Calculate Your Financial Strategy", text_color = COLOR_WHITE, bgcolor = HDR_MASTER, text_size = SZ_HEADER, text_halign = text.align_center)
+        for c = 1 to 10
+            table.cell(mainTable, c, 0, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        table.merge_cells(mainTable, 0, 0, 10, 0)
+
+        // ══════════════════════════════════════════════════
+        // ROW 1: MASTER HEADER
+        // ══════════════════════════════════════════════════
+        // WillyAlgoTrader — col 0+1 merged
+        table.cell(mainTable, 0, 1, "WillyAlgoTrader", text_color = COLOR_WHITE, bgcolor = HDR_MASTER, text_size = SZ_ACCENT, text_halign = text.align_center)
+        table.cell(mainTable, 1, 1, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        table.merge_cells(mainTable, 0, 1, 1, 1)
+        // divider
+        table.cell(mainTable, 2, 1, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        // Risk badge — col 3+4 merged
+        table.cell(mainTable, 3, 1, riskBadge, text_color = COLOR_WHITE, bgcolor = riskColor, text_size = SZ_BASE, text_halign = text.align_center)
+        table.cell(mainTable, 4, 1, "", bgcolor = riskColor, text_size = SZ_BASE)
+        table.merge_cells(mainTable, 3, 1, 4, 1)
+        // divider
+        table.cell(mainTable, 5, 1, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        // Deposit — col 6+7 merged
+        table.cell(mainTable, 6, 1, fmtUsd(depositInput), text_color = COLOR_BLUE, bgcolor = HDR_MASTER, text_size = SZ_BASE, text_halign = text.align_center)
+        table.cell(mainTable, 7, 1, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        table.merge_cells(mainTable, 6, 1, 7, 1)
+        // divider
+        table.cell(mainTable, 8, 1, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        // Version — col 9+10 merged
+        table.cell(mainTable, 9, 1, INDICATOR_VERSION, text_color = TEXT_MUTED, bgcolor = HDR_MASTER, text_size = SZ_BASE, text_halign = text.align_center)
+        table.cell(mainTable, 10, 1, "", bgcolor = HDR_MASTER, text_size = SZ_BASE)
+        table.merge_cells(mainTable, 9, 1, 10, 1)
+
+        // ══════════════════════════════════════════════════
+        // ROW 2: SECTION HEADERS
+        // ══════════════════════════════════════════════════
+        table.cell(mainTable, 0, 2, "🎯 TRADE", text_color = COLOR_WHITE, bgcolor = HDR_TRADE, text_size = SZ_ACCENT, text_halign = text.align_center)
+        table.merge_cells(mainTable, 0, 2, 1, 2)
+        table.cell(mainTable, 2, 2, "", bgcolor = DIV_COLOR, text_size = SZ_BASE)
+        table.cell(mainTable, 3, 2, "⚠️ RISK", text_color = COLOR_WHITE, bgcolor = HDR_RISK, text_size = SZ_ACCENT, text_halign = text.align_center)
+        table.merge_cells(mainTable, 3, 2, 4, 2)
+        table.cell(mainTable, 5, 2, "", bgcolor = DIV_COLOR, text_size = SZ_BASE)
+        table.cell(mainTable, 6, 2, "📈 GROWTH", text_color = COLOR_WHITE, bgcolor = HDR_GROWTH, text_size = SZ_ACCENT, text_halign = text.align_center)
+        table.merge_cells(mainTable, 6, 2, 7, 2)
+        table.cell(mainTable, 8, 2, "", bgcolor = DIV_COLOR, text_size = SZ_BASE)
+        table.cell(mainTable, 9, 2, "📐 KELLY", text_color = COLOR_WHITE, bgcolor = HDR_KELLY, text_size = SZ_ACCENT, text_halign = text.align_center)
+        table.merge_cells(mainTable, 9, 2, 10, 2)
+
+        // ══════════════════════════════════════════════════
+        // DATA ROWS: render all 4 sections side by side
+        // ══════════════════════════════════════════════════
+        int tLen = array.size(tL)
+        int rLen = array.size(rL)
+        int gLen = array.size(gL)
+        int kLen = array.size(kL)
+        int maxRows = math.max(math.max(tLen, rLen), math.max(gLen, kLen))
+
+        int row = 3
+        for i = 0 to maxRows - 1
+            // Dividers
+            fillAllDividers(mainTable, row)
+
+            // TRADE (col 0-1)
+            if i < tLen
+                renderRow(mainTable, 0, row, tL, tV, tLc, tVc, tVbg, tVsz, tSep, i)
+            else
+                fillPair(mainTable, 0, row)
+
+            // RISK (col 3-4)
+            if i < rLen
+                renderRow(mainTable, 3, row, rL, rV, rLc, rVc, rVbg, rVsz, rSep, i)
+            else
+                fillPair(mainTable, 3, row)
+
+            // GROWTH (col 6-7)
+            if i < gLen
+                renderRow(mainTable, 6, row, gL, gV, gLc, gVc, gVbg, gVsz, gSep, i)
+            else
+                fillPair(mainTable, 6, row)
+
+            // KELLY (col 9-10)
+            if i < kLen
+                renderRow(mainTable, 9, row, kL, kV, kLc, kVc, kVbg, kVsz, kSep, i)
+            else
+                fillPair(mainTable, 9, row)
+
+            row += 1
+
+    // ══════════════════════════════════
+    // WATERMARK
+    // ══════════════════════════════════
+    if showWatermarkInput
+        table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = SZ_BASE, text_halign = text.align_center, bgcolor = color.new(color.black, 100))

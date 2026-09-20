@@ -1,0 +1,1637 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// Smart Money Engine [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.6.1
+// ══════════════════════════════════════════════════════════
+
+indicator(
+    title              = "Smart Money Engine [WillyAlgoTrader]",
+    shorttitle         = "Smart-ME",
+    overlay            = true,
+    max_lines_count    = 500,
+    max_labels_count   = 500,
+    max_boxes_count    = 500,
+    max_bars_back      = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN    = "⚙️ Main Settings"
+GRP_STRUCT  = "📐 Structure"
+GRP_OB      = "🧱 Order Blocks"
+GRP_FVG     = "📊 Fair Value Gaps"
+GRP_IFVG    = "🔄 Inverse FVG"
+GRP_FIB     = "📐 Fibonacci"
+GRP_LIQ     = "💧 Liquidity"
+GRP_VISUAL  = "🎨 Visual"
+GRP_DASH    = "📊 Dashboard"
+GRP_ALERT   = "🔔 Alerts"
+GRP_COLORS  = "🎨 Colors"
+GRP_ADV     = "🔧 Advanced"
+
+INDICATOR_VERSION = "v1.6.1"
+
+BULL = 1
+BEAR = -1
+NONE = 0
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main ────────────────────────────
+swingLenInput = input.int(10, "Swing Detection Length", minval = 3, maxval = 50,
+    group = GRP_MAIN,
+    tooltip = "Lookback bars for swing pivot detection.\n" +
+              "• Lower (3-7): more pivots, faster reaction, more noise\n" +
+              "• Higher (10-20): fewer pivots, cleaner structure\n" +
+              "• Recommended: 8-15 for most timeframes")
+
+internalLenInput = input.int(5, "Internal Structure Length", minval = 2, maxval = 20,
+    group = GRP_MAIN,
+    tooltip = "Lookback for internal (minor) structure pivots.\n" +
+              "• Should be smaller than Swing Length\n" +
+              "• Recommended: 3-7")
+
+// ── Structure ───────────────────────
+showSwingStructInput = input.bool(true, "Show Swing Structure", group = GRP_STRUCT,
+    tooltip = "Display major BOS/CHoCH swing structure lines")
+showInternalStructInput = input.bool(true, "Show Internal Structure", group = GRP_STRUCT,
+    tooltip = "Display minor internal BOS/CHoCH structure")
+showSwingLabelsInput = input.bool(true, "Show HH/HL/LH/LL Labels", group = GRP_STRUCT,
+    tooltip = "Display swing point classification labels")
+showStrongWeakInput = input.bool(true, "Show Strong/Weak Levels", group = GRP_STRUCT,
+    tooltip = "Display trailing strong/weak high and low levels")
+
+// ── Order Blocks ────────────────────
+// v1.6.1 [L5]: тултип проговаривает статус мастер-выключателя
+showObInput = input.bool(true, "Show Order Blocks", group = GRP_OB,
+    tooltip = "MASTER SWITCH for the entire Order Block engine:\n" +
+              "detection, confluence grading, retest alerts and the\n" +
+              "'Last OB' dashboard row all stop when disabled.\n" +
+              "Unlike the FVG/Liquidity toggles (visual only — their\n" +
+              "detection keeps feeding OB confluence), nothing else\n" +
+              "in this indicator consumes OB data")
+obMaxInput = input.int(5, "Max Visible OBs", minval = 1, maxval = 15, group = GRP_OB,
+    tooltip = "Maximum number of active order blocks to display.\n• More = cluttered chart\n• Recommended: 3-7")
+obMitigationInput = input.string("Wick", "OB Mitigation",
+    options = ["Close", "Wick"],
+    group = GRP_OB,
+    tooltip = "How to determine OB mitigation:\n" +
+              "• Close: price must close through the OB (confirmed bar)\n" +
+              "• Wick: any wick touch mitigates (stricter)")
+showObGradeInput = input.bool(true, "Show OB Grade (A/B/C)", group = GRP_OB,
+    tooltip = "Grade order blocks by confluence score:\n" +
+              "• A: 2+ confluence factors\n" +
+              "• B: 1 factor\n" +
+              "• C: no confluence\n" +
+              "Factors: FVG overlap, post-sweep (SWP), volume spike\n" +
+              "(if Volume Confirmation enabled), HTF alignment (if HTF set)")
+showObMidlineInput = input.bool(true, "Show OB Midline (CE)", group = GRP_OB,
+    tooltip = "Display consequent encroachment (midline) of order blocks")
+
+// ── Fair Value Gaps ─────────────────
+showFvgInput = input.bool(true, "Show Fair Value Gaps", group = GRP_FVG,
+    tooltip = "Display fair value gaps on chart with fill tracking.\n" +
+              "Note: FVG detection always runs internally for OB\n" +
+              "confluence grading — this toggle is visual only")
+fvgFilterInput = input.bool(true, "Auto-Filter Small FVGs", group = GRP_FVG,
+    tooltip = "Filter out FVGs smaller than 0.5x ATR — removes noise")
+fvgMaxInput = input.int(5, "Max Visible FVGs", minval = 1, maxval = 15, group = GRP_FVG,
+    tooltip = "Maximum active FVGs to display.\n• Recommended: 3-7")
+showFvgMidlineInput = input.bool(true, "Show FVG Midline (CE)", group = GRP_FVG,
+    tooltip = "Display consequent encroachment (midline) of fair value gaps")
+
+// ── Inverse FVG ─────────────────────
+showIfvgInput = input.bool(false, "Show Inverse FVGs", group = GRP_IFVG,
+    tooltip = "When an FVG is fully filled, it flips into an IFVG.\n" +
+              "Bullish FVG → Bearish IFVG (resistance)\n" +
+              "Bearish FVG → Bullish IFVG (support)")
+ifvgMaxInput = input.int(5, "Max Visible IFVGs", minval = 1, maxval = 15, group = GRP_IFVG,
+    tooltip = "Maximum active IFVGs to display")
+ifvgBullColorInput = input.color(color.new(#2962FF, 70), "Bull IFVG Border", inline = "ifvgcol", group = GRP_IFVG)
+ifvgBearColorInput = input.color(color.new(#FF6D00, 70), "Bear IFVG Border", inline = "ifvgcol", group = GRP_IFVG)
+
+// ── Fibonacci Retracement ────────────
+showFibInput = input.bool(true, "Show Fibonacci Retracement", group = GRP_FIB,
+    tooltip = "Auto Fibonacci grid over the current impulse leg\n" +
+              "(trailing extreme ↔ opposite anchor).\n" +
+              "• Bull trend: retracement of the low→high leg\n" +
+              "• Bear trend: retracement of the high→low leg\n" +
+              "Shifts when trailing extremes update.")
+showFibOTEInput = input.bool(true, "Highlight OTE Zone (0.618–0.786)", group = GRP_FIB,
+    tooltip = "Highlight the Optimal Trade Entry zone between the\n" +
+              "0.618 and 0.786 retracement levels of the impulse leg")
+fibColorInput = input.color(color.new(#FFD600, 95), "OTE Zone Color", group = GRP_FIB,
+    tooltip = "Color for the 0.618–0.786 highlighted zone")
+
+// ── Liquidity ───────────────────────
+showLiqInput = input.bool(true, "Show EQH/EQL Liquidity Pools", group = GRP_LIQ,
+    tooltip = "Equal highs/lows within ATR tolerance form liquidity\n" +
+              "pools (buyside above EQH, sellside below EQL).\n" +
+              "Note: detection always runs internally (feeds OB\n" +
+              "confluence via sweeps) — this toggle is visual only")
+eqTolInput = input.float(0.25, "Equal H/L Tolerance (× ATR)",
+    minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_LIQ,
+    tooltip = "Two consecutive swing pivots within this fraction of\n" +
+              "ATR(14) are treated as equal (EQH/EQL).\n" +
+              "• Lower: stricter equality, fewer pools\n" +
+              "• Recommended: 0.15-0.35")
+liqMaxInput = input.int(6, "Max Visible Pools", minval = 1, maxval = 15, group = GRP_LIQ,
+    tooltip = "Maximum active liquidity pools to display")
+showSweepLabelsInput = input.bool(true, "Show Sweep Labels", group = GRP_LIQ,
+    tooltip = "Mark BSL/SSL sweep bars:\n" +
+              "wick through the pool + close back inside (confirmed bar).\n" +
+              "A close THROUGH the pool removes it without a sweep.\n" +
+              "Dimmed labels = backfill sweeps detected on pool\n" +
+              "confirmation (pivot lag window)")
+sweepWindowInput = input.int(10, "Sweep Confluence Window (bars)",
+    minval = 1, maxval = 50, group = GRP_LIQ,
+    tooltip = "An OB created within N bars after a liquidity sweep in\n" +
+              "the matching direction gets +1 confluence factor (SWP):\n" +
+              "• BSL sweep (EQH) → bearish OB\n" +
+              "• SSL sweep (EQL) → bullish OB")
+
+// ── Visual ──────────────────────────
+themeInput = input.string("Auto", "Theme",
+    options = ["Auto", "Dark", "Light"],
+    group = GRP_VISUAL,
+    tooltip = "Chart color theme.\n" +
+              "• Auto: detects from chart background\n" +
+              "• Dark: optimized for dark backgrounds\n" +
+              "• Light: optimized for light/white backgrounds")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL,
+    tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+showBgInput = input.bool(false, "Show Trend Background", group = GRP_VISUAL,
+    tooltip = "Tint chart background based on swing trend direction")
+
+// ── Dashboard ───────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH,
+    tooltip = "Sectioned status table: market structure, active zones,\n" +
+              "Fibonacci leg. Sections toggle individually below")
+
+dashPosStr = input.string("Top Right", "Dashboard Position",
+    options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"],
+    group = GRP_DASH,
+    tooltip = "Screen corner where the dashboard is anchored")
+
+dashFontSizeInput = input.string("Small", "Dashboard Font Size",
+    options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH,
+    tooltip = "Font size for the dashboard table. Section dividers and the\n" +
+              "version footer render one step smaller to preserve hierarchy")
+
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH,
+    tooltip = "Swing trend, internal trend, trend age, HTF bias, last OB grade")
+
+showZonesSecInput = input.bool(true, "  ├ Zones section", group = GRP_DASH,
+    tooltip = "Active order blocks, FVGs, IFVGs and liquidity pools")
+
+showFibSecInput = input.bool(true, "  └ Fibonacci section", group = GRP_DASH,
+    tooltip = "Impulse leg high/low and OTE zone status")
+
+// ── Colors ──────────────────────────
+bullColorInput    = input.color(#1B5E20, "Bull", inline = "col1", group = GRP_COLORS)
+bearColorInput    = input.color(#FF5252, "Bear", inline = "col1", group = GRP_COLORS)
+obBullColorInput  = input.color(color.new(#1B5E20, 95), "Bull OB", inline = "col2", group = GRP_COLORS)
+obBearColorInput  = input.color(color.new(#FF5252, 95), "Bear OB", inline = "col2", group = GRP_COLORS)
+fvgBullColorInput = input.color(color.new(#2962FF, 95), "Bull FVG", inline = "col3", group = GRP_COLORS)
+fvgBearColorInput = input.color(color.new(#FF6D00, 95), "Bear FVG", inline = "col3", group = GRP_COLORS)
+
+// ── Alerts ──────────────────────────
+// v1.6.1 [M1]: тумблеры ниже управляют ТОЛЬКО динамическими alert().
+// Статические alertcondition-события в диалоге алертов TV работают всегда.
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+    tooltip = "Send alerts in JSON format for webhook integrations\n" +
+              "e.g. 3Commas, Autoview, custom bots.\n" +
+              "Applies to dynamic alert() messages; the static\n" +
+              "alertcondition() events always use plain text")
+proxObInput = input.string("A only", "OB Retest Alerts",
+    options = ["Off", "A only", "A + B", "All"],
+    group = GRP_ALERT,
+    tooltip = "Dynamic alert() when price first returns into an active\n" +
+              "order block. Fires ONCE per OB lifetime, filtered by grade.\n" +
+              "Controls the dynamic alert() message only — the static\n" +
+              "'OB Retest' alertcondition events always fire on any grade")
+proxFvgInput = input.bool(true, "FVG Retest Alerts", group = GRP_ALERT,
+    tooltip = "Dynamic alert() once when price first returns into an\n" +
+              "active FVG. No alert if the gap is blown through on the\n" +
+              "same bar (blow-through is not a retest).\n" +
+              "Controls the dynamic alert() only — the static\n" +
+              "'FVG Retest' alertcondition events always fire")
+proxOteInput = input.bool(true, "OTE Entry Alerts", group = GRP_ALERT,
+    tooltip = "Dynamic alert() when close enters the 0.618–0.786 OTE\n" +
+              "zone of the current impulse leg. Re-arms after price exits.\n" +
+              "Controls the dynamic alert() only — the static 'OTE Zone\n" +
+              "Entry' alertcondition always fires.\n" +
+              "Known behavior: the zone shifts when the leg extends to a\n" +
+              "new extreme, so an alert can fire because the zone moved\n" +
+              "onto price — not only because price moved into the zone")
+liqSweepAlertInput = input.bool(true, "Liquidity Sweep Alerts", group = GRP_ALERT,
+    tooltip = "Dynamic alert() on BSL/SSL sweep events (always bar-close —\n" +
+              "a sweep requires a confirmed close back inside).\n" +
+              "The static sweep alertcondition events always fire")
+proxFreqStr = input.string("Bar Close", "Zone Alert Timing",
+    options = ["Bar Close", "Immediate (intrabar)"],
+    group = GRP_ALERT,
+    tooltip = "• Bar Close: alerts on confirmed bars only (default,\n" +
+              "consistent with the indicator's anti-repaint discipline)\n" +
+              "• Immediate: fires on first intrabar touch. A wick touch\n" +
+              "is a fact and cannot repaint, but the bar is not final.\n" +
+              "Sweep alerts are always bar-close regardless")
+
+// ── Advanced ────────────────────────
+htfInput = input.timeframe("", "HTF Trend Filter", group = GRP_ADV,
+    tooltip = "Higher timeframe for trend bias (EMA 50, non-repainting).\n" +
+              "Leave empty to disable.\n" +
+              "Adds +1 OB confluence factor when the OB direction\n" +
+              "is aligned with the HTF trend")
+volConfirmInput = input.bool(true, "Volume Confirmation", group = GRP_ADV,
+    tooltip = "Volume spike (>1.5x prior-bar SMA20) counts as +1 OB\n" +
+              "confluence factor. Disable to exclude volume from grading.\n" +
+              "Auto-excluded on instruments without volume data")
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+float chartBgLuma = 0.299 * color.r(chart.bg_color) +                  0.587 * color.g(chart.bg_color) +                    0.114 * color.b(chart.bg_color)
+
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         chartBgLuma < 128
+
+// v1.6.1 [L1]: TEXT_BRIGHT, LINE_SUBTLE, LABEL_TEXT удалены (не использовались)
+TEXT_COLOR    = isDark ? #E0E0E0                 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0)   : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5)   : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0)   : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0)   : color.new(#F0F4F8, 0)
+HEADER_BG     = color.new(#2962FF, 0)
+HEADER_TEXT   = #FFFFFF
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80)  : color.new(#000000, 80)
+
+// LTM-style dashboard palette
+NEUTRAL_TEXT   = isDark ? #FFEB3B : #F57F17
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+
+BULL_BG = color.new(bullColorInput, 92)
+BEAR_BG = color.new(bearColorInput, 92)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+pivotHi(int leftBars, int rightBars) =>
+    ta.pivothigh(high, leftBars, rightBars)
+
+pivotLo(int leftBars, int rightBars) =>
+    ta.pivotlow(low, leftBars, rightBars)
+
+getDashPos(string pos) =>
+    switch pos
+        "Top Left"     => position.top_left
+        "Top Right"    => position.top_right
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Right" => position.middle_right
+        => position.top_right
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+// One step smaller — used for section dividers and the version footer
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small : s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+// Уровень ретрейса с трендозависимым якорем
+fibLevelCalc(float ratio, bool fromHigh, float hi, float lo) =>
+    fromHigh ? hi - (hi - lo) * ratio : lo + (hi - lo) * ratio
+
+// extraJson — опциональные поля для webhook (напр. грейд OB)
+makeAlertMsg(string eventJson, string eventDisp, string dir, string extraJson = "") =>
+    webhookInput ?
+         '{"event":"' + eventJson + '","ticker":"' + syminfo.tickerid +
+         '","direction":"' + dir + '","price":' + str.tostring(close) + extraJson + '}' :
+         (dir == "bull" ? "🟢" : "🔴") + " " + eventDisp + " | " +
+         syminfo.tickerid + " | " + str.tostring(close, format.mintick)
+
+// Ранг грейда для фильтра ретест-алертов
+gradeRank(string g) =>
+    g == "A" ? 3 : g == "B" ? 2 : 1
+
+dashFontSize    = sizeFromString(dashFontSizeInput)
+dashFontSizeSub = sizeDownFromString(dashFontSizeInput)
+
+// ══════════════════════════════════════
+// WARMUP & BASE CALCULATIONS
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(swingLenInput * 3, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+float atrVal = nz(ta.atr(14), high - low)
+
+float volSma = ta.sma(nz(volume, 0.0), 20)
+// v1.6.1 [M3]: baseline = SMA предыдущего бара —
+// спайк не размывает собственный порог (паттерн LTM)
+float volBase = nz(volSma[1], nz(volSma, volume))
+// v1.6.1 [M4]: наличие объёма — свойство инструмента, не бара
+bool symbolHasVol = ta.cum(nz(volume, 0.0)) > 0
+bool volSpikeRaw  = symbolHasVol and nz(volume, 0.0) > volBase * 1.5
+bool volSpike     = volConfirmInput and volSpikeRaw
+
+// HTF trend (non-repainting: [1] + lookahead_on)
+float htfMa  = htfInput != "" ? request.security(syminfo.tickerid, htfInput,
+    ta.ema(close, 50)[1], barmerge.gaps_off, barmerge.lookahead_on) : na
+bool htfBull = not na(htfMa) ? close > htfMa : true
+bool htfBear = not na(htfMa) ? close < htfMa : true
+
+// Частота zone-entry алертов из инпута
+string proxFreq = proxFreqStr == "Immediate (intrabar)" ?
+     alert.freq_once_per_bar : alert.freq_once_per_bar_close
+
+// Минимальный ранг грейда для динамических OB-ретест алертов (0 = Off)
+int obEntryMinRank = switch proxObInput
+    "Off"    => 0
+    "A only" => 3
+    "A + B"  => 2
+    "All"    => 1
+    => 0
+
+// ══════════════════════════════════════
+// SWING STRUCTURE DETECTION
+// ══════════════════════════════════════
+
+float swPivotHigh = pivotHi(swingLenInput, swingLenInput)
+float swPivotLow  = pivotLo(swingLenInput, swingLenInput)
+
+var float swHighLevel    = na
+var float swLowLevel     = na
+var float swPrevHigh     = na
+var float swPrevLow      = na
+var int   swHighBar      = na
+var int   swLowBar       = na
+var int   swPrevHighBar  = na
+var int   swPrevLowBar   = na
+var int   swTrend        = NONE
+var bool  swHighBroken   = false
+var bool  swLowBroken    = false
+
+// Возраст тренда для дашборда (dashboard-only)
+var int lastStructBreakBar = na
+
+// Trailing strong/weak
+var float trailHigh    = na
+var float trailLow     = na
+var int   trailHighBar = na
+var int   trailLowBar  = na
+
+// Label offset in price (so labels don't sit on candles)
+float labelOffset = atrVal * 0.3
+
+if not na(swPivotHigh)
+    swPrevHigh    := swHighLevel
+    swPrevHighBar := swHighBar
+    swHighLevel   := swPivotHigh
+    swHighBar     := bar_index - swingLenInput
+    swHighBroken  := false
+    if showSwingLabelsInput and isWarmedUp and not na(swPrevHigh)
+        string lbl = swHighLevel > swPrevHigh ? "HH" : "LH"
+        label.new(bar_index - swingLenInput, swHighLevel + labelOffset, lbl,
+            color     = color(na),
+            textcolor = bearColorInput,
+            style     = label.style_label_down,
+            size      = size.small)
+
+if not na(swPivotLow)
+    swPrevLow    := swLowLevel
+    swPrevLowBar := swLowBar
+    swLowLevel   := swPivotLow
+    swLowBar     := bar_index - swingLenInput
+    swLowBroken  := false
+    if showSwingLabelsInput and isWarmedUp and not na(swPrevLow)
+        string lbl = swLowLevel < swPrevLow ? "LL" : "HL"
+        label.new(bar_index - swingLenInput, swLowLevel - labelOffset, lbl,
+            color     = color(na),
+            textcolor = bullColorInput,
+            style     = label.style_label_up,
+            size      = size.small)
+
+// Structure break detection — CONFIRMED only
+bool swBullBreak = not na(swHighLevel) and not swHighBroken and
+                   close > swHighLevel and barstate.isconfirmed and isWarmedUp
+bool swBearBreak = not na(swLowLevel) and not swLowBroken and
+                   close < swLowLevel and barstate.isconfirmed and isWarmedUp
+
+var string swBullType = ""
+var string swBearType = ""
+
+if swBullBreak
+    swHighBroken := true
+    swBullType   := swTrend == BEAR ? "CHoCH" : "BOS"
+    swTrend      := BULL
+    trailLow     := swLowLevel
+    trailLowBar  := swLowBar
+    lastStructBreakBar := bar_index
+
+if swBearBreak
+    swLowBroken  := true
+    swBearType   := swTrend == BULL ? "CHoCH" : "BOS"
+    swTrend      := BEAR
+    trailHigh    := swHighLevel
+    trailHighBar := swHighBar
+    lastStructBreakBar := bar_index
+
+// Update trailing extremes
+if swTrend == BULL
+    if not na(trailHigh)
+        if high > trailHigh
+            trailHigh    := high
+            trailHighBar := bar_index
+    else
+        trailHigh    := high
+        trailHighBar := bar_index
+
+if swTrend == BEAR
+    if not na(trailLow)
+        if low < trailLow
+            trailLow    := low
+            trailLowBar := bar_index
+    else
+        trailLow    := low
+        trailLowBar := bar_index
+
+// Draw swing structure lines
+if swBullBreak and showSwingStructInput
+    line.new(nz(swHighBar, bar_index), swHighLevel, bar_index, swHighLevel,
+        color = bullColorInput, width = 2, style = line.style_solid)
+    label.new(math.round((nz(swHighBar, bar_index) + bar_index) / 2), swHighLevel, swBullType,
+        color = color(na), textcolor = bullColorInput,
+        style = label.style_label_down, size = size.small)
+
+if swBearBreak and showSwingStructInput
+    line.new(nz(swLowBar, bar_index), swLowLevel, bar_index, swLowLevel,
+        color = bearColorInput, width = 2, style = line.style_solid)
+    label.new(math.round((nz(swLowBar, bar_index) + bar_index) / 2), swLowLevel, swBearType,
+        color = color(na), textcolor = bearColorInput,
+        style = label.style_label_up, size = size.small)
+
+// --- Internal pivots (minor) ---
+float intPivotHigh = pivotHi(internalLenInput, internalLenInput)
+float intPivotLow  = pivotLo(internalLenInput, internalLenInput)
+
+var float intHighLevel  = na
+var float intLowLevel   = na
+var int   intHighBar    = na
+var int   intLowBar     = na
+var int   intTrend      = NONE
+var bool  intHighBroken = false
+var bool  intLowBroken  = false
+
+if not na(intPivotHigh)
+    intHighLevel  := intPivotHigh
+    intHighBar    := bar_index - internalLenInput
+    intHighBroken := false
+
+if not na(intPivotLow)
+    intLowLevel  := intPivotLow
+    intLowBar    := bar_index - internalLenInput
+    intLowBroken := false
+
+bool intBullBreak = not na(intHighLevel) and not intHighBroken and                   close > intHighLevel and barstate.isconfirmed and isWarmedUp
+bool intBearBreak = not na(intLowLevel) and not intLowBroken and                    close < intLowLevel and barstate.isconfirmed and isWarmedUp
+
+var string intBullType = ""
+var string intBearType = ""
+
+if intBullBreak
+    intHighBroken := true
+    intBullType   := intTrend == BEAR ? "CHoCH" : "BOS"
+    intTrend      := BULL
+
+if intBearBreak
+    intLowBroken := true
+    intBearType  := intTrend == BULL ? "CHoCH" : "BOS"
+    intTrend     := BEAR
+
+// Draw internal structure lines
+if intBullBreak and showInternalStructInput
+    if intHighLevel != swHighLevel
+        line.new(nz(intHighBar, bar_index), intHighLevel, bar_index, intHighLevel,
+            color = bullColorInput, width = 1, style = line.style_dashed)
+        label.new(math.round((nz(intHighBar, bar_index) + bar_index) / 2), intHighLevel, intBullType,
+            color = color(na), textcolor = color.new(bullColorInput, 30),
+            style = label.style_label_down, size = size.small)
+
+if intBearBreak and showInternalStructInput
+    if intLowLevel != swLowLevel
+        line.new(nz(intLowBar, bar_index), intLowLevel, bar_index, intLowLevel,
+            color = bearColorInput, width = 1, style = line.style_dashed)
+        label.new(math.round((nz(intLowBar, bar_index) + bar_index) / 2), intLowLevel, intBearType,
+            color = color(na), textcolor = color.new(bearColorInput, 30),
+            style = label.style_label_up, size = size.small)
+
+// ══════════════════════════════════════
+// LIQUIDITY POOLS (EQH / EQL) + SWEEP DETECTION
+// Детекция всегда активна (feeds OB confluence),
+// showLiqInput управляет только графикой (na-защита объектов)
+// ══════════════════════════════════════
+
+var array<float> liqLevel  = array.new<float>()
+var array<int>   liqBias   = array.new<int>()    // BEAR = EQH (buyside above), BULL = EQL (sellside below)
+var array<line>  liqLines  = array.new<line>()
+var array<label> liqLabels = array.new<label>()
+
+// Последние свипы — источник SWP-фактора для gradeOB
+var int lastBuySideSweepBar  = na   // EQH swept → bearish signal
+var int lastSellSideSweepBar = na   // EQL swept → bullish signal
+
+// Флаги событий текущего бара (для alertcondition/alert внизу)
+bool bslSweepEvt = false
+bool sslSweepEvt = false
+
+// ── EQH: два последовательных свинг-хая в пределах толеранса ──
+if not na(swPivotHigh) and not na(swPrevHigh) and isWarmedUp and
+     math.abs(swHighLevel - swPrevHigh) <= atrVal * eqTolInput
+    float lvl = math.max(swHighLevel, swPrevHigh)
+
+    // v1.6.1 [L2]: merge в существующий пул того же bias в пределах толеранса
+    bool merged = false
+    if liqLevel.size() > 0
+        for i = 0 to liqLevel.size() - 1
+            if liqBias.get(i) == BEAR and math.abs(liqLevel.get(i) - lvl) <= atrVal * eqTolInput
+                float mergedLvl = math.max(liqLevel.get(i), lvl)
+                liqLevel.set(i, mergedLvl)
+                line ln0 = liqLines.get(i)
+                if not na(ln0)
+                    line.set_y1(ln0, mergedLvl)
+                    line.set_y2(ln0, mergedLvl)
+                label lb0 = liqLabels.get(i)
+                if not na(lb0)
+                    label.set_y(lb0, mergedLvl)
+                merged := true
+                break
+
+    if not merged
+        // v1.6.1 [M2]: backfill слепого окна пивота (swingLen-1..1 бар назад).
+        // Только подтверждённая история — non-repainting.
+        bool poolDead   = false
+        bool retroSwept = false
+        int  retroOff   = na
+        for j = swingLenInput - 1 to 1
+            if high[j] > lvl and close[j] <= lvl
+                retroSwept := true
+                retroOff   := j
+                break
+            else if close[j] > lvl
+                poolDead := true
+                break
+
+        if retroSwept
+            // Свип уже случился в окне: пул не создаём, SWP-фактор
+            // регистрируем от фактического бара свипа, алерт не шлём
+            int sweepBarRetro = bar_index - retroOff
+            if na(lastBuySideSweepBar) or sweepBarRetro > lastBuySideSweepBar
+                lastBuySideSweepBar := sweepBarRetro
+            if showLiqInput and showSweepLabelsInput
+                label.new(sweepBarRetro, high[retroOff] + labelOffset, "BSL Sweep",
+                    color     = color(na),
+                    textcolor = color.new(bearColorInput, 40),
+                    style     = label.style_label_down,
+                    size      = size.small,
+                    tooltip   = "Buyside liquidity sweep (backfill) — detected when the\nsecond pivot confirmed; the sweep happened on this bar")
+        else if not poolDead
+            liqLevel.unshift(lvl)
+            liqBias.unshift(BEAR)
+            line  ln = na
+            label lb = na
+            if showLiqInput
+                ln := line.new(nz(swPrevHighBar, swHighBar), lvl, bar_index, lvl,
+                    color = color.new(bearColorInput, 30),
+                    style = line.style_dotted,
+                    width = 2)
+                lb := label.new(bar_index + 2, lvl, "EQH",
+                    color     = color(na),
+                    textcolor = color.new(bearColorInput, 20),
+                    style     = label.style_label_left,
+                    size      = size.small,
+                    tooltip   = "Equal Highs — buyside liquidity pool above")
+            liqLines.unshift(ln)
+            liqLabels.unshift(lb)
+
+// ── EQL: два последовательных свинг-лоя в пределах толеранса ──
+if not na(swPivotLow) and not na(swPrevLow) and isWarmedUp and
+     math.abs(swLowLevel - swPrevLow) <= atrVal * eqTolInput
+    float lvl = math.min(swLowLevel, swPrevLow)
+
+    // v1.6.1 [L2]: merge в существующий пул того же bias в пределах толеранса
+    bool merged = false
+    if liqLevel.size() > 0
+        for i = 0 to liqLevel.size() - 1
+            if liqBias.get(i) == BULL and math.abs(liqLevel.get(i) - lvl) <= atrVal * eqTolInput
+                float mergedLvl = math.min(liqLevel.get(i), lvl)
+                liqLevel.set(i, mergedLvl)
+                line ln0 = liqLines.get(i)
+                if not na(ln0)
+                    line.set_y1(ln0, mergedLvl)
+                    line.set_y2(ln0, mergedLvl)
+                label lb0 = liqLabels.get(i)
+                if not na(lb0)
+                    label.set_y(lb0, mergedLvl)
+                merged := true
+                break
+
+    if not merged
+        // v1.6.1 [M2]: backfill слепого окна пивота
+        bool poolDead   = false
+        bool retroSwept = false
+        int  retroOff   = na
+        for j = swingLenInput - 1 to 1
+            if low[j] < lvl and close[j] >= lvl
+                retroSwept := true
+                retroOff   := j
+                break
+            else if close[j] < lvl
+                poolDead := true
+                break
+
+        if retroSwept
+            int sweepBarRetro = bar_index - retroOff
+            if na(lastSellSideSweepBar) or sweepBarRetro > lastSellSideSweepBar
+                lastSellSideSweepBar := sweepBarRetro
+            if showLiqInput and showSweepLabelsInput
+                label.new(sweepBarRetro, low[retroOff] - labelOffset, "SSL Sweep",
+                    color     = color(na),
+                    textcolor = color.new(bullColorInput, 40),
+                    style     = label.style_label_up,
+                    size      = size.small,
+                    tooltip   = "Sellside liquidity sweep (backfill) — detected when the\nsecond pivot confirmed; the sweep happened on this bar")
+        else if not poolDead
+            liqLevel.unshift(lvl)
+            liqBias.unshift(BULL)
+            line  ln = na
+            label lb = na
+            if showLiqInput
+                ln := line.new(nz(swPrevLowBar, swLowBar), lvl, bar_index, lvl,
+                    color = color.new(bullColorInput, 30),
+                    style = line.style_dotted,
+                    width = 2)
+                lb := label.new(bar_index + 2, lvl, "EQL",
+                    color     = color(na),
+                    textcolor = color.new(bullColorInput, 20),
+                    style     = label.style_label_left,
+                    size      = size.small,
+                    tooltip   = "Equal Lows — sellside liquidity pool below")
+            liqLines.unshift(ln)
+            liqLabels.unshift(lb)
+
+// ── Update pools: sweep / break-through / extend ──
+// Sweep = вик сквозь + закрытие обратно, ТОЛЬКО на подтверждённом баре
+if liqLevel.size() > 0
+    for i = liqLevel.size() - 1 to 0
+        float lvl  = liqLevel.get(i)
+        int   bias = liqBias.get(i)
+        bool removePool = false
+        bool swept      = false
+
+        if barstate.isconfirmed
+            if bias == BEAR
+                // EQH: wick above + close back below = BSL sweep
+                if high > lvl and close <= lvl
+                    swept := true
+                else if close > lvl
+                    removePool := true   // пробой закрытием — пул снят без свипа
+            else
+                // EQL: wick below + close back above = SSL sweep
+                if low < lvl and close >= lvl
+                    swept := true
+                else if close < lvl
+                    removePool := true
+
+        if swept
+            removePool := true
+            if bias == BEAR
+                // v1.6.1 [L3]: один лейбл на направление на бар
+                if not bslSweepEvt and showLiqInput and showSweepLabelsInput
+                    label.new(bar_index, high + labelOffset, "BSL Sweep",
+                        color     = color(na),
+                        textcolor = bearColorInput,
+                        style     = label.style_label_down,
+                        size      = size.small,
+                        tooltip   = "Buyside liquidity sweep — wick through EQH, close back below")
+                bslSweepEvt := true
+                lastBuySideSweepBar := bar_index
+            else
+                if not sslSweepEvt and showLiqInput and showSweepLabelsInput
+                    label.new(bar_index, low - labelOffset, "SSL Sweep",
+                        color     = color(na),
+                        textcolor = bullColorInput,
+                        style     = label.style_label_up,
+                        size      = size.small,
+                        tooltip   = "Sellside liquidity sweep — wick through EQL, close back above")
+                sslSweepEvt := true
+                lastSellSideSweepBar := bar_index
+
+        if removePool
+            line ln = liqLines.get(i)
+            if not na(ln)
+                line.delete(ln)
+            label lb = liqLabels.get(i)
+            if not na(lb)
+                label.delete(lb)
+            liqLevel.remove(i)
+            liqBias.remove(i)
+            liqLines.remove(i)
+            liqLabels.remove(i)
+        else
+            line ln = liqLines.get(i)
+            if not na(ln)
+                line.set_x2(ln, bar_index)
+            label lb = liqLabels.get(i)
+            if not na(lb)
+                label.set_x(lb, bar_index + 2)
+
+// Cap pool count
+while liqLevel.size() > liqMaxInput
+    int last = liqLevel.size() - 1
+    line ln = liqLines.get(last)
+    if not na(ln)
+        line.delete(ln)
+    label lb = liqLabels.get(last)
+    if not na(lb)
+        label.delete(lb)
+    liqLevel.remove(last)
+    liqBias.remove(last)
+    liqLines.remove(last)
+    liqLabels.remove(last)
+
+// ══════════════════════════════════════
+// FAIR VALUE GAPS
+// (секция выше OB — same-bar FVG участвует в конфлюэнсе OB)
+// ══════════════════════════════════════
+
+var array<float> fvgTop        = array.new<float>()
+var array<float> fvgBottom     = array.new<float>()
+var array<int>   fvgBias       = array.new<int>()
+var array<box>   fvgBoxes      = array.new<box>()
+var array<line>  fvgMidlines   = array.new<line>()
+var array<label> fvgSideLabels = array.new<label>()
+var array<bool>  fvgAlerted    = array.new<bool>()
+var array<int>   fvgCreatedAt  = array.new<int>()
+
+// Флаги событий для alertcondition
+bool fvgEntryBullEvt = false
+bool fvgEntryBearEvt = false
+
+// Bullish FVG: current low > 2 bars ago high
+bool rawBullFvg = low > high[2] and barstate.isconfirmed and isWarmedUp
+// Bearish FVG: current high < 2 bars ago low
+bool rawBearFvg = high < low[2] and barstate.isconfirmed and isWarmedUp
+
+float fvgMinSize = fvgFilterInput ? atrVal * 0.5 : 0.0
+// Детекция без showFvgInput — тумблер только визуальный
+bool bullFvg = rawBullFvg and (low - high[2]) > fvgMinSize
+bool bearFvg = rawBearFvg and (low[2] - high) > fvgMinSize
+
+if bullFvg
+    float top = low
+    float bot = high[2]
+
+    fvgTop.unshift(top)
+    fvgBottom.unshift(bot)
+    fvgBias.unshift(BULL)
+    fvgAlerted.unshift(false)
+    fvgCreatedAt.unshift(bar_index)
+
+    box   newBox  = na
+    line  newMid  = na
+    label sideLbl = na
+    if showFvgInput
+        newBox := box.new(bar_index - 1, top, bar_index, bot,
+            bgcolor      = fvgBullColorInput,
+            border_color = color.new(fvgBullColorInput, 50),
+            border_width = 1,
+            border_style = line.style_dotted)
+        float mid = math.avg(top, bot)
+        newMid := line.new(bar_index - 1, mid, bar_index, mid,
+            color = color.new(#2962FF, 50),
+            style = line.style_dotted,
+            width = 1)
+        sideLbl := label.new(bar_index + 2, mid, "FVG",
+            color     = color(na),
+            textcolor = color.new(#2962FF, 30),
+            style     = label.style_label_left,
+            size      = size.small,
+            tooltip   = "Bullish FVG")
+    fvgBoxes.unshift(newBox)
+    fvgMidlines.unshift(newMid)
+    fvgSideLabels.unshift(sideLbl)
+
+if bearFvg
+    float top = low[2]
+    float bot = high
+
+    fvgTop.unshift(top)
+    fvgBottom.unshift(bot)
+    fvgBias.unshift(BEAR)
+    fvgAlerted.unshift(false)
+    fvgCreatedAt.unshift(bar_index)
+
+    box   newBox  = na
+    line  newMid  = na
+    label sideLbl = na
+    if showFvgInput
+        newBox := box.new(bar_index - 1, top, bar_index, bot,
+            bgcolor      = fvgBearColorInput,
+            border_color = color.new(fvgBearColorInput, 50),
+            border_width = 1,
+            border_style = line.style_dotted)
+        float mid = math.avg(top, bot)
+        newMid := line.new(bar_index - 1, mid, bar_index, mid,
+            color = color.new(#FF6D00, 50),
+            style = line.style_dotted,
+            width = 1)
+        sideLbl := label.new(bar_index + 2, mid, "FVG",
+            color     = color(na),
+            textcolor = color.new(#FF6D00, 30),
+            style     = label.style_label_left,
+            size      = size.small,
+            tooltip   = "Bearish FVG")
+    fvgBoxes.unshift(newBox)
+    fvgMidlines.unshift(newMid)
+    fvgSideLabels.unshift(sideLbl)
+
+// IFVG queue — filled FVGs get queued here with inverted bias
+var array<float> ifvgQueueTop  = array.new<float>()
+var array<float> ifvgQueueBot  = array.new<float>()
+var array<int>   ifvgQueueBias = array.new<int>()
+
+// Update FVG: right edge, retest detection, remove if filled
+if fvgTop.size() > 0
+    for i = fvgTop.size() - 1 to 0
+        float top = fvgTop.get(i)
+        float bot = fvgBottom.get(i)
+        int bias  = fvgBias.get(i)
+        bool filled = false
+
+        if bias == BULL
+            filled := low <= bot
+        else
+            filled := high >= top
+
+        if filled
+            if showIfvgInput
+                ifvgQueueTop.push(top)
+                ifvgQueueBot.push(bot)
+                ifvgQueueBias.push(bias == BULL ? BEAR : BULL)
+            box b = fvgBoxes.get(i)
+            if not na(b)
+                box.delete(b)
+            line m = fvgMidlines.get(i)
+            if not na(m)
+                line.delete(m)
+            label s = fvgSideLabels.get(i)
+            if not na(s)
+                label.delete(s)
+            fvgTop.remove(i)
+            fvgBottom.remove(i)
+            fvgBias.remove(i)
+            fvgBoxes.remove(i)
+            fvgMidlines.remove(i)
+            fvgSideLabels.remove(i)
+            fvgAlerted.remove(i)
+            fvgCreatedAt.remove(i)
+        else
+            box b = fvgBoxes.get(i)
+            if not na(b)
+                box.set_right(b, bar_index)
+            line m = fvgMidlines.get(i)
+            if not na(m)
+                line.set_x2(m, bar_index)
+                line.set_color(m, showFvgMidlineInput ?
+                    color.new(bias == BULL ? #2962FF : #FF6D00, 50) :
+                    color.new(color.black, 100))
+            label s = fvgSideLabels.get(i)
+            if not na(s)
+                label.set_x(s, bar_index + 2)
+                label.set_y(s, math.avg(top, bot))
+
+            // FVG retest — первое касание, не пробитие насквозь.
+            // v1.6.1 [M1]: детекция и evt-флаг всегда;
+            // proxFvgInput гейтит только динамический alert()
+            if not fvgAlerted.get(i) and bar_index > fvgCreatedAt.get(i)
+                bool touched = bias == BULL ? low < top : high > bot
+                if touched
+                    fvgAlerted.set(i, true)
+                    if bias == BULL
+                        fvgEntryBullEvt := true
+                    else
+                        fvgEntryBearEvt := true
+                    if proxFvgInput
+                        alert(makeAlertMsg("fvg_entry", "FVG Retest",
+                             bias == BULL ? "bull" : "bear"), proxFreq)
+
+// Cap FVG count
+while fvgTop.size() > fvgMaxInput
+    int last = fvgTop.size() - 1
+    box b = fvgBoxes.get(last)
+    if not na(b)
+        box.delete(b)
+    line m = fvgMidlines.get(last)
+    if not na(m)
+        line.delete(m)
+    label s = fvgSideLabels.get(last)
+    if not na(s)
+        label.delete(s)
+    fvgTop.remove(last)
+    fvgBottom.remove(last)
+    fvgBias.remove(last)
+    fvgBoxes.remove(last)
+    fvgMidlines.remove(last)
+    fvgSideLabels.remove(last)
+    fvgAlerted.remove(last)
+    fvgCreatedAt.remove(last)
+
+// ══════════════════════════════════════
+// INVERSE FAIR VALUE GAPS (IFVG)
+// ══════════════════════════════════════
+// v1.6.1 [L1]: массив ifvgBarIdx удалён (писался, не читался)
+
+var array<float> ifvgTop        = array.new<float>()
+var array<float> ifvgBottom     = array.new<float>()
+var array<int>   ifvgBias       = array.new<int>()
+var array<box>   ifvgBoxes      = array.new<box>()
+var array<label> ifvgSideLabels = array.new<label>()
+
+// Process queued IFVGs
+if ifvgQueueTop.size() > 0 and showIfvgInput
+    for q = 0 to ifvgQueueTop.size() - 1
+        float iTop  = ifvgQueueTop.get(q)
+        float iBot  = ifvgQueueBot.get(q)
+        int   iBias = ifvgQueueBias.get(q)
+        color borderClr = iBias == BULL ? ifvgBullColorInput : ifvgBearColorInput
+
+        ifvgTop.unshift(iTop)
+        ifvgBottom.unshift(iBot)
+        ifvgBias.unshift(iBias)
+
+        box newBox = box.new(bar_index, iTop, bar_index, iBot,
+            bgcolor      = color.new(color.black, 100),
+            border_color = borderClr,
+            border_width = 1,
+            border_style = line.style_dashed)
+        ifvgBoxes.unshift(newBox)
+
+        float iMid = math.avg(iTop, iBot)
+        label sideLbl = label.new(bar_index + 2, iMid, "IFVG",
+            color     = color(na),
+            textcolor = color.new(borderClr, 10),
+            style     = label.style_label_left,
+            size      = size.small,
+            tooltip   = (iBias == BULL ? "Bullish" : "Bearish") + " IFVG")
+        ifvgSideLabels.unshift(sideLbl)
+    ifvgQueueTop.clear()
+    ifvgQueueBot.clear()
+    ifvgQueueBias.clear()
+
+// Update IFVG: extend right edge, mitigate on CONFIRMED close
+if ifvgTop.size() > 0
+    for i = ifvgTop.size() - 1 to 0
+        float iTop = ifvgTop.get(i)
+        float iBot = ifvgBottom.get(i)
+        int iBias  = ifvgBias.get(i)
+        bool mitigated = false
+
+        if iBias == BULL
+            if barstate.isconfirmed and close < iBot
+                mitigated := true
+        else
+            if barstate.isconfirmed and close > iTop
+                mitigated := true
+
+        if mitigated
+            box.delete(ifvgBoxes.get(i))
+            label sideLbl = ifvgSideLabels.get(i)
+            if not na(sideLbl)
+                label.delete(sideLbl)
+            ifvgTop.remove(i)
+            ifvgBottom.remove(i)
+            ifvgBias.remove(i)
+            ifvgBoxes.remove(i)
+            ifvgSideLabels.remove(i)
+        else
+            box.set_right(ifvgBoxes.get(i), bar_index)
+            label sideLbl = ifvgSideLabels.get(i)
+            if not na(sideLbl)
+                label.set_x(sideLbl, bar_index + 2)
+                label.set_y(sideLbl, math.avg(iTop, iBot))
+
+// Cap IFVG count
+while ifvgTop.size() > ifvgMaxInput
+    int last = ifvgTop.size() - 1
+    box.delete(ifvgBoxes.get(last))
+    label sideLbl = ifvgSideLabels.get(last)
+    if not na(sideLbl)
+        label.delete(sideLbl)
+    ifvgTop.remove(last)
+    ifvgBottom.remove(last)
+    ifvgBias.remove(last)
+    ifvgBoxes.remove(last)
+    ifvgSideLabels.remove(last)
+
+// ══════════════════════════════════════
+// ORDER BLOCKS
+// ══════════════════════════════════════
+// v1.6.1 [L1]: массив obBarIdx удалён (писался, не читался)
+
+var array<float>  obTop        = array.new<float>()
+var array<float>  obBottom     = array.new<float>()
+var array<int>    obBias       = array.new<int>()
+var array<string> obGrade      = array.new<string>()
+var array<box>    obBoxes      = array.new<box>()
+var array<line>   obMidlines   = array.new<line>()
+var array<label>  obLabels     = array.new<label>()
+var array<label>  obSideLabels = array.new<label>()
+var array<bool>   obAlerted    = array.new<bool>()
+var array<int>    obCreatedAt  = array.new<int>()
+
+// Последний созданный OB для дашборда
+var string lastObInfo = "—"
+
+// Флаги событий для alertcondition
+bool obEntryBullEvt = false
+bool obEntryBearEvt = false
+
+// Пересечение OB с активным FVG того же направления
+obFvgOverlap(float oTop, float oBot, int bias) =>
+    bool found = false
+    int n = fvgTop.size()
+    if n > 0
+        for i = 0 to n - 1
+            if fvgBias.get(i) == bias and oBot <= fvgTop.get(i) and oTop >= fvgBottom.get(i)
+                found := true
+                break
+    found
+
+// Конфлюэнс-скоринг → грейд A/B/C + строка факторов
+// A = 2+ фактора, B = 1, C = 0
+// Факторы: FVG overlap | SWP (post-sweep) | volume spike (если включён) | HTF (если задан)
+gradeOB(float oTop, float oBot, int bias) =>
+    int score = 0
+    string parts = ""
+
+    bool fvgHit = obFvgOverlap(oTop, oBot, bias)
+    if fvgHit
+        score += 1
+    parts += "FVG" + (fvgHit ? "✓" : "✗")
+
+    bool swpHit = bias == BULL ?
+         not na(lastSellSideSweepBar) and bar_index - lastSellSideSweepBar <= sweepWindowInput :
+         not na(lastBuySideSweepBar) and bar_index - lastBuySideSweepBar <= sweepWindowInput
+    if swpHit
+        score += 1
+    parts += " SWP" + (swpHit ? "✓" : "✗")
+
+    // v1.6.1 [M4]: symbolHasVol вместо per-bar hasVolume
+    if volConfirmInput and symbolHasVol
+        if volSpike
+            score += 1
+        parts += " VOL" + (volSpike ? "✓" : "✗")
+
+    if htfInput != ""
+        bool htfHit = bias == BULL ? htfBull : htfBear
+        if htfHit
+            score += 1
+        parts += " HTF" + (htfHit ? "✓" : "✗")
+
+    string g = score >= 2 ? "A" : score == 1 ? "B" : "C"
+    [g, parts]
+
+// Find last bearish candle before bullish break
+findBullishOB(int fromBar, int toBar) =>
+    float obHi = na
+    float obLo = na
+    int   obBr = na
+    if fromBar > 0 and toBar > 0 and fromBar <= toBar
+        int lookback = math.min(toBar - fromBar, 30)
+        if lookback >= 1
+            for i = 1 to lookback
+                if bar_index - i >= 0
+                    if close[i] < open[i]
+                        obHi := high[i]
+                        obLo := low[i]
+                        obBr := bar_index - i
+                        break
+    [obHi, obLo, obBr]
+
+// Find last bullish candle before bearish break
+findBearishOB(int fromBar, int toBar) =>
+    float obHi = na
+    float obLo = na
+    int   obBr = na
+    if fromBar > 0 and toBar > 0 and fromBar <= toBar
+        int lookback = math.min(toBar - fromBar, 30)
+        if lookback >= 1
+            for i = 1 to lookback
+                if bar_index - i >= 0
+                    if close[i] > open[i]
+                        obHi := high[i]
+                        obLo := low[i]
+                        obBr := bar_index - i
+                        break
+    [obHi, obLo, obBr]
+
+// Create OB on swing structure breaks
+if swBullBreak and showObInput
+    [oH, oL, oB] = findBullishOB(nz(swLowBar, bar_index - 10), bar_index)
+    if not na(oH)
+        [grade, factors] = gradeOB(oH, oL, BULL)
+        lastObInfo := "▲ " + grade
+        string obTooltip = "Bullish OB | Grade " + grade + " | " + factors
+
+        obTop.unshift(oH)
+        obBottom.unshift(oL)
+        obBias.unshift(BULL)
+        obGrade.unshift(grade)
+        obAlerted.unshift(false)
+        obCreatedAt.unshift(bar_index)
+
+        box newBox = box.new(oB, oH, bar_index, oL,
+            bgcolor      = obBullColorInput,
+            border_color = color.new(bullColorInput, 60),
+            border_width = 1,
+            border_style = line.style_dotted)
+        obBoxes.unshift(newBox)
+
+        float mid = math.avg(oH, oL)
+        line newMid = line.new(oB, mid, bar_index, mid,
+            color = color.new(bullColorInput, 50),
+            style = line.style_dotted,
+            width = 1)
+        obMidlines.unshift(newMid)
+
+        label gradeLbl = na
+        if showObGradeInput
+            gradeLbl := label.new(oB, oH, grade,
+                color     = color(na),
+                textcolor = bullColorInput,
+                style     = label.style_label_down,
+                size      = size.small,
+                tooltip   = obTooltip)
+        obLabels.unshift(gradeLbl)
+
+        label sideLbl = label.new(bar_index + 2, mid, "OB",
+            color     = color(na),
+            textcolor = color.new(bullColorInput, 30),
+            style     = label.style_label_left,
+            size      = size.small,
+            tooltip   = obTooltip)
+        obSideLabels.unshift(sideLbl)
+
+if swBearBreak and showObInput
+    [oH, oL, oB] = findBearishOB(nz(swHighBar, bar_index - 10), bar_index)
+    if not na(oH)
+        [grade, factors] = gradeOB(oH, oL, BEAR)
+        lastObInfo := "▼ " + grade
+        string obTooltip = "Bearish OB | Grade " + grade + " | " + factors
+
+        obTop.unshift(oH)
+        obBottom.unshift(oL)
+        obBias.unshift(BEAR)
+        obGrade.unshift(grade)
+        obAlerted.unshift(false)
+        obCreatedAt.unshift(bar_index)
+
+        box newBox = box.new(oB, oH, bar_index, oL,
+            bgcolor      = obBearColorInput,
+            border_color = color.new(bearColorInput, 60),
+            border_width = 1,
+            border_style = line.style_dotted)
+        obBoxes.unshift(newBox)
+
+        float mid = math.avg(oH, oL)
+        line newMid = line.new(oB, mid, bar_index, mid,
+            color = color.new(bearColorInput, 50),
+            style = line.style_dotted,
+            width = 1)
+        obMidlines.unshift(newMid)
+
+        label gradeLbl = na
+        if showObGradeInput
+            gradeLbl := label.new(oB, oH, grade,
+                color     = color(na),
+                textcolor = bearColorInput,
+                style     = label.style_label_down,
+                size      = size.small,
+                tooltip   = obTooltip)
+        obLabels.unshift(gradeLbl)
+
+        label sideLbl = label.new(bar_index + 2, mid, "OB",
+            color     = color(na),
+            textcolor = color.new(bearColorInput, 30),
+            style     = label.style_label_left,
+            size      = size.small,
+            tooltip   = obTooltip)
+        obSideLabels.unshift(sideLbl)
+
+// Update OB right edges to current bar + mitigate + retest detection
+if obTop.size() > 0
+    for i = obTop.size() - 1 to 0
+        bool mitigated = false
+        int bias = obBias.get(i)
+
+        if bias == BULL
+            mitigated := obMitigationInput == "Close" ?
+                 barstate.isconfirmed and close < obBottom.get(i) :
+                 low < obBottom.get(i)
+        else
+            mitigated := obMitigationInput == "Close" ?
+                 barstate.isconfirmed and close > obTop.get(i) :
+                 high > obTop.get(i)
+
+        if mitigated
+            box.delete(obBoxes.get(i))
+            line.delete(obMidlines.get(i))
+            label lbl = obLabels.get(i)
+            if not na(lbl)
+                label.delete(lbl)
+            label sideLbl = obSideLabels.get(i)
+            if not na(sideLbl)
+                label.delete(sideLbl)
+            obTop.remove(i)
+            obBottom.remove(i)
+            obBias.remove(i)
+            obGrade.remove(i)
+            obBoxes.remove(i)
+            obMidlines.remove(i)
+            obLabels.remove(i)
+            obSideLabels.remove(i)
+            obAlerted.remove(i)
+            obCreatedAt.remove(i)
+        else
+            box.set_right(obBoxes.get(i), bar_index)
+            line.set_x2(obMidlines.get(i), bar_index)
+            label sideLbl = obSideLabels.get(i)
+            if not na(sideLbl)
+                label.set_x(sideLbl, bar_index + 2)
+                label.set_y(sideLbl, math.avg(obTop.get(i), obBottom.get(i)))
+            line.set_color(obMidlines.get(i), showObMidlineInput ?
+                color.new(bias == BULL ? bullColorInput : bearColorInput, 50) :
+                color.new(color.black, 100))
+
+            // OB retest — первое касание, once per lifetime.
+            // v1.6.1 [M1]: детекция и evt-флаги всегда; грейд-фильтр
+            // и "Off" гейтят только динамический alert()
+            if not obAlerted.get(i) and bar_index > obCreatedAt.get(i)
+                bool touched = bias == BULL ?
+                     low <= obTop.get(i) :
+                     high >= obBottom.get(i)
+                if touched
+                    obAlerted.set(i, true)
+                    if bias == BULL
+                        obEntryBullEvt := true
+                    else
+                        obEntryBearEvt := true
+                    string g = obGrade.get(i)
+                    if obEntryMinRank > 0 and gradeRank(g) >= obEntryMinRank
+                        alert(makeAlertMsg("ob_entry", g + "-OB Retest",
+                             bias == BULL ? "bull" : "bear",
+                             ',"grade":"' + g + '"'), proxFreq)
+
+// Cap OB count
+while obTop.size() > obMaxInput
+    int last = obTop.size() - 1
+    box.delete(obBoxes.get(last))
+    line.delete(obMidlines.get(last))
+    label lbl = obLabels.get(last)
+    if not na(lbl)
+        label.delete(lbl)
+    label sideLbl = obSideLabels.get(last)
+    if not na(sideLbl)
+        label.delete(sideLbl)
+    obTop.remove(last)
+    obBottom.remove(last)
+    obBias.remove(last)
+    obGrade.remove(last)
+    obBoxes.remove(last)
+    obMidlines.remove(last)
+    obLabels.remove(last)
+    obSideLabels.remove(last)
+    obAlerted.remove(last)
+    obCreatedAt.remove(last)
+
+// ══════════════════════════════════════
+// FIBONACCI RETRACEMENT (trend-aware impulse leg)
+// ══════════════════════════════════════
+
+var line  fibLine0    = na
+var line  fibLine236  = na
+var line  fibLine382  = na
+var line  fibLine5    = na
+var line  fibLine618  = na
+var line  fibLine786  = na
+var line  fibLine1    = na
+var label fibLbl0     = na
+var label fibLbl236   = na
+var label fibLbl382   = na
+var label fibLbl5     = na
+var label fibLbl618   = na
+var label fibLbl786   = na
+var label fibLbl1     = na
+var box   fibOTEBox   = na
+
+color FIB_COLOR = isDark ? color.new(#9E9E9E, 50) : color.new(#757575, 50)
+color FIB_TEXT  = isDark ? color.new(#BDBDBD, 30) : color.new(#616161, 30)
+
+// OTE-зона считается глобально каждый бар — для entry-алертов и дашборда
+bool  oteValid    = not na(trailHigh) and not na(trailLow) and trailHigh != trailLow and swTrend != NONE
+bool  oteFromHigh = swTrend != BEAR
+float ote618 = oteValid ? fibLevelCalc(0.618, oteFromHigh, trailHigh, trailLow) : na
+float ote786 = oteValid ? fibLevelCalc(0.786, oteFromHigh, trailHigh, trailLow) : na
+float oteHi  = math.max(ote618, ote786)
+float oteLo  = math.min(ote618, ote786)
+bool  inOte  = oteValid and close >= oteLo and close <= oteHi
+// Событие: close вошёл в зону (перевзводится после выхода).
+// v1.6.1 [M1]: evt-флаг всегда; proxOteInput гейтит только alert()
+bool oteEntryEvt = isWarmedUp and inOte and not inOte[1]
+
+if oteEntryEvt and proxOteInput
+    alert(makeAlertMsg("ote_entry", "OTE Entry",
+         swTrend == BULL ? "bull" : "bear"), proxFreq)
+
+if showFibInput and barstate.islast and not na(trailHigh) and not na(trailLow) and trailHigh != trailLow
+    // Delete previous drawings
+    line.delete(fibLine0)
+    line.delete(fibLine236)
+    line.delete(fibLine382)
+    line.delete(fibLine5)
+    line.delete(fibLine618)
+    line.delete(fibLine786)
+    line.delete(fibLine1)
+    label.delete(fibLbl0)
+    label.delete(fibLbl236)
+    label.delete(fibLbl382)
+    label.delete(fibLbl5)
+    label.delete(fibLbl618)
+    label.delete(fibLbl786)
+    label.delete(fibLbl1)
+    box.delete(fibOTEBox)
+
+    bool fromHigh = swTrend != BEAR
+
+    float fib0   = fibLevelCalc(0.0,   fromHigh, trailHigh, trailLow)
+    float fib236 = fibLevelCalc(0.236, fromHigh, trailHigh, trailLow)
+    float fib382 = fibLevelCalc(0.382, fromHigh, trailHigh, trailLow)
+    float fib5   = fibLevelCalc(0.5,   fromHigh, trailHigh, trailLow)
+    float fib618 = fibLevelCalc(0.618, fromHigh, trailHigh, trailLow)
+    float fib786 = fibLevelCalc(0.786, fromHigh, trailHigh, trailLow)
+    float fib1   = fibLevelCalc(1.0,   fromHigh, trailHigh, trailLow)
+
+    int leftBar  = math.min(nz(trailHighBar, bar_index - 50), nz(trailLowBar, bar_index - 50))
+    int rightBar = bar_index + 10
+
+    fibLine0   := line.new(leftBar, fib0,   rightBar, fib0,   color = FIB_COLOR, style = line.style_dotted, width = 1)
+    fibLine236 := line.new(leftBar, fib236, rightBar, fib236, color = FIB_COLOR, style = line.style_dotted, width = 1)
+    fibLine382 := line.new(leftBar, fib382, rightBar, fib382, color = FIB_COLOR, style = line.style_dotted, width = 1)
+    fibLine5   := line.new(leftBar, fib5,   rightBar, fib5,   color = FIB_COLOR, style = line.style_dotted, width = 1)
+    fibLine618 := line.new(leftBar, fib618, rightBar, fib618, color = FIB_COLOR, style = line.style_dotted, width = 1)
+    fibLine786 := line.new(leftBar, fib786, rightBar, fib786, color = FIB_COLOR, style = line.style_dotted, width = 1)
+    fibLine1   := line.new(leftBar, fib1,   rightBar, fib1,   color = FIB_COLOR, style = line.style_dotted, width = 1)
+
+    fibLbl0   := label.new(rightBar, fib0,   "0",     color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+    fibLbl236 := label.new(rightBar, fib236, "0.236", color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+    fibLbl382 := label.new(rightBar, fib382, "0.382", color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+    fibLbl5   := label.new(rightBar, fib5,   "0.5",   color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+    fibLbl618 := label.new(rightBar, fib618, "0.618", color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+    fibLbl786 := label.new(rightBar, fib786, "0.786", color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+    fibLbl1   := label.new(rightBar, fib1,   "1",     color = color(na), textcolor = FIB_TEXT, style = label.style_label_left, size = size.tiny)
+
+    // v1.6.1 [L4]: бордер из fibColorInput (был захардкожен #FFD600)
+    if showFibOTEInput
+        fibOTEBox := box.new(leftBar, math.max(fib618, fib786), rightBar, math.min(fib618, fib786),
+            bgcolor      = fibColorInput,
+            border_color = color.new(fibColorInput, 80),
+            border_width = 0)
+
+// ══════════════════════════════════════
+// PLOTS & BACKGROUND
+// ══════════════════════════════════════
+
+bgcolor(showBgInput and swTrend == BULL ? BULL_BG :
+        showBgInput and swTrend == BEAR ? BEAR_BG : na,
+        title = "Trend Background")
+
+// ══════════════════════════════════════
+// STRONG / WEAK HIGH-LOW LINES
+// ══════════════════════════════════════
+var line  strongHighLine = na
+var line  strongLowLine  = na
+var label strongHighLbl  = na
+var label strongLowLbl   = na
+
+if showStrongWeakInput and barstate.islast and not na(trailHigh) and not na(trailLow)
+    int rightBar = bar_index + 20
+
+    line.delete(strongHighLine)
+    line.delete(strongLowLine)
+    label.delete(strongHighLbl)
+    label.delete(strongLowLbl)
+
+    strongHighLine := line.new(nz(trailHighBar, bar_index), trailHigh, rightBar, trailHigh,
+        color = bearColorInput, style = line.style_dashed, width = 1)
+    strongLowLine := line.new(nz(trailLowBar, bar_index), trailLow, rightBar, trailLow,
+        color = bullColorInput, style = line.style_dashed, width = 1)
+
+    string hiLabel = swTrend == BEAR ? "Strong High" : "Weak High"
+    string loLabel = swTrend == BULL ? "Strong Low"  : "Weak Low"
+
+    strongHighLbl := label.new(rightBar, trailHigh, hiLabel,
+        color = color(na), textcolor = bearColorInput,
+        style = label.style_label_left, size = size.small)
+    strongLowLbl := label.new(rightBar, trailLow, loLabel,
+        color = color(na), textcolor = bullColorInput,
+        style = label.style_label_left, size = size.small)
+
+// ══════════════════════════════════════
+// DASHBOARD (LTM-style — sectioned, dynamic height,
+// zebra rows, per-row tooltips, trend-colored header, footer)
+// ══════════════════════════════════════
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    // ── Values ──
+    string trendWord = swTrend == BULL ? "Bullish" : swTrend == BEAR ? "Bearish" : "Neutral"
+    color  trendCol  = swTrend == BULL ? bullColorInput : swTrend == BEAR ? bearColorInput : TEXT_MUTED
+    color  headerBg  = swTrend == BULL ? HEADER_BG_BULL : swTrend == BEAR ? HEADER_BG_BEAR : HEADER_BG
+
+    string intStr = intTrend == BULL ? "Bullish" : intTrend == BEAR ? "Bearish" : "—"
+    color  intClr = intTrend == BULL ? bullColorInput : intTrend == BEAR ? bearColorInput : TEXT_MUTED
+
+    string ageStr = swTrend == NONE or na(lastStructBreakBar) ? "—" : str.tostring(bar_index - lastStructBreakBar) + " bars"
+
+    string htfStr = htfInput == "" ? "Off" : htfBull ? "Bullish" : "Bearish"
+    color  htfClr = htfInput == "" ? TEXT_MUTED : htfBull ? bullColorInput : bearColorInput
+
+    color lastObClr = str.contains(lastObInfo, "▲") ? bullColorInput : str.contains(lastObInfo, "▼") ? bearColorInput : TEXT_MUTED
+
+    string legHiStr = na(trailHigh) ? "—" : str.tostring(trailHigh, format.mintick)
+    string legLoStr = na(trailLow)  ? "—" : str.tostring(trailLow,  format.mintick)
+
+    string oteStr = not oteValid ? "—" : inOte ? "Inside ✓" : "Outside"
+    color  oteClr = not oteValid ? TEXT_MUTED : inOte ? NEUTRAL_TEXT : TEXT_COLOR
+
+    // ── Dynamic height ──
+    int marketRows = showMarketSecInput ? 6 : 0
+    int zonesRows  = showZonesSecInput  ? 5 : 0
+    int fibRows    = showFibSecInput    ? 4 : 0
+    int totalRows  = 2 + marketRows + zonesRows + fibRows
+
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(getDashPos(dashPosStr), 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    int  r   = 0
+    bool zeb = false
+    color rb = TABLE_BG
+
+    // ── Header (trend-colored) ──
+    table.cell(dashTable, 0, r, "◆ SME · " + trendWord, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    // ── Market section ──
+    if showMarketSecInput
+        table.cell(dashTable, 0, r, "— Market —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Swing Trend", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Major structure direction (last confirmed BOS/CHoCH).")
+        table.cell(dashTable, 1, r, trendWord == "Neutral" ? "—" : trendWord, text_color = trendCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Internal", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Minor (internal) structure direction.")
+        table.cell(dashTable, 1, r, intStr, text_color = intClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Age", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Bars since the last swing structure break.")
+        table.cell(dashTable, 1, r, ageStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "HTF Bias", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Higher-timeframe EMA-50 bias (OB confluence factor).")
+        table.cell(dashTable, 1, r, htfStr, text_color = htfClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Last OB", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Direction and confluence grade of the most recent order block.\nA = 2+ factors · B = 1 · C = none.")
+        table.cell(dashTable, 1, r, lastObInfo, text_color = lastObClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    // ── Zones section ──
+    if showZonesSecInput
+        table.cell(dashTable, 0, r, "— Zones —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Order Blocks", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Active (unmitigated) order blocks on chart.")
+        table.cell(dashTable, 1, r, str.tostring(obTop.size()), text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "FVGs", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Active (unfilled) fair value gaps.")
+        table.cell(dashTable, 1, r, str.tostring(fvgTop.size()), text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "IFVGs", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Active inverse FVGs (filled gaps flipped to S/R).")
+        table.cell(dashTable, 1, r, str.tostring(ifvgTop.size()), text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Liq Pools", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Active EQH/EQL liquidity pools awaiting a sweep or break.")
+        table.cell(dashTable, 1, r, str.tostring(liqLevel.size()), text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    // ── Fibonacci section ──
+    if showFibSecInput
+        table.cell(dashTable, 0, r, "— Fibonacci —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Leg High", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Trailing high of the current impulse leg (fib anchor).")
+        table.cell(dashTable, 1, r, legHiStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Leg Low", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Trailing low of the current impulse leg (fib anchor).")
+        table.cell(dashTable, 1, r, legLoStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "OTE", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Is price inside the 0.618–0.786 Optimal Trade Entry zone\nof the current impulse leg?")
+        table.cell(dashTable, 1, r, oteStr, text_color = oteClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    // ── Footer ──
+    table.cell(dashTable, 0, r, "SME · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(
+        position     = position.bottom_center,
+        columns      = 1,
+        rows         = 1,
+        bgcolor      = color.new(color.black, 100),
+        border_color = color.new(color.black, 100),
+        border_width = 0,
+        frame_color  = color.new(color.black, 100),
+        frame_width  = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader",
+        text_color  = WM_COLOR,
+        text_size   = size.normal,
+        text_halign = text.align_center,
+        bgcolor     = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+
+// Структурные события (bar close, раздельные bull/bear сообщения)
+if swBullBreak
+    alert(makeAlertMsg(swBullType == "BOS" ? "bos" : "choch", swBullType, "bull"),
+         alert.freq_once_per_bar_close)
+
+if swBearBreak
+    alert(makeAlertMsg(swBearType == "BOS" ? "bos" : "choch", swBearType, "bear"),
+         alert.freq_once_per_bar_close)
+
+// Свипы ликвидности (всегда bar close — требуют подтверждённого закрытия)
+if liqSweepAlertInput and bslSweepEvt
+    alert(makeAlertMsg("sweep_bsl", "BSL Sweep", "bear"), alert.freq_once_per_bar_close)
+
+if liqSweepAlertInput and sslSweepEvt
+    alert(makeAlertMsg("sweep_ssl", "SSL Sweep", "bull"), alert.freq_once_per_bar_close)
+
+// Статические события — отдельные пункты в диалоге алертов TradingView.
+// v1.6.1 [M1]: работают независимо от alert-инпутов выше
+alertcondition(swBullBreak and swBullType == "BOS",   "Bullish BOS",   "🟢 Bullish BOS | {{ticker}} | {{close}}")
+alertcondition(swBearBreak and swBearType == "BOS",   "Bearish BOS",   "🔴 Bearish BOS | {{ticker}} | {{close}}")
+alertcondition(swBullBreak and swBullType == "CHoCH", "Bullish CHoCH", "🟢 Bullish CHoCH | {{ticker}} | {{close}}")
+alertcondition(swBearBreak and swBearType == "CHoCH", "Bearish CHoCH", "🔴 Bearish CHoCH | {{ticker}} | {{close}}")
+alertcondition(bslSweepEvt,     "Buyside Liquidity Sweep (EQH)",  "🔴 BSL Sweep | {{ticker}} | {{close}}")
+alertcondition(sslSweepEvt,     "Sellside Liquidity Sweep (EQL)", "🟢 SSL Sweep | {{ticker}} | {{close}}")
+alertcondition(obEntryBullEvt,  "Bullish OB Retest",              "🟢 OB Retest | {{ticker}} | {{close}}")
+alertcondition(obEntryBearEvt,  "Bearish OB Retest",              "🔴 OB Retest | {{ticker}} | {{close}}")
+alertcondition(fvgEntryBullEvt, "Bullish FVG Retest",             "🟢 FVG Retest | {{ticker}} | {{close}}")
+alertcondition(fvgEntryBearEvt, "Bearish FVG Retest",             "🔴 FVG Retest | {{ticker}} | {{close}}")
+alertcondition(oteEntryEvt,     "OTE Zone Entry",                 "🎯 OTE Entry | {{ticker}} | {{close}}")

@@ -1,0 +1,727 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// AUTO SUPPORT & RESISTANCE CHANNELS [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.6.1
+
+indicator(
+    title            = "Auto S/R Channels [WillyAlgoTrader]",
+    shorttitle       = "SRChannels",
+    overlay          = true,
+    max_lines_count  = 500,
+    max_labels_count = 500,
+    max_boxes_count  = 500,
+    max_bars_back    = 2000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN       = "⚙️ Main Settings"
+GRP_VISUAL     = "🎨 Visual Settings"
+GRP_CHAN       = "📏 Channels"
+GRP_STYLE_BASE = "📐 Base Line Style"
+GRP_STYLE_PAR  = "📐 Parallel Line Style"
+GRP_STYLE_MID  = "📐 Midline Style"
+GRP_DASH       = "📊 Dashboard"
+GRP_ALERT      = "🔔 Alerts"
+GRP_COLORS     = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.6.1"
+int MAX_PIVOTS    = 40
+int MAX_CHECK_LEN = 500   // hard cap for the containment quality loop
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+pivotLenInput = input.int(10, "Pivot Length", minval = 2, maxval = 50, group = GRP_MAIN, tooltip = "Lookback/forward bars for pivot detection.\n• Higher = fewer, stronger pivots\n• Lower = more pivots, noisier\n• Recommended: 8–21")
+atrLenInput = input.int(14, "ATR Length", minval = 5, maxval = 100, group = GRP_MAIN, tooltip = "ATR period for calculations.\nRecommended: 14")
+minChannelBarsInput = input.int(10, "Min Channel Bars", minval = 3, maxval = 200, group = GRP_MAIN, tooltip = "Minimum distance between two base pivots.\nRecommended: 10–30")
+maxChannelBarsInput = input.int(400, "Max Channel Bars", minval = 30, maxval = 2000, group = GRP_MAIN, tooltip = "Maximum lookback for channel base pivots.\nAlso the max channel age: older channels expire and are removed.\nRecommended: 200–500")
+channelQualityInput = input.float(0.55, "Min Channel Quality", minval = 0.2, maxval = 1.0, step = 0.05, group = GRP_MAIN, tooltip = "Min fraction of bars contained in channel.\n• Higher = stricter, fewer channels\n• Recommended: 0.5–0.8")
+
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart theme.\n• Auto: detect from background\n• Dark/Light: manual override")
+showMidlineInput = input.bool(true, "Show Midlines", group = GRP_VISUAL, tooltip = "Dotted midline inside channels")
+showFillInput = input.bool(true, "Show Channel Fill", group = GRP_VISUAL, tooltip = "Very subtle channel fill")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark")
+extendInput = input.string("Right", "Extend Channels", options = ["None", "Right", "Both"], group = GRP_VISUAL, tooltip = "• None: lines end at their pivots\n• Right: lines project N bars past the last chart bar (see Projection Bars)\n• Both: same projection right + infinite extend left")
+projBarsInput = input.int(55, "Projection Bars", minval = 0, maxval = 300, group = GRP_VISUAL, tooltip = "How far channel and target lines project to the right of the LAST chart bar.\n0 = end exactly at the last bar.\nApplies when Extend = Right or Both.")
+deletePrevInput = input.bool(true, "Delete Previous", group = GRP_VISUAL, tooltip = "Remove old channels when new ones form.\nNote: with this OFF, only the newest channel's projection follows the chart; older copies keep frozen endpoints.")
+showBreakoutLblInput = input.bool(true, "Show Breakout Label", group = GRP_VISUAL, tooltip = "Label on the last channel breakout bar")
+showTargetInput = input.bool(true, "Show Breakout Targets", group = GRP_VISUAL, tooltip = "Measured-move target after a breakout:\nchannel width projected from the broken boundary.\nDashed line + 🎯 label; ✓ when reached.")
+
+showUpInput = input.bool(true, "Show Up Channels", group = GRP_CHAN, tooltip = "Ascending channels from pivot lows")
+showDownInput = input.bool(true, "Show Down Channels", group = GRP_CHAN, tooltip = "Descending channels from pivot highs")
+
+baseWidthInput = input.int(2, "Width", minval = 1, maxval = 5, group = GRP_STYLE_BASE)
+baseStyleInput = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_STYLE_BASE)
+
+parWidthInput = input.int(2, "Width", minval = 1, maxval = 5, group = GRP_STYLE_PAR)
+parStyleInput = input.string("Solid", "Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_STYLE_PAR)
+
+midWidthInput = input.int(1, "Width", minval = 1, maxval = 3, group = GRP_STYLE_MID)
+midStyleInput = input.string("Dashed", "Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_STYLE_MID)
+
+bullColorInput = input.color(#00E676, "Bull / Up", inline = "col1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear / Down", inline = "col1", group = GRP_COLORS)
+fillTranspInput = input.int(95, "Fill Transparency", minval = 80, maxval = 99, group = GRP_COLORS)
+
+showDashInput = input.bool(false, "Show Dashboard", group = GRP_DASH)
+dashPosStr = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH)
+
+alertBreakInput = input.bool(true, "Alert on Signal", group = GRP_ALERT)
+alertBreakoutInput = input.bool(true, "Alert on Breakout", group = GRP_ALERT)
+alertReactInput = input.bool(true, "Alert on React", group = GRP_ALERT)
+webhookInput = input.bool(false, "Webhook JSON", group = GRP_ALERT)
+
+// ══════════════════════════════════════
+// THEME
+// ══════════════════════════════════════
+float bgLuma = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)
+
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         bgLuma < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG     = color.new(#2962FF, 0)
+HEADER_TEXT   = #FFFFFF
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+getLineStyle(string s) =>
+    switch s
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        =>          line.style_solid
+
+// Right side is handled by finite projection, never extend.right
+getExtend(string s) =>
+    s == "Both" ? extend.left : extend.none
+
+linePrice(int x1, float y1, int x2, float y2, int bx) =>
+    x2 == x1 ? y1 : y1 + (y2 - y1) / (x2 - x1) * (bx - x1)
+
+clearLabels(array<label> arr) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            label.delete(array.get(arr, i))
+        array.clear(arr)
+
+// Direction-agnostic "is price inside channel?"
+isInside(float p, float baseLine, float off) =>
+    float upper = math.max(baseLine, baseLine + off)
+    float lower = math.min(baseLine, baseLine + off)
+    p >= lower and p <= upper
+
+// ══════════════════════════════════════
+// PIVOT DETECTION
+// ══════════════════════════════════════
+
+int WARMUP_BARS = math.max(pivotLenInput * 4, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+float atrVal = nz(ta.atr(atrLenInput), high - low)
+
+float pivotHi = ta.pivothigh(high, pivotLenInput, pivotLenInput)
+float pivotLo = ta.pivotlow(low, pivotLenInput, pivotLenInput)
+
+// Pivots are only accepted on confirmed bars —
+// ta.pivothigh/low can flicker intrabar on the realtime bar.
+bool newHi = not na(pivotHi) and barstate.isconfirmed
+bool newLo = not na(pivotLo) and barstate.isconfirmed
+
+var array<float> hiPrices  = array.new_float()
+var array<int>   hiIndices = array.new_int()
+var array<float> loPrices  = array.new_float()
+var array<int>   loIndices = array.new_int()
+
+if newHi
+    array.push(hiPrices, pivotHi)
+    array.push(hiIndices, bar_index - pivotLenInput)
+    if array.size(hiPrices) > MAX_PIVOTS
+        array.shift(hiPrices)
+        array.shift(hiIndices)
+
+if newLo
+    array.push(loPrices, pivotLo)
+    array.push(loIndices, bar_index - pivotLenInput)
+    if array.size(loPrices) > MAX_PIVOTS
+        array.shift(loPrices)
+        array.shift(loIndices)
+
+// ══════════════════════════════════════════════════════════
+// CHANNEL SEARCH
+// ══════════════════════════════════════════════════════════
+// v1.6.1: containment window covers the whole allowed channel length
+int qualityWindow = math.min(maxChannelBarsInput, MAX_CHECK_LEN)
+
+findUpChannel(array<float> basePrices, array<int> baseIndices, array<float> oppPrices, array<int> oppIndices) =>
+    int bestX1 = na
+    float bestY1 = na
+    int bestX2 = na
+    float bestY2 = na
+    float bestOffset = na
+    float bestQual = 0.0
+
+    int sz = array.size(basePrices)
+    if sz >= 2
+        int pairsToCheck = math.min(sz, 8)
+        for i = sz - 1 to math.max(0, sz - pairsToCheck)
+            for j = i - 1 to math.max(0, i - 5)
+                int ix1 = array.get(baseIndices, j)
+                float iy1 = array.get(basePrices, j)
+                int ix2 = array.get(baseIndices, i)
+                float iy2 = array.get(basePrices, i)
+                int span = ix2 - ix1
+                if span < minChannelBarsInput or span > maxChannelBarsInput
+                    continue
+                if iy2 <= iy1
+                    continue
+                float maxOff = 0.0
+                int oppSz = array.size(oppPrices)
+                if oppSz > 0
+                    for k = 0 to oppSz - 1
+                        int oppBar = array.get(oppIndices, k)
+                        if oppBar >= ix1 and oppBar <= bar_index
+                            float oppVal = array.get(oppPrices, k)
+                            float baseAtOpp = linePrice(ix1, iy1, ix2, iy2, oppBar)
+                            float diff = oppVal - baseAtOpp
+                            if diff > maxOff
+                                maxOff := diff
+                if maxOff <= 0
+                    continue
+                int totalBars = bar_index - ix1
+                if totalBars <= 0
+                    continue
+                int checkLen = math.min(totalBars, qualityWindow)                     // v1.6.1: was hard 300
+                int contained = 0
+                float tol = atrVal * 0.05
+                for k = 0 to checkLen - 1
+                    int bx = bar_index - k
+                    if bx < ix1
+                        break
+                    float bLine = linePrice(ix1, iy1, ix2, iy2, bx)
+                    float pLine = bLine + maxOff
+                    if low[k] >= bLine - tol and high[k] <= pLine + tol
+                        contained += 1
+                float qual = safeDiv(float(contained), float(checkLen), 0.0)
+                if qual >= channelQualityInput and qual > bestQual
+                    bestQual := qual
+                    bestX1 := ix1
+                    bestY1 := iy1
+                    bestX2 := ix2
+                    bestY2 := iy2
+                    bestOffset := maxOff
+    [bestX1, bestY1, bestX2, bestY2, bestOffset, bestQual]
+
+findDownChannel(array<float> basePrices, array<int> baseIndices, array<float> oppPrices, array<int> oppIndices) =>
+    int bestX1 = na
+    float bestY1 = na
+    int bestX2 = na
+    float bestY2 = na
+    float bestOffset = na
+    float bestQual = 0.0
+
+    int sz = array.size(basePrices)
+    if sz >= 2
+        int pairsToCheck = math.min(sz, 8)
+        for i = sz - 1 to math.max(0, sz - pairsToCheck)
+            for j = i - 1 to math.max(0, i - 5)
+                int ix1 = array.get(baseIndices, j)
+                float iy1 = array.get(basePrices, j)
+                int ix2 = array.get(baseIndices, i)
+                float iy2 = array.get(basePrices, i)
+                int span = ix2 - ix1
+                if span < minChannelBarsInput or span > maxChannelBarsInput
+                    continue
+                if iy2 >= iy1
+                    continue
+                float minOff = 0.0
+                int oppSz = array.size(oppPrices)
+                if oppSz > 0
+                    for k = 0 to oppSz - 1
+                        int oppBar = array.get(oppIndices, k)
+                        if oppBar >= ix1 and oppBar <= bar_index
+                            float oppVal = array.get(oppPrices, k)
+                            float baseAtOpp = linePrice(ix1, iy1, ix2, iy2, oppBar)
+                            float diff = oppVal - baseAtOpp
+                            if diff < minOff
+                                minOff := diff
+                if minOff >= 0
+                    continue
+                int totalBars = bar_index - ix1
+                if totalBars <= 0
+                    continue
+                int checkLen = math.min(totalBars, qualityWindow)                     // v1.6.1: was hard 300
+                int contained = 0
+                float tol = atrVal * 0.05
+                for k = 0 to checkLen - 1
+                    int bx = bar_index - k
+                    if bx < ix1
+                        break
+                    float bLine = linePrice(ix1, iy1, ix2, iy2, bx)
+                    float pLine = bLine + minOff
+                    if high[k] <= bLine + tol and low[k] >= pLine - tol
+                        contained += 1
+                float qual = safeDiv(float(contained), float(checkLen), 0.0)
+                if qual >= channelQualityInput and qual > bestQual
+                    bestQual := qual
+                    bestX1 := ix1
+                    bestY1 := iy1
+                    bestX2 := ix2
+                    bestY2 := iy2
+                    bestOffset := minOff
+    [bestX1, bestY1, bestX2, bestY2, bestOffset, bestQual]
+
+// ══════════════════════════════════════
+// CHANNEL STATE
+// ══════════════════════════════════════
+
+var int   chUpX1 = na,      var float chUpY1 = na
+var int   chUpX2 = na,      var float chUpY2 = na
+var float chUpOff = na,     var float chUpQual = na
+var bool  chUpOn = false
+
+var int   chDnX1 = na,      var float chDnY1 = na
+var int   chDnX2 = na,      var float chDnY2 = na
+var float chDnOff = na,     var float chDnQual = na
+var bool  chDnOn = false
+
+var line chUpLnBase = na, var line chUpLnPar = na, var line chUpLnMid = na
+var line chDnLnBase = na, var line chDnLnPar = na, var line chDnLnMid = na
+var linefill chUpFill1 = na, var linefill chUpFill2 = na
+var linefill chDnFill1 = na, var linefill chDnFill2 = na
+
+// ══════════════════════════════════════
+// BREAKOUT / TARGET STATE & LABEL ARRAYS
+// ══════════════════════════════════════
+
+var bool upBullFired = false
+var bool upBearFired = false
+var bool dnBullFired = false
+var bool dnBearFired = false
+
+var array<label> upLabels = array.new_label()
+var array<label> dnLabels = array.new_label()
+
+// One active measured-move target per channel
+var line  upTgtLine  = na
+var label upTgtLbl   = na
+var float upTgtPrice = na
+var int   upTgtDir   = 0
+var bool  upTgtHit   = false
+
+var line  dnTgtLine  = na
+var label dnTgtLbl   = na
+var float dnTgtPrice = na
+var int   dnTgtDir   = 0
+var bool  dnTgtHit   = false
+
+// ══════════════════════════════════════════════════════════
+// GUARD 5: STALE CHANNEL LIFECYCLE
+// ══════════════════════════════════════════════════════════
+// A channel older than maxChannelBarsInput (from its second base pivot
+// X2) is fully retired: deactivated, drawings deleted, labels cleared,
+// targets and breakout flags reset, quality zeroed.
+
+if barstate.isconfirmed
+    if chUpOn and not na(chUpX2) and (bar_index - chUpX2) > maxChannelBarsInput
+        chUpOn   := false
+        chUpQual := 0.0
+        line.delete(chUpLnBase)
+        line.delete(chUpLnPar)
+        line.delete(chUpLnMid)
+        linefill.delete(chUpFill1)
+        linefill.delete(chUpFill2)
+        chUpLnBase := na
+        chUpLnPar  := na
+        chUpLnMid  := na
+        chUpFill1  := na
+        chUpFill2  := na
+        clearLabels(upLabels)
+        line.delete(upTgtLine)
+        label.delete(upTgtLbl)
+        upTgtLine  := na
+        upTgtLbl   := na
+        upTgtPrice := na
+        upTgtDir   := 0
+        upTgtHit   := false
+        upBullFired := false
+        upBearFired := false
+
+    if chDnOn and not na(chDnX2) and (bar_index - chDnX2) > maxChannelBarsInput
+        chDnOn   := false
+        chDnQual := 0.0
+        line.delete(chDnLnBase)
+        line.delete(chDnLnPar)
+        line.delete(chDnLnMid)
+        linefill.delete(chDnFill1)
+        linefill.delete(chDnFill2)
+        chDnLnBase := na
+        chDnLnPar  := na
+        chDnLnMid  := na
+        chDnFill1  := na
+        chDnFill2  := na
+        clearLabels(dnLabels)
+        line.delete(dnTgtLine)
+        label.delete(dnTgtLbl)
+        dnTgtLine  := na
+        dnTgtLbl   := na
+        dnTgtPrice := na
+        dnTgtDir   := 0
+        dnTgtHit   := false
+        dnBullFired := false
+        dnBearFired := false
+
+// ══════════════════════════════════════
+// CHANNEL SEARCH TRIGGER
+// ══════════════════════════════════════
+
+if (newHi or newLo) and isWarmedUp
+
+    // ── Up channel (needs ≥2 lows) ──
+    if array.size(loPrices) >= 2
+        [bx1, by1, bx2, by2, boff, bq] = findUpChannel(loPrices, loIndices, hiPrices, hiIndices)
+        if not na(bx1) and bq > nz(chUpQual, 0.0) * 0.7
+            bool upChanged = bx1 != chUpX1 or bx2 != chUpX2
+            chUpX1 := bx1
+            chUpY1 := by1
+            chUpX2 := bx2
+            chUpY2 := by2
+            chUpOff := boff
+            chUpQual := bq
+            chUpOn := true
+            if upChanged
+                clearLabels(upLabels)
+                // Target belongs to the old geometry — retire it
+                line.delete(upTgtLine)
+                label.delete(upTgtLbl)
+                upTgtLine  := na
+                upTgtLbl   := na
+                upTgtPrice := na
+                upTgtDir   := 0
+                upTgtHit   := false
+                float newB = linePrice(bx1, by1, bx2, by2, bar_index)
+                if isInside(close, newB, boff)
+                    upBullFired := false
+                    upBearFired := false
+                else
+                    upBullFired := close > math.max(newB, newB + boff)
+                    upBearFired := close < math.min(newB, newB + boff)
+
+    // ── Down channel (needs ≥2 highs) ──
+    if array.size(hiPrices) >= 2
+        [bx1, by1, bx2, by2, boff, bq] = findDownChannel(hiPrices, hiIndices, loPrices, loIndices)
+        if not na(bx1) and bq > nz(chDnQual, 0.0) * 0.7
+            bool dnChanged = bx1 != chDnX1 or bx2 != chDnX2
+            chDnX1 := bx1
+            chDnY1 := by1
+            chDnX2 := bx2
+            chDnY2 := by2
+            chDnOff := boff
+            chDnQual := bq
+            chDnOn := true
+            if dnChanged
+                clearLabels(dnLabels)
+                line.delete(dnTgtLine)
+                label.delete(dnTgtLbl)
+                dnTgtLine  := na
+                dnTgtLbl   := na
+                dnTgtPrice := na
+                dnTgtDir   := 0
+                dnTgtHit   := false
+                float newB = linePrice(bx1, by1, bx2, by2, bar_index)
+                if isInside(close, newB, boff)
+                    dnBullFired := false
+                    dnBearFired := false
+                else
+                    dnBullFired := close > math.max(newB, newB + boff)
+                    dnBearFired := close < math.min(newB, newB + boff)
+
+// ══════════════════════════════════════
+// DRAWING
+// ══════════════════════════════════════
+
+lineExt  = getExtend(extendInput)
+baseStyl = getLineStyle(baseStyleInput)
+parStyl  = getLineStyle(parStyleInput)
+midStyl  = getLineStyle(midStyleInput)
+
+bool projectOn = extendInput != "None"
+
+drawCh(int x1, float y1, int x2, float y2, float off, bool active, bool show, line prevBase, line prevPar, line prevMid, linefill prevF1, linefill prevF2, color col, bool del, int projX) =>
+    line nBase = prevBase
+    line nPar = prevPar
+    line nMid = prevMid
+    linefill nF1 = prevF1
+    linefill nF2 = prevF2
+    if active and show and not na(x1) and not na(x2) and not na(off)
+        if del
+            line.delete(prevBase)
+            line.delete(prevPar)
+            line.delete(prevMid)
+            linefill.delete(prevF1)
+            linefill.delete(prevF2)
+            nMid := na
+            nF1  := na
+            nF2  := na
+        // Finite projection — right endpoint at projX (na = end at pivot)
+        int   dx2 = na(projX) ? x2 : projX
+        float dy2 = na(projX) ? y2 : linePrice(x1, y1, x2, y2, projX)
+        nBase := line.new(x1, y1, dx2, dy2, color = col, width = baseWidthInput, style = baseStyl, extend = lineExt)
+        nPar := line.new(x1, y1 + off, dx2, dy2 + off, color = col, width = parWidthInput, style = parStyl, extend = lineExt)
+        if showMidlineInput
+            nMid := line.new(x1, y1 + off / 2, dx2, dy2 + off / 2, color = col, width = midWidthInput, style = midStyl, extend = lineExt)
+        if showFillInput
+            color fc = color.new(col, fillTranspInput)
+            if not na(nMid)
+                nF1 := linefill.new(nBase, nMid, fc)
+                nF2 := linefill.new(nMid, nPar, fc)
+            else
+                nF1 := linefill.new(nBase, nPar, fc)
+    [nBase, nPar, nMid, nF1, nF2]
+
+if (newHi or newLo) and isWarmedUp
+    int projX = projectOn ? bar_index + projBarsInput : na
+    [a1, a2, a3, a4, a5] = drawCh(chUpX1, chUpY1, chUpX2, chUpY2, chUpOff, chUpOn, showUpInput, chUpLnBase, chUpLnPar, chUpLnMid, chUpFill1, chUpFill2, bullColorInput, deletePrevInput, projX)
+    chUpLnBase := a1
+    chUpLnPar := a2
+    chUpLnMid := a3
+    chUpFill1 := a4
+    chUpFill2 := a5
+
+    [b1, b2, b3, b4, b5] = drawCh(chDnX1, chDnY1, chDnX2, chDnY2, chDnOff, chDnOn, showDownInput, chDnLnBase, chDnLnPar, chDnLnMid, chDnFill1, chDnFill2, bearColorInput, deletePrevInput, projX)
+    chDnLnBase := b1
+    chDnLnPar := b2
+    chDnLnMid := b3
+    chDnFill1 := b4
+    chDnFill2 := b5
+
+// ── Projection maintenance ──
+// v1.6.1: gated by barstate.islast — the endpoint position only matters
+// on the last chart bar; on history these were thousands of no-op calls.
+int projEdge = bar_index + projBarsInput
+
+if barstate.islast
+    if projectOn
+        if chUpOn and not na(chUpLnBase)
+            float yB = linePrice(chUpX1, chUpY1, chUpX2, chUpY2, projEdge)
+            line.set_xy2(chUpLnBase, projEdge, yB)
+            line.set_xy2(chUpLnPar, projEdge, yB + chUpOff)
+            if not na(chUpLnMid)
+                line.set_xy2(chUpLnMid, projEdge, yB + chUpOff / 2)
+        if chDnOn and not na(chDnLnBase)
+            float yB = linePrice(chDnX1, chDnY1, chDnX2, chDnY2, projEdge)
+            line.set_xy2(chDnLnBase, projEdge, yB)
+            line.set_xy2(chDnLnPar, projEdge, yB + chDnOff)
+            if not na(chDnLnMid)
+                line.set_xy2(chDnLnMid, projEdge, yB + chDnOff / 2)
+
+    // Target lines/labels follow the same edge
+    if not na(upTgtLine)
+        line.set_x2(upTgtLine, projEdge)
+        label.set_x(upTgtLbl, projEdge)
+    if not na(dnTgtLine)
+        line.set_x2(dnTgtLine, projEdge)
+        label.set_x(dnTgtLbl, projEdge)
+
+// ══════════════════════════════════════════════════════════
+// BREAKOUT & SIGNAL DETECTION
+// ══════════════════════════════════════════════════════════
+// GUARD 2: crossover — close[1] within 1.5 ATR of boundary
+// GUARD 3: smart flag reset on channel rebuild (price-aware)
+// GUARD 4: all old labels deleted on channel rebuild
+// GUARD 5: stale channel lifecycle
+// GUARD 6: gap-breakout latch (silent flag, no late label)
+// (GUARD 1 removed in v1.6.1 — dead code: GUARD 5 retires the channel
+//  earlier in the same bar, so the age condition was always true here.)
+
+bool upBreakSup   = false
+bool upBreakRes   = false
+bool upReactSup   = false
+bool upReactRes   = false
+bool dnBreakSup   = false
+bool dnBreakRes   = false
+bool dnReactSup   = false
+bool dnReactRes   = false
+
+int  upBoDir = 0
+int  dnBoDir = 0
+
+// Target of the breakout that fired THIS bar (for webhook JSON).
+// If both channels break on the same bar, the down-channel value wins —
+// acceptable: same direction, similar magnitude.
+float boTarget = na
+
+if barstate.isconfirmed and isWarmedUp
+
+    // ══ Up channel (off > 0: base = support, par = resistance) ══
+    if chUpOn and not na(chUpX1) and not na(chUpX2) and not na(chUpOff)
+        float bNow  = linePrice(chUpX1, chUpY1, chUpX2, chUpY2, bar_index)
+        float pNow  = bNow + chUpOff                                              // resistance
+        float bPrev = linePrice(chUpX1, chUpY1, chUpX2, chUpY2, bar_index - 1)
+        float pPrev = bPrev + chUpOff
+        float tol      = atrVal * 0.12
+        float crossTol = atrVal * 1.5                                             // GUARD 2
+
+        if close >= bNow and close <= pNow
+            upBullFired := false
+            upBearFired := false
+
+        // Bull breakout: close > resistance
+        if close > pNow and not upBullFired
+            if close[1] <= pPrev + crossTol
+                upBoDir     := 1
+                upBullFired := true
+                upBreakRes  := true
+                float tgt = pNow + chUpOff                                        // measured move up
+                boTarget := tgt
+                if showBreakoutLblInput
+                    array.push(upLabels, label.new(bar_index, low, "Breakout ▲", color = bullColorInput, textcolor = #FFFFFF, style = label.style_label_up, size = size.small))
+                if showTargetInput
+                    line.delete(upTgtLine)
+                    label.delete(upTgtLbl)
+                    upTgtLine  := line.new(bar_index, tgt, projEdge, tgt, color = bullColorInput, width = 1, style = line.style_dashed)
+                    upTgtLbl   := label.new(projEdge, tgt, "🎯 " + str.tostring(tgt, format.mintick), color = color.new(bullColorInput, 100), textcolor = bullColorInput, style = label.style_label_left, size = size.small)
+                    upTgtPrice := tgt
+                    upTgtDir   := 1
+                    upTgtHit   := false
+            else
+                upBullFired := true                                               // GUARD 6
+
+        // Bear breakout: close < support
+        if close < bNow and not upBearFired
+            if close[1] >= bPrev - crossTol
+                upBoDir     := -1
+                upBearFired := true
+                upBreakSup  := true
+                float tgt = bNow - chUpOff                                        // measured move down
+                boTarget := tgt
+                if showBreakoutLblInput
+                    array.push(upLabels, label.new(bar_index, high, "Breakout ▼", color = bearColorInput, textcolor = #FFFFFF, style = label.style_label_down, size = size.small))
+                if showTargetInput
+                    line.delete(upTgtLine)
+                    label.delete(upTgtLbl)
+                    upTgtLine  := line.new(bar_index, tgt, projEdge, tgt, color = bearColorInput, width = 1, style = line.style_dashed)
+                    upTgtLbl   := label.new(projEdge, tgt, "🎯 " + str.tostring(tgt, format.mintick), color = color.new(bearColorInput, 100), textcolor = bearColorInput, style = label.style_label_left, size = size.small)
+                    upTgtPrice := tgt
+                    upTgtDir   := -1
+                    upTgtHit   := false
+            else
+                upBearFired := true                                               // GUARD 6
+
+        if not upBreakSup and low <= bNow + tol and close > bNow and open > bNow
+            upReactSup := true
+        if not upBreakRes and high >= pNow - tol and close < pNow and open < pNow
+            upReactRes := true
+
+    // ══ Down channel (off < 0: base = resistance [upper], par = support [lower]) ══
+    if chDnOn and not na(chDnX1) and not na(chDnX2) and not na(chDnOff)
+        float bNow  = linePrice(chDnX1, chDnY1, chDnX2, chDnY2, bar_index)       // upper boundary
+        float pNow  = bNow + chDnOff                                              // lower boundary (off < 0)
+        float bPrev = linePrice(chDnX1, chDnY1, chDnX2, chDnY2, bar_index - 1)
+        float pPrev = bPrev + chDnOff
+        float tol      = atrVal * 0.12
+        float crossTol = atrVal * 1.5                                             // GUARD 2
+
+        if close <= bNow and close >= pNow
+            dnBullFired := false
+            dnBearFired := false
+
+        // Bull breakout: close > base (upper boundary / resistance)
+        if close > bNow and not dnBullFired
+            if close[1] <= bPrev + crossTol
+                dnBoDir     := 1
+                dnBullFired := true
+                dnBreakRes  := true
+                float tgt = bNow - chDnOff                                        // + |off| (chDnOff < 0)
+                boTarget := tgt
+                if showBreakoutLblInput
+                    array.push(dnLabels, label.new(bar_index, low, "Breakout ▲", color = bullColorInput, textcolor = #FFFFFF, style = label.style_label_up, size = size.small))
+                if showTargetInput
+                    line.delete(dnTgtLine)
+                    label.delete(dnTgtLbl)
+                    dnTgtLine  := line.new(bar_index, tgt, projEdge, tgt, color = bullColorInput, width = 1, style = line.style_dashed)
+                    dnTgtLbl   := label.new(projEdge, tgt, "🎯 " + str.tostring(tgt, format.mintick), color = color.new(bullColorInput, 100), textcolor = bullColorInput, style = label.style_label_left, size = size.small)
+                    dnTgtPrice := tgt
+                    dnTgtDir   := 1
+                    dnTgtHit   := false
+            else
+                dnBullFired := true                                               // GUARD 6
+
+        // Bear breakout: close < parallel (lower boundary / support)
+        if close < pNow and not dnBearFired
+            if close[1] >= pPrev - crossTol
+                dnBoDir     := -1
+                dnBearFired := true
+                dnBreakSup  := true
+                float tgt = pNow + chDnOff                                        // - |off| (chDnOff < 0)
+                boTarget := tgt
+                if showBreakoutLblInput
+                    array.push(dnLabels, label.new(bar_index, high, "Breakout ▼", color = bearColorInput, textcolor = #FFFFFF, style = label.style_label_down, size = size.small))
+                if showTargetInput
+                    line.delete(dnTgtLine)
+                    label.delete(dnTgtLbl)
+                    dnTgtLine  := line.new(bar_index, tgt, projEdge, tgt, color = bearColorInput, width = 1, style = line.style_dashed)
+                    dnTgtLbl   := label.new(projEdge, tgt, "🎯 " + str.tostring(tgt, format.mintick), color = color.new(bearColorInput, 100), textcolor = bearColorInput, style = label.style_label_left, size = size.small)
+                    dnTgtPrice := tgt
+                    dnTgtDir   := -1
+                    dnTgtHit   := false
+            else
+                dnBearFired := true                                               // GUARD 6
+
+        // React at resistance (upper = base)
+        if not dnBreakRes and high >= bNow - tol and close < bNow and open < bNow
+            dnReactRes := true
+        // React at support (lower = parallel)
+        if not dnBreakSup and low <= pNow + tol and close > pNow and open > pNow
+            dnReactSup := true
+
+    // ── Target-hit tracking (visual only) ──
+    if upTgtDir == 1 and not upTgtHit and not na(upTgtPrice) and high >= upTgtPrice
+        upTgtHit := true
+        if not na(upTgtLbl)
+            label.set_text(upTgtLbl, "🎯 " + str.tostring(upTgtPrice, format.mintick) + " ✓")
+    if upTgtDir == -1 and not upTgtHit and not na(upTgtPrice) and low <= upTgtPrice
+        upTgtHit := true
+        if not na(upTgtLbl)
+            label.set_text(upTgtLbl, "🎯 " + str.tostring(upTgtPrice, format.mintick) + " ✓")
+    if dnTgtDir == 1 and not dnTgtHit and not na(dnTgtPrice) and high >= dnTgtPrice
+        dnTgtHit := true
+        if not na(dnTgtLbl)
+            label.set_text(dnTgtLbl, "🎯 " + str.tostring(dnTgtPrice, format.mintick) + " ✓")
+    if dnTgtDir == -1 and not dnTgtHit and not na(dnTgtPrice) and low <= dnTgtPrice
+        dnTgtHit := true
+        if not na(dnTgtLbl)
+            label.set_text(dnTgtLbl, "🎯 " + str.tostring(dnTgtPrice, format.mintick) + " ✓")
+
+// ═══ Aggregated signals ═══
+// Only REVERSAL breakouts feed Buy/Sell (by design):
+//   Buy  = react at up-channel support  OR bullish reversal breakout of a down-channel.
+//   Sell = react at down-channel resistance OR bearish reversal breakout of an up-channel.
+// Continuation breakouts fire Breakout alerts only.
+bool bullSig = upReactSup or dnBreakRes
+bool bearSig = upBreakSup or dnReactRes
+
+bool hasBullBreakout = upBoDir == 1 or dnBoDir == 1
+bool hasBearBreakout = upBoDir == -1 or dnBoDir == -1
+bool hasBreakout = hasBullBreakout or hasBearBreakout
+
+bool anyReact = upReactSup or upReactRes or dnReactSup or dnReactRes
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ═════════════════════════

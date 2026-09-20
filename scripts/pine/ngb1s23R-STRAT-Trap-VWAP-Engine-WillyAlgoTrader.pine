@@ -1,0 +1,1254 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © WillyAlgoTrader
+//
+// ══════════════════════════════════════════════════════════
+// 1. VERSION & DECLARATION & CHANGELOG
+// ══════════════════════════════════════════════════════════
+// STRAT TRAP & VWAP ENGINE [WillyAlgoTrader]
+// ──────────────────────────────────────────────────────────
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.9.0
+// ══════════════════════════════════════════════════════════
+
+//@version=6
+indicator(
+     title            = "STRAT Trap & VWAP Engine [WillyAlgoTrader]",
+     shorttitle       = "STRAT Trap",
+     overlay          = true,
+     max_bars_back    = 5000,
+     max_lines_count  = 500,
+     max_labels_count = 500)
+
+// ══════════════════════════════════════════════════════════
+// 2. CONSTANTS
+// ══════════════════════════════════════════════════════════
+string VERSION  = "1.9.0"
+string JSON_IND = "STRAT"
+int    ST_IDLE    = 0
+int    ST_PENDING = 1
+
+int LINE_FORWARD_BARS = 20
+int LINE_UPDATE_BARS  = 5
+int LABEL_OFFSET_BARS = 1
+int BE_DIM_TRANSP     = 70
+int FORM_LEN          = 10
+int MAX_VWAP_SEGMENTS = 250
+int MS_DAY            = 86400000   // milliseconds in 24 hours
+int STATS_PRUNE_DAYS  = 31         // rolling buffer horizon for timestamped stats
+
+string GRP_APP = "🎨 Appearance"
+string GRP_PAT = "📐 Pattern Engine"
+string GRP_TRG = "🎯 Trigger Engine"
+string GRP_RSK = "🛡️ Risk Management"
+string GRP_FLT = "🔍 Filters"
+string GRP_PVT = "🌊 PVTE Regime Filter"
+string GRP_CND = "🕯️ Actionable Candles"
+string GRP_FTC = "📶 Timeframe Continuity"
+string GRP_LVL = "📏 Key Levels"
+string GRP_DSH = "📊 Dashboard"
+string GRP_ALR = "🔔 Alerts"
+
+// ══════════════════════════════════════════════════════════
+// 3. INPUTS
+// ══════════════════════════════════════════════════════════
+themeInput        = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_APP, tooltip = "Auto detects the chart background. Dark/Light force a palette.")
+showWatermarkInput = input.bool(true, "Watermark", group = GRP_APP, tooltip = "Brand watermark at the bottom center.")
+colorBarsInput    = input.bool(false, "Color Bars by Type", group = GRP_APP, tooltip = "1 = amber, 2U = green, 2D = red, 3 = magenta. The forming bar is classified live: a 1 can still become a 2 or 3 before close — final type is fixed on bar close.")
+showBarNumInput   = input.bool(true, "Show Bar Numbers", group = GRP_APP, tooltip = "Prints 1 / 2 / 3 below each bar in the type color.")
+signalSizeInput   = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_APP, tooltip = "Font size for LONG/SHORT entry labels and ▲/▼ trigger labels.")
+
+extInput          = input.bool(false, "Extended Patterns", group = GRP_PAT, tooltip = "Adds 2-2-2 Continuation, 2-2-2-2 (Randy Jackson) and the 1-bar 3 RevStrat (outside bar closing beyond the prior bar's range). Longer patterns always take priority over shorter ones on the same bar — e.g. with this ON, the third 2U in a row fires 2-2-2 Cont instead of 2-2 Cont.")
+showSetupLblInput = input.bool(false, "Setup Labels", group = GRP_PAT, tooltip = "Pattern name on the setup bar. Tooltip on the label shows trigger/stop/expiry.")
+maxDrawInput      = input.int(60, "Max Pattern Drawings", minval = 10, maxval = 200, group = GRP_PAT, tooltip = "FIFO cap on setup/trigger labels (and ×2 on trigger/stop lines). Oldest are removed first.")
+
+expiryInput       = input.int(3, "Setup Expiry (bars)", minval = 1, maxval = 20, group = GRP_TRG, tooltip = "Pending setup expires after this many bars without a trigger break.")
+showLinesInput    = input.bool(true, "Trigger / Stop Lines", group = GRP_TRG, tooltip = "Solid line = trigger side (entry on break of the setup bar's high/low), dotted = stop side. Lines extend while pending, freeze on resolution, dim on invalidation.")
+showTrigLblInput  = input.bool(false, "Trigger Labels", group = GRP_TRG, tooltip = "▲ / ▼ + pattern name on the bar that confirms the break. All events fire on bar CLOSE (no intrabar repaint).")
+
+enableTradesInput = input.bool(true, "Trade Engine", group = GRP_RSK, tooltip = "Open a managed trade on every TRIGGERED setup while flat. An opposite or same-direction trigger while a trade is running is ignored by the trade layer (it is still drawn and alerted as a STRAT signal). Closures: TP3, SL, BE stop-out.")
+entryModeInput    = input.string("Trap Bar", "Entry Mode", options = ["Trap Bar", "STRAT Trigger", "Both"], group = GRP_RSK, tooltip = "What opens trades:\n• Trap Bar (default): divergence candles — body color against the STRAT direction. A red 2U broke the prior high but closed red (liquidity sweep, buyers failed) → SHORT. A green 2D swept the low but closed green → LONG. Stop beyond the sweep extreme.\n• STRAT Trigger: confirmed break of the setup bar's high/low (v1.2 behavior).\n• Both: trap first — a trap bar on the trigger bar overrides the trigger's direction (the failed breakout IS the trade).\nSTRAT setups/triggers keep drawing and alerting in every mode.")
+atrLenRiskInput   = input.int(14, "ATR Length (Risk)", minval = 5, maxval = 50, group = GRP_RSK, tooltip = "ATR period for the SL buffer and the minimum stop distance.")
+riskPresetInput   = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RSK, tooltip = "Quick presets (SL part applies to the ATR anchor mode):\n• Conservative: SL 2.5×ATR, TP 1R/2R/4R\n• Balanced: SL 1.5×ATR, TP 1R/2R/3R\n• Aggressive: SL 1.0×ATR, TP 1.5R/2.5R/4R\n• Scalping: SL 0.8×ATR, TP 0.8R/1.5R/2R\n• Custom: manual multipliers below")
+slAnchorInput     = input.string("Trigger Level", "SL Anchor", options = ["Trigger Level", "Setup Bar", "Wick-Anchored", "ATR"], group = GRP_RSK, tooltip = "Where the stop is anchored (trigger entries; a trap stop is ALWAYS the sweep extreme):\n• Trigger Level (default): just beyond the broken setup high/low — price trading back through the broken level means the breakout failed. Tight; risk = the breakout bar's extension, floored at 0.5×ATR.\n• Setup Bar: the opposite side of the setup bar (the S-line). Structural and wide.\n• Wick-Anchored (§22 standard): beyond the ENTRY bar's own wick + buffer.\n• ATR: fixed distance close ± SL Multiplier × ATR (preset-driven).")
+slMultInput       = input.float(1.5, "SL Multiplier (×ATR)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RSK, tooltip = "Custom preset only, ATR anchor mode. Stop distance as a multiple of ATR.")
+slBufferInput     = input.float(0.25, "SL Buffer (×ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_RSK, tooltip = "Stop = the SL Anchor level plus this ATR buffer (Trigger Level / Setup Bar anchors and trap entries). A minimum distance of 0.5×ATR from entry is always enforced.")
+maxRiskAtrInput   = input.float(3.0, "Max Risk (×ATR)", minval = 0.0, maxval = 10.0, step = 0.5, group = GRP_RSK, tooltip = "Skip entries whose entry→SL distance exceeds this many ATR. 0 = off. A skipped trigger still fires its plain trig/stop alert — bots see the signal and decide on their side. Wide setup bars (outside bars, momentum breakouts) are the usual offenders.")
+tp1MultInput      = input.float(1.0, "TP1 (×Risk)", minval = 0.5, maxval = 5.0,  step = 0.1, group = GRP_RSK, tooltip = "Custom preset only. TP1 as a multiple of actual risk. 1.0 = 1:1 R:R.")
+tp2MultInput      = input.float(2.0, "TP2 (×Risk)", minval = 1.0, maxval = 10.0, step = 0.1, group = GRP_RSK, tooltip = "Custom preset only. TP2 as a multiple of actual risk.")
+tp3MultInput      = input.float(3.0, "TP3 (×Risk)", minval = 1.5, maxval = 15.0, step = 0.1, group = GRP_RSK, tooltip = "Custom preset only. TP3 as a multiple of actual risk. Reaching TP3 closes the trade.")
+
+useVolFilterInput = input.bool(false, "Volume Confirmation Filter", group = GRP_FLT, tooltip = "Require above-average volume on the entry bar (trap or trigger). Automatically bypassed on instruments without volume (some forex feeds). A filtered trigger still sends its plain trig/stop alert.")
+volFiltMultInput  = input.float(1.2, "Volume Threshold (×SMA20)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_FLT, tooltip = "Entry bar volume must exceed the 20-bar average times this factor.\n• 1.0 = any above-average volume\n• 1.5-2.0 = only strong participation")
+minFtcAlignInput  = input.int(0, "Min FTC Aligned", minval = 0, maxval = 8, group = GRP_FLT, tooltip = "Require at least this many VISIBLE higher timeframes green for longs / red for shorts at entry (the FTC strip). Clamped to the number of visible TFs (a monthly chart only sees Q). 0 = off. STRAT-native replacement for a single-EMA HTF bias.\nHONESTY NOTE: alignment is read from the FORMING higher-TF bars (FTC is a live-state concept). An entry allowed live can look filtered after a chart reload and vice versa — the only filter in this indicator with that property. PVTE and Volume filters are reload-stable.")
+
+usePvteInput      = input.bool(true, "PVTE Regime Filter", group = GRP_PVT, tooltip = "3-state regime engine from the Pivot VWAP Trend Engine: longs only in BULL regime, shorts only in BEAR. Regime is entered on an outer-band close cross and exits to NEUTRAL on a close cross of the OPPOSITE inner band (hysteresis). Applies to trap and trigger entries; a filtered trigger still sends its plain alert.")
+pvteKernelInput   = input.string("EMA", "Basis Kernel", options = ["EMA", "DEMA", "HMA", "KAMA"], group = GRP_PVT, tooltip = "Moving-average kernel for the regime baseline. EMA — classic; DEMA — reduced lag; HMA — fast & smooth; KAMA — adapts to efficiency ratio (slows in chop). All kernels are computed every bar; the switch only selects.")
+pvteBasisLenInput = input.int(21, "Basis Length", minval = 2, maxval = 500, group = GRP_PVT, tooltip = "Lookback period of the regime baseline kernel.")
+pvteAtrLenInput   = input.int(100, "ATR Length", minval = 1, maxval = 500, group = GRP_PVT, tooltip = "Volatility lookback used for band spacing.")
+pvteAtrMultInput  = input.float(3.0, "ATR Multiplier (Outer Band)", minval = 0.5, step = 0.1, group = GRP_PVT, tooltip = "Outer band = Basis ± ATR × Mult. Inner band = Basis ± ATR × (Mult − 1). With Mult ≤ 1 the inner band collapses onto the basis.")
+pvteNeutralInput  = input.string("Block", "In NEUTRAL Regime", options = ["Block", "Allow"], group = GRP_PVT, tooltip = "Block (default): no entries while the regime is NEUTRAL — the filter's whole point.\nAllow: NEUTRAL passes both directions; only an OPPOSITE regime blocks.")
+showPvteBandsInput = input.bool(true, "Show Regime Bands", group = GRP_PVT, tooltip = "Outer bands solid, inner bands faded, regime-colored.")
+showAvwapInput     = input.bool(true, "Show Anchored VWAP", group = GRP_PVT, tooltip = "PVTE anchored-VWAP trail (visual layer only — does NOT influence entries or filters). Anchored at the last confirmed structural pivot in the regime direction, backfilled on confirmation, re-anchored on every new in-regime pivot, reset on regime change. Honest lag: a pivot is only KNOWN Pivot Length bars after it forms — no repaint.")
+avwapPivotLenInput = input.int(13, "VWAP Pivot Length", minval = 1, maxval = 250, group = GRP_PVT, tooltip = "Bars required on each side to confirm the anchor pivot.")
+avwapSrcInput      = input.string("Close", "VWAP Source", options = ["HLC3", "HL2", "Close"], group = GRP_PVT, tooltip = "Price source for the anchored VWAP accumulation.")
+beInput           = input.bool(true, "Break-Even After TP1", group = GRP_RSK, tooltip = "Move the stop to entry once TP1 is touched. A BE moved this bar cannot stop out this bar. BE stop-outs after TP1 count as wins.")
+showSlTpInput     = input.bool(true, "Show SL/TP Lines", group = GRP_RSK, tooltip = "Entry/stop/target lines for the active trade. Lines persist after the trade closes as a record and are replaced on the next entry.")
+showEntryLblInput = input.bool(true, "LONG/SHORT Entry Labels", group = GRP_RSK, tooltip = "Label on the bar that opens a trade: 'LONG · <pattern>'. Replaces the plain ▲/▼ trigger label for that bar (one label per trigger). Tooltip shows Entry/SL/TP1-3/Risk.")
+showSlTpLabelsInput  = input.bool(true, "Show SL/TP Labels", group = GRP_RSK, tooltip = "Price labels next to the Entry/SL/TP lines.")
+showPctOnLabelsInput = input.bool(true, "Show % Distance on Labels", group = GRP_RSK, tooltip = "Append % distance from entry, e.g. 'SL 1.2300 (-0.36%)'.")
+labelFontSizeInput = input.string("Small", "SL/TP Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_RSK, tooltip = "Font size for the Entry/SL/TP price labels.")
+entryLineStyleInput = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RSK, tooltip = "Entry is a reference, not an action level — keep it subtle.")
+slLineStyleInput    = input.string("Solid", "SL Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RSK, tooltip = "Stop-loss is an action level — solid and prominent by default.")
+tpLineStyleInput    = input.string("Dashed", "TP Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RSK, tooltip = "Style for TP1/TP2/TP3. On hit, a TP line turns solid teal.")
+
+showCandleInput   = input.bool(true, "Hammer / Shooter Marks", group = GRP_CND, tooltip = "Triangle below = hammer, above = shooter. Shown on confirmed close only. Inside bars are already marked by the number 1.")
+wickPctInput      = input.float(0.75, "Min Wick Fraction", minval = 0.5, maxval = 0.95, step = 0.05, group = GRP_CND, tooltip = "Required wick as a fraction of the full bar range. 0.75 = the wick takes at least 75% of the range (body squeezed into the remaining 25%).")
+
+ftcInput          = input.bool(true, "FTC Strip", group = GRP_FTC, tooltip = "Top-center row of higher timeframes: green/red = current HTF bar direction, ·I / ·O = the HTF bar is inside/outside vs its previous bar. Uses the FORMING higher-TF bar by design — continuity is the live state, it can change until that HTF bar closes.")
+
+prevDayInput      = input.bool(true, "Prev Day High/Low", group = GRP_LVL, tooltip = "Previous completed day's high/low, anchored to the current day's first bar. Lookahead-safe (no repaint).")
+dayHiColInput     = input.color(#26A69A, "PDH", group = GRP_LVL, inline = "d")
+dayLoColInput     = input.color(#EF5350, "PDL", group = GRP_LVL, inline = "d")
+prevWeekInput     = input.bool(false, "Prev Week High/Low", group = GRP_LVL)
+weekHiColInput    = input.color(#FF9800, "PWH", group = GRP_LVL, inline = "w")
+weekLoColInput    = input.color(#AB47BC, "PWL", group = GRP_LVL, inline = "w")
+prevMonthInput    = input.bool(false, "Prev Month High/Low", group = GRP_LVL)
+monthHiColInput   = input.color(#2962FF, "PMH", group = GRP_LVL, inline = "m")
+monthLoColInput   = input.color(#8D6E63, "PML", group = GRP_LVL, inline = "m")
+
+showDashInput     = input.bool(true, "Show Dashboard", group = GRP_DSH, tooltip = "Show the sectioned status panel.")
+dashPosInput      = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DSH, tooltip = "Corner of the chart where the dashboard is anchored.")
+dashSizeInput     = input.string("Small", "Dashboard Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DSH, tooltip = "Font size for the dashboard data rows (§3.4: minimum Small — Tiny data is unreadable on laptops). Section dividers and the version footer render one step smaller.")
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DSH, tooltip = "Seq / Setup / Levels / Candle")
+showTradeSecInput  = input.bool(true, "  ├ Trade section", group = GRP_DSH, tooltip = "Entry / SL / TP1-3 / R:R / SL Dist %. Collapses to one row when flat. Hidden when the Trade Engine is off.")
+showStatsSecInput  = input.bool(true, "  └ Stats section", group = GRP_DSH, tooltip = "Trades / Wins / Losses / Win rate / Form. Hidden when the Trade Engine is off.")
+statsPeriodInput  = input.string("All-Time", "Win Rate Period", options = ["24 Hours", "30 Days", "All-Time"], group = GRP_DSH, tooltip = "Time window for the Stats section:\n• 24 Hours / 30 Days: trades closed within the window (relative to the latest bar)\n• All-Time: all trades on the loaded history\nForm strip always shows the last trades regardless of period.\nAll stats reset on chart reload.")
+
+enableAlertsInput = input.bool(true, "Enable alert() Events", group = GRP_ALR, tooltip = "Dynamic webhook messages via alert(). Create the TV alert with condition 'Any alert() function call'. The 6 fixed alertcondition entries in the dropdown work independently of this switch.")
+alertFmtInput     = input.string("JSON", "Alert Format", options = ["JSON", "Text"], group = GRP_ALR, tooltip = "JSON for bots/webhooks (raw floats), Text for humans (mintick-formatted).")
+entryAlertInput   = input.bool(true, "  ├ Entries", group = GRP_ALR, tooltip = "Trade-opening alerts: trigger_* with full risk payload and trap_long/trap_short. Master switch above must be on. The fixed alertcondition entries in the TV dialog are not affected by these category toggles.")
+tpBeAlertInput    = input.bool(true, "  ├ TP / Break-Even", group = GRP_ALR, tooltip = "be, tp1_hit, tp2_hit, tp3_close.")
+slAlertInput      = input.bool(true, "  ├ SL / BE Stop-Out", group = GRP_ALR, tooltip = "sl_hit (includes be_stop and win/loss result).")
+trigAlertInput    = input.bool(true, "  ├ Filtered Triggers", group = GRP_ALR, tooltip = "Plain trig/stop alert for triggers that did NOT open a trade (engine busy, filters, risk cap, Trap mode). Turn off to hear only actual trades.")
+setupAlertInput   = input.bool(true, "  └ Setups", group = GRP_ALR, tooltip = "setup_bull/setup_bear on every armed pattern. NOTE: Cont patterns re-arm on every trend bar — this is the densest alert stream; turn off if your bot only acts on entries.")
+
+// ── Input validation (§20) ──
+if riskPresetInput == "Custom" and (tp1MultInput >= tp2MultInput or tp2MultInput >= tp3MultInput)
+    runtime.error("Invalid TP multipliers: required TP1 < TP2 < TP3")
+if slMultInput <= 0
+    runtime.error("SL Multiplier must be greater than 0")
+
+// ══════════════════════════════════════════════════════════
+// 4. THEME DETECTION & COLORS
+// ══════════════════════════════════════════════════════════
+float bgLum  = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)
+bool  isDark = themeInput == "Dark" or (themeInput == "Auto" and bgLum < 128.0)
+
+// Adaptive signal colors: acid #00E676/#FF5252 are unreadable as lines/text
+// on white — light theme uses the RMZ-proven darker shades. Label BGs keep
+// contrast via the paired textcolor (dark-on-bright / white-on-dark).
+color BULL      = isDark ? #00E676 : #00A152
+color BEAR      = isDark ? #FF5252 : #D32F2F
+color C_INSIDE  = isDark ? #FFD54F : #C77800
+color C_OUTSIDE = isDark ? #E040FB : #8E24AA
+color C_TEXT    = isDark ? #ECEFF1 : #263238
+color C_MUTED   = color.new(C_TEXT, 45)
+color HEADER_BG = isDark ? #1E222D : #E8EAED
+color PANEL_BG  = isDark ? color.new(#131722, 20) : color.new(#FFFFFF, 20)
+
+// ── Risk palette (RTS canon, theme-aware) ──
+color SL_COLOR       = isDark ? color.new(#E57373, 0)  : color.new(#B71C1C, 0)
+color TP1_COLOR      = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+color TP2_COLOR      = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+color TP3_COLOR      = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+color ENTRY_COLOR    = isDark ? color.new(#5C8AAE, 0)  : color.new(#34495E, 0)
+color TP_LABEL_COLOR = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+color TP_HIT_COLOR   = isDark ? color.new(#4DB6AC, 0)  : color.new(#00695C, 0)
+color BE_COLOR       = isDark ? color.new(#FFA726, 0)  : color.new(#E65100, 0)
+color LABEL_TEXT     = isDark ? #1A1A1A                : #FFFFFF
+color TABLE_ROW_ALT  = isDark ? color.new(#1C2030, 0)  : color.new(#F0F4F8, 0)
+color HEADER_TEXT    = #FFFFFF
+color HEADER_BG_BULL = color.new(#0F6E56, 0)
+color HEADER_BG_BEAR = color.new(#A32D2D, 0)
+
+// ══════════════════════════════════════════════════════════
+// 5. FUNCTIONS
+// ══════════════════════════════════════════════════════════
+// newest-first access into the confirmed-bar classification sequence
+seqGet(array<int> s, int back) =>
+    s.get(s.size() - 1 - back)
+
+clsName(int c) =>
+    c == 1 ? "1" : c == 3 ? "3" : c == 2 ? "2U" : c == -2 ? "2D" : "·"
+
+clsColor(int c) =>
+    c == 1 ? C_INSIDE : c == 3 ? C_OUTSIDE : c == 2 ? BULL : c == -2 ? BEAR : na
+
+// register one pattern row: [group(0 core/1 ext), dir, len, t0..t3] newest-first
+addPat(matrix<int> m, array<string> nm, int grp, int dir, string name, int plen, int t0, int t1, int t2, int t3) =>
+    m.add_row(m.rows(), array.from(grp, dir, plen, t0, t1, t2, t3))
+    nm.push(name)
+
+// compact FTC token string for webhooks, e.g. "1H+4H+D-W+M+Q+"
+buildFtc(array<bool> v, array<bool> g, array<string> lbl) =>
+    string s = ""
+    for i = 0 to 7
+        if v.get(i)
+            s += lbl.get(i) + (g.get(i) ? "+" : "-")
+    s
+
+// dynamic webhook message (JSON raw floats / Text mintick)
+fireAlert(string action, string pat, float trig, float stp, string ftc) =>
+    if enableAlertsInput
+        string msg = ""
+        if alertFmtInput == "JSON"
+            msg := '{"ind":"' + JSON_IND + '","v":"' + VERSION + '","sym":"' + syminfo.ticker +
+                 '","tf":"' + timeframe.period + '","action":"' + action + '","pattern":"' + pat +
+                 '","price":' + str.tostring(close) + ',"trig":' + str.tostring(trig) +
+                 ',"stop":' + str.tostring(stp) + ',"ftc":"' + ftc + '"}'
+        else
+            msg := "STRAT " + str.upper(action) + " " + pat + " " + syminfo.ticker + " " + timeframe.period +
+                 " @ " + str.tostring(close, format.mintick) +
+                 " | trig " + str.tostring(trig, format.mintick) +
+                 " stop " + str.tostring(stp, format.mintick) + " | FTC " + ftc
+        alert(msg, alert.freq_once_per_bar)
+
+// trade-event webhook: caller supplies the payload fields
+fireTradeAlert(string action, string jsonFields, string textFields, string ftc) =>
+    if enableAlertsInput
+        string msg = ""
+        if alertFmtInput == "JSON"
+            msg := '{"ind":"' + JSON_IND + '","v":"' + VERSION + '","sym":"' + syminfo.ticker +
+                 '","tf":"' + timeframe.period + '","action":"' + action + '"' + jsonFields +
+                 ',"ftc":"' + ftc + '"}'
+        else
+            msg := "STRAT " + str.upper(action) + " " + syminfo.ticker + " " + timeframe.period +
+                 textFields + " | FTC " + ftc
+        alert(msg, alert.freq_once_per_bar)
+
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+safeDiv(float num, float den, float fallback) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// Kaufman Adaptive MA — single unconditional call site
+kamaCalc(float src, int len) =>
+    float fastSC = 2.0 / 3.0    // 2 / (2 + 1)
+    float slowSC = 2.0 / 31.0   // 2 / (30 + 1)
+    float mom    = math.abs(ta.change(src, len))
+    float noise  = math.sum(math.abs(ta.change(src)), len)
+    float er     = safeDiv(mom, noise, 0.0)
+    float sc     = math.pow(er * (fastSC - slowSC) + slowSC, 2.0)
+    var float k  = na
+    k := na(k[1]) ? src : k[1] + nz(sc) * (src - k[1])
+    k
+
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small : s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+// wins/losses within a time window (cutoff = earliest close time in ms)
+periodStats(array<int> tms, array<bool> wns, int cutoff) =>
+    int w = 0
+    int l = 0
+    int n = array.size(tms)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(tms, i) >= cutoff
+                if array.get(wns, i)
+                    w += 1
+                else
+                    l += 1
+    [w, l]
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct   = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+levelLine(bool show, float px, int startBar, string tag, color col) =>
+    var line  ln = na
+    var label lb = na
+    if show and not na(px) and barstate.islast
+        if na(ln)
+            ln := line.new(startBar, px, bar_index, px, extend = extend.right, style = line.style_dashed, color = col, width = 1)
+            lb := label.new(bar_index, px, "", style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.small)
+        line.set_xy1(ln, startBar, px)
+        line.set_xy2(ln, bar_index, px)
+        label.set_xy(lb, bar_index, px)
+        label.set_text(lb, tag + " " + str.tostring(px, format.mintick))
+    if not show and not na(ln)
+        line.delete(ln)
+        label.delete(lb)
+        ln := na
+        lb := na
+
+// ══════════════════════════════════════════════════════════
+// 6. CALCULATIONS
+// ══════════════════════════════════════════════════════════
+// ── bar classification (live on the forming bar; sequence stores closes only)
+bool insideNow  = bar_index > 0 and high <= high[1] and low >= low[1]
+bool outsideNow = bar_index > 0 and high >  high[1] and low <  low[1]
+int  clsNow     = bar_index == 0 ? 0 : insideNow ? 1 : outsideNow ? 3 : high > high[1] ? 2 : -2
+
+// ── actionable candles (no divisions: wick compared against range * fraction)
+float rng    = high - low
+float upWick = high - math.max(open, close)
+float dnWick = math.min(open, close) - low
+bool hammerNow  = rng > 0 and dnWick >= rng * wickPctInput and clsNow != 1
+bool shooterNow = rng > 0 and upWick >= rng * wickPctInput and clsNow != 1
+
+// ── risk engine primitives (unconditional) ──
+float riskAtr = nz(ta.atr(atrLenRiskInput), 0.0)
+bool  hasVolume = nz(volume, 0) > 0
+float volSma    = nz(ta.sma(volume, 20), 0.0)
+entryLineStyle = lineStyleFromString(entryLineStyleInput)
+slLineStyle    = lineStyleFromString(slLineStyleInput)
+tpLineStyle    = lineStyleFromString(tpLineStyleInput)
+slTpLabelSize  = sizeFromString(labelFontSizeInput)
+signalSize     = sizeFromString(signalSizeInput)
+dashFontSize    = sizeFromString(dashSizeInput)
+dashFontSizeSub = sizeDownFromString(dashSizeInput)
+dashPos = dashPosInput == "Top Left" ? position.top_left : dashPosInput == "Bottom Left" ? position.bottom_left : dashPosInput == "Bottom Right" ? position.bottom_right : position.top_right
+
+// ── risk presets ──
+[effSlMult, effTp1m, effTp2m, effTp3m] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.0]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.0]
+    "Custom"       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    => [1.5, 1.0, 2.0, 3.0]
+
+// ── higher-timeframe data (unconditional; forming HTF bar by design — FTC is live state)
+htf(string tf) =>
+    request.security(syminfo.tickerid, tf, [open, close, high, low, high[1], low[1]])
+
+[o15, c15, h15, l15, h15p, l15p]  = htf("15")
+[o30, c30, h30, l30, h30p, l30p]  = htf("30")
+[o60, c60, h60, l60, h60p, l60p]  = htf("60")
+[o4h, c4h, h4h, l4h, h4hp, l4hp]  = htf("240")
+[oD,  cD,  hD,  lD,  hDp,  lDp ]  = htf("D")
+[oW,  cW,  hW,  lW,  hWp,  lWp ]  = htf("W")
+[oM,  cM,  hM,  lM,  hMp,  lMp ]  = htf("M")
+[oQ,  cQ,  hQ,  lQ,  hQp,  lQp ]  = htf("3M")
+
+int chartSec = timeframe.in_seconds(timeframe.period)
+
+// visible = strictly higher than the chart TF and data available
+array<bool> fV = array.from(
+     chartSec < timeframe.in_seconds("15")  and not na(o15),
+     chartSec < timeframe.in_seconds("30")  and not na(o30),
+     chartSec < timeframe.in_seconds("60")  and not na(o60),
+     chartSec < timeframe.in_seconds("240") and not na(o4h),
+     chartSec < timeframe.in_seconds("D")   and not na(oD),
+     chartSec < timeframe.in_seconds("W")   and not na(oW),
+     chartSec < timeframe.in_seconds("M")   and not na(oM),
+     chartSec < timeframe.in_seconds("3M")  and not na(oQ))
+array<bool> fG = array.from(
+     nz(o15) <= nz(c15), nz(o30) <= nz(c30), nz(o60) <= nz(c60), nz(o4h) <= nz(c4h),
+     nz(oD) <= nz(cD), nz(oW) <= nz(cW), nz(oM) <= nz(cM), nz(oQ) <= nz(cQ))
+array<bool> fI = array.from(
+     nz(h15) <= nz(h15p) and nz(l15) >= nz(l15p), nz(h30) <= nz(h30p) and nz(l30) >= nz(l30p),
+     nz(h60) <= nz(h60p) and nz(l60) >= nz(l60p), nz(h4h) <= nz(h4hp) and nz(l4h) >= nz(l4hp),
+     nz(hD) <= nz(hDp) and nz(lD) >= nz(lDp), nz(hW) <= nz(hWp) and nz(lW) >= nz(lWp),
+     nz(hM) <= nz(hMp) and nz(lM) >= nz(lMp), nz(hQ) <= nz(hQp) and nz(lQ) >= nz(lQp))
+array<bool> fO = array.from(
+     nz(h15) > nz(h15p) and nz(l15) < nz(l15p), nz(h30) > nz(h30p) and nz(l30) < nz(l30p),
+     nz(h60) > nz(h60p) and nz(l60) < nz(l60p), nz(h4h) > nz(h4hp) and nz(l4h) < nz(l4hp),
+     nz(hD) > nz(hDp) and nz(lD) < nz(lDp), nz(hW) > nz(hWp) and nz(lW) < nz(lWp),
+     nz(hM) > nz(hMp) and nz(lM) < nz(lMp), nz(hQ) > nz(hQp) and nz(lQ) < nz(lQp))
+var array<string> FTC_LBL = array.from("15", "30", "1H", "4H", "D", "W", "M", "Q")
+
+// ── previous-period levels: lookahead-safe [1] values + correct period anchors
+[pdH, pdL] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pwH, pwL] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[pmH, pmL] = request.security(syminfo.tickerid, "M", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+bool newD = nz(ta.change(time("D"))) != 0
+bool newW = nz(ta.change(time("W"))) != 0
+bool newM = nz(ta.change(time("M"))) != 0
+var int dStart = 0
+var int wStart = 0
+var int mStart = 0
+if newD
+    dStart := bar_index
+if newW
+    wStart := bar_index
+if newM
+    mStart := bar_index
+// ── PVTE regime engine (all kernels unconditional; switch only selects) ──
+float pvtEmaV  = ta.ema(close, pvteBasisLenInput)
+float pvtEma2V = ta.ema(pvtEmaV, pvteBasisLenInput)
+float pvtDemaV = 2.0 * pvtEmaV - pvtEma2V
+float pvtHmaV  = ta.hma(close, pvteBasisLenInput)
+float pvtKamaV = kamaCalc(close, pvteBasisLenInput)
+float pvtBasis = switch pvteKernelInput
+    "EMA"  => pvtEmaV
+    "DEMA" => pvtDemaV
+    "HMA"  => pvtHmaV
+    =>        pvtKamaV
+
+float pvtAtr     = ta.atr(pvteAtrLenInput)
+float pvtInnerK  = math.max(pvteAtrMultInput - 1.0, 0.0)
+float pvtOuterUp = pvtBasis + pvtAtr * pvteAtrMultInput
+float pvtOuterDn = pvtBasis - pvtAtr * pvteAtrMultInput
+float pvtInnerUp = pvtBasis + pvtAtr * pvtInnerK
+float pvtInnerDn = pvtBasis - pvtAtr * pvtInnerK
+
+bool pvtCrUpOuter = ta.crossover(close, pvtOuterUp)
+bool pvtCrDnOuter = ta.crossunder(close, pvtOuterDn)
+bool pvtCrDnInner = ta.crossunder(close, pvtInnerDn)
+bool pvtCrUpInner = ta.crossover(close, pvtInnerUp)
+
+// ── anchored VWAP primitives (unconditional) ──
+float avwapPlV = ta.pivotlow(low, avwapPivotLenInput, avwapPivotLenInput)
+float avwapPhV = ta.pivothigh(high, avwapPivotLenInput, avwapPivotLenInput)
+float vSrc = avwapSrcInput == "HLC3" ? hlc3 : avwapSrcInput == "HL2" ? hl2 : close
+
+// ══════════════════════════════════════════════════════════
+// 7. SIGNAL LOGIC — STRAT FSM & PVTE REGIME
+// ══════════════════════════════════════════════════════════
+// ── pattern table (built once; scan order = priority, longest first)
+var array<int>    seq      = array.new<int>()
+var matrix<int>   patM     = matrix.new<int>()
+var array<string> patNames = array.new<string>()
+if barstate.isfirst
+    // Extended, len 4
+    addPat(patM, patNames, 1,  1, "2-2-2-2 RJ",     4,  2, -2,  2,  2)
+    addPat(patM, patNames, 1, -1, "2-2-2-2 RJ",     4, -2,  2, -2, -2)
+    // Extended, len 3
+    addPat(patM, patNames, 1,  1, "2-2-2 Cont",     3,  2,  2,  2,  0)
+    addPat(patM, patNames, 1, -1, "2-2-2 Cont",     3, -2, -2, -2,  0)
+    // Core, len 3
+    addPat(patM, patNames, 0,  1, "3-2-2 Rev",      3,  2, -2,  3,  0)
+    addPat(patM, patNames, 0, -1, "3-2-2 Rev",      3, -2,  2,  3,  0)
+    addPat(patM, patNames, 0,  1, "3-1-2",          3,  2,  1,  3,  0)
+    addPat(patM, patNames, 0, -1, "3-1-2",          3, -2,  1,  3,  0)
+    addPat(patM, patNames, 0,  1, "2-1-2 Rev",      3,  2,  1, -2,  0)
+    addPat(patM, patNames, 0, -1, "2-1-2 Rev",      3, -2,  1,  2,  0)
+    addPat(patM, patNames, 0,  1, "2-1-2 Cont",     3,  2,  1,  2,  0)
+    addPat(patM, patNames, 0, -1, "2-1-2 Cont",     3, -2,  1, -2,  0)
+    addPat(patM, patNames, 0,  1, "1-2-2 RevStrat", 3,  2, -2,  1,  0)
+    addPat(patM, patNames, 0, -1, "1-2-2 RevStrat", 3, -2,  2,  1,  0)
+    // Core, len 2
+    addPat(patM, patNames, 0,  1, "3-2",            2,  2,  3,  0,  0)
+    addPat(patM, patNames, 0, -1, "3-2",            2, -2,  3,  0,  0)
+    addPat(patM, patNames, 0,  1, "2-2 Rev",        2,  2, -2,  0,  0)
+    addPat(patM, patNames, 0, -1, "2-2 Rev",        2, -2,  2,  0,  0)
+    addPat(patM, patNames, 0,  1, "2-2 Cont",       2,  2,  2,  0,  0)
+    addPat(patM, patNames, 0, -1, "2-2 Cont",       2, -2, -2,  0,  0)
+
+// ── FSM state
+var int    fsmState    = ST_IDLE
+var float  pendHi      = na
+var float  pendLo      = na
+var int    setupDir    = 0
+var string pendName    = ""
+var int    barsPending = 0
+var line   hiLn        = na
+var line   loLn        = na
+var array<line>  lnFifo  = array.new<line>()
+var array<label> lblFifo = array.new<label>()
+
+bool setupBullSig = false
+bool setupBearSig = false
+bool trigBullSig  = false
+bool trigBearSig  = false
+// captured trigger context (pendName/levels may be overwritten by a same-bar re-arm)
+string trigPat = ""
+float  trigLvl = na
+float  trigStp = na
+
+if barstate.isconfirmed and bar_index > 0
+    seq.push(clsNow)
+    if seq.size() > 10
+        seq.shift()
+
+    // ── 1) resolve pending setup (before detecting a new one)
+    if fsmState == ST_PENDING
+        barsPending += 1
+        bool brokeTrig  = setupDir > 0 ? high  > pendHi : low   < pendLo
+        bool failedStop = setupDir > 0 ? close < pendLo : close > pendHi
+        if failedStop
+            // conservative: an adverse CLOSE invalidates even if the same
+            // (outside) bar also wicked through the trigger
+            fsmState := ST_IDLE
+            if not na(hiLn)
+                line.set_x2(hiLn, bar_index)
+                line.set_x2(loLn, bar_index)
+                line.set_color(hiLn, C_MUTED)
+                line.set_color(loLn, C_MUTED)
+        else if brokeTrig
+            if setupDir > 0
+                trigBullSig := true
+            else
+                trigBearSig := true
+            if not na(hiLn)
+                line.set_x2(hiLn, bar_index)
+                line.set_x2(loLn, bar_index)
+            trigPat := pendName
+            trigLvl := setupDir > 0 ? pendHi : pendLo
+            trigStp := setupDir > 0 ? pendLo : pendHi
+            // trigger/entry label is drawn AFTER the trade engine (one
+            // label per trigger bar: LONG/SHORT when a trade opens,
+            // plain ▲/▼ otherwise)
+            fsmState := ST_IDLE
+        else if barsPending >= expiryInput
+            fsmState := ST_IDLE
+            if not na(hiLn)
+                line.set_x2(hiLn, bar_index)
+                line.set_x2(loLn, bar_index)
+                line.set_color(hiLn, C_MUTED)
+                line.set_color(loLn, C_MUTED)
+
+    // ── 2) detect a new setup on this close
+    int mIdx = -1
+    for r = 0 to patM.rows() - 1
+        if patM.get(r, 0) == 1 and not extInput
+            continue
+        int plen = patM.get(r, 2)
+        if seq.size() < plen
+            continue
+        bool ok = true
+        for k = 0 to plen - 1
+            if seqGet(seq, k) != patM.get(r, 3 + k)
+                ok := false
+                break
+        if ok
+            mIdx := r
+            break
+
+    string mName = mIdx >= 0 ? patNames.get(mIdx) : ""
+    int    mDir  = mIdx >= 0 ? patM.get(mIdx, 1) : 0
+    // 1-bar 3 RevStrat (Extended): outside bar closing beyond the prior range
+    // (original had close>low[1] on the bull side — fixed to close>high[1])
+    if mIdx == -1 and extInput and clsNow == 3
+        if close > high[1]
+            mName := "3 RevStrat"
+            mDir  := 1
+        else if close < low[1]
+            mName := "3 RevStrat"
+            mDir  := -1
+
+    // ── 3) arm (a new setup while pending re-arms: latest setup wins)
+    if mDir != 0
+        // M2: still pending here = superseded setup — freeze & dim its lines
+        if fsmState == ST_PENDING and not na(hiLn)
+            line.set_x2(hiLn, bar_index)
+            line.set_x2(loLn, bar_index)
+            line.set_color(hiLn, C_MUTED)
+            line.set_color(loLn, C_MUTED)
+        fsmState    := ST_PENDING
+        pendHi      := high
+        pendLo      := low
+        setupDir    := mDir
+        pendName    := mName
+        barsPending := 0
+        if mDir > 0
+            setupBullSig := true
+        else
+            setupBearSig := true
+        // setup alert moved to the ALERTS section (block 5) — §25 chronology
+        if showSetupLblInput
+            label sl = label.new(bar_index, mDir > 0 ? low : high, mName,
+                 style = mDir > 0 ? label.style_label_up : label.style_label_down,
+                 color = color.new(mDir > 0 ? BULL : BEAR, 80), textcolor = C_TEXT, size = signalSize,
+                 tooltip = "Trigger: " + str.tostring(mDir > 0 ? high : low, format.mintick) +
+                     "\nStop: "   + str.tostring(mDir > 0 ? low : high, format.mintick) +
+                     "\nExpiry: " + str.tostring(expiryInput) + " bars")
+            lblFifo.push(sl)
+        if showLinesInput
+            hiLn := line.new(bar_index, high, bar_index, high,
+                 color = mDir > 0 ? BULL : C_MUTED, width = mDir > 0 ? 2 : 1,
+                 style = mDir > 0 ? line.style_solid : line.style_dotted)
+            loLn := line.new(bar_index, low, bar_index, low,
+                 color = mDir < 0 ? BEAR : C_MUTED, width = mDir < 0 ? 2 : 1,
+                 style = mDir < 0 ? line.style_solid : line.style_dotted)
+            lnFifo.push(hiLn)
+            lnFifo.push(loLn)
+
+    // ── 4) FIFO caps
+    while lblFifo.size() > maxDrawInput
+        label.delete(lblFifo.shift())
+    while lnFifo.size() > maxDrawInput * 2
+        line.delete(lnFifo.shift())
+
+// extend live trigger/stop lines while pending
+if fsmState == ST_PENDING and not na(hiLn)
+    line.set_x2(hiLn, bar_index)
+    line.set_x2(loLn, bar_index)
+var int pvteRegime = 0
+if barstate.isconfirmed
+    // exits first, entries second — a band-to-band flip resolves same bar
+    if pvteRegime == 1 and pvtCrDnInner
+        pvteRegime := 0
+    if pvteRegime == -1 and pvtCrUpInner
+        pvteRegime := 0
+    if pvtCrUpOuter
+        pvteRegime := 1
+    if pvtCrDnOuter
+        pvteRegime := -1
+
+// ── anchored VWAP trail (PVTE port; visual layer — no signals, no delta) ──
+var bool  avwapActive = false
+var int   avwapDir    = 0
+var float avwapPV     = 0.0
+var float avwapV      = 0.0
+var float aVwap       = na
+var array<line> avwapLines = array.new<line>()
+
+if barstate.isconfirmed and showAvwapInput
+    bool avwapWarm = bar_index >= avwapPivotLenInput * 2 + 2
+    // regime change → hard reset of the anchor state
+    if pvteRegime != nz(pvteRegime[1])
+        while avwapLines.size() > 0
+            line.delete(avwapLines.pop())
+        avwapActive := false
+        avwapDir    := 0
+        aVwap       := na
+    // new confirmed in-regime pivot → (re)anchor with one-shot backfill
+    bool anchorBearNow = pvteRegime == -1 and not na(avwapPlV) and nz(pvteRegime[avwapPivotLenInput], 9) == -1 and avwapWarm
+    bool anchorBullNow = pvteRegime ==  1 and not na(avwapPhV) and nz(pvteRegime[avwapPivotLenInput], 9) ==  1 and avwapWarm
+    bool createdNow    = false
+    if anchorBearNow or anchorBullNow
+        while avwapLines.size() > 0
+            line.delete(avwapLines.pop())
+        avwapDir := anchorBearNow ? -1 : 1
+        avwapPV  := 0.0
+        avwapV   := 0.0
+        float prevY = na
+        for i = 0 to avwapPivotLenInput
+            int j = avwapPivotLenInput - i   // oldest → newest
+            avwapPV += vSrc[j] * nz(volume[j])
+            avwapV  += nz(volume[j])
+            float y = avwapV > 0.0 ? avwapPV / avwapV : vSrc[j]
+            if not na(prevY)
+                avwapLines.push(line.new(bar_index - j - 1, prevY, bar_index - j, y,
+                     color = avwapDir == 1 ? BULL : BEAR, style = line.style_dotted, width = 2))
+            prevY := y
+        aVwap        := prevY
+        avwapActive  := true
+        createdNow   := true
+    // O(1) incremental accumulation on every subsequent confirmed bar
+    if avwapActive and not createdNow
+        avwapPV += vSrc * nz(volume)
+        avwapV  += nz(volume)
+        float newVwap = avwapV > 0.0 ? avwapPV / avwapV : vSrc
+        if not na(aVwap)
+            avwapLines.push(line.new(bar_index - 1, aVwap, bar_index, newVwap,
+                 color = avwapDir == 1 ? BULL : BEAR, style = line.style_dotted, width = 2))
+            if avwapLines.size() > MAX_VWAP_SEGMENTS
+                line.delete(avwapLines.shift())
+        aVwap := newVwap
+
+// ══════════════════════════════════════════════════════════
+// 8. RISK MANAGEMENT — TRADE ENGINE
+// ══════════════════════════════════════════════════════════
+// Entries: STRAT triggers only. Management/closure: RTS canon §17-§19.
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var float activeTP3   = na
+var int   activeDir   = 0
+var int   entryBarIdx = na
+var bool  tp1Reached  = false
+var bool  tp2Reached  = false
+var bool  tp3Reached  = false
+var bool  beActive    = false
+
+// session statistics (reset on chart reload — disclosed in dashboard)
+var int    winCount  = 0
+var int    lossCount = 0
+var string formStr   = ""
+var array<int>  tradeTimes = array.new<int>()
+var array<bool> tradeWins  = array.new<bool>()
+
+// bar-start captures: a BE moved THIS bar cannot stop out this bar
+bool  beActiveAtBarStart = beActive
+float effectiveSL        = activeSL
+
+// hit detection: entry-bar guard + confirmed only
+bool canCheckHit = enableTradesInput and activeDir != 0 and not na(entryBarIdx) and bar_index > entryBarIdx and barstate.isconfirmed
+
+bool slHitRaw  = canCheckHit and (activeDir == 1 ? low  <= effectiveSL : high >= effectiveSL)
+bool tp1HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP1   : low  <= activeTP1)
+bool tp2HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP2   : low  <= activeTP2)
+bool tp3HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP3   : low  <= activeTP3)
+
+// TP-priority (§18): TP touches register regardless of SL in the same bar
+bool tp1FirstTouch = tp1HitRaw and not tp1Reached
+bool tp2FirstTouch = tp2HitRaw and not tp2Reached
+bool tp3FirstTouch = tp3HitRaw and not tp3Reached
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+if tp3FirstTouch
+    tp3Reached := true
+
+// break-even after TP1 (§19)
+bool beJustActivated = false
+if beInput and tp1FirstTouch and not beActive and activeDir != 0
+    activeSL        := activeEntry
+    beActive        := true
+    beJustActivated := true
+
+// snapshots BEFORE reset (§17.5)
+var float hitSL    = na
+var float hitEntry = na
+if slHitRaw
+    hitSL    := effectiveSL
+    hitEntry := activeEntry
+
+float exitEntry         = activeEntry
+int   exitDir           = activeDir
+float exitTP1           = activeTP1
+float exitTP2           = activeTP2
+float exitTP3           = activeTP3
+bool  exitBeActive      = beActiveAtBarStart
+bool  displayTp1Reached = tp1Reached
+bool  displayTp2Reached = tp2Reached
+bool  displayTp3Reached = tp3Reached
+
+// closure: SL blocked by a first TP1/TP3 touch of this bar (TP-priority)
+bool closeBySl  = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
+bool evSlHit    = closeBySl
+bool evTp3Close = false
+bool tradeWin   = false
+if (tp3HitRaw or closeBySl) and activeDir != 0
+    evTp3Close := tp3HitRaw
+    tradeWin   := tp1Reached
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STATS_PRUNE_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+
+// entries (flat here — initially or freed by a same-bar closure)
+// Trap bars: body color against the STRAT direction = failed break/sweep
+bool trapShortBar = clsNow == 2  and close < open   // broke the high, closed red
+bool trapLongBar  = clsNow == -2 and close > open   // swept the low, closed green
+
+bool evLongEntry   = false
+bool evShortEntry  = false
+bool openedByTrig  = false
+string entryPat    = ""
+bool allowTrig = entryModeInput != "Trap Bar"
+bool allowTrap = entryModeInput != "STRAT Trigger"
+
+if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
+    int   tDir       = 0
+    float slAnchorPx = na
+    bool  viaTrap    = false
+    // trap first: in "Both" the divergence read overrides the trigger
+    if allowTrap and (trapLongBar or trapShortBar)
+        tDir       := trapLongBar ? 1 : -1
+        entryPat   := trapLongBar ? "Trap 2D" : "Trap 2U"
+        slAnchorPx := trapLongBar ? low : high   // the sweep extreme
+        viaTrap    := true
+    else if allowTrig and (trigBullSig or trigBearSig)
+        tDir         := trigBullSig ? 1 : -1
+        entryPat     := trigPat
+        slAnchorPx   := slAnchorInput == "Setup Bar" ? trigStp :
+             slAnchorInput == "Wick-Anchored" ? (trigBullSig ? low : high) : trigLvl
+        openedByTrig := true
+    // ── entry filters (both sources) ──
+    if tDir != 0
+        bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volFiltMultInput)
+        int ftcAligned = 0
+        int ftcVisible = 0
+        for i = 0 to 7
+            if fV.get(i)
+                ftcVisible += 1
+                if (tDir == 1) == fG.get(i)
+                    ftcAligned += 1
+        bool ftcOk = minFtcAlignInput == 0 or ftcAligned >= math.min(minFtcAlignInput, ftcVisible)
+        bool pvteOk = not usePvteInput or (tDir == 1 ? pvteRegime == 1 : pvteRegime == -1) or
+             (pvteRegime == 0 and pvteNeutralInput == "Allow")
+        if not (volOk and ftcOk and pvteOk)
+            tDir := 0
+    if tDir != 0
+        float slPx = na
+        if not viaTrap and slAnchorInput == "ATR"
+            slPx := tDir == 1 ? close - riskAtr * effSlMult : close + riskAtr * effSlMult
+        else
+            slPx := tDir == 1 ?
+                 math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) :
+                 math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
+        float riskPx = tDir == 1 ? close - slPx : slPx - close
+        bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
+        if riskOk
+            activeEntry := close
+            activeSL    := slPx
+            activeTP1   := tDir == 1 ? close + riskPx * effTp1m : close - riskPx * effTp1m
+            activeTP2   := tDir == 1 ? close + riskPx * effTp2m : close - riskPx * effTp2m
+            activeTP3   := tDir == 1 ? close + riskPx * effTp3m : close - riskPx * effTp3m
+            activeDir   := tDir
+            entryBarIdx := bar_index
+            tp1Reached  := false
+            tp2Reached  := false
+            tp3Reached  := false
+            beActive    := false
+            evLongEntry  := tDir == 1
+            evShortEntry := tDir == -1
+        else
+            openedByTrig := false
+    else
+        openedByTrig := false
+
+// ══════════════════════════════════════════════════════════
+// 9. PLOTS & VISUALS
+// ══════════════════════════════════════════════════════════
+barcolor(colorBarsInput ? clsColor(clsNow) : na)
+
+plotchar(showBarNumInput and clsNow == 1,  "Inside (1)",   "1", location.belowbar, C_INSIDE,  size = size.tiny)
+plotchar(showBarNumInput and clsNow == 2,  "Two Up (2U)",  "2", location.belowbar, BULL,      size = size.tiny)
+plotchar(showBarNumInput and clsNow == -2, "Two Down (2D)","2", location.belowbar, BEAR,      size = size.tiny)
+plotchar(showBarNumInput and clsNow == 3,  "Outside (3)",  "3", location.belowbar, C_OUTSIDE, size = size.tiny)
+
+// ── PVTE regime bands (optional) ──
+color pvtBandCol = pvteRegime == 1 ? BULL : pvteRegime == -1 ? BEAR : C_MUTED
+plot(showPvteBandsInput ? pvtOuterUp : na, "PVTE Outer Up", color = pvtBandCol, linewidth = 1)
+plot(showPvteBandsInput ? pvtOuterDn : na, "PVTE Outer Dn", color = pvtBandCol, linewidth = 1)
+plot(showPvteBandsInput ? pvtInnerUp : na, "PVTE Inner Up", color = color.new(pvtBandCol, 65), linewidth = 1)
+plot(showPvteBandsInput ? pvtInnerDn : na, "PVTE Inner Dn", color = color.new(pvtBandCol, 65), linewidth = 1)
+
+// ── previous-period level lines (unconditional calls; self-managed)
+levelLine(prevDayInput   and chartSec <= timeframe.in_seconds("D"), pdH, dStart, "PDH", dayHiColInput)
+levelLine(prevDayInput   and chartSec <= timeframe.in_seconds("D"), pdL, dStart, "PDL", dayLoColInput)
+levelLine(prevWeekInput  and chartSec <= timeframe.in_seconds("W"), pwH, wStart, "PWH", weekHiColInput)
+levelLine(prevWeekInput  and chartSec <= timeframe.in_seconds("W"), pwL, wStart, "PWL", weekLoColInput)
+levelLine(prevMonthInput and chartSec <= timeframe.in_seconds("M"), pmH, mStart, "PMH", monthHiColInput)
+levelLine(prevMonthInput and chartSec <= timeframe.in_seconds("M"), pmL, mStart, "PML", monthLoColInput)
+
+// ══════════════════════════════════════════════════════════
+// 10. LABELS & SHAPES
+// ══════════════════════════════════════════════════════════
+plotshape(showCandleInput and hammerNow and barstate.isconfirmed,  "Hammer",  shape.triangleup,   location.belowbar, BULL, size = size.tiny)
+plotshape(showCandleInput and shooterNow and barstate.isconfirmed, "Shooter", shape.triangledown, location.abovebar, BEAR, size = size.tiny)
+
+// ── entry / trigger labels ──
+// Entry label keys on the entry itself (any source); the plain ▲/▼
+// trigger label shows whenever the trigger did not open the trade
+if (evLongEntry or evShortEntry) and showEntryLblInput
+    string eTip = "Entry: " + fmtPrice(activeEntry) +
+         "\nSL: "  + fmtPrice(activeSL) +
+         "\nTP1: " + fmtPrice(activeTP1) +
+         "\nTP2: " + fmtPrice(activeTP2) +
+         "\nTP3: " + fmtPrice(activeTP3) +
+         "\nRisk: " + fmtPrice(math.abs(activeEntry - activeSL))
+    label el = label.new(bar_index, evLongEntry ? low : high,
+         (evLongEntry ? "LONG · " : "SHORT · ") + entryPat,
+         style = evLongEntry ? label.style_label_up : label.style_label_down,
+         color = evLongEntry ? BULL : BEAR, textcolor = isDark ? #0B0E11 : #FFFFFF,
+         size = signalSize, tooltip = eTip)
+    lblFifo.push(el)
+if (trigBullSig or trigBearSig) and showTrigLblInput and not openedByTrig
+    label tl = label.new(bar_index, trigBullSig ? low : high,
+         (trigBullSig ? "▲ " : "▼ ") + trigPat,
+         style = trigBullSig ? label.style_label_up : label.style_label_down,
+         color = trigBullSig ? BULL : BEAR, textcolor = isDark ? #0B0E11 : #FFFFFF,
+         size = signalSize)
+    lblFifo.push(tl)
+while lblFifo.size() > maxDrawInput
+    label.delete(lblFifo.shift())
+
+// ══════════════════════════════════════════════════════════
+// 11. SL/TP LINES & LABELS
+// ══════════════════════════════════════════════════════════
+// ── trade lines & labels (RTS §23 — persist after close, replaced on next entry)
+var line slLine    = na
+var line tp1Line   = na
+var line tp2Line   = na
+var line tp3Line   = na
+var line entryLine = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+var label entryLabel = na
+
+if (evLongEntry or evShortEntry) and showSlTpInput
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    line.delete(entryLine)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    label.delete(entryLabel)
+
+    int startBar = bar_index
+    entryLine := line.new(startBar, activeEntry, startBar + LINE_FORWARD_BARS, activeEntry, color = ENTRY_COLOR, style = entryLineStyle, width = 1)
+    slLine    := line.new(startBar, activeSL,    startBar + LINE_FORWARD_BARS, activeSL,    color = SL_COLOR,  style = slLineStyle, width = 2)
+    tp1Line   := line.new(startBar, activeTP1,   startBar + LINE_FORWARD_BARS, activeTP1,   color = TP1_COLOR, style = tpLineStyle, width = 1)
+    tp2Line   := line.new(startBar, activeTP2,   startBar + LINE_FORWARD_BARS, activeTP2,   color = TP2_COLOR, style = tpLineStyle, width = 1)
+    tp3Line   := line.new(startBar, activeTP3,   startBar + LINE_FORWARD_BARS, activeTP3,   color = TP3_COLOR, style = tpLineStyle, width = 1)
+
+    if showSlTpLabelsInput
+        int lx = startBar + LINE_FORWARD_BARS + LABEL_OFFSET_BARS
+        entryLabel := label.new(lx, activeEntry, "ENTRY " + fmtPrice(activeEntry), color = ENTRY_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        slLabel    := label.new(lx, activeSL, "SL " + fmtPrice(activeSL) + formatPctFromEntry(activeSL, activeEntry), color = SL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        tp1Label   := label.new(lx, activeTP1, "TP1 " + fmtPrice(activeTP1) + formatPctFromEntry(activeTP1, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        tp2Label   := label.new(lx, activeTP2, "TP2 " + fmtPrice(activeTP2) + formatPctFromEntry(activeTP2, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+        tp3Label   := label.new(lx, activeTP3, "TP3 " + fmtPrice(activeTP3) + formatPctFromEntry(activeTP3, activeEntry), color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = slTpLabelSize)
+
+// ── TP-hit recolor (snapshot-driven, gated against fresh entries)
+if showSlTpInput and not na(tp1Line) and displayTp1Reached and not (evLongEntry or evShortEntry)
+    line.set_color(tp1Line, TP_HIT_COLOR)
+    line.set_style(tp1Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp1Label)
+        label.set_text(tp1Label, "TP1 ✓ " + fmtPrice(exitTP1) + formatPctFromEntry(exitTP1, exitEntry))
+        label.set_color(tp1Label, TP_HIT_COLOR)
+
+if showSlTpInput and not na(tp2Line) and displayTp2Reached and not (evLongEntry or evShortEntry)
+    line.set_color(tp2Line, TP_HIT_COLOR)
+    line.set_style(tp2Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp2Label)
+        label.set_text(tp2Label, "TP2 ✓ " + fmtPrice(exitTP2) + formatPctFromEntry(exitTP2, exitEntry))
+        label.set_color(tp2Label, TP_HIT_COLOR)
+
+if showSlTpInput and not na(tp3Line) and displayTp3Reached and not (evLongEntry or evShortEntry)
+    line.set_color(tp3Line, TP_HIT_COLOR)
+    line.set_style(tp3Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp3Label)
+        label.set_text(tp3Label, "TP3 ✓ " + fmtPrice(exitTP3) + formatPctFromEntry(exitTP3, exitEntry))
+        label.set_color(tp3Label, TP_HIT_COLOR)
+
+// ── BE dimming (§19.4): SL line/label stay at the ORIGINAL level as a
+// dimmed record; the effective stop is shown by the annotated entry label.
+// beJustActivated covers TP1+TP3 in one bar (beActive already reset by
+// the same-bar closure); exitEntry is the pre-reset snapshot
+if showSlTpInput and ((beActive and activeDir != 0) or beJustActivated)
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, BE_DIM_TRANSP))
+    if showSlTpLabelsInput
+        if not na(slLabel)
+            label.set_color(slLabel, color.new(SL_COLOR, BE_DIM_TRANSP))
+        if not na(entryLabel)
+            label.set_text(entryLabel, "ENTRY " + fmtPrice(exitEntry) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+
+// ── extend active trade lines to current bar
+if activeDir != 0 and showSlTpInput and not na(slLine)
+    line.set_x2(slLine, bar_index + LINE_UPDATE_BARS)
+    line.set_x2(tp1Line, bar_index + LINE_UPDATE_BARS)
+    line.set_x2(tp2Line, bar_index + LINE_UPDATE_BARS)
+    line.set_x2(tp3Line, bar_index + LINE_UPDATE_BARS)
+    line.set_x2(entryLine, bar_index + LINE_UPDATE_BARS)
+    if showSlTpLabelsInput and not na(slLabel)
+        int lx2 = bar_index + LINE_UPDATE_BARS + LABEL_OFFSET_BARS
+        label.set_x(slLabel, lx2)
+        label.set_x(tp1Label, lx2)
+        label.set_x(tp2Label, lx2)
+        label.set_x(tp3Label, lx2)
+        label.set_x(entryLabel, lx2)
+
+// ══════════════════════════════════════════════════════════
+// 12. DASHBOARD
+// ══════════════════════════════════════════════════════════
+// ── FTC strip (top center)
+var table ftcT = na
+if ftcInput
+    if na(ftcT)
+        ftcT := table.new(position.top_center, 8, 1)
+    if barstate.islast
+        for c = 0 to 7
+            bool vv = fV.get(c)
+            string t = vv ? FTC_LBL.get(c) + (fI.get(c) ? "·I" : fO.get(c) ? "·O" : "") : ""
+            table.cell(ftcT, c, 0, t,
+                 bgcolor = vv ? color.new(fG.get(c) ? BULL : BEAR, 55) : color.new(#000000, 100),
+                 text_color = C_TEXT, text_size = size.small)
+// ── dashboard 2.0 (RTS canon — sectioned, dynamic height; delete+recreate
+//    on islast is the documented exception to the var-table rule)
+var table dash = na
+if showDashInput and barstate.islast
+    int marketRows = showMarketSecInput ? 6 : 0
+    int tradeRows  = showTradeSecInput and enableTradesInput ? (activeDir != 0 ? 8 : 2) : 0
+    int statsRows  = showStatsSecInput and enableTradesInput ? 6 : 0
+    if not na(dash)
+        table.delete(dash)
+    dash := table.new(dashPos, 2, 2 + marketRows + tradeRows + statsRows, bgcolor = PANEL_BG, frame_color = color.new(C_TEXT, 85), frame_width = 1)
+
+    int  r   = 0
+    bool zeb = false
+    color rb = PANEL_BG
+
+    // header colored by active trade
+    string hdrWord = activeDir == 1 ? "Long" : activeDir == -1 ? "Short" : "Flat"
+    color  hdrBg   = activeDir == 1 ? HEADER_BG_BULL : activeDir == -1 ? HEADER_BG_BEAR : HEADER_BG
+    color  hdrTx   = activeDir != 0 ? HEADER_TEXT : C_TEXT
+    table.cell(dash, 0, r, "◆ STRAT · " + hdrWord, text_color = hdrTx, bgcolor = hdrBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dash, 0, r, 1, r)
+    r += 1
+
+    if showMarketSecInput
+        table.cell(dash, 0, r, "— Market —", text_color = C_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dash, 0, r, 1, r)
+        r += 1
+
+        string seqTxt = ""
+        int n = math.min(seq.size(), 4)
+        if n > 0
+            for i = 0 to n - 1
+                seqTxt := clsName(seqGet(seq, i)) + (seqTxt == "" ? "" : "-") + seqTxt
+        else
+            seqTxt := "—"
+        string stTxt  = fsmState == ST_PENDING ?
+             pendName + (setupDir > 0 ? " ▲ " : " ▼ ") + str.tostring(barsPending) + "/" + str.tostring(expiryInput) : "idle"
+        string lvlTxt = fsmState == ST_PENDING ?
+             "T " + str.tostring(setupDir > 0 ? pendHi : pendLo, format.mintick) +
+             " · S " + str.tostring(setupDir > 0 ? pendLo : pendHi, format.mintick) : "—"
+        string cndTxt = shooterNow ? "Shooter" : hammerNow ? "Hammer" : clsNow == 1 ? "Inside" : "—"
+        color  cndCol = shooterNow ? BEAR : hammerNow ? BULL : clsNow == 1 ? C_INSIDE : C_MUTED
+        color  stCol  = fsmState == ST_PENDING ? (setupDir > 0 ? BULL : BEAR) : C_MUTED
+
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Seq", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Last confirmed STRAT sequence (oldest left)")
+        table.cell(dash, 1, r, seqTxt, text_color = C_TEXT, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Setup", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Pending setup: pattern · bars waited / expiry")
+        table.cell(dash, 1, r, stTxt, text_color = stCol, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Levels", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Pending trigger (T) and stop (S) levels")
+        table.cell(dash, 1, r, lvlTxt, text_color = C_TEXT, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Candle", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Actionable candle on the current bar (informational)")
+        table.cell(dash, 1, r, cndTxt, text_color = cndCol, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        string pvtTxt = not usePvteInput ? "Off" : pvteRegime == 1 ? "BULL" : pvteRegime == -1 ? "BEAR" : "NEUTRAL"
+        color  pvtClr = not usePvteInput ? C_MUTED : pvteRegime == 1 ? BULL : pvteRegime == -1 ? BEAR : C_INSIDE
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "PVTE", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "PVTE regime filter: longs only in BULL, shorts only in BEAR (hysteresis bands)")
+        table.cell(dash, 1, r, pvtTxt, text_color = pvtClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+
+    if showTradeSecInput and enableTradesInput
+        table.cell(dash, 0, r, "— Trade —", text_color = C_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dash, 0, r, 1, r)
+        r += 1
+        if activeDir != 0
+            float riskPct = safeDiv(math.abs(activeEntry - activeSL), activeEntry, 0.0) * 100.0
+            color riskClr = riskPct > 3.0 ? BEAR : riskPct > 1.0 ? C_INSIDE : BULL
+            color rrClr   = effTp1m >= 1.5 ? BULL : effTp1m >= 1.0 ? C_INSIDE : BEAR
+            string dirWord = activeDir == 1 ? "Long" : "Short"
+            color  dirClr  = activeDir == 1 ? BULL : BEAR
+            string slVal   = (beActive ? "BE @ " : "") + fmtPrice(activeSL)
+            color  slClr   = beActive ? BE_COLOR : SL_COLOR
+
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "Entry", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Active position entry price")
+            table.cell(dash, 1, r, dirWord + " @ " + fmtPrice(activeEntry), text_color = dirClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "SL", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Stop-loss. 'BE @' = moved to break-even after TP1")
+            table.cell(dash, 1, r, slVal, text_color = slClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "TP1", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left)
+            table.cell(dash, 1, r, (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1), text_color = tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "TP2", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left)
+            table.cell(dash, 1, r, (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2), text_color = tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "TP3", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left)
+            table.cell(dash, 1, r, (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3), text_color = tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "R:R", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Risk:Reward at TP1 (from the actual SL distance)")
+            table.cell(dash, 1, r, str.tostring(effTp1m, "#.#") + "R", text_color = rrClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+            table.cell(dash, 0, r, "SL Dist", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Distance from entry to stop in % of entry price")
+            table.cell(dash, 1, r, str.tostring(riskPct, "#.##") + "%", text_color = riskClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+            r += 1
+            zeb := not zeb
+        else
+            table.cell(dash, 0, r, "Flat · waiting for signal", text_color = C_MUTED, bgcolor = PANEL_BG, text_size = dashFontSize, text_halign = text.align_center)
+            table.merge_cells(dash, 0, r, 1, r)
+            r += 1
+
+    if showStatsSecInput and enableTradesInput
+        int pW = winCount
+        int pL = lossCount
+        if statsPeriodInput == "24 Hours"
+            [w24, l24] = periodStats(tradeTimes, tradeWins, time - MS_DAY)
+            pW := w24
+            pL := l24
+        else if statsPeriodInput == "30 Days"
+            [w30, l30] = periodStats(tradeTimes, tradeWins, time - MS_DAY * 30)
+            pW := w30
+            pL := l30
+        int    pTotal   = pW + pL
+        float  pWinRate = pTotal > 0 ? pW / float(pTotal) * 100.0 : 0.0
+        string perTag   = statsPeriodInput == "24 Hours" ? "24H" : statsPeriodInput == "30 Days" ? "30D" : "All-Time"
+
+        table.cell(dash, 0, r, "— Stats · " + perTag + " —", text_color = C_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dash, 0, r, 1, r)
+        r += 1
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Trades", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Closed trades within the period (resets on chart reload)")
+        table.cell(dash, 1, r, pTotal > 0 ? str.tostring(pTotal) : "—", text_color = C_TEXT, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Wins", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "A trade is a WIN once TP1 is touched (TP3 / BE stop-out after TP1)")
+        table.cell(dash, 1, r, pTotal > 0 ? str.tostring(pW) : "—", text_color = pTotal > 0 ? BULL : C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Losses", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Closed before TP1 (SL hit)")
+        table.cell(dash, 1, r, pTotal > 0 ? str.tostring(pL) : "—", text_color = pTotal > 0 ? BEAR : C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        string dashWR = pTotal > 0 ? str.tostring(pWinRate, "#.#") + "%  " + buildGauge(pWinRate, 100, 8) : "—"
+        color  wrCol  = pTotal == 0 ? C_MUTED : pWinRate >= 55.0 ? BULL : pWinRate >= 45.0 ? C_INSIDE : BEAR
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Win rate", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Win rate for the period. Win = TP1 touched.\nOptimistic intrabar model (TP priority)")
+        table.cell(dash, 1, r, dashWR, text_color = wrCol, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Form", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left, tooltip = "Last trades regardless of period: ▰ win · ▱ loss (newest right)")
+        table.cell(dash, 1, r, formStr == "" ? "—" : formStr, text_color = C_TEXT, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
+
+    table.cell(dash, 0, r, "STRAT Trap & VWAP Engine · v" + VERSION, text_color = C_MUTED, bgcolor = PANEL_BG, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dash, 0, r, 1, r)
+
+// ══════════════════════════════════════════════════════════
+// 13. WATERMARK
+// ══════════════════════════════════════════════════════════
+// ── watermark (bottom center)
+var table wm = na
+if showWatermarkInput
+    if na(wm)
+        wm := table.new(position.bottom_center, 1, 1)
+    if barstate.islast
+        table.cell(wm, 0, 0, "WillyAlgoTrader — STRAT Trap & VWAP Engine", text_color = color.new(C_TEXT, 55), text_size = size.small)
+
+// ══════════════════════════════════════════════════════════
+// 14. ALERTS
+// ══════════════════════════════════════════════════════════
+// Chronology (§25): management → closures → trigger/entries → setup info
+
+// 1) trade management: BE → TP1 → TP2
+// BE fields from the exitEntry snapshot: a same-bar TP1+TP3 closure resets
+// activeEntry/activeSL before this block runs (SL == entry at break-even)
+if beJustActivated and tpBeAlertInput
+    fireTradeAlert("be", ',"entry":' + str.tostring(exitEntry) + ',"sl":' + str.tostring(exitEntry),
+         " | SL → BE @ " + fmtPrice(exitEntry), buildFtc(fV, fG, FTC_LBL))
+if tp1FirstTouch and tpBeAlertInput
+    fireTradeAlert("tp1_hit", ',"level":' + str.tostring(exitTP1) + ',"entry":' + str.tostring(exitEntry),
+         " | TP1 " + fmtPrice(exitTP1), buildFtc(fV, fG, FTC_LBL))
+if tp2FirstTouch and tpBeAlertInput
+    fireTradeAlert("tp2_hit", ',"level":' + str.tostring(exitTP2) + ',"entry":' + str.tostring(exitEntry),
+         " | TP2 " + fmtPrice(exitTP2), buildFtc(fV, fG, FTC_LBL))
+
+// 2) closures: TP3 → SL / BE stop-out (snapshot-driven)
+if evTp3Close and tpBeAlertInput
+    fireTradeAlert("tp3_close", ',"entry":' + str.tostring(exitEntry) + ',"level":' + str.tostring(exitTP3) +
+         ',"dir":"' + (exitDir == 1 ? "long" : "short") + '","result":"win"',
+         " | " + (exitDir == 1 ? "Long" : "Short") + " closed at TP3 " + fmtPrice(exitTP3), buildFtc(fV, fG, FTC_LBL))
+if evSlHit and slAlertInput
+    fireTradeAlert("sl_hit", ',"entry":' + str.tostring(nz(hitEntry)) + ',"sl":' + str.tostring(nz(hitSL)) +
+         ',"dir":"' + (exitDir == 1 ? "long" : "short") + '","be_stop":' + (exitBeActive ? "true" : "false") +
+         ',"result":"' + (tradeWin ? "win" : "loss") + '"',
+         " | " + (exitBeActive ? "BE stop-out" : "SL hit") + " @ " + str.tostring(nz(hitSL), format.mintick), buildFtc(fV, fG, FTC_LBL))
+
+// 3) trigger dispatch: full risk payload when THIS trigger opened the
+//    trade, plain trig/stop otherwise
+if trigBullSig or trigBearSig
+    string trigAction = trigBullSig ? "trigger_bull" : "trigger_bear"
+    if openedByTrig
+        if entryAlertInput
+            fireTradeAlert(trigAction, ',"pattern":"' + trigPat + '","price":' + str.tostring(close) +
+                 ',"entry":' + str.tostring(activeEntry) + ',"sl":' + str.tostring(activeSL) +
+                 ',"tp1":' + str.tostring(activeTP1) + ',"tp2":' + str.tostring(activeTP2) +
+                 ',"tp3":' + str.tostring(activeTP3) + ',"regime":' + str.tostring(pvteRegime),
+                 " | " + trigPat + " @ " + str.tostring(close, format.mintick) +
+                 " | SL " + fmtPrice(activeSL) + " TP1 " + fmtPrice(activeTP1) +
+                 " TP2 " + fmtPrice(activeTP2) + " TP3 " + fmtPrice(activeTP3), buildFtc(fV, fG, FTC_LBL))
+    else if trigAlertInput
+        fireAlert(trigAction, trigPat, trigLvl, trigStp, buildFtc(fV, fG, FTC_LBL))
+
+// 4) trap entries: same payload shape, dedicated actions
+if (evLongEntry or evShortEntry) and not openedByTrig and entryAlertInput
+    fireTradeAlert(evLongEntry ? "trap_long" : "trap_short", ',"pattern":"' + entryPat +
+         '","price":' + str.tostring(close) +
+         ',"entry":' + str.tostring(activeEntry) + ',"sl":' + str.tostring(activeSL) +
+         ',"tp1":' + str.tostring(activeTP1) + ',"tp2":' + str.tostring(activeTP2) +
+         ',"tp3":' + str.tostring(activeTP3) + ',"regime":' + str.tostring(pvteRegime),
+         " | " + entryPat + " @ " + str.tostring(close, format.mintick) +
+         " | SL " + fmtPrice(activeSL) + " TP1 " + fmtPrice(activeTP1) +
+         " TP2 " + fmtPrice(activeTP2) + " TP3 " + fmtPrice(activeTP3), buildFtc(fV, fG, FTC_LBL))
+
+// 5) new setups (info — lowest priority in the intrabar stream)
+//    pendHi/pendLo/pendName hold the just-armed setup; nothing mutates
+//    them between the arm block and this point within the same bar
+if (setupBullSig or setupBearSig) and setupAlertInput
+    fireAlert(setupBullSig ? "setup_bull" : "setup_bear", pendName,
+         setupBullSig ? pendHi : pendLo, setupBullSig ? pendLo : pendHi, buildFtc(fV, fG, FTC_LBL))
+
+alertcondition(setupBullSig,                "STRAT: Setup Bull",     "STRAT bullish setup formed (details in dynamic alert)")
+alertcondition(setupBearSig,                "STRAT: Setup Bear",     "STRAT bearish setup formed (details in dynamic alert)")
+alertcondition(setupBullSig or setupBearSig, "STRAT: Setup Any",     "STRAT setup formed (details in dynamic alert)")
+alertcondition(trigBullSig,                 "STRAT: Triggered Bull", "STRAT bullish setup triggered (details in dynamic alert)")
+alertcondition(trigBearSig,                 "STRAT: Triggered Bear", "STRAT bearish setup triggered (details in dynamic alert)")
+alertcondition(trigBullSig or trigBearSig,  "STRAT: Triggered Any",  "STRAT setup triggered (details in dynamic alert)")
+alertcondition(evLongEntry or evShortEntry, "STRAT: Trade Opened",   "STRAT trade opened (details in dynamic alert)")
+alertcondition(tp1FirstTouch or tp2FirstTouch or tp3FirstTouch, "STRAT: TP Hit", "STRAT take-profit touched (details in dynamic alert)")
+alertcondition(evTp3Close or evSlHit,       "STRAT: Trade Closed",   "STRAT trade closed — TP3 / SL / BE stop-out (details in dynamic alert)")

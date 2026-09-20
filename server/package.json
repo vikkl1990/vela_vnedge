@@ -1,0 +1,18 @@
+{
+  "name": "vnedge-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "VNEdge bot server: Delta India feed → PineTS scanners → paper trading → REST/SSE API",
+  "scripts": {
+    "dev": "node --watch --no-warnings=ExperimentalWarning src/index.ts",
+    "start": "node --no-warnings=ExperimentalWarning src/index.ts",
+    "backtest": "node --no-warnings=ExperimentalWarning src/cli/backtest.ts",
+    "compat": "node --no-warnings=ExperimentalWarning src/cli/compat.ts",
+    "test": "node --no-warnings=ExperimentalWarning --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "pinets": "^0.9.34"
+  },
+  "engines": { "node": ">=22.18" }
+}

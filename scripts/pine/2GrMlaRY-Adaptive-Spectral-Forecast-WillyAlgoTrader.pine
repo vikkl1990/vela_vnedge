@@ -1,0 +1,605 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE SPECTRAL FORECAST [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.1.1
+
+indicator(
+    title              = "Adaptive Spectral Forecast [WillyAlgoTrader]",
+    shorttitle         = "SpectralFcst",
+    overlay            = true,
+    max_labels_count   = 500,
+    max_lines_count    = 500,
+    max_polylines_count = 100)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_FCST   = "🔮 Forecast"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.1.1"
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main Settings ───────────────────
+int lookbackInput = input.int(144, "Analysis Lookback", minval = 30, maxval = 500, step = 10, group = GRP_MAIN, tooltip = "Number of bars used for spectral analysis.\n• Higher = more stable cycles, slower adaptation\n• Lower = faster adaptation, more noise\n• Recommended: 80–200")
+sourceInput = input.source(close, "Price Source", group = GRP_MAIN, tooltip = "Price series to analyze. Close is recommended for most use cases.")
+int numHarmonicsInput = input.int(5, "Harmonics Count", minval = 1, maxval = 8, group = GRP_MAIN, tooltip = "Number of dominant cycles to extract.\n• Higher = more complex fit, risk of overfitting\n• Lower = smoother forecast, may miss structure\n• Recommended: 3–5")
+int minPeriodInput = input.int(8, "Min Cycle Period", minval = 4, maxval = 50, group = GRP_MAIN, tooltip = "Minimum cycle period to detect (in bars).\n• Shorter periods capture fast oscillations\n• Recommended: 6–12")
+string presetInput = input.string("Default", "Preset", options = ["Conservative", "Default", "Aggressive", "Scalping"], group = GRP_MAIN, tooltip = "Quick presets:\n• Conservative: longer lookback, fewer harmonics, stronger filter\n• Default: balanced\n• Aggressive: shorter lookback, more harmonics\n• Scalping: optimized for 1–5min charts")
+bool trendFilterInput = input.bool(true, "Trend Alignment Filter", group = GRP_MAIN, tooltip = "Only allow BUY when trend is bullish, SELL when bearish.\nReduces false signals in choppy markets.")
+
+// ── Forecast ────────────────────────
+int extrapInput = input.int(55, "Forecast Bars", minval = 5, maxval = 100, step = 5, group = GRP_FCST, tooltip = "How many bars to project into the future.\n• Higher = longer forecast, less reliable\n• Lower = shorter but more accurate\n• Recommended: 15–50")
+float confidenceMultInput = input.float(1.5, "Confidence Band Width", minval = 0.5, maxval = 4.0, step = 0.1, group = GRP_FCST, tooltip = "ATR multiplier for confidence bands.\n• Higher = wider bands, more conservative\n• Lower = tighter bands\n• Recommended: 1.0–2.5")
+bool showBandsInput = input.bool(true, "Show Confidence Bands", group = GRP_FCST, tooltip = "Display ATR-based uncertainty zone around forecast")
+int trendSmoothInput = input.int(30, "Trend Smoothing", minval = 5, maxval = 100, step = 5, group = GRP_FCST, tooltip = "EMA period for adaptive trend extraction.\n• Higher = smoother trend, better for swing\n• Lower = faster trend, better for scalping\n• Recommended: 20–50")
+float decayInput = input.float(0.97, "Harmonic Decay Rate", minval = 0.90, maxval = 1.0, step = 0.01, group = GRP_FCST, tooltip = "Amplitude decay per bar in forecast.\n• 1.0 = no decay (cycles repeat forever)\n• 0.95 = fast decay toward trend\n• Recommended: 0.96–0.99")
+float minSnrInput = input.float(2.0, "Min Cycle SNR", minval = 1.0, maxval = 10.0, step = 0.5, group = GRP_FCST, tooltip = "Minimum signal-to-noise ratio for a cycle to be included.\n• Higher = only strong cycles, fewer harmonics\n• Lower = include weaker cycles\n• Recommended: 1.5–3.0")
+
+// ── Visual Settings ─────────────────
+bool showSignalsInput = input.bool(true, "Show Buy/Sell Signals", group = GRP_VISUAL, tooltip = "Display reversal markers when forecast changes direction")
+bool showFitInput = input.bool(true, "Show Historical Fit", group = GRP_VISUAL, tooltip = "Display the fitted harmonic curve on historical bars")
+bool showTrendInput = input.bool(false, "Show Trend Line", group = GRP_VISUAL, tooltip = "Display the adaptive trend component")
+bool showDotsInput = input.bool(true, "Show Reversal Dots", group = GRP_VISUAL, tooltip = "Display forecast turning point markers")
+bool showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark on chart")
+string themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+
+// ── Dashboard ───────────────────────
+bool showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Display info panel with cycle data and forecast status")
+string dashPosStr = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH, tooltip = "Position of the dashboard on the chart")
+
+// ── Alerts ──────────────────────────
+bool webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations")
+
+// ── Colors ──────────────────────────
+color bullColorInput = input.color(#00E676, "Bull", inline = "sig_colors", group = GRP_COLORS)
+color bearColorInput = input.color(#FF5252, "Bear", inline = "sig_colors", group = GRP_COLORS)
+color bandColorInput = input.color(#42A5F5, "Band / Forecast", inline = "fcst_colors", group = GRP_COLORS, tooltip = "Color for forecast line and confidence bands")
+
+// ══════════════════════════════════════
+// PRESET OVERRIDES
+// ══════════════════════════════════════
+int effLookback = switch presetInput
+    "Conservative" => math.max(lookbackInput, 150)
+    "Aggressive"   => math.min(lookbackInput, 80)
+    "Scalping"     => math.min(lookbackInput, 50)
+    => lookbackInput
+
+int effHarmonics = switch presetInput
+    "Conservative" => math.min(numHarmonicsInput, 3)
+    "Aggressive"   => math.min(numHarmonicsInput + 1, 8)
+    "Scalping"     => math.min(numHarmonicsInput + 2, 8)
+    => numHarmonicsInput
+
+int effExtrap = switch presetInput
+    "Conservative" => math.max(extrapInput, 40)
+    "Aggressive"   => math.min(extrapInput, 25)
+    "Scalping"     => math.min(extrapInput, 15)
+    => extrapInput
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+LINE_SUBTLE   = isDark ? color.new(#555555, 0) : color.new(#AAAAAA, 0)
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+// ══════════════════════════════════════
+// FUNCTIONS (top-level)
+// ══════════════════════════════════════
+
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// ── Goertzel — returns power only (phase not needed) ──
+goertzelPower(int len, int period, array<float> data) =>
+    float w = 2.0 * math.pi / period
+    float coeff = 2.0 * math.cos(w)
+    float s0 = 0.0
+    float s1 = 0.0
+    float s2 = 0.0
+    for i = 0 to len - 1
+        s0 := array.get(data, i) + coeff * s1 - s2
+        s2 := s1
+        s1 := s0
+    float realPart = s1 - s2 * math.cos(w)
+    float imagPart = s2 * math.sin(w)
+    // Normalize by N^2 for proper cross-period comparison
+    float power = (realPart * realPart + imagPart * imagPart) / (len * len * 1.0)
+    power
+
+// ── Harmonic coefficients via DFT projection ──
+computeHarmonicCoeffs(int len, int period, array<float> data) =>
+    float w = 2.0 * math.pi / period
+    float sumSin = 0.0
+    float sumCos = 0.0
+    for i = 0 to len - 1
+        float val = array.get(data, i)
+        sumSin += val * math.sin(w * i)
+        sumCos += val * math.cos(w * i)
+    float a = 2.0 * sumSin / len
+    float b = 2.0 * sumCos / len
+    [a, b]
+
+// ── EMA trend array ──
+buildTrendArray(int len, int smooth, array<float> data) =>
+    result = array.new_float(len, 0.0)
+    float alpha = 2.0 / (smooth + 1)
+    array.set(result, 0, array.get(data, 0))
+    for i = 1 to len - 1
+        float prev = array.get(result, i - 1)
+        float curr = array.get(data, i)
+        array.set(result, i, alpha * curr + (1.0 - alpha) * prev)
+    result
+
+// ── Evaluate harmonic sum at time t with optional amplitude decay ──
+evalHarmonicsDecay(float t, float tBase, float decay, array<float> aArr, array<float> bArr, array<int> periods) =>
+    float val = 0.0
+    float dist = math.max(t - tBase, 0.0)
+    float decayFactor = math.pow(decay, dist)
+    for j = 0 to array.size(periods) - 1
+        float w = 2.0 * math.pi / array.get(periods, j)
+        val += (array.get(aArr, j) * math.sin(w * t) + array.get(bArr, j) * math.cos(w * t)) * decayFactor
+    val
+
+// ── Evaluate harmonic sum at time t (no decay — for historical fit) ──
+evalHarmonics(float t, array<float> aArr, array<float> bArr, array<int> periods) =>
+    float val = 0.0
+    for j = 0 to array.size(periods) - 1
+        float w = 2.0 * math.pi / array.get(periods, j)
+        val += array.get(aArr, j) * math.sin(w * t) + array.get(bArr, j) * math.cos(w * t)
+    val
+
+// ── Weighted linear regression slope over last k points of an array ──
+arrayTrendSlope(array<float> arr, int k) =>
+    int n = array.size(arr)
+    int useK = math.min(k, n)
+    float sumX = 0.0
+    float sumY = 0.0
+    float sumXY = 0.0
+    float sumX2 = 0.0
+    for i = 0 to useK - 1
+        float x = i * 1.0
+        float y = array.get(arr, n - useK + i)
+        sumX += x
+        sumY += y
+        sumXY += x * y
+        sumX2 += x * x
+    safeDiv(useK * sumXY - sumX * sumY, useK * sumX2 - sumX * sumX, 0.0)
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// WARMUP & PROTECTION
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(effLookback, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+float atrValue = nz(ta.atr(14), 0.0)
+
+// ══════════════════════════════════════
+// PERSISTENT OBJECTS
+// ══════════════════════════════════════
+var polyline fitPoly = na
+var polyline trendPoly = na
+var array<polyline> fcstPolys = array.new<polyline>()
+var polyline bandUpperPoly = na
+var polyline bandLowerPoly = na
+var array<label> revLabels = array.new<label>()
+
+// ══════════════════════════════════════
+// SIGNAL STATE (persistent across bars)
+// ══════════════════════════════════════
+var int lastSignalDir = 0
+var int forecastDir = 0       // persisted so signals can fire on confirmed bars
+
+// Dashboard state (persistent)
+var string dashTrendStr = "—"
+var color dashTrendColor = color.gray
+var string dashSignalStr = "Wait"
+var color dashSignalColor = color.gray
+var string dashStrengthStr = "—"
+var color dashStrengthColor = color.gray
+var string dashDomCycleStr = "—"
+var string dashFcstDirStr = "—"
+var color dashFcstDirColor = color.gray
+var float dashAvgSnr = 0.0
+var int dashCyclesFound = 0
+var float dashTrendSlope = 0.0
+
+// ══════════════════════════════════════
+// MAIN CALCULATIONS (barstate.islast)
+// ══════════════════════════════════════
+if barstate.islast and isWarmedUp
+    // ── Step 1: Build price data array ──
+    int N = math.min(effLookback, bar_index + 1)
+    priceData = array.new_float(N, 0.0)
+    for i = 0 to N - 1
+        array.set(priceData, i, nz(sourceInput[N - 1 - i], close))
+
+    // ── Step 2: Extract adaptive trend ──
+    trendArr = buildTrendArray(N, trendSmoothInput, priceData)
+
+    // ── Step 3: Detrend with Hann window (reduces spectral leakage) ──
+    detrended = array.new_float(N, 0.0)
+    for i = 0 to N - 1
+        float raw = array.get(priceData, i) - array.get(trendArr, i)
+        float hann = 0.5 * (1.0 - math.cos(2.0 * math.pi * i / (N - 1)))
+        array.set(detrended, i, raw * hann)
+
+    // ── Step 4: Goertzel spectral scan ──
+    int maxPeriodVal = math.min(N - 1, math.floor(N / 2))
+    int scanMin = math.max(minPeriodInput, 4)
+    int scanMax = math.max(maxPeriodVal, scanMin + 1)
+
+    allPowers = array.new_float()
+    allPeriods = array.new_int()
+    float totalPower = 0.0
+    int scanCount = 0
+
+    // Adaptive step: scan every period for short cycles, step=2 for long
+    int p = scanMin
+    while p <= scanMax
+        pwr = goertzelPower(N, p, detrended)
+        array.push(allPowers, pwr)
+        array.push(allPeriods, p)
+        totalPower += pwr
+        scanCount += 1
+        p += (p > 30 ? 2 : 1)
+
+    // ── Step 5: Peak detection with SNR ──
+    peakPeriods = array.new_int()
+    peakPowers = array.new_float()
+    peakSnr = array.new_float()
+
+    float meanPower = safeDiv(totalPower, scanCount * 1.0, 1.0)
+
+    // Track absolute best peak for fallback
+    float bestPwr = -1.0
+    int bestPwrIdx = -1
+
+    int pwrSize = array.size(allPowers)
+    if pwrSize > 2
+        for i = 1 to pwrSize - 2
+            float currPwr = array.get(allPowers, i)
+            float prevPwr = array.get(allPowers, i - 1)
+            float nxtPwr = array.get(allPowers, i + 1)
+            float snr = safeDiv(currPwr, meanPower, 0.0)
+            // Track global max for fallback
+            if currPwr > bestPwr
+                bestPwr := currPwr
+                bestPwrIdx := i
+            // Primary filter: local peak + SNR threshold
+            if currPwr > prevPwr and currPwr > nxtPwr and snr >= minSnrInput
+                array.push(peakPeriods, array.get(allPeriods, i))
+                array.push(peakPowers, currPwr)
+                array.push(peakSnr, snr)
+
+    // Fallback: if no peaks passed SNR filter, use the single strongest frequency
+    if array.size(peakPowers) == 0 and bestPwrIdx >= 0
+        array.push(peakPeriods, array.get(allPeriods, bestPwrIdx))
+        array.push(peakPowers, bestPwr)
+        array.push(peakSnr, safeDiv(bestPwr, meanPower, 0.0))
+
+    // Edge case: very small spectrum (≤2 frequencies scanned) — take the strongest
+    if array.size(peakPowers) == 0 and pwrSize > 0 and pwrSize <= 2
+        float edgeBestPwr = -1.0
+        int edgeBestIdx = -1
+        for i = 0 to pwrSize - 1
+            if array.get(allPowers, i) > edgeBestPwr
+                edgeBestPwr := array.get(allPowers, i)
+                edgeBestIdx := i
+        if edgeBestIdx >= 0
+            array.push(peakPeriods, array.get(allPeriods, edgeBestIdx))
+            array.push(peakPowers, edgeBestPwr)
+            array.push(peakSnr, safeDiv(edgeBestPwr, meanPower, 0.0))
+
+    bool usedFallback = array.size(peakPowers) > 0 and array.size(peakSnr) > 0 and array.get(peakSnr, 0) < minSnrInput
+
+    // ── Step 6: Select top N harmonics ──
+    // NOTE: coefficients computed on UN-windowed detrended data for correct amplitude
+    detrendedRaw = array.new_float(N, 0.0)
+    for i = 0 to N - 1
+        array.set(detrendedRaw, i, array.get(priceData, i) - array.get(trendArr, i))
+
+    selectedPeriods = array.new_int()
+    selectedSnr = array.new_float()
+    selA = array.new_float()
+    selB = array.new_float()
+
+    int toSelect = math.min(effHarmonics, array.size(peakPowers))
+    peakPwrCopy = array.copy(peakPowers)
+    peakPerCopy = array.copy(peakPeriods)
+    peakSnrCopy = array.copy(peakSnr)
+
+    for _k = 0 to toSelect - 1
+        if array.size(peakPwrCopy) == 0
+            break
+        float maxPwr = -1.0
+        int maxIdx = -1
+        for m = 0 to array.size(peakPwrCopy) - 1
+            if array.get(peakPwrCopy, m) > maxPwr
+                maxPwr := array.get(peakPwrCopy, m)
+                maxIdx := m
+        if maxIdx != -1
+            int selPeriod = array.get(peakPerCopy, maxIdx)
+            array.push(selectedPeriods, selPeriod)
+            array.push(selectedSnr, array.get(peakSnrCopy, maxIdx))
+            [aCoeff, bCoeff] = computeHarmonicCoeffs(N, selPeriod, detrendedRaw)
+            array.push(selA, aCoeff)
+            array.push(selB, bCoeff)
+            array.remove(peakPwrCopy, maxIdx)
+            array.remove(peakPerCopy, maxIdx)
+            array.remove(peakSnrCopy, maxIdx)
+
+    int numFound = array.size(selectedPeriods)
+    dashCyclesFound := numFound
+
+    // ── Step 7: Trend slope via linear regression (5-bar) ──
+    float trendLast = array.get(trendArr, N - 1)
+    float trendSlope = arrayTrendSlope(trendArr, 5)
+    float currentAtr = atrValue
+    int baseIdx = bar_index - (N - 1)
+
+    dashTrendSlope := trendSlope
+
+    // ── Clean up previous visual objects ──
+    if not na(fitPoly)
+        fitPoly.delete()
+    if not na(trendPoly)
+        trendPoly.delete()
+    if not na(bandUpperPoly)
+        bandUpperPoly.delete()
+    if not na(bandLowerPoly)
+        bandLowerPoly.delete()
+    for poly in fcstPolys
+        poly.delete()
+    array.clear(fcstPolys)
+    for lbl in revLabels
+        lbl.delete()
+    array.clear(revLabels)
+
+    // ── Historical fit polyline (decimated for performance) ──
+    if showFitInput and numFound > 0
+        fitPts = array.new<chart.point>()
+        int fitStep = N > 200 ? 3 : N > 100 ? 2 : 1
+        for i = 0 to N - 1
+            if i % fitStep == 0 or i == N - 1
+                float harmVal = evalHarmonics(i * 1.0, selA, selB, selectedPeriods)
+                float trendVal = array.get(trendArr, i)
+                array.push(fitPts, chart.point.from_index(baseIdx + i, trendVal + harmVal))
+        fitCol = trendSlope >= 0 ? bullColorInput : bearColorInput
+        fitPoly := polyline.new(fitPts, line_color = fitCol, line_width = 2)
+
+    // ── Historical trend line (decimated) ──
+    if showTrendInput
+        trendPts = array.new<chart.point>()
+        int tStep = N > 200 ? 3 : N > 100 ? 2 : 1
+        for i = 0 to N - 1
+            if i % tStep == 0 or i == N - 1
+                array.push(trendPts, chart.point.from_index(baseIdx + i, array.get(trendArr, i)))
+        trendPoly := polyline.new(trendPts, line_color = LINE_SUBTLE, line_width = 1)
+
+    // ── Forecast extrapolation with decay ──
+    float tBase = (N - 1) * 1.0  // decay starts from end of historical data
+
+    if numFound > 0
+        float prevY = evalHarmonics(tBase, selA, selB, selectedPeriods) + trendLast
+        bool isUp = true
+        bool isUpSet = false
+
+        segPts = array.new<chart.point>()
+        array.push(segPts, chart.point.from_index(bar_index, prevY))
+
+        upperPts = array.new<chart.point>()
+        lowerPts = array.new<chart.point>()
+        array.push(upperPts, chart.point.from_index(bar_index, prevY))
+        array.push(lowerPts, chart.point.from_index(bar_index, prevY))
+
+        for i = 1 to effExtrap
+            float t = tBase + i * 1.0
+            float harmVal = evalHarmonicsDecay(t, tBase, decayInput, selA, selB, selectedPeriods)
+            float projTrend = trendLast + trendSlope * i
+            float y = harmVal + projTrend
+            bool currUp = y >= prevY
+
+            float bandWidth = currentAtr * confidenceMultInput * math.sqrt(i * 1.0)
+            array.push(upperPts, chart.point.from_index(bar_index + i, y + bandWidth))
+            array.push(lowerPts, chart.point.from_index(bar_index + i, y - bandWidth))
+
+            if not isUpSet
+                isUp := currUp
+                isUpSet := true
+
+            if currUp != isUp
+                segCol = isUp ? bullColorInput : bearColorInput
+                array.push(fcstPolys, polyline.new(segPts, line_color = segCol, line_width = 2, line_style = line.style_dotted))
+                lastSegPt = array.get(segPts, array.size(segPts) - 1)
+                array.clear(segPts)
+                array.push(segPts, lastSegPt)
+                isUp := currUp
+
+            array.push(segPts, chart.point.from_index(bar_index + i, y))
+            prevY := y
+
+        if array.size(segPts) > 1
+            lastSegCol = isUp ? bullColorInput : bearColorInput
+            array.push(fcstPolys, polyline.new(segPts, line_color = lastSegCol, line_width = 2, line_style = line.style_dotted))
+
+        // Confidence bands
+        if showBandsInput
+            bandUpperPoly := polyline.new(upperPts, line_color = color.new(bandColorInput, 60), line_width = 1, line_style = line.style_dotted)
+            bandLowerPoly := polyline.new(lowerPts, line_color = color.new(bandColorInput, 60), line_width = 1, line_style = line.style_dotted)
+
+        // ── Reversal dots on forecast ──
+        if showDotsInput
+            for i = 1 to effExtrap - 1
+                float t0 = tBase + i * 1.0
+                float yC = evalHarmonicsDecay(t0, tBase, decayInput, selA, selB, selectedPeriods) + trendLast + trendSlope * i
+                float yP = evalHarmonicsDecay(t0 - 1.0, tBase, decayInput, selA, selB, selectedPeriods) + trendLast + trendSlope * (i - 1)
+                float yN = evalHarmonicsDecay(t0 + 1.0, tBase, decayInput, selA, selB, selectedPeriods) + trendLast + trendSlope * (i + 1)
+                bool isPeak = yC > yP and yC > yN
+                bool isTrough = yC < yP and yC < yN
+                if isPeak or isTrough
+                    dotCol = isPeak ? bearColorInput : bullColorInput
+                    dotTip = (isPeak ? "Forecast Peak" : "Forecast Trough") + "\nBar +" + str.tostring(i)
+                    array.push(revLabels, label.new(bar_index + i, yC, "●", color = color.new(color.black, 100), textcolor = dotCol, style = label.style_label_center, size = size.normal, tooltip = dotTip))
+
+        // ── Forecast direction: 3-bar consensus for robustness ──
+        float y0 = evalHarmonicsDecay(tBase, tBase, decayInput, selA, selB, selectedPeriods) + trendLast
+        float y1 = evalHarmonicsDecay(tBase + 1.0, tBase, decayInput, selA, selB, selectedPeriods) + trendLast + trendSlope
+        float y2 = evalHarmonicsDecay(tBase + 2.0, tBase, decayInput, selA, selB, selectedPeriods) + trendLast + trendSlope * 2
+        float y3 = evalHarmonicsDecay(tBase + 3.0, tBase, decayInput, selA, selB, selectedPeriods) + trendLast + trendSlope * 3
+
+        // Require majority of 3 next bars to agree on direction
+        int upVotes = (y1 > y0 ? 1 : 0) + (y2 > y1 ? 1 : 0) + (y3 > y2 ? 1 : 0)
+        int newFcstDir = upVotes >= 2 ? 1 : upVotes <= 1 ? -1 : 0
+
+        // Apply trend alignment filter
+        bool trendAligned = not trendFilterInput or (newFcstDir == 1 and trendSlope > 0) or (newFcstDir == -1 and trendSlope < 0)
+
+        // Only update forecastDir if trend-aligned, SNR sufficient, and NOT fallback
+        if trendAligned and dashAvgSnr >= minSnrInput and not usedFallback
+            forecastDir := newFcstDir
+
+        dashFcstDirStr := forecastDir == 1 ? "▲ Up" : forecastDir == -1 ? "▼ Down" : "— Flat"
+        dashFcstDirColor := forecastDir == 1 ? bullColorInput : forecastDir == -1 ? bearColorInput : TEXT_MUTED
+
+        // ── Dashboard data ──
+        dashTrendStr := trendSlope > 0 ? "Bullish" : trendSlope < 0 ? "Bearish" : "Neutral"
+        dashTrendColor := trendSlope > 0 ? bullColorInput : trendSlope < 0 ? bearColorInput : color.gray
+
+        float sumSnr = 0.0
+        for s = 0 to array.size(selectedSnr) - 1
+            sumSnr += array.get(selectedSnr, s)
+        dashAvgSnr := numFound > 0 ? sumSnr / numFound : 0.0
+        dashStrengthStr := usedFallback ? "Weak*" : dashAvgSnr > 5.0 ? "Strong" : dashAvgSnr > 2.5 ? "Medium" : "Weak"
+        dashStrengthColor := usedFallback ? color.new(#FF9800, 0) : dashAvgSnr > 5.0 ? bullColorInput : dashAvgSnr > 2.5 ? #FFEB3B : bearColorInput
+        dashDomCycleStr := numFound > 0 ? str.tostring(array.get(selectedPeriods, 0)) + " bars" : "—"
+
+// ══════════════════════════════════════
+// SIGNALS — fire on CONFIRMED bars
+// ══════════════════════════════════════
+// forecastDir is updated on barstate.islast (realtime bar).
+// On next bar, barstate.isconfirmed fires and we check if direction changed.
+// This avoids the islast+isconfirmed mutual exclusion problem.
+
+bool dirChangedBuy = forecastDir == 1 and lastSignalDir != 1 and barstate.isconfirmed and isWarmedUp
+bool dirChangedSell = forecastDir == -1 and lastSignalDir != -1 and barstate.isconfirmed and isWarmedUp
+
+if dirChangedBuy
+    lastSignalDir := 1
+if dirChangedSell
+    lastSignalDir := -1
+
+// Dashboard signal state (update on last bar for display)
+dashSignalStr := dirChangedBuy ? "BUY" : dirChangedSell ? "SELL" : forecastDir == 1 ? "Bullish Bias" : forecastDir == -1 ? "Bearish Bias" : "Wait"
+dashSignalColor := dirChangedBuy ? bullColorInput : dirChangedSell ? bearColorInput : TEXT_MUTED
+
+// ══════════════════════════════════════
+// SIGNAL VISUALS
+// ══════════════════════════════════════
+plotshape(showSignalsInput and dirChangedBuy ? low : na, "Buy Signal", style = shape.labelup, location = location.belowbar, color = bullColorInput, textcolor = color.white, text = "▲", size = size.small)
+
+plotshape(showSignalsInput and dirChangedSell ? high : na, "Sell Signal", style = shape.labeldown, location = location.abovebar, color = bearColorInput, textcolor = color.white, text = "▼", size = size.small)
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+if showDashInput and barstate.islast
+    var dashTable = table.new(dashPos, 2, 10, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    // Header
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader", text_color = #FFFFFF, bgcolor = color.new(#2962FF, 0), text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    // Row 1: Trend
+    table.cell(dashTable, 0, 1, "Trend", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, dashTrendStr, text_color = dashTrendColor, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 2: Forecast Direction
+    table.cell(dashTable, 0, 2, "Forecast", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, dashFcstDirStr, text_color = dashFcstDirColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 3: Signal
+    table.cell(dashTable, 0, 3, "Signal", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, dashSignalStr, text_color = dashSignalColor, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 4: Strength
+    table.cell(dashTable, 0, 4, "Strength", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    snrDisplay = dashStrengthStr + " (" + str.tostring(dashAvgSnr, "#.#") + ")"
+    table.cell(dashTable, 1, 4, snrDisplay, text_color = dashStrengthColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 5: Dominant Cycle
+    table.cell(dashTable, 0, 5, "Dom. Cycle", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, dashDomCycleStr, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 6: Cycles Found
+    table.cell(dashTable, 0, 6, "Cycles", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, str.tostring(dashCyclesFound) + " / " + str.tostring(effHarmonics), text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 7: Timeframe
+    table.cell(dashTable, 0, 7, "Timeframe", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 7, timeframe.period, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 8: Preset
+    table.cell(dashTable, 0, 8, "Preset", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 8, presetInput, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 9: Version
+    table.cell(dashTable, 0, 9, "Version", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 9, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string priceStr = str.tostring(close, format.mintick)
+string tickerStr = syminfo.tickerid
+string tfStr = timeframe.period
+string timeStr = str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone)
+
+string buyJsonMsg = '{"action":"buy","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+string buyTextMsg = "🟢 BUY | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Time: " + timeStr
+string buyMsg = webhookInput ? buyJsonMsg : buyTextMsg
+
+string sellJsonMsg = '{"action":"sell","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+string sellTextMsg = "🔴 SELL | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Time: " + timeStr
+string sellMsg = webhookInput ? sellJsonMsg : sellTextMsg
+
+if dirChangedBuy
+    alert(buyMsg, alert.freq_once_per_bar_close)
+
+if dirChangedSell
+    alert(sellMsg, alert.freq_once_per_bar_close)

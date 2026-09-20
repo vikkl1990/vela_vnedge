@@ -1,0 +1,1343 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// VOLUME-WEIGHTED S/R ZONES [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.4.3
+
+indicator(
+     title             = "Volume-Weighted S/R Zones [WillyAlgoTrader]",
+     shorttitle        = "VWSR Zones",
+     overlay           = true,
+     max_lines_count   = 500,
+     max_labels_count  = 500,
+     max_boxes_count   = 500,
+     max_bars_back     = 5000)
+
+// ══════════════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_ZONE   = "📦 Zone Detection"
+GRP_FILTER = "🔍 Filters (optional)"
+GRP_SIGNAL = "🎯 Signals"
+GRP_RISK   = "🛡️ Risk Management"
+GRP_VISUAL = "🎨 Visual"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.4.3"
+
+// Score tier thresholds
+SCORE_WEAK_MAX   = 30.0
+SCORE_MED_MAX    = 60.0
+SCORE_STRONG_MAX = 85.0
+
+// Visual layout constants
+LINE_FORWARD_BARS  = 20    // SL/TP line forward extension
+LABEL_OFFSET_BARS  = 1     // label offset from line endpoint
+LINE_UPDATE_BARS   = 5     // line forward extension during update
+
+// Zone box half-height (in ATR units)
+ZONE_HALF_ATR = 0.15
+
+// Zone box border width — fixed at 1px per v1.1.2 (previously varied
+// by score tier). Kept as a named constant for clarity.
+ZONE_BORDER_WIDTH = 1
+
+// Score-rebuild factors
+MERGE_BASE_WEIGHT  = 0.3
+MERGE_TOUCH_FACTOR = 4.0
+
+// Zone cleanup thresholds
+MIN_VIABLE_SCORE = 5.0
+
+// Same-bar guard
+ENTRY_BAR_HOLD = 1
+
+// Warmup safety margin — added on top of the max lookback requirement
+// to guarantee all helper indicators (ATR, volume SMA) are populated
+// before zone detection runs. Anything 3+ is conservative; 5 is round.
+WARMUP_BUFFER = 5
+
+// ══════════════════════════════════════════════════════════
+// INPUTS — MAIN
+// ══════════════════════════════════════════════════════════
+lookbackInput = input.int(21, "Pivot Lookback", minval = 2, maxval = 30, group = GRP_MAIN, tooltip = "Bars on each side of a pivot point.\n• 3-5: scalping/intraday\n• 5-10: swing\n• 10+: position trading")
+maxZonesInput = input.int(8, "Max Active Zones", minval = 2, maxval = 20, group = GRP_MAIN, tooltip = "How many top zones to keep on chart.\nWeakest zones get removed when limit exceeded.")
+mergeAtrInput = input.float(0.5, "Zone Merge Distance (×ATR)", minval = 0.1, maxval = 3.0, step = 0.1, group = GRP_MAIN, tooltip = "Close pivots within this ATR distance get merged.\nHigher = fewer/wider zones, Lower = more/tighter zones.\nDefault 0.5 works well on most TFs; raise to 0.7-1.0 on higher TFs if zones look too granular.")
+minScoreInput = input.float(15.0, "Min Score to Display", minval = 0.0, maxval = 100.0, step = 5.0, group = GRP_MAIN, tooltip = "Hide zones with strength score below this threshold.\n0 = show everything, 30+ = only meaningful levels.")
+
+// ── Zone Detection ───────────────────────────────────────
+atrLenInput       = input.int(14, "ATR Length", minval = 5, maxval = 50, group = GRP_ZONE, tooltip = "ATR period used for clustering, reactions, and signals.")
+volLookbackInput  = input.int(20, "Volume Avg Lookback", minval = 5, maxval = 100, group = GRP_ZONE, tooltip = "Bars to average volume for volume-score calculation (excludes pivot bar itself).")
+reactionBarsInput = input.int(5, "Reaction Window (bars)", minval = 2, maxval = 20, group = GRP_ZONE, tooltip = "How many bars after a pivot to measure reaction strength.")
+ageDecayInput     = input.float(0.5, "Age Decay Rate", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_ZONE, tooltip = "Score loss per bar = rate × 0.1.\n• 0.0 = no decay\n• 0.5 = -0.05/bar (~25 over 500 bars)\n• 1.0 = -0.10/bar (~50 over 500 bars)")
+maxAgeValueInput  = input.int(30, "Max Zone Age (Value)", minval = 1, maxval = 10000, group = GRP_ZONE, tooltip = "Zones older than this get auto-removed.\nUnit selected below — default 30 Days means 30 calendar days of price action regardless of timeframe.")
+maxAgeUnitInput   = input.string("Days", "Max Zone Age (Unit)", options = ["Bars", "Hours", "Days"], group = GRP_ZONE, tooltip = "Unit for Max Zone Age.\n• Bars: legacy behavior, age measured in chart bars\n• Hours: TF-independent, age measured in real time\n• Days: TF-independent, age measured in calendar days (default)\nFor tick/Renko charts where time-per-bar is undefined, Hours/Days fall back to 500 bars.")
+
+// ── Optional Filters ─────────────────────────────────────
+useVolFilterInput  = input.bool(false, "Volume Filter for Breaks", group = GRP_FILTER, tooltip = "Require break candle volume ≥ N×average.\nReduces false breakouts on thin volume.")
+volMultInput       = input.float(1.3, "  Volume Multiplier", minval = 1.0, maxval = 5.0, step = 0.1, group = GRP_FILTER)
+useVolCapInput     = input.bool(true,  "  Volume Cap (gap protection)", group = GRP_FILTER, tooltip = "Reject break candles with anomalously HIGH volume (gaps, news spikes).\nProtects against false-positive breaks on equities after market gaps.\nOnly applies when 'Volume Filter for Breaks' is enabled.")
+volCapInput        = input.float(5.0,  "    Volume Cap Multiplier", minval = 2.0, maxval = 20.0, step = 0.5, group = GRP_FILTER, tooltip = "Reject breaks where volume > N×average.\n• 5.0 = filter only extreme spikes (default)\n• 3.0 = stricter, filters moderate spikes too\n• 10.0 = very loose, only filters absolute outliers")
+useMomFilterInput  = input.bool(false, "Momentum Filter for Breaks", group = GRP_FILTER, tooltip = "Require break candle range ≥ N×ATR.\nFilters weak/doji breakouts.")
+momMultInput       = input.float(1.0, "  Momentum Multiplier (×ATR)", minval = 0.3, maxval = 3.0, step = 0.1, group = GRP_FILTER)
+useMitigationInput = input.bool(false, "Mitigation Filter for Retests", group = GRP_FILTER, tooltip = "Skip retests on zones already tested once.")
+
+// ── Signals ──────────────────────────────────────────────
+showBreaksInput    = input.bool(true,  "Show Break Signals",  group = GRP_SIGNAL)
+showRetestsInput   = input.bool(true,  "Show Retest Signals", group = GRP_SIGNAL)
+retestMinBarsInput = input.int(2,  "Min Bars Before Retest", minval = 1, maxval = 50,  group = GRP_SIGNAL)
+retestMaxBarsInput = input.int(30, "Max Bars for Retest",    minval = 5, maxval = 200, group = GRP_SIGNAL)
+reactionMinInput   = input.float(0.5, "Min Retest Reaction (×ATR)", minval = 0.1, maxval = 3.0, step = 0.1, group = GRP_SIGNAL, tooltip = "Retest needs price to bounce off zone by at least this × ATR.")
+
+// ── Risk Management ──────────────────────────────────────
+useRiskInput        = input.bool(true, "Enable Risk Management", group = GRP_RISK)
+riskPresetInput     = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RISK, tooltip = "• Conservative: SL 2.5×ATR, TP 1R/2R/4R\n• Balanced: SL 1.5×ATR, TP 1R/2R/3R\n• Aggressive: SL 1.0×ATR, TP 1.5R/2.5R/4R\n• Scalping: SL 0.8×ATR, TP 0.8R/1.5R/2R\n• Custom: manual values below")
+slMultInput         = input.float(1.5, "  SL ×ATR (Custom)",   minval = 0.5, maxval = 5.0,  step = 0.1, group = GRP_RISK)
+tp1MultInput        = input.float(1.0, "  TP1 ×Risk (Custom)", minval = 0.5, maxval = 5.0,  step = 0.1, group = GRP_RISK)
+tp2MultInput        = input.float(2.0, "  TP2 ×Risk (Custom)", minval = 1.0, maxval = 10.0, step = 0.1, group = GRP_RISK)
+tp3MultInput        = input.float(3.0, "  TP3 ×Risk (Custom)", minval = 1.5, maxval = 15.0, step = 0.1, group = GRP_RISK)
+useZoneSLInput      = input.bool(true, "Zone-Aware SL", group = GRP_RISK, tooltip = "Place SL behind the broken zone (clearer invalidation) instead of pure ATR.")
+useBreakEvenInput   = input.bool(true, "Break-Even After TP1", group = GRP_RISK, tooltip = "When TP1 is hit, move stop-loss to entry price (break-even).\nThe trailed SL replaces the original — trade closes at break-even\ninstead of original SL if price reverses.\nLets winners run to TP2/TP3 risk-free.")
+showSlTpInput       = input.bool(true, "Show SL/TP Lines",  group = GRP_RISK)
+showSlTpLabelsInput = input.bool(true, "Show SL/TP Labels", group = GRP_RISK)
+showPctOnLabelsInput= input.bool(true, "Show % Distance on Labels", group = GRP_RISK, tooltip = "Append % distance from entry to SL/TP labels (e.g. 'SL 1.2300 (-0.36%)').\nHelps quick R:R assessment without mental math.")
+entryLineStyleInput = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Line style for the entry-price reference line. Pro default: Dotted (low visual weight — it's a reference, not an action level).")
+slLineStyleInput    = input.string("Solid",  "SL Line Style",    options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Line style for the stop-loss line. Pro default: Solid (high visual weight — SL is the most critical risk level).")
+tpLineStyleInput    = input.string("Dashed", "TP Line Style",    options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Line style for all three take-profit lines (TP1/TP2/TP3). Pro default: Dashed (medium visual weight). On hit, a TP line turns solid cyan regardless of this setting.")
+
+// ── Visual ───────────────────────────────────────────────
+themeInput          = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL)
+showZonesInput      = input.bool(true, "Show Zones",             group = GRP_VISUAL)
+showZoneLabelsInput = input.bool(true, "Show Zone Score Labels", group = GRP_VISUAL)
+showWatermarkInput  = input.bool(true, "Show Watermark",         group = GRP_VISUAL)
+zoneForwardBarsInput = input.int(5, "Zone Forward Bars", minval = 0, maxval = 100, group = GRP_VISUAL, tooltip = "How many bars beyond the last bar to extend zone boxes.\n0 = stop at last bar, 5 = small forward projection (default).")
+labelFontSizeInput  = input.string("Small", "SL/TP Label Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for SL/TP/Entry labels (price + percent values).\nDefault: Small. Use Tiny for compact look on busy charts.")
+signalFontSizeInput = input.string("Small", "Signal Marker Size (BRK/RT)", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for BRK/RT signal markers below/above bars.")
+
+// ── Dashboard ────────────────────────────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH)
+dashPosStr    = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH)
+showStatsInput = input.bool(true, "Show Trade Stats (W/L)", group = GRP_DASH, tooltip = "Show per-session trade statistics in dashboard:\n• Trades: total closed trades (wins + losses)\n• W/L: wins vs losses count\n• Win Rate: a trade counts as WIN as soon as TP1 is reached\n• BE saves: subset of wins that closed on break-even stop (didn't reach TP3)\n• Avg R: average R-multiple, assumes 1/3 partition at each TP\n\nWin definition: TP1 reached = WIN. Stopped before TP1 = LOSS.")
+resetStatsInput = input.int(0, "Reset Stats Counter", minval = 0, maxval = 999, group = GRP_DASH, tooltip = "Change this value (or any other input) to fully reset stats counters.\nPine re-initializes all `var` state when any input changes.")
+
+// ── Colors ───────────────────────────────────────────────
+bullColorInput = input.color(#00E676, "Support (Demand)",    inline = "c1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Resistance (Supply)", inline = "c1", group = GRP_COLORS)
+
+// ── Alerts ───────────────────────────────────────────────
+webhookInput       = input.bool(false, "Webhook JSON Format", group = GRP_ALERT)
+alertOnBreakInput  = input.bool(true,  "Alert on Breaks",  group = GRP_ALERT)
+alertOnRetestInput = input.bool(true,  "Alert on Retests", group = GRP_ALERT)
+alertOnSlHitInput  = input.bool(false, "Alert on SL Hit",  group = GRP_ALERT)
+alertOnTpHitInput  = input.bool(false, "Alert on TP Hits", group = GRP_ALERT)
+
+// ══════════════════════════════════════════════════════════
+// THEME DETECTION & COLOR PALETTE
+// ══════════════════════════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+TEXT_COLOR      = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED      = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+
+BULL_TEXT       = isDark ? #00E676 : #00695C   // deep teal-green on light (passes 4.5:1)
+BEAR_TEXT       = isDark ? #FF5252 : #D32F2F   // 4.98:1 on white — AA pass
+NEUTRAL_TEXT    = isDark ? #FFEB3B : #BF360C   // burnt orange on light (was #F57F17, 2.65:1 fail)
+
+// v1.4.3 A11Y: BULL_LABEL_TEXT / BEAR_LABEL_TEXT are used for BRK/RT
+// MARKERS, which paint on top of full-opacity bull/bear colors (NOT
+// blended). Previously BEAR_LABEL_TEXT was #FFFFFF on the default
+// #FF5252 bear color — 3.19:1, WCAG AA fail. Changed to #1A1A1A
+// (dark) which gives 5.45:1 on #FF5252 (AA pass). Looks less alarming
+// but is actually readable.
+//
+// BULL_LABEL_TEXT (#004D25) on default bull (#00E676) is 6.02:1 — OK.
+BULL_LABEL_TEXT = #004D25
+BEAR_LABEL_TEXT = #1A1A1A
+
+// v1.4.3 A11Y: zone label text colors must be ADAPTIVE to theme.
+// The zone label background is `color.new(baseColor, 50)` — 50%
+// transparent — which blends with the chart background. The blended
+// result is dark on dark themes and light on light themes:
+//
+//   Dark theme   + bull (#00E676) at 50% on #131722 → #0A7E4C (dark green)
+//   Dark theme   + bear (#FF5252) at 50% on #131722 → #89343A (dark red)
+//   Light theme  + bull (#00E676) at 50% on #FFFFFF → #80F2BA (light green)
+//   Light theme  + bear (#FF5252) at 50% on #FFFFFF → #FFA8A8 (light pink)
+//
+// Fixed text colors fail in two combinations: dark+bull (text was
+// #004D25 on #0A7E4C = 1.96:1 fail) and light+bear (text was #FFFFFF
+// on #FFA8A8 = 1.84:1 fail). Now per-(theme, zone-type):
+ZONE_BULL_LABEL_TEXT = isDark ? #FFFFFF : #004D25   // light on dark zone, dark on light zone
+ZONE_BEAR_LABEL_TEXT = isDark ? #FFFFFF : #1A1A1A   // light on dark zone, dark on light zone
+
+TABLE_BG        = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER    = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+HEADER_BG       = color.new(#1565C0, 0)
+HEADER_TEXT     = #FFFFFF
+WM_COLOR        = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+SL_COLOR    = isDark ? color.new(#EF5350, 0)  : color.new(#C62828, 0)
+TP1_COLOR   = isDark ? color.new(#4CAF50, 25) : color.new(#2E7D32, 25)
+TP2_COLOR   = isDark ? color.new(#4CAF50, 35) : color.new(#2E7D32, 35)
+TP3_COLOR   = isDark ? color.new(#4CAF50, 0)  : color.new(#2E7D32, 0)   // TP3 full opacity for emphasis
+ENTRY_COLOR = isDark ? color.new(#42A5F5, 0)  : color.new(#1565C0, 0)
+// v1.4.3 A11Y: full-opacity TP green for LABEL backgrounds. Previously
+// labels used TP1_COLOR / TP2_COLOR which are 25%/35% transparent —
+// the label text then blended with chart bg giving 2.69-4.03:1 contrast
+// (WCAG AA fail). Using base green at full opacity keeps labels readable
+// (5.13-6.26:1) while the LINES still differ by transparency for visual
+// hierarchy. TP3_COLOR is already full-opacity so it reuses TP_LABEL_COLOR.
+TP_LABEL_COLOR = isDark ? color.new(#4CAF50, 0) : color.new(#2E7D32, 0)
+
+// Pro accent + utility
+TP_HIT_COLOR = isDark ? color.new(#26C6DA, 0) : color.new(#00838F, 0)   // soft cyan for hit TP
+// v1.4.3 A11Y: BE light was #BF360C — IDENTICAL to NEUTRAL_TEXT on
+// light theme (both #BF360C), making BE-active dashboard cells
+// indistinguishable from neutral-trend cells. Changed to dark amber
+// 950 (#704214) — distinct brown-amber hue, AAA contrast on white
+// (8.47:1), keeps the warning/caution semantics of amber.
+BE_COLOR     = isDark ? color.new(#FFA726, 0) : color.new(#704214, 0)   // amber (dark theme) / dark amber (light)
+
+// LABEL_TEXT — text color on tinted SL/TP/Entry/BE label backgrounds.
+// Adaptive: dark theme uses muted-saturated bg colors → needs DARK text;
+// light theme uses darker bg variants → WHITE text works.
+// Without adaptation, dark-theme BE+white would be only 1.94:1 contrast (fail).
+LABEL_TEXT = isDark ? #1A1A1A : #FFFFFF
+
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    =>                position.top_right
+
+// v1.4.0: helper to resolve a style-name string to Pine's line.style_*
+// constant. Replaces the v1.3.x slTpLineStyle one-shot switch that only
+// handled the SL line — now we have three independently-configurable
+// inputs (entry / SL / TP) so a function is cleaner than three switches.
+lineStyleFromString(string s) =>
+    switch s
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        =>          line.style_solid
+
+// Pre-resolve user inputs once. Pine infers the type (series lineStyle
+// or similar) — no explicit type annotation needed and `var` would be
+// inappropriate here since the values can change when user changes inputs.
+entryLineStyle = lineStyleFromString(entryLineStyleInput)
+slLineStyle    = lineStyleFromString(slLineStyleInput)
+tpLineStyle    = lineStyleFromString(tpLineStyleInput)
+
+// ══════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// Resolve dropdown string to text size constant
+sizeFromString(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        =>          size.small
+
+// "+0.42%" / "-1.18%" suffix. Empty string when level/entry invalid or toggle off.
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+scoreToTransp(float score) =>
+    score >= SCORE_STRONG_MAX ? 75 : score >= SCORE_MED_MAX ? 80 : score >= SCORE_WEAK_MAX ? 87 : 92
+
+scoreToTier(float score) =>
+    score >= SCORE_STRONG_MAX ? "🔥" : score >= SCORE_MED_MAX ? "★★★" : score >= SCORE_WEAK_MAX ? "★★" : "★"
+
+// ══════════════════════════════════════════════════════════
+// BASE SERIES
+// ══════════════════════════════════════════════════════════
+float atrVal    = nz(ta.atr(atrLenInput), 0.0)
+float volAvgPrev = nz(ta.sma(volume[1], volLookbackInput), 0.0)
+bool  hasVolume  = nz(volume, 0) > 0
+
+int  WARMUP_BARS = math.max(lookbackInput + reactionBarsInput, math.max(atrLenInput, volLookbackInput)) + lookbackInput + WARMUP_BUFFER
+bool isWarmedUp  = bar_index >= WARMUP_BARS
+
+// v1.4.0: TF-aware max zone age. Converts the user's value+unit
+// (Bars / Hours / Days) into an integer bar count, since the cleanup
+// loop compares against bar_index deltas.
+//
+// On non-time-based charts (tick, range, Renko, point-and-figure)
+// `timeframe.in_seconds()` returns 0. Hours/Days are meaningless there,
+// so we fall back to a legacy 500-bar default. Bars unit always works
+// regardless.
+//
+// Note: timeframe.in_seconds() officially returns float — used as float
+// here even though typical TF values are whole seconds, to match docs
+// and avoid implicit-cast warnings.
+float _tfSeconds = timeframe.in_seconds()
+int  maxAgeBars = switch maxAgeUnitInput
+    "Bars"  => maxAgeValueInput
+    "Hours" => _tfSeconds > 0 ? int(math.max(1.0, maxAgeValueInput * 3600.0  / _tfSeconds)) : 500
+    "Days"  => _tfSeconds > 0 ? int(math.max(1.0, maxAgeValueInput * 86400.0 / _tfSeconds)) : 500
+    =>         500
+
+// ══════════════════════════════════════════════════════════
+// PIVOT DETECTION
+// ══════════════════════════════════════════════════════════
+float ph = ta.pivothigh(high, lookbackInput, lookbackInput)
+float pl = ta.pivotlow (low,  lookbackInput, lookbackInput)
+
+bool newPH = not na(ph)
+bool newPL = not na(pl)
+
+int pivotBarOffset = lookbackInput
+
+// ══════════════════════════════════════════════════════════
+// STRENGTH SCORE FUNCTIONS
+// ══════════════════════════════════════════════════════════
+calcVolScore(int offset) =>
+    float result = 20.0
+    float pivotVol = nz(volume[offset], 0.0)
+    float avgV     = nz(volAvgPrev[offset], 0.0)
+    if hasVolume and avgV > 0
+        float ratio = safeDiv(pivotVol, avgV, 1.0)
+        result := math.min(40.0, math.max(0.0, ratio * 20.0))
+    result
+
+calcReactionScore(int offset, float pivotPrice, bool isResistance) =>
+    float maxMove = 0.0
+    int   loopEnd = math.min(reactionBarsInput, offset)
+    // v1.4.1: start at i=1 to exclude the pivot bar itself. The pivot
+    // bar's high/low IS the extreme by definition — it contributes 0
+    // to the move calc. Starting at 1 looks at the bar AFTER the pivot,
+    // which is the first bar of the actual reaction.
+    for i = 1 to loopEnd
+        float ext = isResistance ? nz(low[offset - i], pivotPrice) : nz(high[offset - i], pivotPrice)
+        float move = isResistance ? (pivotPrice - ext) : (ext - pivotPrice)
+        if move > maxMove
+            maxMove := move
+    float atrAtPivot = nz(atrVal[offset], atrVal)
+    float moveAtr = safeDiv(maxMove, atrAtPivot, 0.0)
+    math.min(30.0, math.max(0.0, moveAtr * 10.0))
+
+// ══════════════════════════════════════════════════════════
+// ZONE STORAGE
+// ══════════════════════════════════════════════════════════
+var array<float> zoneTops      = array.new<float>()
+var array<float> zoneBots      = array.new<float>()
+var array<float> zoneScores    = array.new<float>()
+var array<int>   zoneCreated   = array.new<int>()
+var array<int>   zoneTypes     = array.new<int>()
+var array<int>   zoneTouches   = array.new<int>()
+var array<bool>  zoneBroken    = array.new<bool>()
+var array<int>   zoneBrokenBar = array.new<int>()
+var array<box>   zoneBoxes     = array.new<box>()
+var array<label> zoneLabels    = array.new<label>()
+
+// ══════════════════════════════════════════════════════════
+// ADD PIVOT
+// ══════════════════════════════════════════════════════════
+addPivot(float price, int zType, int barOffset) =>
+    float vScore     = calcVolScore(barOffset)
+    float rScore     = calcReactionScore(barOffset, price, zType == 1)
+    float baseScore  = vScore + rScore + 10.0
+    float mergeDist  = atrVal * mergeAtrInput
+    int   pivotBar   = bar_index - barOffset
+
+    int mergeIdx = -1
+    int sz = array.size(zoneTops)
+    if sz > 0
+        for i = 0 to sz - 1
+            if mergeIdx == -1 and array.get(zoneTypes, i) == zType and not array.get(zoneBroken, i)
+                float midZone = (array.get(zoneTops, i) + array.get(zoneBots, i)) / 2.0
+                if math.abs(midZone - price) <= mergeDist
+                    mergeIdx := i
+
+    if mergeIdx >= 0
+        float curTop = array.get(zoneTops, mergeIdx)
+        float curBot = array.get(zoneBots, mergeIdx)
+        array.set(zoneTops, mergeIdx, math.max(curTop, price))
+        array.set(zoneBots, mergeIdx, math.min(curBot, price))
+
+        int   curTouch  = array.get(zoneTouches, mergeIdx)
+        int   newTouch  = curTouch + 1
+        float touchBon  = math.min(20.0, math.sqrt(newTouch) * MERGE_TOUCH_FACTOR)
+        float curScore  = array.get(zoneScores, mergeIdx)
+        array.set(zoneScores,  mergeIdx, math.min(100.0, curScore + baseScore * MERGE_BASE_WEIGHT + touchBon * 0.5))
+        array.set(zoneTouches, mergeIdx, newTouch)
+    else
+        box   nullBox = na
+        label nullLbl = na
+        array.push(zoneTops,      price + atrVal * ZONE_HALF_ATR)
+        array.push(zoneBots,      price - atrVal * ZONE_HALF_ATR)
+        array.push(zoneScores,    math.min(100.0, baseScore))
+        array.push(zoneCreated,   pivotBar)
+        array.push(zoneTypes,     zType)
+        array.push(zoneTouches,   1)
+        array.push(zoneBroken,    false)
+        array.push(zoneBrokenBar, 0)
+        array.push(zoneBoxes,     nullBox)
+        array.push(zoneLabels,    nullLbl)
+    0
+
+if barstate.isconfirmed and isWarmedUp
+    if newPH
+        addPivot(ph, 1, pivotBarOffset)
+    if newPL
+        addPivot(pl, -1, pivotBarOffset)
+
+// ══════════════════════════════════════════════════════════
+// AGE DECAY & CLEANUP (single reverse pass)
+// ══════════════════════════════════════════════════════════
+if barstate.isconfirmed and array.size(zoneTops) > 0
+    float decayPerBar = ageDecayInput * 0.1
+    for i = array.size(zoneTops) - 1 to 0
+        if i < array.size(zoneTops)
+            // Apply decay first
+            if decayPerBar > 0
+                float newScr = math.max(0.0, array.get(zoneScores, i) - decayPerBar)
+                array.set(zoneScores, i, newScr)
+            // Then evaluate removal
+            int   age = bar_index - array.get(zoneCreated, i)
+            float scr = array.get(zoneScores, i)
+            bool broken = array.get(zoneBroken, i)
+            int   barsSinceBreak = broken ? bar_index - array.get(zoneBrokenBar, i) : 0
+            bool tooOld      = age > maxAgeBars
+            bool tooWeak     = scr < MIN_VIABLE_SCORE
+            bool brokenStale = broken and barsSinceBreak > retestMaxBarsInput * 2
+            if tooOld or tooWeak or brokenStale
+                box   b = array.get(zoneBoxes,  i)
+                label l = array.get(zoneLabels, i)
+                if not na(b)
+                    box.delete(b)
+                if not na(l)
+                    label.delete(l)
+                array.remove(zoneTops,      i)
+                array.remove(zoneBots,      i)
+                array.remove(zoneScores,    i)
+                array.remove(zoneCreated,   i)
+                array.remove(zoneTypes,     i)
+                array.remove(zoneTouches,   i)
+                array.remove(zoneBroken,    i)
+                array.remove(zoneBrokenBar, i)
+                array.remove(zoneBoxes,     i)
+                array.remove(zoneLabels,    i)
+
+if barstate.isconfirmed
+    // Cap to max — remove weakest zones one by one until under cap.
+    // CHANGED v1.2.1: safety limit scales with maxZonesInput (was hardcoded 50).
+    // Worst case sane upper bound is `current_size - maxZones`, so `maxZones * 3`
+    // is more than enough headroom for any realistic pivot spike while still
+    // preventing a runaway loop if some future bug pushes the array past expected.
+    int trimSafetyMax = maxZonesInput * 3
+    int trimSafety = 0
+    while array.size(zoneTops) > maxZonesInput and trimSafety < trimSafetyMax
+        float minScr = 999.0
+        int   minIdx = 0
+        for i = 0 to array.size(zoneScores) - 1
+            float s = array.get(zoneScores, i)
+            if s < minScr
+                minScr := s
+                minIdx := i
+        box   bm = array.get(zoneBoxes,  minIdx)
+        label lm = array.get(zoneLabels, minIdx)
+        if not na(bm)
+            box.delete(bm)
+        if not na(lm)
+            label.delete(lm)
+        array.remove(zoneTops,      minIdx)
+        array.remove(zoneBots,      minIdx)
+        array.remove(zoneScores,    minIdx)
+        array.remove(zoneCreated,   minIdx)
+        array.remove(zoneTypes,     minIdx)
+        array.remove(zoneTouches,   minIdx)
+        array.remove(zoneBroken,    minIdx)
+        array.remove(zoneBrokenBar, minIdx)
+        array.remove(zoneBoxes,     minIdx)
+        array.remove(zoneLabels,    minIdx)
+        trimSafety += 1
+
+// ══════════════════════════════════════════════════════════
+// BREAK & RETEST DETECTION
+// ══════════════════════════════════════════════════════════
+var float lastBreakZoneTop = na
+var float lastBreakZoneBot = na
+var float lastBreakScore   = 0.0
+var int   lastBreakDir     = 0
+var int   lastBreakBar     = 0
+var bool  lastBreakRetested = false
+
+bool sigBreakBull  = false
+bool sigBreakBear  = false
+bool sigRetestBull = false
+bool sigRetestBear = false
+
+// v1.2.1: volume filter now has both a floor AND optional ceiling.
+// Floor: volume >= avg × multiplier (default, filters thin-volume breakouts)
+// Ceiling (opt-in): volume <= avg × cap (filters gap-day / news-spike anomalies)
+// Ceiling only applies when the main volume filter is on — standalone makes no sense.
+bool volFloorPass = useVolFilterInput  ? (hasVolume and volume >= volAvgPrev * volMultInput) : true
+bool volCapPass   = (useVolFilterInput and useVolCapInput) ? (volAvgPrev > 0 and volume <= volAvgPrev * volCapInput) : true
+bool volPass      = volFloorPass and volCapPass
+bool momPass = useMomFilterInput ? ((high - low) >= atrVal * momMultInput) : true
+
+if barstate.isconfirmed and isWarmedUp and array.size(zoneTops) > 0
+    for i = 0 to array.size(zoneTops) - 1
+        if not array.get(zoneBroken, i)
+            float zTop  = array.get(zoneTops, i)
+            float zBot  = array.get(zoneBots, i)
+            int   zType = array.get(zoneTypes, i)
+
+            if zType == 1 and close > zTop and close[1] <= zTop and volPass and momPass and not sigBreakBull
+                array.set(zoneBroken, i, true)
+                array.set(zoneBrokenBar, i, bar_index)
+                lastBreakZoneTop  := zTop
+                lastBreakZoneBot  := zBot
+                lastBreakScore    := array.get(zoneScores, i)
+                lastBreakDir      := 1
+                lastBreakBar      := bar_index
+                lastBreakRetested := false
+                sigBreakBull      := true
+            else if zType == -1 and close < zBot and close[1] >= zBot and volPass and momPass and not sigBreakBear
+                array.set(zoneBroken, i, true)
+                array.set(zoneBrokenBar, i, bar_index)
+                lastBreakZoneTop  := zTop
+                lastBreakZoneBot  := zBot
+                lastBreakScore    := array.get(zoneScores, i)
+                lastBreakDir      := -1
+                lastBreakBar      := bar_index
+                lastBreakRetested := false
+                sigBreakBear      := true
+
+if barstate.isconfirmed and isWarmedUp and lastBreakDir != 0
+    int barsSinceBreak = bar_index - lastBreakBar
+    bool inWindow = barsSinceBreak >= retestMinBarsInput and barsSinceBreak <= retestMaxBarsInput
+    bool mitigationOk = useMitigationInput ? not lastBreakRetested : true
+    if inWindow and mitigationOk
+        if lastBreakDir == 1
+            bool touched = low <= lastBreakZoneTop
+            bool bounced = close > lastBreakZoneTop and (close - low) >= atrVal * reactionMinInput
+            if touched and bounced
+                lastBreakRetested := true
+                sigRetestBull := true
+        else
+            bool touched = high >= lastBreakZoneBot
+            bool bounced = close < lastBreakZoneBot and (high - close) >= atrVal * reactionMinInput
+            if touched and bounced
+                lastBreakRetested := true
+                sigRetestBear := true
+
+bool finalBullSignal = (showBreaksInput and sigBreakBull) or (showRetestsInput and sigRetestBull)
+bool finalBearSignal = (showBreaksInput and sigBreakBear) or (showRetestsInput and sigRetestBear)
+
+float signalScore = (sigRetestBull or sigRetestBear or sigBreakBull or sigBreakBear) ? lastBreakScore : 0.0
+
+// ══════════════════════════════════════════════════════════
+// RISK MANAGEMENT
+// ══════════════════════════════════════════════════════════
+[effSLMult, effTP1, effTP2, effTP3] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.0]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.0]
+    "Custom"       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    =>                [1.5, 1.0, 2.0, 3.0]
+
+var float activeEntry    = na
+var float activeSL       = na
+var float activeTP1      = na
+var float activeTP2      = na
+var float activeTP3      = na
+var int   activeDir      = 0
+var float activeRR       = 0.0
+var int   activeEntryBar = 0
+
+// TP-latching flags — fire each TP only once per trade, prevent dup alerts
+var bool tp1Reached = false
+var bool tp2Reached = false
+var bool tp3Reached = false
+
+// Break-even tracking — set when SL is moved to entry after TP1
+var bool beActive = false
+
+// v1.3.0: per-trade TP multiplier snapshot. Cached at entry so Avg R
+// stays accurate even if user changes the preset/Custom values mid-session.
+// Each closed trade contributes its OWN-time R values to the rolling sum.
+var float activeTP1Mult = 0.0
+var float activeTP2Mult = 0.0
+var float activeTP3Mult = 0.0
+
+// v1.3.0: session stats counters. `var` means they persist across bars
+// but reset whenever ANY input changes (Pine re-initializes var state).
+// The dedicated `resetStatsInput` is a no-op-on-its-own — its only
+// purpose is to give the user a button that triggers that re-init
+// deliberately. Pine ties `var` re-init to any input change, so simply
+// declaring `resetStatsInput` as an input is enough — no further
+// reference needed.
+//
+// v1.3.1: outcome buckets reduced to WIN / LOSS only. statsBeSaves is
+// a DIAGNOSTIC sub-counter — a subset of wins where BE-stop was what
+// actually closed the trade (rather than reaching TP3). Useful for
+// tuning TP3 target distance.
+var int   statsWins     = 0
+var int   statsLosses   = 0
+var int   statsBeSaves  = 0   // diagnostic only — subset of wins
+var float statsRSum     = 0.0 // cumulative realized R-multiple
+
+if useRiskInput and isWarmedUp and barstate.isconfirmed and activeDir == 0
+    // Position lifecycle: a new entry is only allowed when no position is
+    // active (activeDir == 0). The previous trade must close via SL or TP3
+    // before another signal can open a new one. Signals that arrive while
+    // a trade is live are ignored (visible on chart markers only).
+    //
+    // Guard against the rare edge case where both bull and bear fire on
+    // the same bar (e.g. a fresh break combined with a stale retest of
+    // opposite direction) — prefer the most recent break direction.
+    bool takeBull = finalBullSignal and not (finalBearSignal and lastBreakDir == -1)
+    bool takeBear = finalBearSignal and not (finalBullSignal and lastBreakDir == 1)
+    // v1.2.1: hard defense-in-depth guard — when the lastBreakDir filter
+    // above doesn't resolve cleanly (e.g. lastBreakDir == 0 with both
+    // signals present), `if takeBull / else if takeBear` would silently
+    // pick bull via control flow. Make the bull-priority explicit so
+    // there is exactly one possible entry per bar regardless of state.
+    takeBear := takeBear and not takeBull
+    if takeBull
+        activeEntry := close
+        activeDir   := 1
+        activeEntryBar := bar_index
+        tp1Reached := false
+        tp2Reached := false
+        tp3Reached := false
+        beActive   := false
+        // v1.3.0: snapshot the TP multipliers so this trade's R-calc
+        // is locked in even if the user changes the preset mid-trade.
+        activeTP1Mult := effTP1
+        activeTP2Mult := effTP2
+        activeTP3Mult := effTP3
+        float slDist = atrVal * effSLMult
+        if useZoneSLInput and not na(lastBreakZoneBot)
+            float zoneSL = lastBreakZoneBot - atrVal * 0.2
+            float atrSL  = close - slDist
+            activeSL := math.max(atrSL, zoneSL)
+            slDist := math.abs(activeEntry - activeSL)
+        else
+            activeSL := activeEntry - slDist
+        activeTP1 := activeEntry + slDist * effTP1
+        activeTP2 := activeEntry + slDist * effTP2
+        activeTP3 := activeEntry + slDist * effTP3
+        activeRR  := effTP1
+    else if takeBear
+        activeEntry := close
+        activeDir   := -1
+        activeEntryBar := bar_index
+        tp1Reached := false
+        tp2Reached := false
+        tp3Reached := false
+        beActive   := false
+        // v1.3.0: snapshot TP multipliers (see takeBull above for rationale)
+        activeTP1Mult := effTP1
+        activeTP2Mult := effTP2
+        activeTP3Mult := effTP3
+        float slDist = atrVal * effSLMult
+        if useZoneSLInput and not na(lastBreakZoneTop)
+            float zoneSL = lastBreakZoneTop + atrVal * 0.2
+            float atrSL  = close + slDist
+            activeSL := math.min(atrSL, zoneSL)
+            slDist := math.abs(activeSL - activeEntry)
+        else
+            activeSL := activeEntry + slDist
+        activeTP1 := activeEntry - slDist * effTP1
+        activeTP2 := activeEntry - slDist * effTP2
+        activeTP3 := activeEntry - slDist * effTP3
+        activeRR  := effTP1
+
+// Captured BEFORE any BE update on this bar — ensures TP1+SL on the same
+// bar resolves against the ORIGINAL stop. If the wick first hit SL, that
+// SL value wins; BE only takes effect from the NEXT bar onward.
+float effectiveSL = activeSL
+
+// SL/TP detection synchronized with entry (barstate.isconfirmed).
+// Intra-bar wicks don't trigger — keeps entry/exit on the same time grid
+// and avoids closing a just-opened position by stop wick noise.
+bool canHit = barstate.isconfirmed and activeDir != 0 and (bar_index - activeEntryBar) >= ENTRY_BAR_HOLD
+bool slHit  = canHit and (activeDir == 1 ? low  <= effectiveSL : high >= effectiveSL)
+bool tp1Hit = canHit and (activeDir == 1 ? high >= activeTP1   : low  <= activeTP1)
+bool tp2Hit = canHit and (activeDir == 1 ? high >= activeTP2   : low  <= activeTP2)
+bool tp3Hit = canHit and (activeDir == 1 ? high >= activeTP3   : low  <= activeTP3)
+
+// First-touch latching — each TP can fire only once per trade.
+// v1.2.1: TP3 now mirrors TP1/TP2 — `and not slHit` makes same-bar SL+TP3
+// resolve consistently as a loss. The "TP hit visuals" block keys off
+// `tp3Reached`, so without this guard the TP3 line would still turn cyan
+// with a ✓ label on a losing trade where SL fired on the same bar.
+// Rationale: real-world brokers don't guarantee TP-limit execution before
+// SL-stop on the same wick; conservative bias toward SL is the realistic
+// backtest behavior.
+bool tp1FirstTouch = tp1Hit and not tp1Reached and not slHit and activeDir != 0
+bool tp2FirstTouch = tp2Hit and not tp2Reached and not slHit and activeDir != 0
+bool tp3FirstTouch = tp3Hit and not tp3Reached and not slHit and activeDir != 0
+
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+if tp3FirstTouch
+    tp3Reached := true
+
+// v1.4.2 HARDENING: snapshot beActive AT THIS POINT — before the BE
+// activation block runs. This captures whether BE was ALREADY active
+// coming into this bar (from a previous TP1 hit), distinct from "BE
+// became active on this bar".
+//
+// In current logic, same-bar TP1+BE+SL is impossible because
+// `tp1FirstTouch` requires `not slHit`, so the BE block can't activate
+// on a bar where slHit also fires. The live `beActive` therefore can't
+// produce wrong answers for downstream consumers under current rules.
+//
+// But reading the bar-start value is the SEMANTICALLY correct query
+// ("was BE active when we entered this bar?"), removes a footgun
+// for future logic changes (e.g. if someone reworks tp1FirstTouch
+// guards), and makes the code's intent explicit. Used by:
+//   1. SL alert emoji: "BE STOP-OUT" only valid when BE pre-existed
+//   2. isBeSave classification: same reasoning
+bool beActiveAtBarStart = beActive
+
+// Break-even trail — on TP1 first touch, move SL to entry. From the
+// next bar onward, any wick touching entry stops out at break-even.
+// v1.4.1: `tp1FirstTouch` already includes `not slHit and activeDir != 0`
+// (see line above), so we only need to add `not beActive` for idempotency.
+bool beJustActivated = false
+if useBreakEvenInput and tp1FirstTouch and not beActive
+    activeSL := activeEntry
+    beActive := true
+    beJustActivated := true
+
+// v1.4.1 BUGFIX [critical]: snapshot exit-relevant prices BEFORE the
+// closure block resets activeEntry/activeSL/activeTP* to na. Without
+// these snapshots, the exit-alert section at end of script reads
+// `nz(activeXxx) = 0` and sends "Entry: 0.00 | SL: 0.00" messages.
+//
+// `exitSL` uses `effectiveSL` (snapshotted before BE mutation) so the
+// SL-hit alert shows the SL value that ACTUALLY triggered the stop,
+// not a later BE-modified value that hadn't yet activated when the
+// slHit check ran. For the BE alert specifically, the "moved to entry"
+// message uses `exitEntry`, which is the right value regardless.
+float exitEntry = activeEntry
+float exitSL    = effectiveSL   // SL value that slHit checked against
+float exitTP1   = activeTP1
+float exitTP2   = activeTP2
+float exitTP3   = activeTP3
+// v1.4.2: exitBeActive uses the bar-start snapshot, not the
+// (possibly-just-flipped) live `beActive`. Without this, a same-bar
+// TP1+BE+SL scenario would incorrectly report "BE STOP-OUT" — the
+// SL hit was against the original SL via effectiveSL, not the BE
+// price (BE block ran AFTER the bar's effectiveSL snapshot).
+bool  exitBeActive = beActiveAtBarStart
+
+if (slHit or tp3Hit) and activeDir != 0
+    // ── v1.3.1: TP1-reached classification ────────────────────────
+    // A trade is a WIN as soon as TP1 was reached. The path after TP1
+    // (TP2/TP3/BE-stop) doesn't change the win/loss verdict — only the
+    // realized R-multiple. Rationale: the trade idea proved correct
+    // the moment first target paid out; rest is partial-fill mechanics.
+    //
+    // Outcome buckets:
+    //   reachedTp1 = true   → WIN  (regardless of how it closed)
+    //   reachedTp1 = false  → LOSS (must mean slHit fired before TP1)
+    //
+    // The same-bar SL+TP3 edge case (per v1.2.1 fix 1) means tp1Reached
+    // would also have stayed false in that scenario — so it's correctly
+    // counted as a LOSS, consistent with the conservative bias toward SL.
+    //
+    // BE-saves: diagnostic SUB-counter. Counts wins where the trade
+    // closed because BE-stop fired (rather than TP3). High BE-saves
+    // relative to total wins = TP1 fills regularly but TP2/TP3 don't.
+    bool reachedTp1   = tp1Reached
+    bool outcomeWin   = reachedTp1
+    // The else branch implies LOSS. Why: closure is gated by
+    // (slHit or tp3Hit). TP3 being hit *requires* price to have moved
+    // past TP1 first (TP1 is always closer to entry than TP3), so
+    // a tp3Hit without tp1Reached would only happen on the same bar
+    // where tp1Hit also fired — and in that case `tp1FirstTouch`
+    // sets tp1Reached BEFORE this block runs (unless slHit also fired
+    // that bar, but then we're in the same-bar-SL edge case and
+    // counting it as loss is correct per v1.2.1 fix 1).
+    // v1.4.2: isBeSave uses beActiveAtBarStart, not live beActive.
+    // A "BE save" means the BE-stop fired against a trade that was
+    // ALREADY trailed to BE coming into this bar. A same-bar
+    // TP1+BE+SL is NOT a BE save — the SL hit was against the
+    // original SL price (BE block ran AFTER effectiveSL snapshot).
+    bool isBeSave     = reachedTp1 and slHit and beActiveAtBarStart   // win that exited on BE-stop, not TP3
+    float tradeR = 0.0
+    if outcomeWin
+        // Compute realized R based on which TPs were actually reached.
+        // The partition that didn't reach a TP (or BE) exits at the
+        // closure price — TP3 or BE-stop.
+        float r1 = (1.0 / 3.0) * activeTP1Mult                          // TP1 always reached in WIN branch
+        float r2 = tp2Reached ? (1.0 / 3.0) * activeTP2Mult : 0.0       // 0 if TP2 missed (BE-stopped between TP1 and TP2)
+        // Third partition: either reached TP3 (full R), or stopped at BE (0R).
+        // It cannot have stopped at original SL — that would have meant
+        // TP1 was never reached (BE only activates after TP1).
+        float r3 = tp3Reached ? (1.0 / 3.0) * activeTP3Mult : 0.0
+        tradeR := r1 + r2 + r3
+        statsWins += 1
+        if isBeSave
+            statsBeSaves += 1
+    else
+        // Straight loss. No TPs hit, full position exits at -1R.
+        tradeR := -1.0
+        statsLosses += 1
+    statsRSum += tradeR
+    // ── now do the actual reset ───────────────────────────────────
+    activeDir      := 0
+    activeSL       := na
+    activeTP1      := na
+    activeTP2      := na
+    activeTP3      := na
+    activeEntry    := na
+    activeRR       := 0.0
+    activeEntryBar := 0
+    tp1Reached     := false
+    tp2Reached     := false
+    tp3Reached     := false
+    beActive       := false
+    activeTP1Mult  := 0.0
+    activeTP2Mult  := 0.0
+    activeTP3Mult  := 0.0
+
+// ══════════════════════════════════════════════════════════
+// DRAW / UPDATE ZONE BOXES (last bar only)
+// ══════════════════════════════════════════════════════════
+// CHANGED v1.1.1: right edge is bar_index + zoneForwardBarsInput,
+// extend is always extend.none. No more infinite right extension.
+if barstate.islast and showZonesInput and array.size(zoneTops) > 0
+    int zoneRightEdge = bar_index + zoneForwardBarsInput
+    for i = 0 to array.size(zoneTops) - 1
+        float scr = array.get(zoneScores, i)
+        if scr >= minScoreInput
+            float zTop = array.get(zoneTops, i)
+            float zBot = array.get(zoneBots, i)
+            int   zType = array.get(zoneTypes, i)
+            int   zCreated = array.get(zoneCreated, i)
+            bool  zBrk = array.get(zoneBroken, i)
+            int   zTouches = array.get(zoneTouches, i)
+
+            color baseColor = zType == 1 ? bearColorInput : bullColorInput
+            int   transp = scoreToTransp(scr)
+            color fillCol = color.new(baseColor, transp)
+            int   borderTransp = math.max(0, transp - 30)
+            color borderCol = color.new(baseColor, borderTransp)
+
+            if zBrk
+                fillCol   := color.new(baseColor, math.min(95, transp + 8))
+                int bTr = math.min(85, math.max(0, transp - 10))
+                borderCol := color.new(baseColor, bTr)
+
+            box existingBox = array.get(zoneBoxes, i)
+            if na(existingBox)
+                box newBox = box.new(zCreated, zTop, zoneRightEdge, zBot, border_color = borderCol, bgcolor = fillCol, border_width = ZONE_BORDER_WIDTH, extend = extend.none)
+                array.set(zoneBoxes, i, newBox)
+            else
+                box.set_top(existingBox, zTop)
+                box.set_bottom(existingBox, zBot)
+                box.set_right(existingBox, zoneRightEdge)
+                box.set_border_color(existingBox, borderCol)
+                box.set_bgcolor(existingBox, fillCol)
+                box.set_border_width(existingBox, ZONE_BORDER_WIDTH)
+                box.set_extend(existingBox, extend.none)
+
+            if showZoneLabelsInput
+                string tier = scoreToTier(scr)
+                string touchStr = zTouches > 1 ? " ×" + str.tostring(zTouches) : ""
+                string brkStr   = zBrk ? " ✕" : ""
+                string lblTxt = tier + " " + str.tostring(scr, "#") + brkStr + touchStr
+                float lblY = zType == 1 ? zTop : zBot
+                string lblStyle = zType == 1 ? label.style_label_lower_left : label.style_label_upper_left
+                color lblTextCol = zType == 1 ? ZONE_BEAR_LABEL_TEXT : ZONE_BULL_LABEL_TEXT
+                color lblBgCol   = color.new(baseColor, 50)
+
+                label existingLbl = array.get(zoneLabels, i)
+                if na(existingLbl)
+                    label newLbl = label.new(bar_index, lblY, lblTxt, color = lblBgCol, textcolor = lblTextCol, style = lblStyle, size = size.small)
+                    array.set(zoneLabels, i, newLbl)
+                else
+                    label.set_xy(existingLbl, bar_index, lblY)
+                    label.set_text(existingLbl, lblTxt)
+                    label.set_textcolor(existingLbl, lblTextCol)
+                    label.set_color(existingLbl, lblBgCol)
+                    label.set_style(existingLbl, lblStyle)
+            else
+                label existingLbl = array.get(zoneLabels, i)
+                if not na(existingLbl)
+                    label.delete(existingLbl)
+                    label nullL1 = na
+                    array.set(zoneLabels, i, nullL1)
+        else
+            box   b = array.get(zoneBoxes,  i)
+            label l = array.get(zoneLabels, i)
+            if not na(b)
+                box.delete(b)
+                box nullB2 = na
+                array.set(zoneBoxes, i, nullB2)
+            if not na(l)
+                label.delete(l)
+                label nullL2 = na
+                array.set(zoneLabels, i, nullL2)
+
+// ══════════════════════════════════════════════════════════
+// SIGNAL MARKERS
+// ══════════════════════════════════════════════════════════
+// Markers render on the entry bar (so the trade has a visible origin)
+// and when no position is active. They are suppressed only on later
+// bars during a live trade — those signals are ignored by the risk
+// block and would just be visual noise.
+//
+// v1.4.1: when an entry just opened on THIS bar (isEntryBar), only
+// markers matching activeDir are drawn. This eliminates the cosmetic
+// "BRK ▲ + BRK ▼ on the same candle" case when a single bar broke
+// both an overhead resistance and a nearby support — only one of
+// those signals could win (per bull-priority guard in risk block),
+// so showing both was misleading.
+//
+// Using label.new (not plotshape) so the marker size can be dynamic —
+// plotshape only accepts simple/const sizes.
+bool isEntryBar = activeDir != 0 and activeEntryBar == bar_index
+bool canShowSig = activeDir == 0 or isEntryBar
+// Direction-filtered visibility: on an entry bar, only the chosen
+// direction's marker is drawn. On a no-position bar, both can draw.
+bool canShowBullSig = canShowSig and (not isEntryBar or activeDir == 1)
+bool canShowBearSig = canShowSig and (not isEntryBar or activeDir == -1)
+signalMarkerSize = sizeFromString(signalFontSizeInput)
+
+if showBreaksInput and sigBreakBull and canShowBullSig
+    label.new(bar_index, low, "BRK", color = bullColorInput, textcolor = BULL_LABEL_TEXT, style = label.style_label_up, size = signalMarkerSize, yloc = yloc.belowbar)
+if showBreaksInput and sigBreakBear and canShowBearSig
+    label.new(bar_index, high, "BRK", color = bearColorInput, textcolor = BEAR_LABEL_TEXT, style = label.style_label_down, size = signalMarkerSize, yloc = yloc.abovebar)
+if showRetestsInput and sigRetestBull and canShowBullSig
+    label.new(bar_index, low, "RT", color = bullColorInput, textcolor = BULL_LABEL_TEXT, style = label.style_label_up, size = signalMarkerSize, yloc = yloc.belowbar)
+if showRetestsInput and sigRetestBear and canShowBearSig
+    label.new(bar_index, high, "RT", color = bearColorInput, textcolor = BEAR_LABEL_TEXT, style = label.style_label_down, size = signalMarkerSize, yloc = yloc.abovebar)
+
+// ══════════════════════════════════════════════════════════
+// SL/TP LINES & LABELS — Pro design (ported from LP indicator)
+// ══════════════════════════════════════════════════════════
+// Style hierarchy (defaults — all three are now user-configurable
+// via entryLineStyleInput / slLineStyleInput / tpLineStyleInput):
+//   • Entry: dotted blue, width 1
+//   • SL:    solid red, width 1 (dimmed when BE is active)
+//   • TPs:   dashed green, width 1 (→ solid cyan + ✓ on hit)
+//   • Labels: tinted background matching line color + adaptive LABEL_TEXT
+//   • % distance from entry suffix (toggleable)
+//
+// v1.4.0: each line type has its own style input. The TP-hit override
+// (solid cyan) still wins over the user's TP style — it's an event
+// indicator, not a preference.
+var line  slLine    = na
+var line  tp1Line   = na
+var line  tp2Line   = na
+var line  tp3Line   = na
+var line  entryLine = na
+var label slLbl     = na
+var label tp1Lbl    = na
+var label tp2Lbl    = na
+var label tp3Lbl    = na
+var label entryLbl  = na
+var bool  riskLinesActive = false
+
+labelSize = sizeFromString(labelFontSizeInput)
+
+if useRiskInput and showSlTpInput and isEntryBar
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(tp1Line)
+        line.delete(tp1Line)
+    if not na(tp2Line)
+        line.delete(tp2Line)
+    if not na(tp3Line)
+        line.delete(tp3Line)
+    if not na(entryLine)
+        line.delete(entryLine)
+    if not na(slLbl)
+        label.delete(slLbl)
+    if not na(tp1Lbl)
+        label.delete(tp1Lbl)
+    if not na(tp2Lbl)
+        label.delete(tp2Lbl)
+    if not na(tp3Lbl)
+        label.delete(tp3Lbl)
+    if not na(entryLbl)
+        label.delete(entryLbl)
+
+    int x2 = bar_index + LINE_FORWARD_BARS
+    entryLine := line.new(bar_index, activeEntry, x2, activeEntry, color = ENTRY_COLOR, style = entryLineStyle, width = 1)
+    slLine    := line.new(bar_index, activeSL,    x2, activeSL,    color = SL_COLOR,    style = slLineStyle,    width = 1)
+    tp1Line   := line.new(bar_index, activeTP1,   x2, activeTP1,   color = TP1_COLOR,   style = tpLineStyle,    width = 1)
+    tp2Line   := line.new(bar_index, activeTP2,   x2, activeTP2,   color = TP2_COLOR,   style = tpLineStyle,    width = 1)
+    tp3Line   := line.new(bar_index, activeTP3,   x2, activeTP3,   color = TP3_COLOR,   style = tpLineStyle,    width = 1)
+
+    if showSlTpLabelsInput
+        int lblX = x2 + LABEL_OFFSET_BARS
+        string entryS = str.tostring(activeEntry, format.mintick)
+        string slS    = str.tostring(activeSL,    format.mintick) + formatPctFromEntry(activeSL,  activeEntry)
+        string tp1S   = str.tostring(activeTP1,   format.mintick) + formatPctFromEntry(activeTP1, activeEntry)
+        string tp2S   = str.tostring(activeTP2,   format.mintick) + formatPctFromEntry(activeTP2, activeEntry)
+        string tp3S   = str.tostring(activeTP3,   format.mintick) + formatPctFromEntry(activeTP3, activeEntry)
+        entryLbl := label.new(lblX, activeEntry, "ENTRY " + entryS, color = ENTRY_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        slLbl    := label.new(lblX, activeSL,    "SL "    + slS,    color = SL_COLOR,    textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp1Lbl   := label.new(lblX, activeTP1,   "TP1 "   + tp1S,   color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp2Lbl   := label.new(lblX, activeTP2,   "TP2 "   + tp2S,   color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp3Lbl   := label.new(lblX, activeTP3,   "TP3 "   + tp3S,   color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+    riskLinesActive := true
+
+// TP hit visuals — line turns solid cyan, label gets ✓
+if useRiskInput and showSlTpInput and not na(tp1Line) and tp1Reached
+    line.set_color(tp1Line, TP_HIT_COLOR)
+    line.set_style(tp1Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp1Lbl)
+        label.set_text(tp1Lbl, "TP1 ✓ " + str.tostring(activeTP1, format.mintick) + formatPctFromEntry(activeTP1, activeEntry))
+        label.set_color(tp1Lbl, TP_HIT_COLOR)
+if useRiskInput and showSlTpInput and not na(tp2Line) and tp2Reached
+    line.set_color(tp2Line, TP_HIT_COLOR)
+    line.set_style(tp2Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp2Lbl)
+        label.set_text(tp2Lbl, "TP2 ✓ " + str.tostring(activeTP2, format.mintick) + formatPctFromEntry(activeTP2, activeEntry))
+        label.set_color(tp2Lbl, TP_HIT_COLOR)
+if useRiskInput and showSlTpInput and not na(tp3Line) and tp3Reached
+    line.set_color(tp3Line, TP_HIT_COLOR)
+    line.set_style(tp3Line, line.style_solid)
+    if showSlTpLabelsInput and not na(tp3Lbl)
+        label.set_text(tp3Lbl, "TP3 ✓ " + str.tostring(activeTP3, format.mintick) + formatPctFromEntry(activeTP3, activeEntry))
+        label.set_color(tp3Lbl, TP_HIT_COLOR)
+
+// Break-even visualization — when BE is active, dim the original SL
+// reference and tag the ENTRY label with "→ SL (BE)" in amber. The
+// activeSL value itself was already moved to entry by the BE logic above.
+if useRiskInput and showSlTpInput and beActive and activeDir != 0
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, 70))
+    if showSlTpLabelsInput
+        if not na(slLbl)
+            label.set_color(slLbl, color.new(SL_COLOR, 70))
+        if not na(entryLbl)
+            string entryS = str.tostring(activeEntry, format.mintick)
+            label.set_text(entryLbl, "ENTRY " + entryS + "  → SL (BE)")
+            label.set_color(entryLbl, BE_COLOR)
+
+if activeDir != 0
+    riskLinesActive := true
+
+if activeDir == 0 and riskLinesActive
+    if not na(slLine)
+        line.delete(slLine)
+    if not na(tp1Line)
+        line.delete(tp1Line)
+    if not na(tp2Line)
+        line.delete(tp2Line)
+    if not na(tp3Line)
+        line.delete(tp3Line)
+    if not na(entryLine)
+        line.delete(entryLine)
+    if not na(slLbl)
+        label.delete(slLbl)
+    if not na(tp1Lbl)
+        label.delete(tp1Lbl)
+    if not na(tp2Lbl)
+        label.delete(tp2Lbl)
+    if not na(tp3Lbl)
+        label.delete(tp3Lbl)
+    if not na(entryLbl)
+        label.delete(entryLbl)
+    riskLinesActive := false
+
+if activeDir != 0 and useRiskInput and showSlTpInput and not na(slLine)
+    int newX2 = bar_index + LINE_UPDATE_BARS
+    int newLblX = newX2 + LABEL_OFFSET_BARS
+    line.set_x2(slLine,    newX2)
+    line.set_x2(tp1Line,   newX2)
+    line.set_x2(tp2Line,   newX2)
+    line.set_x2(tp3Line,   newX2)
+    line.set_x2(entryLine, newX2)
+    if showSlTpLabelsInput and not na(slLbl)
+        label.set_x(slLbl,    newLblX)
+        label.set_x(tp1Lbl,   newLblX)
+        label.set_x(tp2Lbl,   newLblX)
+        label.set_x(tp3Lbl,   newLblX)
+        label.set_x(entryLbl, newLblX)
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD METRICS
+// ══════════════════════════════════════════════════════════
+// v1.4.1 PERF: entire block runs only on the last bar. The dashboard
+// table itself is rendered only there anyway, but in v1.4.0 the
+// per-bar zone iteration (bullWeight/bearWeight/strongestScore loop)
+// and the per-bar string assembly were running on every historical
+// bar, then thrown away. On a 5000-bar chart with 8 zones that was
+// ~40,000 array.get calls and ~100K string concats per render for
+// values never used. Now all of it is gated.
+//
+// Declared with `var` and `na`/0 defaults outside the gate so the
+// dashboard render block below (also gated by barstate.islast) sees
+// initialized values when it runs.
+var float bullWeight = 0.0
+var float bearWeight = 0.0
+var float strongestScore = 0.0
+var int   activeZoneCount = 0
+var string trendStr = "Neutral"
+var color  trendCol = na
+var string sigStr   = "Wait"
+var color  sigCol   = na
+var string strStr   = "—"
+var color  strCol   = na
+var float  riskPct  = 0.0
+var color  rrCol    = na
+var color  riskCol  = na
+var string dashSL   = "—"
+var string dashTP1  = "—"
+var string dashTP2  = "—"
+var string dashTP3  = "—"
+var string dashRR   = "—"
+var string dashRsk  = "—"
+var string zonesStr = "0 active"
+var color  dashSlCol  = na
+var color  dashTp1Col = na
+var color  dashTp2Col = na
+var color  dashTp3Col = na
+var int    statsTotal = 0
+var float  winRate   = 0.0
+var float  avgR      = 0.0
+var string dashTrades  = "0"
+var string dashWL      = "0/0"
+var string dashWinRate = "—"
+var string dashBeSaves = "0"
+var string dashAvgR    = "—"
+var color  winRateCol  = na
+var color  avgRCol     = na
+
+if showDashInput and barstate.islast
+    // v1.4.2: also gated by showDashInput — no point computing values
+    // that won't be rendered if the dashboard is disabled.
+    // Reset accumulators (these are var, so we explicitly zero them)
+    bullWeight     := 0.0
+    bearWeight     := 0.0
+    strongestScore := 0.0
+    activeZoneCount := 0
+    if array.size(zoneTops) > 0
+        for i = 0 to array.size(zoneTops) - 1
+            if not array.get(zoneBroken, i) and array.get(zoneScores, i) >= minScoreInput
+                float zMid  = (array.get(zoneTops, i) + array.get(zoneBots, i)) / 2.0
+                float s     = array.get(zoneScores, i)
+                int   zType = array.get(zoneTypes, i)
+                activeZoneCount += 1
+                float dist = math.abs(zMid - close)
+                float proximityFactor = atrVal > 0 ? math.max(0.1, 1.0 - math.min(1.0, dist / (atrVal * 10.0))) : 1.0
+                float weight = s * proximityFactor
+                if zType == -1 and zMid < close
+                    bullWeight += weight
+                else if zType == 1 and zMid > close
+                    bearWeight += weight
+                if s > strongestScore
+                    strongestScore := s
+
+    trendStr := bullWeight > bearWeight * 1.2 ? "Bullish" : bearWeight > bullWeight * 1.2 ? "Bearish" : "Neutral"
+    trendCol := bullWeight > bearWeight * 1.2 ? BULL_TEXT : bearWeight > bullWeight * 1.2 ? BEAR_TEXT : NEUTRAL_TEXT
+
+    sigStr := sigBreakBull ? "BREAK ▲" : sigBreakBear ? "BREAK ▼" : sigRetestBull ? "RETEST ▲" : sigRetestBear ? "RETEST ▼" : activeDir == 1 ? "Long Active" : activeDir == -1 ? "Short Active" : "Wait"
+    sigCol := (sigBreakBull or sigRetestBull or activeDir == 1) ? BULL_TEXT : (sigBreakBear or sigRetestBear or activeDir == -1) ? BEAR_TEXT : TEXT_MUTED
+
+    strStr := signalScore > 0 ? str.tostring(signalScore, "#") + "/100" : str.tostring(strongestScore, "#") + "/100"
+    strCol := signalScore >= SCORE_STRONG_MAX ? BULL_TEXT : signalScore >= SCORE_MED_MAX ? NEUTRAL_TEXT : TEXT_COLOR
+
+    riskPct := activeDir != 0 and not na(activeEntry) and activeEntry != 0 and not na(activeSL) ? math.abs(activeEntry - activeSL) / activeEntry * 100.0 : 0.0
+    rrCol   := activeRR >= 1.5 ? BULL_TEXT : activeRR >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+    riskCol := riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+
+    dashSL  := activeDir != 0 and not na(activeSL)  ? (beActive ? "BE @ " : "") + str.tostring(activeSL,  format.mintick) : "—"
+    dashTP1 := activeDir != 0 and not na(activeTP1) ? (tp1Reached ? "✓ " : "") + str.tostring(activeTP1, format.mintick) : "—"
+    dashTP2 := activeDir != 0 and not na(activeTP2) ? (tp2Reached ? "✓ " : "") + str.tostring(activeTP2, format.mintick) : "—"
+    dashTP3 := activeDir != 0 and not na(activeTP3) ? (tp3Reached ? "✓ " : "") + str.tostring(activeTP3, format.mintick) : "—"
+    dashRR  := activeDir != 0 ? str.tostring(activeRR, "#.#") + "R" : "—"
+    dashRsk := activeDir != 0 ? str.tostring(riskPct, "#.##") + "%" : "—"
+    zonesStr := str.tostring(activeZoneCount) + " active"
+
+    // Dashboard cell colors mirror the on-chart line state — SL turns amber
+    // when BE is active; TPs brighten to cyan after first touch.
+    dashSlCol  := beActive ? BE_COLOR : SL_COLOR
+    dashTp1Col := tp1Reached ? TP_HIT_COLOR : TP_LABEL_COLOR
+    dashTp2Col := tp2Reached ? TP_HIT_COLOR : TP_LABEL_COLOR
+    dashTp3Col := tp3Reached ? TP_HIT_COLOR : TP_LABEL_COLOR
+
+    // ── v1.3.0: Stats display strings + colors ───────────────────────
+    // v1.3.1: Total = wins + losses (BE no longer a separate outcome bucket).
+    // Win Rate uses the same denominator as Total — it's a simple
+    // wins/total ratio now, not "wins / (wins + losses) excluding BE".
+    statsTotal := statsWins + statsLosses
+    winRate    := statsTotal > 0 ? statsWins / float(statsTotal) * 100.0 : 0.0
+    avgR       := statsTotal > 0 ? statsRSum / float(statsTotal) : 0.0
+
+    dashTrades  := str.tostring(statsTotal)
+    dashWL      := str.tostring(statsWins) + "/" + str.tostring(statsLosses)
+    dashWinRate := statsTotal > 0 ? str.tostring(winRate, "#.#") + "%" : "—"
+    // "BE saves" — diagnostic sub-counter of wins. Shown as "N (X%)" where
+    // X% = BE saves as percentage of wins, to make the ratio interpretable.
+    dashBeSaves := statsWins > 0 ? str.tostring(statsBeSaves) + " (" + str.tostring(statsBeSaves / float(statsWins) * 100.0, "#") + "%)" : str.tostring(statsBeSaves)
+    dashAvgR    := statsTotal > 0 ? str.tostring(avgR, "+0.00;-0.00") + "R" : "—"
+
+    // Color coding:
+    //   Win rate ≥ 55% = bullish green, 45-54% = neutral amber, <45% = bearish red
+    //   Avg R > 0 = green, < 0 = red, == 0 = muted
+    winRateCol := statsTotal == 0 ? TEXT_MUTED : winRate >= 55.0 ? BULL_TEXT : winRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+    avgRCol    := statsTotal == 0 ? TEXT_MUTED : avgR > 0 ? BULL_TEXT : avgR < 0 ? BEAR_TEXT : TEXT_MUTED
+
+if showDashInput and barstate.islast
+    // Table size depends on whether stats section is enabled. Pine
+    // table.new fixes the row count at creation; since `var table`
+    // is re-initialized on any input change (including showStatsInput
+    // toggle), the size is always correct for the current config.
+    int dashRows = showStatsInput ? 18 : 13
+    var table dashTable = table.new(dashPos, 2, dashRows, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+    table.cell(dashTable, 0, 0, "VWSR Zones", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+    table.cell(dashTable, 0, 1,  "Trend",    text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 1,  trendStr,   text_color = trendCol,   text_size = size.small)
+    table.cell(dashTable, 0, 2,  "Signal",   text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 2,  sigStr,     text_color = sigCol,     text_size = size.small)
+    table.cell(dashTable, 0, 3,  "Score",    text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 3,  strStr,     text_color = strCol,     text_size = size.small)
+    table.cell(dashTable, 0, 4,  "Zones",    text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 4,  zonesStr,   text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(dashTable, 0, 5,  "TF",       text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 5,  timeframe.period, text_color = TEXT_COLOR, text_size = size.small)
+    table.cell(dashTable, 0, 6,  "SL",       text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 6,  dashSL,     text_color = dashSlCol,  text_size = size.small)
+    table.cell(dashTable, 0, 7,  "TP1",      text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 7,  dashTP1,    text_color = dashTp1Col, text_size = size.small)
+    table.cell(dashTable, 0, 8,  "TP2",      text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 8,  dashTP2,    text_color = dashTp2Col, text_size = size.small)
+    table.cell(dashTable, 0, 9,  "TP3",      text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 9,  dashTP3,    text_color = dashTp3Col, text_size = size.small)
+    table.cell(dashTable, 0, 10, "R:R (TP1)", text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 10, dashRR,     text_color = rrCol,      text_size = size.small)
+    table.cell(dashTable, 0, 11, "Risk",     text_color = TEXT_MUTED, text_size = size.small)
+    table.cell(dashTable, 1, 11, dashRsk,    text_color = riskCol,    text_size = size.small)
+    // Version row position depends on whether stats section is enabled
+    int verRow = showStatsInput ? 17 : 12
+    table.cell(dashTable, 0, verRow, "Version",          text_color = TEXT_MUTED, text_size = size.tiny)
+    table.cell(dashTable, 1, verRow, INDICATOR_VERSION,  text_color = TEXT_MUTED, text_size = size.tiny)
+    // v1.3.0: stats rows occupy 12-16 when enabled
+    if showStatsInput
+        table.cell(dashTable, 0, 12, "Trades",   text_color = TEXT_MUTED, text_size = size.small)
+        table.cell(dashTable, 1, 12, dashTrades, text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(dashTable, 0, 13, "W/L",      text_color = TEXT_MUTED, text_size = size.small)
+        table.cell(dashTable, 1, 13, dashWL,     text_color = TEXT_COLOR, text_size = size.small)
+        table.cell(dashTable, 0, 14, "Win Rate", text_color = TEXT_MUTED, text_size = size.small)
+        table.cell(dashTable, 1, 14, dashWinRate,text_color = winRateCol,text_size = size.small)
+        table.cell(dashTable, 0, 15, "BE saves", text_color = TEXT_MUTED, text_size = size.small)
+        table.cell(dashTable, 1, 15, dashBeSaves, text_color = BE_COLOR,  text_size = size.small)
+        table.cell(dashTable, 0, 16, "Avg R",    text_color = TEXT_MUTED, text_size = size.small)
+        table.cell(dashTable, 1, 16, dashAvgR,   text_color = avgRCol,    text_size = size.small)
+
+// ══════════════════════════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var table wmTable = table.new(position = position.bottom_right, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_right, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════
+// v1.4.1: alert message builders now correctly differentiate between
+// alerts fired DURING an active trade (entry & exit) — which need the
+// real SL/TP values — and alerts fired when risk management is off
+// (useRiskInput=false). The old code used `nz(activeXxx)` everywhere,
+// which silently substituted 0 for na and printed "SL: 0.00" in alerts
+// when there was no active position.
+//
+// A single helper handles both value sources:
+//   • fmtActive(): returns "n/a" if the value is na, else the
+//     formatted price string. Used for both currently-active values
+//     (aSL, aTP1, ...) and exit snapshots (eSL, eTP1, ...) since
+//     both are floats with the same na-meaning.
+fmtActive(float v) =>
+    na(v) ? "n/a" : str.tostring(v, format.mintick)
+
+string aPrice = str.tostring(close, format.mintick)
+string aSL    = fmtActive(activeSL)
+string aTP1   = fmtActive(activeTP1)
+string aTP2   = fmtActive(activeTP2)
+string aTP3   = fmtActive(activeTP3)
+string aRR    = str.tostring(activeRR, "#.#")
+string aScore = str.tostring(signalScore, "#")
+
+// Exit-time snapshot values (captured pre-closure to survive the reset).
+string eEntry = fmtActive(exitEntry)
+string eSL    = fmtActive(exitSL)
+string eTP1   = fmtActive(exitTP1)
+string eTP2   = fmtActive(exitTP2)
+string eTP3   = fmtActive(exitTP3)
+
+string jsonBreakBull  = '{"action":"break_bull","ticker":"'  + syminfo.tickerid + '","price":' + aPrice + ',"score":' + aScore + ',"sl":' + aSL + ',"tp1":' + aTP1 + ',"tp2":' + aTP2 + ',"tp3":' + aTP3 + ',"rr":' + aRR + '}'
+string jsonBreakBear  = '{"action":"break_bear","ticker":"'  + syminfo.tickerid + '","price":' + aPrice + ',"score":' + aScore + ',"sl":' + aSL + ',"tp1":' + aTP1 + ',"tp2":' + aTP2 + ',"tp3":' + aTP3 + ',"rr":' + aRR + '}'
+string jsonRetestBull = '{"action":"retest_bull","ticker":"' + syminfo.tickerid + '","price":' + aPrice + ',"score":' + aScore + ',"sl":' + aSL + ',"tp1":' + aTP1 + ',"tp2":' + aTP2 + ',"tp3":' + aTP3 + ',"rr":' + aRR + '}'
+string jsonRetestBear = '{"action":"retest_bear","ticker":"' + syminfo.tickerid + '","price":' + aPrice + ',"score":' + aScore + ',"sl":' + aSL + ',"tp1":' + aTP1 + ',"tp2":' + aTP2 + ',"tp3":' + aTP3 + ',"rr":' + aRR + '}'
+
+string textBreakBull  = "🟢 BREAK UP | "    + syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + aPrice + " | Score: " + aScore + " | SL: " + aSL + " | TP1: " + aTP1 + " | TP2: " + aTP2 + " | TP3: " + aTP3 + " | R:R: " + aRR
+string textBreakBear  = "🔴 BREAK DOWN | "  + syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + aPrice + " | Score: " + aScore + " | SL: " + aSL + " | TP1: " + aTP1 + " | TP2: " + aTP2 + " | TP3: " + aTP3 + " | R:R: " + aRR
+string textRetestBull = "🟢 RETEST LONG | " + syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + aPrice + " | Score: " + aScore + " | SL: " + aSL + " | TP1: " + aTP1 + " | TP2: " + aTP2 + " | TP3: " + aTP3 + " | R:R: " + aRR
+string textRetestBear = "🔴 RETEST SHORT | "+ syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + aPrice + " | Score: " + aScore + " | SL: " + aSL + " | TP1: " + aTP1 + " | TP2: " + aTP2 + " | TP3: " + aTP3 + " | R:R: " + aRR
+
+// v1.4.1: exit alerts now use exit-time SNAPSHOTS (eSL/eTP1/etc) instead
+// of activeSL/etc which have already been reset to na by closure.
+string textTp1Hit = "🎯 TP1 HIT | " + syminfo.tickerid + " | TP1: " + eTP1
+string textTp2Hit = "🎯 TP2 HIT | " + syminfo.tickerid + " | TP2: " + eTP2
+string textTp3Hit = "🏆 TP3 HIT | " + syminfo.tickerid + " | TP3: " + eTP3
+string textBeAct  = "🛡️ BREAK-EVEN | " + syminfo.tickerid + " | SL moved to " + eEntry
+
+// Break/retest alerts mirror the chart markers: silent during an active
+// trade since those signals are ignored by the risk block anyway.
+// v1.4.1: same direction-filter applied as markers — bull-direction
+// alerts use canShowBullSig, bear use canShowBearSig.
+if sigBreakBull and alertOnBreakInput and canShowBullSig
+    alert(webhookInput ? jsonBreakBull : textBreakBull, alert.freq_once_per_bar_close)
+if sigBreakBear and alertOnBreakInput and canShowBearSig
+    alert(webhookInput ? jsonBreakBear : textBreakBear, alert.freq_once_per_bar_close)
+if sigRetestBull and alertOnRetestInput and canShowBullSig
+    alert(webhookInput ? jsonRetestBull : textRetestBull, alert.freq_once_per_bar_close)
+if sigRetestBear and alertOnRetestInput and canShowBearSig
+    alert(webhookInput ? jsonRetestBear : textRetestBear, alert.freq_once_per_bar_close)
+
+// SL hit message reflects BE state — different emoji distinguishes a
+// regular loss from a break-even stop-out.
+// v1.4.1: uses eSL/eEntry exit snapshots so the values survive the
+// closure reset that happens above this alert section. exitBeActive
+// snapshot is also needed because the closure also resets beActive.
+if slHit and alertOnSlHitInput
+    string slMsg = (exitBeActive ? "🛡️ BE STOP-OUT | " : "🛑 SL HIT | ") + syminfo.tickerid + " | Entry: " + eEntry + " | SL: " + eSL
+    alert(slMsg, alert.freq_once_per_bar_close)
+
+// TP & BE alerts use first-touch latches so they fire only once per trade.
+// v1.2.1: tp1/tp2/tp3 FirstTouch flags now all carry `and not slHit` natively,
+// so the explicit `and not slHit` guards on TP1/TP2 alerts below are redundant
+// but kept for code-reading clarity (matches the original v1.2.0 intent).
+if tp1FirstTouch and alertOnTpHitInput
+    alert(textTp1Hit, alert.freq_once_per_bar_close)
+if beJustActivated and alertOnTpHitInput
+    alert(textBeAct, alert.freq_once_per_bar_close)
+if tp2FirstTouch and alertOnTpHitInput
+    alert(textTp2Hit, alert.freq_once_per_bar_close)
+if tp3FirstTouch and alertOnTpHitInput
+    alert(textTp3Hit, alert.freq_once_per_bar_close)

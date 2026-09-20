@@ -1,0 +1,266 @@
+//@version=6
+
+// ══════════════════════════════════════════════════════════
+// Adaptive Squeeze Momentum Pro [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.0.0
+
+indicator(title = "Adaptive Squeeze Momentum Pro [WillyAlgoTrader]", shorttitle = "AdSqzMomPro", overlay = false, max_labels_count = 500, max_lines_count = 500)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+GRP_ADV    = "🔧 Advanced"
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+lengthInput    = input.int(21, "Squeeze Length", minval = 5, maxval = 100, step = 1, group = GRP_MAIN, tooltip = "Lookback for volatility bands & ATR channels.\nCrypto 15M recommended: 14–20")
+sourceInput    = input.source(close, "Source", group = GRP_MAIN)
+bbMultInput    = input.float(1.8, "Volatility Band Mult", minval = 0.5, maxval = 4.0, step = 0.1, group = GRP_MAIN, tooltip = "EMA-band width multiplier.\nCrypto: 1.5–2.0 (higher volatility = lower mult)")
+atrMultInput   = input.float(1.6, "ATR Channel Mult", minval = 0.5, maxval = 4.0, step = 0.1, group = GRP_MAIN, tooltip = "ATR channel multiplier.\nCrypto 15M recommended: 1.3–1.6")
+momLengthInput = input.int(20, "Momentum Length", minval = 5, maxval = 100, step = 1, group = GRP_MAIN, tooltip = "Momentum oscillator lookback.\nCrypto 15M recommended: 12–20")
+presetInput    = input.string("Default", "Preset", options = ["Conservative", "Default", "Aggressive", "Scalping"], group = GRP_MAIN, tooltip = "Conservative: fewer signals, longer lookbacks\nDefault: balanced for 15M crypto\nAggressive: faster, more signals\nScalping: 1–5min optimized")
+
+useDivergenceInput = input.bool(true, "Detect Divergences", group = GRP_FILTER)
+divLookbackInput   = input.int(3, "Divergence Lookback", minval = 2, maxval = 20, step = 1, group = GRP_FILTER, tooltip = "Pivot detection lookback.\nCrypto 15M recommended: 2–5")
+earlyDivInput      = input.bool(true, "Early Divergence (no right confirm)", group = GRP_FILTER, tooltip = "ON: label on bar close, no wait.\nOFF: waits for confirmation bars (more reliable, delayed).")
+useHtfFilterInput  = input.bool(false, "Use HTF Trend Filter", group = GRP_FILTER, tooltip = "Filter divergences by higher timeframe trend direction")
+htfInput           = input.timeframe("60", "Higher Timeframe", group = GRP_FILTER, tooltip = "Should be 3–5x chart TF.\n15M chart → use 1H")
+
+showDivSignalsInput = input.bool(true,  "Show Divergence Labels", group = GRP_VISUAL)
+showDivLinesInput   = input.bool(true,  "Show Divergence Lines", group = GRP_VISUAL)
+showOverlayInput    = input.bool(true, "Show Divergences on Chart", group = GRP_VISUAL, tooltip = "Duplicate divergence labels on the price chart overlay")
+showBgInput         = input.bool(false, "Show Squeeze Background", group = GRP_VISUAL)
+showWatermarkInput  = input.bool(true,  "Show Watermark", group = GRP_VISUAL)
+labelSizeInput      = input.string("Tiny", "Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL)
+themeInput          = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL)
+
+bullStrongInput  = input.color(#00E676, "Bull Strong", inline = "bull", group = GRP_COLORS)
+bullWeakInput    = input.color(#00897B, "Bull Weak", inline = "bull", group = GRP_COLORS)
+bearStrongInput  = input.color(#FF5252, "Bear Strong", inline = "bear", group = GRP_COLORS)
+bearWeakInput    = input.color(#AD1457, "Bear Weak", inline = "bear", group = GRP_COLORS)
+sqzBgColorInput  = input.color(#FF6D00, "Squeeze BG", inline = "sqz", group = GRP_COLORS)
+divBullLineInput = input.color(#00E676, "Div Bull Line", inline = "divl", group = GRP_COLORS)
+divBearLineInput = input.color(#FF5252, "Div Bear Line", inline = "divl", group = GRP_COLORS)
+
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT)
+smoothInput  = input.int(3, "Momentum Smoothing", minval = 1, maxval = 20, step = 1, group = GRP_ADV, tooltip = "EMA smoothing. 1 = raw.\nCrypto 15M recommended: 2–5")
+
+// ══════════════════════════════════════
+// THEME
+// ══════════════════════════════════════
+isDark = themeInput == "Dark" ? true : themeInput == "Light" ? false : color.r(chart.bg_color) < 128
+LABEL_TEXT  = #FFFFFF
+LINE_SUBTLE = isDark ? color.new(#555555, 0) : color.new(#AAAAAA, 0)
+WM_COLOR    = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+labelSize = labelSizeInput == "Tiny" ? size.tiny : labelSizeInput == "Small" ? size.small : labelSizeInput == "Normal" ? size.normal : labelSizeInput == "Large" ? size.large : size.huge
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// ══════════════════════════════════════
+// PRESET LOGIC
+// ══════════════════════════════════════
+adjLength  = presetInput == "Conservative" ? math.max(lengthInput, 25) : presetInput == "Aggressive" ? math.min(lengthInput, 14) : presetInput == "Scalping" ? math.min(lengthInput, 10) : lengthInput
+adjBBMult  = presetInput == "Conservative" ? math.max(bbMultInput, 2.2) : presetInput == "Aggressive" ? math.min(bbMultInput, 1.6) : presetInput == "Scalping" ? math.min(bbMultInput, 1.4) : bbMultInput
+adjATRMult = presetInput == "Conservative" ? math.min(atrMultInput, 1.2) : presetInput == "Aggressive" ? math.max(atrMultInput, 1.6) : presetInput == "Scalping" ? math.max(atrMultInput, 1.8) : atrMultInput
+adjMomLen  = presetInput == "Conservative" ? math.max(momLengthInput, 25) : presetInput == "Aggressive" ? math.min(momLengthInput, 12) : presetInput == "Scalping" ? math.min(momLengthInput, 8) : momLengthInput
+adjSmooth  = presetInput == "Conservative" ? math.max(smoothInput, 7) : presetInput == "Aggressive" ? math.min(smoothInput, 2) : presetInput == "Scalping" ? 1 : smoothInput
+
+// ══════════════════════════════════════
+// CALCULATIONS
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(adjLength * 2, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// ── Volatility Bands (EMA-based) ──
+float emaBasis = nz(ta.ema(sourceInput, adjLength), sourceInput)
+float devValue = nz(ta.stdev(sourceInput, adjLength), 0.0)
+float vbWidth  = devValue * adjBBMult * 2.0
+
+// ── ATR Channel ──
+float atrVal  = nz(ta.atr(adjLength), 0.0)
+float acWidth = atrVal * adjATRMult * 2.0
+
+// ── Squeeze Detection ──
+float sqzRatio = safeDiv(vbWidth, acWidth, 1.0)
+bool  sqzOn    = sqzRatio < 1.0
+string sqzTier = not sqzOn ? "NONE" : sqzRatio < 0.5 ? "EXTREME" : sqzRatio < 0.7 ? "HIGH" : sqzRatio < 0.9 ? "MID" : "LOW"
+
+// ── Momentum ──
+float highestHi = nz(ta.highest(high, adjMomLen), high)
+float lowestLo  = nz(ta.lowest(low, adjMomLen), low)
+float emaMom    = nz(ta.ema(sourceInput, adjMomLen), sourceInput)
+float midAll    = ((highestHi + lowestLo) * 0.5 + emaMom) * 0.5
+float rawMom    = sourceInput - midAll
+float atrNorm   = nz(ta.atr(adjMomLen), 1.0)
+float normMom   = safeDiv(rawMom, atrNorm, 0.0)
+float momValue  = adjSmooth <= 1 ? normMom : nz(ta.ema(normMom, adjSmooth), normMom)
+float momPrev   = nz(momValue[1], 0.0)
+
+bool momRising  = momValue > momPrev
+bool momFalling = momValue < momPrev
+bool momAbove   = momValue > 0
+bool momBelow   = momValue <= 0
+
+// ── Histogram Colors (4-state) ──
+color histColor = momAbove ? (momRising ? bullStrongInput : bullWeakInput) : (momFalling ? bearStrongInput : bearWeakInput)
+
+// ══════════════════════════════════════
+// PLOTS
+// ══════════════════════════════════════
+plot(momValue, "Momentum", color = histColor, style = plot.style_columns, linewidth = 3)
+hline(0, "Zero", color = LINE_SUBTLE, linestyle = hline.style_dotted, linewidth = 1)
+bgcolor(showBgInput and sqzOn ? color.new(sqzBgColorInput, 92) : na, title = "Squeeze Background")
+
+// ══════════════════════════════════════
+// SQUEEZE RELEASE (for alerts)
+// ══════════════════════════════════════
+bool prevSqzOn       = bar_index > 0 ? sqzOn[1] : false
+bool sqzJustReleased = not sqzOn and prevSqzOn
+
+// ══════════════════════════════════════
+// DIVERGENCE DETECTION
+// ══════════════════════════════════════
+int pivotLB     = divLookbackInput
+int rightBars   = earlyDivInput ? 0 : pivotLB
+int pivotOffset = rightBars
+
+float momPivotLow    = ta.pivotlow(momValue, pivotLB, rightBars)
+float momPivotHigh   = ta.pivothigh(momValue, pivotLB, rightBars)
+float pricePivotLow  = ta.pivotlow(low, pivotLB, rightBars)
+float pricePivotHigh = ta.pivothigh(high, pivotLB, rightBars)
+
+var float prevMomLow    = na
+var float prevPriceLow  = na
+var int   prevLowBar    = na
+var float prevMomHigh   = na
+var float prevPriceHigh = na
+var int   prevHighBar   = na
+
+bool bullDiv = false
+bool bearDiv = false
+
+var float _lineLowFromY  = na
+var int   _lineLowFromX  = na
+var float _lineLowToY    = na
+var int   _lineLowToX    = na
+var float _lineHighFromY = na
+var int   _lineHighFromX = na
+var float _lineHighToY   = na
+var int   _lineHighToX   = na
+
+int divLabelBarLow  = na
+int divLabelBarHigh = na
+
+if not na(momPivotLow) and not na(pricePivotLow)
+    int curBar = bar_index - pivotOffset
+    if not na(prevMomLow) and not na(prevPriceLow) and not na(prevLowBar)
+        if pricePivotLow < prevPriceLow and momPivotLow > prevMomLow
+            bullDiv        := true
+            _lineLowFromY := prevMomLow
+            _lineLowFromX := prevLowBar
+            _lineLowToY   := momPivotLow
+            _lineLowToX   := curBar
+            divLabelBarLow := curBar
+    prevMomLow   := momPivotLow
+    prevPriceLow := pricePivotLow
+    prevLowBar   := curBar
+
+if not na(momPivotHigh) and not na(pricePivotHigh)
+    int curBar = bar_index - pivotOffset
+    if not na(prevMomHigh) and not na(prevPriceHigh) and not na(prevHighBar)
+        if pricePivotHigh > prevPriceHigh and momPivotHigh < prevMomHigh
+            bearDiv         := true
+            _lineHighFromY := prevMomHigh
+            _lineHighFromX := prevHighBar
+            _lineHighToY   := momPivotHigh
+            _lineHighToX   := curBar
+            divLabelBarHigh := curBar
+    prevMomHigh   := momPivotHigh
+    prevPriceHigh := pricePivotHigh
+    prevHighBar   := curBar
+
+// ── HTF Trend Filter (non-repainting) ──
+float htfEmaFast  = request.security(syminfo.tickerid, htfInput, ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float htfEmaSlow  = request.security(syminfo.tickerid, htfInput, ta.ema(close, 50)[1], barmerge.gaps_off, barmerge.lookahead_on)
+float safeHtfFast = nz(htfEmaFast, close)
+float safeHtfSlow = nz(htfEmaSlow, close)
+bool  htfBullish  = safeHtfFast > safeHtfSlow
+bool  htfBearish  = safeHtfFast < safeHtfSlow
+
+// ── Confirmed Divergences ──
+bool htfDivBullOk = useHtfFilterInput ? htfBullish : true
+bool htfDivBearOk = useHtfFilterInput ? htfBearish : true
+bool confirmedBullDiv = bullDiv and useDivergenceInput and barstate.isconfirmed and isWarmedUp and htfDivBullOk
+bool confirmedBearDiv = bearDiv and useDivergenceInput and barstate.isconfirmed and isWarmedUp and htfDivBearOk
+
+// ══════════════════════════════════════
+// DIVERGENCE LABELS & LINES
+// ══════════════════════════════════════
+
+// Bullish divergence
+if confirmedBullDiv
+    int lblBar = nz(divLabelBarLow, bar_index - pivotOffset)
+    if showDivSignalsInput
+        label.new(lblBar, nz(momPivotLow, 0.0), "Div", color = color.new(bullStrongInput, 30), textcolor = LABEL_TEXT, style = label.style_label_up, size = labelSize, tooltip = "Bullish Divergence: Price lower low, momentum higher low" + (earlyDivInput ? " (Early)" : " (Confirmed)"))
+    if showOverlayInput and showDivSignalsInput
+        label.new(lblBar, low, "Div", color = color.new(bullStrongInput, 30), textcolor = LABEL_TEXT, style = label.style_label_up, size = labelSize, force_overlay = true, tooltip = "Bullish Divergence")
+    if showDivLinesInput and not na(_lineLowFromX) and not na(_lineLowToX)
+        line.new(_lineLowFromX, _lineLowFromY, _lineLowToX, _lineLowToY, color = divBullLineInput, width = 2, style = line.style_solid)
+
+// Bearish divergence
+if confirmedBearDiv
+    int lblBar = nz(divLabelBarHigh, bar_index - pivotOffset)
+    if showDivSignalsInput
+        label.new(lblBar, nz(momPivotHigh, 0.0), "Div", color = color.new(bearStrongInput, 30), textcolor = LABEL_TEXT, style = label.style_label_down, size = labelSize, tooltip = "Bearish Divergence: Price higher high, momentum lower high" + (earlyDivInput ? " (Early)" : " (Confirmed)"))
+    if showOverlayInput and showDivSignalsInput
+        label.new(lblBar, high, "Div", color = color.new(bearStrongInput, 30), textcolor = LABEL_TEXT, style = label.style_label_down, size = labelSize, force_overlay = true, tooltip = "Bearish Divergence")
+    if showDivLinesInput and not na(_lineHighFromX) and not na(_lineHighToX)
+        line.new(_lineHighFromX, _lineHighFromY, _lineHighToX, _lineHighToY, color = divBearLineInput, width = 2, style = line.style_solid)
+
+// Cleanup
+if array.size(label.all) > 400
+    label.delete(array.shift(label.all))
+if array.size(line.all) > 400
+    line.delete(array.shift(line.all))
+
+// ══════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+
+// Squeeze fire
+if sqzJustReleased and barstate.isconfirmed and isWarmedUp
+    string sqzDir = momAbove ? "BULLISH" : "BEARISH"
+    string sqzMsgPlain = "🟡 SQUEEZE FIRED | " + syminfo.tickerid + " | TF: " + timeframe.period + " | Direction: " + sqzDir + " | Price: " + str.tostring(close, format.mintick)
+    string sqzMsgJson  = '{"action":"squeeze_fire","ticker":"' + syminfo.tickerid + '","price":' + str.tostring(close) + ',"tf":"' + timeframe.period + '","direction":"' + sqzDir + '"}'
+    alert(webhookInput ? sqzMsgJson : sqzMsgPlain, alert.freq_once_per_bar_close)
+
+// Divergences
+if confirmedBullDiv
+    string msg = "🟢 BULL DIVERGENCE | " + syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + str.tostring(close, format.mintick) + " | HTF: " + (htfBullish ? "BULL" : "BEAR")
+    string msgJson = '{"action":"bull_div","ticker":"' + syminfo.tickerid + '","price":' + str.tostring(close) + ',"tf":"' + timeframe.period + '","htf_trend":"' + (htfBullish ? "bull" : "bear") + '"}'
+    alert(webhookInput ? msgJson : msg, alert.freq_once_per_bar_close)
+
+if confirmedBearDiv
+    string msg = "🔴 BEAR DIVERGENCE | " + syminfo.tickerid + " | TF: " + timeframe.period + " | Price: " + str.tostring(close, format.mintick) + " | HTF: " + (htfBearish ? "BEAR" : "BULL")
+    string msgJson = '{"action":"bear_div","ticker":"' + syminfo.tickerid + '","price":' + str.tostring(close) + ',"tf":"' + timeframe.period + '","htf_trend":"' + (htfBearish ? "bear" : "bull") + '"}'
+    alert(webhookInput ? msgJson : msg, alert.freq_once_per_bar_close)

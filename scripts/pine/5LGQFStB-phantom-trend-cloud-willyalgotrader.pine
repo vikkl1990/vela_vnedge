@@ -1,0 +1,432 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// PHANTOM TREND CLOUD [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.1.0
+
+indicator(
+    title            = "Phantom Trend Cloud [WillyAlgoTrader]",
+    shorttitle       = "PhantomCloud",
+    overlay          = true,
+    max_labels_count = 500,
+    max_lines_count  = 500,
+    max_boxes_count  = 200)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+GRP_ADV    = "🔧 Advanced"
+
+INDICATOR_VERSION = "v1.1.0"
+int MAX_BROKEN_SR = 20
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main ────────────────────────────────────────────────
+ribbonLenInput = input.int(21, "Ribbon Length", minval = 5, maxval = 100, step = 1, group = GRP_MAIN, tooltip = "Core period for the trend ribbon.\n• Higher = smoother cloud, fewer whipsaws\n• Lower = faster response, more noise\n• Recommended: 14–30")
+sourceInput = input.source(close, "Source", group = GRP_MAIN, tooltip = "Price source for calculations")
+cloudMultInput = input.float(1.618, "Cloud Width (ATR×)", minval = 0.3, maxval = 5.0, step = 0.1, group = GRP_MAIN, tooltip = "Multiplier for cloud envelope width.\n• Higher = wider cloud, fewer retests trigger\n• Lower = tighter cloud, more retests\n• Recommended: 1.0–2.5")
+atrLenInput = input.int(13, "ATR Period", minval = 5, maxval = 100, step = 1, group = GRP_MAIN, tooltip = "ATR lookback for volatility measurement.\n• 14 is standard\n• Lower = more reactive to recent volatility\n• Higher = smoother volatility estimate")
+
+// ── Filters ─────────────────────────────────────────────
+useVolFilterInput = input.bool(true, "Volume Filter", group = GRP_FILTER, tooltip = "Require above-average volume for retest signals.\nAuto-disabled on instruments with no volume (Forex)")
+volMultInput = input.float(1.0, "Volume Threshold (×SMA)", minval = 0.5, maxval = 3.0, step = 0.1, group = GRP_FILTER, tooltip = "Volume must exceed SMA(20) × this multiplier.\n• 1.0 = above average\n• 1.5 = significantly above average")
+useMomentumInput = input.bool(true, "Momentum Filter (RSI)", group = GRP_FILTER, tooltip = "Require RSI alignment with trend direction.\nBullish retest needs RSI > 40, bearish needs RSI < 60")
+rsiLenInput = input.int(14, "RSI Length", minval = 2, maxval = 50, step = 1, group = GRP_FILTER, tooltip = "Lookback period for the RSI momentum filter and score")
+useAdxInput = input.bool(false, "ADX Trend Strength Filter", group = GRP_FILTER, tooltip = "Only show signals when ADX > threshold, indicating a trending market")
+adxLenInput = input.int(14, "ADX Length", minval = 5, maxval = 50, step = 1, group = GRP_FILTER, tooltip = "Smoothing length for the custom ADX (strength + filter)")
+adxThreshInput = input.int(20, "ADX Threshold", minval = 10, maxval = 50, step = 1, group = GRP_FILTER, tooltip = "Minimum ADX value to confirm trend.\n• 20 = moderate trend\n• 25 = strong trend")
+retestCooldownInput = input.int(8, "Retest Cooldown (bars)", minval = 2, maxval = 50, step = 1, group = GRP_FILTER, tooltip = "Minimum bars between consecutive retest signals.\nPrevents signal clustering in choppy zones")
+useHtfInput = input.bool(false, "HTF Trend Filter", group = GRP_FILTER, tooltip = "Only allow retests aligned with higher timeframe trend direction")
+htfInput = input.timeframe("", "Higher Timeframe", group = GRP_FILTER, tooltip = "Leave empty = auto (next higher TF based on chart resolution).\nManual: e.g. 60 for 1H, D for Daily")
+
+// ── Visual ──────────────────────────────────────────────
+showCloudInput = input.bool(true, "Show Cloud", group = GRP_VISUAL, tooltip = "Display the trend cloud envelope")
+showRetestInput = input.bool(true, "Show Retest Signals", group = GRP_VISUAL, tooltip = "Display diamond markers at retest points")
+showTrendDotsInput = input.bool(false, "Show Trend Change Dots", group = GRP_VISUAL, tooltip = "Display a dot on the ribbon midline when trend flips")
+showSupportResInput = input.bool(true, "Show S/R Lines", group = GRP_VISUAL, tooltip = "Show horizontal support/resistance lines from retests")
+showBgInput = input.bool(false, "Show Background Tint", group = GRP_VISUAL, tooltip = "Subtle background color based on trend direction")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark on chart")
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+
+// ── Dashboard ───────────────────────────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Display info panel with trend, signal, and strength data")
+dashPosStr = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH, tooltip = "Dashboard position on chart")
+
+// ── Alerts ──────────────────────────────────────────────
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations\n(3Commas, Alertatron, custom bots)")
+
+// ── Colors ──────────────────────────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "colors", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "colors", group = GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Neutral", inline = "colors", group = GRP_COLORS)
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG     = color.new(#2962FF, 0)
+HEADER_TEXT   = #FFFFFF
+LABEL_TEXT    = #FFFFFF
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+// Безопасное деление
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// Hull-weighted midline — faster than EMA, smoother than WMA
+hullMid(float src, int len) =>
+    int halfLen = math.max(int(len / 2), 1)
+    int sqrtLen = math.max(int(math.sqrt(len)), 1)
+    float wma1 = ta.wma(src, halfLen)
+    float wma2 = ta.wma(src, len)
+    float raw = nz(wma1, src) * 2.0 - nz(wma2, src)
+    nz(ta.wma(raw, sqrtLen), src)
+
+// Custom lightweight ADX (returns smoothed ADX only)
+calcAdx(int len) =>
+    float upMove = nz(high - high[1], 0.0)
+    float dnMove = nz(low[1] - low, 0.0)
+    float plusDm = upMove > dnMove and upMove > 0 ? upMove : 0.0
+    float minusDm = dnMove > upMove and dnMove > 0 ? dnMove : 0.0
+    float trVal = nz(ta.tr(true), 0.0)
+    float smoothTr = nz(ta.rma(trVal, len), trVal)
+    float smoothPlus = nz(ta.rma(plusDm, len), 0.0)
+    float smoothMinus = nz(ta.rma(minusDm, len), 0.0)
+    float diPlus = safeDiv(smoothPlus, smoothTr) * 100.0
+    float diMinus = safeDiv(smoothMinus, smoothTr) * 100.0
+    float diSum = diPlus + diMinus
+    float dx = safeDiv(math.abs(diPlus - diMinus), diSum) * 100.0
+    nz(ta.rma(dx, len), 0.0)
+
+// Resolve "next higher" timeframe from current chart resolution
+f_nextHtf() =>
+    int s = timeframe.in_seconds(timeframe.period)
+    s <= 60      ? "5"  :
+      s <= 300   ? "15" :
+      s <= 900   ? "60" :
+      s <= 3600  ? "240" :
+      s <= 14400 ? "D"  : "W"
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION MAPPING
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CALCULATIONS (with na protection)
+// ══════════════════════════════════════
+
+// Warmup
+int WARMUP_BARS = math.max(ribbonLenInput * 2, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// ── Core Ribbon ─────────────────────────────────────────
+float midLine = hullMid(sourceInput, ribbonLenInput)
+float atrVal = nz(ta.atr(atrLenInput), 0.0)
+
+// Adaptive envelope — widens in high volatility, narrows in calm
+float envelopeWidth = atrVal * cloudMultInput
+
+// Cloud edges
+float upperCloud = midLine + envelopeWidth
+float lowerCloud = midLine - envelopeWidth
+
+// ── Trend Detection ─────────────────────────────────────
+// Trend = slope of the cloud midline (direction held through flat bars)
+var bool trendUp = true
+trendUp := na(midLine[1]) ? trendUp : midLine > midLine[1] ? true : midLine < midLine[1] ? false : trendUp
+bool trendDn = not trendUp
+bool trendFlip = trendUp != trendUp[1]
+
+// ── Trend Strength (ADX) ────────────────────────────────
+float adxValue = calcAdx(adxLenInput)
+bool strongTrend = adxValue > adxThreshInput
+
+// ── RSI for momentum filter ─────────────────────────────
+float rsiVal = nz(ta.rsi(sourceInput, rsiLenInput), 50.0)
+
+// ── Volume ──────────────────────────────────────────────
+bool hasVolume = nz(volume, 0) > 0
+float volSma = hasVolume ? nz(ta.sma(volume, 20), 0.0) : 0.0
+bool volConfirm = not useVolFilterInput or not hasVolume or (hasVolume and volume > volSma * volMultInput)
+
+// ── Momentum filter ─────────────────────────────────────
+bool momentumBullOk = not useMomentumInput or rsiVal > 40.0
+bool momentumBearOk = not useMomentumInput or rsiVal < 60.0
+
+// ── ADX filter ──────────────────────────────────────────
+bool adxOk = not useAdxInput or strongTrend
+
+// ── HTF Trend Bias (non-repainting, single security call) ───
+string htfRes = htfInput == "" ? f_nextHtf() : htfInput
+[htfFastRaw, htfSlowRaw] = request.security(syminfo.tickerid, htfRes, [ta.ema(close, 12)[1], ta.ema(close, 26)[1]], barmerge.gaps_off, barmerge.lookahead_on)
+float safeHtfFast = nz(htfFastRaw, close)
+float safeHtfSlow = nz(htfSlowRaw, close)
+bool htfBullish = safeHtfFast > safeHtfSlow
+bool htfBearish = safeHtfFast < safeHtfSlow
+bool htfBullOk = not useHtfInput or htfBullish
+bool htfBearOk = not useHtfInput or htfBearish
+
+// ══════════════════════════════════════
+// RETEST DETECTION (Smart Scoring)
+// ══════════════════════════════════════
+
+// Track last retest bar for cooldown
+var int lastRetestBar = 0
+bool cooldownOk = bar_index - lastRetestBar > retestCooldownInput
+
+// Bullish retest: price dips into cloud from above, then closes above midline
+bool priceRetestBull = low <= upperCloud and close > midLine and close > open and trendUp and not trendFlip
+bool bullRetestRaw = priceRetestBull and cooldownOk and volConfirm and momentumBullOk and adxOk and htfBullOk
+
+// Bearish retest: price wicks into cloud from below, then closes below midline
+bool priceRetestBear = high >= lowerCloud and close < midLine and close < open and trendDn and not trendFlip
+bool bearRetestRaw = priceRetestBear and cooldownOk and volConfirm and momentumBearOk and adxOk and htfBearOk
+
+// ══════════════════════════════════════
+// SIGNALS (bar-close confirmed + warmup)
+// ══════════════════════════════════════
+bool confirmedBull = bullRetestRaw and barstate.isconfirmed and isWarmedUp
+bool confirmedBear = bearRetestRaw and barstate.isconfirmed and isWarmedUp
+
+// Trend change signals
+bool confirmedTrendUp = trendFlip and trendUp and barstate.isconfirmed and isWarmedUp
+bool confirmedTrendDn = trendFlip and trendDn and barstate.isconfirmed and isWarmedUp
+
+// Update cooldown tracker
+if confirmedBull or confirmedBear
+    lastRetestBar := bar_index
+
+// ── Retest Strength Score (0–100) ───────────────────────
+// Composite score: penetration depth + volume spike + RSI alignment + ADX
+float penetrationScore = 0.0
+if confirmedBull
+    penetrationScore := math.min(safeDiv(upperCloud - low, envelopeWidth) * 50.0, 50.0)
+if confirmedBear
+    penetrationScore := math.min(safeDiv(high - lowerCloud, envelopeWidth) * 50.0, 50.0)
+
+float volScore = hasVolume and volSma != 0 ? math.min(safeDiv(volume, volSma) * 15.0, 25.0) : 12.5
+float rsiScore = confirmedBull ? math.max(math.min((rsiVal - 30.0) * 0.5, 15.0), 0.0) : confirmedBear ? math.max(math.min((70.0 - rsiVal) * 0.5, 15.0), 0.0) : 0.0
+float adxScore = math.min(adxValue * 0.4, 10.0)
+float retestScore = math.min(penetrationScore + volScore + rsiScore + adxScore, 100.0)
+
+// Store latest score for dashboard
+var float lastScore = 0.0
+var string lastSignalStr = "Wait"
+var color lastSignalColor = color.gray
+if confirmedBull
+    lastScore := retestScore
+    lastSignalStr := "Bull Retest"
+    lastSignalColor := bullColorInput
+if confirmedBear
+    lastScore := retestScore
+    lastSignalStr := "Bear Retest"
+    lastSignalColor := bearColorInput
+if confirmedTrendUp
+    lastSignalStr := "Trend ▲"
+    lastSignalColor := bullColorInput
+if confirmedTrendDn
+    lastSignalStr := "Trend ▼"
+    lastSignalColor := bearColorInput
+
+// Bars since last signal for dashboard
+var int lastSignalBar = 0
+if confirmedBull or confirmedBear or confirmedTrendUp or confirmedTrendDn
+    lastSignalBar := bar_index
+int barsSinceSignal = bar_index - lastSignalBar
+
+// ══════════════════════════════════════
+// PLOTS & CLOUD
+// ══════════════════════════════════════
+color trendColor = trendUp ? bullColorInput : bearColorInput
+color cloudColorBright = trendFlip ? na : color.new(trendColor, 60)
+color cloudColorFade = trendFlip ? na : color.new(trendColor, 88)
+
+// Midline
+plot(showCloudInput ? midLine : na, "Midline", color = trendFlip ? na : trendColor, linewidth = 2, style = plot.style_linebr)
+
+// Cloud inner edges
+pUpper = plot(showCloudInput ? upperCloud : na, "Upper Cloud", display = display.none, editable = false)
+pLower = plot(showCloudInput ? lowerCloud : na, "Lower Cloud", display = display.none, editable = false)
+pMid1 = plot(showCloudInput ? midLine : na, "Mid (fill anchor)", display = display.none, editable = false)
+
+// Cloud fills
+fill(pMid1, pUpper, midLine, upperCloud, cloudColorBright, cloudColorFade, title = "Upper Cloud Fill")
+fill(pMid1, pLower, lowerCloud, midLine, cloudColorFade, cloudColorBright, title = "Lower Cloud Fill")
+
+// Background tint
+bgcolor(showBgInput ? color.new(trendColor, 94) : na, title = "Trend Background")
+
+// ══════════════════════════════════════
+// LABELS & SHAPES
+// ══════════════════════════════════════
+
+// Retest signals — diamond above/below bar
+if showRetestInput and confirmedBull
+    label.new(bar_index, low, "◆",
+        color       = bullColorInput,
+        textcolor   = LABEL_TEXT,
+        style       = label.style_label_up,
+        size        = size.tiny,
+        tooltip     = "Bull Retest\nScore: " + str.tostring(retestScore, "#.0") + "/100\nRSI: " + str.tostring(rsiVal, "#.0") + "\nADX: " + str.tostring(adxValue, "#.0"))
+
+if showRetestInput and confirmedBear
+    label.new(bar_index, high, "◆",
+        color       = bearColorInput,
+        textcolor   = LABEL_TEXT,
+        style       = label.style_label_down,
+        size        = size.tiny,
+        tooltip     = "Bear Retest\nScore: " + str.tostring(retestScore, "#.0") + "/100\nRSI: " + str.tostring(rsiVal, "#.0") + "\nADX: " + str.tostring(adxValue, "#.0"))
+
+// Trend change dots on midline
+plotshape(showTrendDotsInput and confirmedTrendUp ? midLine : na, "Trend Up", shape.circle, location.absolute, bullColorInput, size = size.tiny)
+plotshape(showTrendDotsInput and confirmedTrendDn ? midLine : na, "Trend Dn", shape.circle, location.absolute, bearColorInput, size = size.tiny)
+
+// ── S/R Lines from retests (broken lines bounded) ───────
+var line srBullLine = na
+var line srBearLine = na
+var array<line> brokenSr = array.new<line>()
+
+if showSupportResInput and confirmedBull
+    if not na(srBullLine)
+        line.delete(srBullLine)
+    srBullLine := line.new(bar_index - 1, low, bar_index, low, color = color.new(bullColorInput, 50), style = line.style_dotted, extend = extend.right)
+
+if showSupportResInput and confirmedBear
+    if not na(srBearLine)
+        line.delete(srBearLine)
+    srBearLine := line.new(bar_index - 1, high, bar_index, high, color = color.new(bearColorInput, 50), style = line.style_dotted, extend = extend.right)
+
+// Invalidate S/R if price breaks through — keep broken level, bounded
+if not na(srBullLine)
+    float srBullY = line.get_y1(srBullLine)
+    if close < srBullY - atrVal * 0.5
+        line.set_extend(srBullLine, extend.none)
+        line.set_x2(srBullLine, bar_index)
+        array.push(brokenSr, srBullLine)
+        srBullLine := na
+        if array.size(brokenSr) > MAX_BROKEN_SR
+            line.delete(array.shift(brokenSr))
+
+if not na(srBearLine)
+    float srBearY = line.get_y1(srBearLine)
+    if close > srBearY + atrVal * 0.5
+        line.set_extend(srBearLine, extend.none)
+        line.set_x2(srBearLine, bar_index)
+        array.push(brokenSr, srBearLine)
+        srBearLine := na
+        if array.size(brokenSr) > MAX_BROKEN_SR
+            line.delete(array.shift(brokenSr))
+
+// ── Cleanup old labels ──────────────────────────────────
+if array.size(label.all) > 400
+    label.delete(array.shift(label.all))
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+string trendStr = trendUp ? "Bullish" : "Bearish"
+color trendStrColor = trendUp ? bullColorInput : bearColorInput
+string strengthStr = adxValue >= 30 ? "Strong" : adxValue >= 20 ? "Moderate" : "Weak"
+color strengthColor = adxValue >= 30 ? bullColorInput : adxValue >= 20 ? neutralColorInput : bearColorInput
+string scoreStr = lastScore > 0 ? str.tostring(lastScore, "#.0") : "—"
+string agoBarsStr = lastSignalBar > 0 ? str.tostring(barsSinceSignal) + " bars ago" : "—"
+
+if showDashInput and barstate.islast
+    var dashTable = table.new(dashPos, 2, 8, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    // Header
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    // Row 1: Trend
+    table.cell(dashTable, 0, 1, "Trend", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, trendStr, text_color = trendStrColor, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 2: Signal
+    table.cell(dashTable, 0, 2, "Signal", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, lastSignalStr, text_color = lastSignalColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 3: Score
+    table.cell(dashTable, 0, 3, "Score", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, scoreStr, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 4: Strength (ADX)
+    table.cell(dashTable, 0, 4, "Strength", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, strengthStr, text_color = strengthColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 5: Last Signal
+    table.cell(dashTable, 0, 5, "Last Signal", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, agoBarsStr, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 6: Timeframe
+    table.cell(dashTable, 0, 6, "TF", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, timeframe.period, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 7: Version
+    table.cell(dashTable, 0, 7, "Version", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 7, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string tickerStr = syminfo.tickerid
+string priceStr = str.tostring(close, format.mintick)
+string tfStr = timeframe.period
+string scoreAlertStr = str.tostring(retestScore, "#.0")
+
+string buyJsonMsg = '{"action":"buy","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '","score":' + scoreAlertStr + '}'
+string buyTextMsg = "🟢 BULL RETEST | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + scoreAlertStr
+string sellJsonMsg = '{"action":"sell","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '","score":' + scoreAlertStr + '}'
+string sellTextMsg = "🔴 BEAR RETEST | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + scoreAlertStr
+string trendUpJsonMsg = '{"action":"trend_up","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '"}'
+string trendUpTextMsg = "🔵 TREND UP | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr
+string trendDnJsonMsg = '{"action":"trend_down","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '"}'
+string trendDnTextMsg = "🟠 TREND DOWN | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr
+
+if confirmedBull
+    alert(webhookInput ? buyJsonMsg : buyTextMsg, alert.freq_once_per_bar_close)
+
+if confirmedBear
+    alert(webhookInput ? sellJsonMsg : sellTextMsg, alert.freq_once_per_bar_close)
+
+if confirmedTrendUp
+    alert(webhookInput ? trendUpJsonMsg : trendUpTextMsg, alert.freq_once_per_bar_close)
+
+if confirmedTrendDn
+    alert(webhookInput ? trendDnJsonMsg : trendDnTextMsg, alert.freq_once_per_bar_close)

@@ -1,0 +1,637 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// PULSE TREND RADAR [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 3.3.1
+
+indicator(title = "Pulse Trend Radar [WillyAlgoTrader]", shorttitle = "Pulse Trend Radar", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 500)
+
+GRP_MAIN = "⚙️ Main Settings"
+GRP_SLTP = "🎯 SL / TP"
+GRP_LIQ  = "💧 Liquidity Zones"
+GRP_OB   = "🟧 Order Blocks"
+GRP_FLAT = "⏸️ Range Filter"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_DASH = "📊 Dashboard"
+GRP_ALERT = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+INDICATOR_VERSION = "v3.3.1"
+
+// ── INPUTS ──
+erLengthInput = input.int(13, "Efficiency Ratio Length", minval=2, maxval=100, group=GRP_MAIN, tooltip="Lookback for Kaufman ER. Recommended: 8–20")
+fastAlphaInput = input.int(2, "Fast Smoothing", minval=2, maxval=10, group=GRP_MAIN)
+slowAlphaInput = input.int(30, "Slow Smoothing", minval=10, maxval=100, group=GRP_MAIN)
+sourceInput = input.source(close, "Source", group=GRP_MAIN)
+bandMultInput = input.float(1.8, "Band Multiplier", minval=0.5, maxval=5.0, step=0.1, group=GRP_MAIN, tooltip="Band width. Recommended: 1.5–2.5")
+atrLengthInput = input.int(50, "Volatility Length", minval=10, maxval=200, group=GRP_MAIN)
+
+showSltpInput = input.bool(true, "Show SL/TP Levels", group=GRP_SLTP, tooltip="Drawing only. SL/TP prices are always calculated internally so alerts and the dashboard stay valid.")
+slMultInput = input.float(3, "SL (× ATR)", minval=0.5, maxval=5.0, step=0.1, group=GRP_SLTP)
+tp1MultInput = input.float(1.0, "TP1 (× risk)", minval=0.5, maxval=5.0, step=0.5, group=GRP_SLTP)
+tp2MultInput = input.float(2.0, "TP2 (× risk)", minval=1.0, maxval=8.0, step=0.5, group=GRP_SLTP)
+tp3MultInput = input.float(3.0, "TP3 (× risk)", minval=1.5, maxval=12.0, step=0.5, group=GRP_SLTP)
+
+showLiqInput = input.bool(true, "Show Liquidity Zones", group=GRP_LIQ)
+liqPivotInput = input.int(4, "Pivot Lookback", minval=2, maxval=10, group=GRP_LIQ)
+liqMaxZonesInput = input.int(15, "Max Zones", minval=5, maxval=50, group=GRP_LIQ)
+
+showOBInput = input.bool(true, "Show Order Blocks", group=GRP_OB, tooltip="Marks the last opposite-direction candle (searched up to 10 bars back) before a trend flip as a supply/demand zone. Falls back to the previous bar if no opposite candle is found.")
+obMaxInput = input.int(10, "Max Order Blocks", minval=3, maxval=30, group=GRP_OB)
+obSearchInput = input.int(10, "OB Search Depth (bars)", minval=1, maxval=30, group=GRP_OB, tooltip="How far back to search for the last opposite candle at a trend flip")
+
+enableFlatInput = input.bool(true, "Enable Range Filter", group=GRP_FLAT, tooltip="Suppress trend-flip signals, alerts and SL/TP placement while the smoothed Efficiency Ratio indicates a ranging market. Disable to restore v3.2 behavior exactly.")
+flatEnterInput = input.float(20.0, "Range ON below ER", minval=1.0, maxval=90.0, step=1.0, group=GRP_FLAT, tooltip="Smoothed ER (%) below which the market is considered ranging. Recommended: 15–30")
+flatExitInput = input.float(30.0, "Range OFF above ER", minval=2.0, maxval=95.0, step=1.0, group=GRP_FLAT, tooltip="Smoothed ER (%) above which the market is considered trending again. Keep above the ON threshold — the gap is hysteresis that prevents regime flicker. Recommended: ON + 8–15")
+flatSmoothInput = input.int(5, "ER Smoothing", minval=1, maxval=20, group=GRP_FLAT, tooltip="SMA length applied to the Efficiency Ratio before regime detection. Higher = fewer regime switches, more lag")
+resumeSignalsInput = input.bool(true, "Resume Signals After Range", group=GRP_FLAT, tooltip="If the trend flipped while the market was flat, fire the signal when the range ends (marked ·R in the dashboard) instead of skipping the trend entirely")
+showFlatBgInput = input.bool(true, "Shade Range Background", group=GRP_FLAT)
+alertFlatInput = input.bool(false, "Alert on Range ON/OFF", group=GRP_FLAT)
+
+showSignalsInput = input.bool(true, "Show Signals", group=GRP_VISUAL)
+signalSizeStr = input.string("Small", "Signal Label Size", options=["Tiny","Small","Normal","Large"], group=GRP_VISUAL, tooltip="Size of Long/Short signal labels on chart")
+showFillInput = input.bool(true, "Show Gradient Fill", group=GRP_VISUAL, tooltip="Fill intensity grows with displacement — brighter = overbought/oversold")
+showTrackerInput = input.bool(true, "Show Trade Tracker", group=GRP_VISUAL, tooltip="Entry line + P&L %")
+showWinLossInput = input.bool(true, "Show Win/Loss Markers", group=GRP_VISUAL, tooltip="Green ● = TP1 reached before SL (or trade flipped in profit). Red ● = SL hit first (or trade flipped at a loss)")
+showWatermarkInput = input.bool(true, "Show Watermark", group=GRP_VISUAL)
+themeInput = input.string("Auto", "Theme", options=["Auto","Dark","Light"], group=GRP_VISUAL)
+
+showDashInput = input.bool(true, "Show Dashboard", group=GRP_DASH)
+dashPosStr = input.string("Top Right", "Position", options=["Top Left","Top Right","Bottom Left","Bottom Right"], group=GRP_DASH)
+dashFontStr = input.string("Small", "Dashboard Font Size", options=["Tiny","Small","Normal"], group=GRP_DASH, tooltip="Font size for all dashboard rows.\n• Tiny: compact, for large monitors\n• Small: default, readable on most screens\n• Normal: large, for small/mobile screens")
+
+bullColorInput = input.color(#00E676, "Bull", inline="c", group=GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline="c", group=GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Neutral", inline="c", group=GRP_COLORS)
+webhookInput = input.bool(false, "Webhook JSON", group=GRP_ALERT)
+
+// ── SIZE RESOLUTION ──
+signalSize = switch signalSizeStr
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+dashFont = switch dashFontStr
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    => size.small
+
+// ── THEME ──
+isDark = switch themeInput
+    "Dark" => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED = isDark ? color.new(#9E9E9E,0) : color.new(#757575,0)
+TABLE_BG = isDark ? color.new(#131722,5) : color.new(#FFFFFF,5)
+TABLE_BORDER = isDark ? color.new(#2A2E39,0) : color.new(#D0D0D0,0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030,0) : color.new(#F0F4F8,0)
+HEADER_BG = color.new(#2962FF,0)
+WM_COLOR = isDark ? color.new(#FFFFFF,80) : color.new(#000000,80)
+ENTRY_COLOR = isDark ? #B0BEC5 : #455A64
+TBL_BULL = isDark ? #00E676 : #1B8A4E
+TBL_BEAR = isDark ? #FF5252 : #C62828
+TBL_NEUTRAL = isDark ? #FFEB3B : #E68A00
+TBL_TP1 = isDark ? #4CAF50 : #2E7D32
+TBL_PNL_UP = isDark ? #00E676 : #1B8A4E
+TBL_PNL_DN = isDark ? #FF5252 : #C62828
+
+// ── FUNCTIONS ──
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+kamaCalc(float src, float er, int fastLen, int slowLen) =>
+    float fastSc = 2.0 / (fastLen + 1.0)
+    float slowSc = 2.0 / (slowLen + 1.0)
+    float sc = math.pow(er * (fastSc - slowSc) + slowSc, 2)
+    var float kama = 0.0
+    kama := nz(kama[1], src) + sc * (src - nz(kama[1], src))
+    kama
+
+// NOTE: The signal score is a HEURISTIC convenience metric, not a
+// statistically calibrated probability. Four factors are weighted 25 pts
+// each: trend strength, volume delta alignment, ER momentum, and
+// proximity to the nearest liquidity zone. Grades (A+/A/B/C) rank
+// signals relative to each other on the same chart — they are not a
+// promise of win probability.
+calcSignalScore(float ts, float vd, bool isL, float erN, float erP, float nld, float atr) =>
+    float f1 = math.min(25.0, ts * 0.25)
+    float f2 = math.min(25.0, (isL ? math.max(vd,0.0) : math.max(-vd,0.0)) * 0.25)
+    // v3.3.1: rescaled ×0.5 → ×1.25. At ×0.5 a +50pt ER jump was needed
+    // for the full 25 pts — practically unreachable, so the factor was
+    // dead weight. Now a +20pt jump (a strong but realistic breakout
+    // acceleration) earns the maximum.
+    float f3 = erN-erP > 0 ? math.min(25.0, (erN-erP) * 1.25) : 0.0
+    float f4 = atr > 0 and nld < atr*2.0 ? math.min(25.0, (1.0 - nld/(atr*2.0))*25.0) : 0.0
+    f1 + f2 + f3 + f4
+
+gradeFromScore(float s) => s >= 80 ? "A+" : s >= 60 ? "A" : s >= 40 ? "B" : "C"
+gradeColorFromScore(float s, color b, color n, color r) => s >= 60 ? b : s >= 40 ? n : r
+
+dashPos = switch dashPosStr
+    "Top Left" => position.top_left
+    "Top Right" => position.top_right
+    "Bottom Left" => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ── CALCULATIONS ──
+int WARMUP_BARS = math.max(erLengthInput + slowAlphaInput, atrLengthInput, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// Kaufman ER — computed ONCE and shared by KAMA, trend strength,
+// scoring and the range filter (v3.3.1: previously computed twice)
+float erDirection = math.abs(sourceInput - nz(sourceInput[erLengthInput], sourceInput))
+float erNoise = math.sum(math.abs(nz(sourceInput - sourceInput[1], 0.0)), erLengthInput)
+float erRaw = safeDiv(erDirection, erNoise, 0.0)
+float efficiencyRatio = erRaw * 100.0
+float prevER = nz(efficiencyRatio[1], 0.0)
+
+float kamaLine = kamaCalc(sourceInput, erRaw, fastAlphaInput, slowAlphaInput)
+
+var float[] trRing = array.new_float(atrLengthInput, 0.0)
+var int trIdx = 0
+array.set(trRing, trIdx % atrLengthInput, nz(ta.tr, 0.0))
+trIdx += 1
+float mAtr = bar_index >= atrLengthInput ? array.median(trRing) : nz(ta.atr(atrLengthInput), nz(ta.tr, 0.0))
+
+float upperBand = kamaLine + mAtr * bandMultInput
+float lowerBand = kamaLine - mAtr * bandMultInput
+
+var int trendState = 0
+if trendState == 0
+    trendState := sourceInput > kamaLine ? 1 : -1
+else if trendState == -1 and nz(sourceInput[1], sourceInput) > nz(upperBand[1], upperBand)
+    trendState := 1
+else if trendState == 1 and nz(sourceInput[1], sourceInput) < nz(lowerBand[1], lowerBand)
+    trendState := -1
+
+bool isBullish = trendState == 1
+bool trendChanged = trendState != nz(trendState[1], trendState)
+float trendLinePlot = trendChanged ? na : (isBullish ? lowerBand : upperBand)
+
+float trendStrength = math.min(100.0, efficiencyRatio * 0.6 + math.min(safeDiv(math.abs(sourceInput - kamaLine), mAtr, 0.0) * 100.0, 100.0) * 0.4)
+
+// ── RANGE (FLAT) REGIME ──
+// NEW v3.3.0: hysteresis on the smoothed Kaufman ER. Enter range when
+// smoothed ER drops below the ON threshold, leave only when it rises
+// above the (higher) OFF threshold — the gap prevents regime flicker.
+// The trendState machine keeps running underneath; only signal EMISSION
+// is gated, so the indicator never loses track of the trend.
+float erSmooth = ta.sma(efficiencyRatio, flatSmoothInput)
+// Guard against inverted thresholds set by the user
+float flatOnLevel = math.min(flatEnterInput, flatExitInput)
+float flatOffLevel = math.max(flatEnterInput, flatExitInput)
+
+var bool isFlat = false
+bool flatEntered = false
+bool flatExited = false
+if enableFlatInput and isWarmedUp
+    if not isFlat and erSmooth < flatOnLevel
+        isFlat := true
+        flatEntered := true
+    else if isFlat and erSmooth > flatOffLevel
+        isFlat := false
+        flatExited := true
+else
+    if isFlat
+        flatExited := true
+    isFlat := false
+
+float displacement = safeDiv(math.abs(sourceInput - kamaLine), mAtr * bandMultInput, 0.0)
+float fillIntensity = math.min(displacement, 1.0)
+int fillTransp = showFillInput ? math.round(95 - fillIntensity * 35) : 100
+color trendColor = isFlat ? neutralColorInput : (isBullish ? bullColorInput : bearColorInput)
+color gradientFill = trendChanged or isFlat ? na : color.new(trendColor, fillTransp)
+
+bool hasVolume = nz(volume, 0) > 0
+float obvRaw = ta.cum(hasVolume ? (close > open ? volume : close < open ? -volume : 0.0) : 0.0)
+float obvDelta = obvRaw - nz(ta.sma(obvRaw, 20), obvRaw)
+string volRegimeStr = not hasVolume ? "N/A" : (obvDelta > 0 ? "Accumulation" : "Distribution")
+color volRegimeCol = not hasVolume ? TEXT_MUTED : (obvDelta > 0 ? bullColorInput : bearColorInput)
+
+var float bullVolume = 0.0
+var float bearVolume = 0.0
+float preResetVolDelta = safeDiv(bullVolume - bearVolume, math.max(bullVolume + bearVolume, 1.0), 0.0) * 100.0
+if trendChanged
+    bullVolume := 0.0
+    bearVolume := 0.0
+else
+    bullVolume += (close > open and hasVolume) ? volume : 0.0
+    bearVolume += (close < open and hasVolume) ? volume : 0.0
+float volDeltaPct = safeDiv(bullVolume - bearVolume, math.max(bullVolume + bearVolume, 1.0), 0.0) * 100.0
+
+// ── LIQUIDITY ZONES ──
+var box[] liqBull = array.new_box(0)
+var box[] liqBear = array.new_box(0)
+
+if showLiqInput and not na(ta.pivothigh(high, liqPivotInput, liqPivotInput)) and isWarmedUp
+    float ph = nz(high[liqPivotInput], high)
+    array.push(liqBear, box.new(bar_index[liqPivotInput], ph, bar_index+5, ph - mAtr*0.15, border_color=color.new(bearColorInput,60), bgcolor=color.new(bearColorInput,90), border_width=1))
+    if array.size(liqBear) > liqMaxZonesInput
+        box.delete(array.shift(liqBear))
+
+if showLiqInput and not na(ta.pivotlow(low, liqPivotInput, liqPivotInput)) and isWarmedUp
+    float pl = nz(low[liqPivotInput], low)
+    array.push(liqBull, box.new(bar_index[liqPivotInput], pl + mAtr*0.15, bar_index+5, pl, border_color=color.new(bullColorInput,60), bgcolor=color.new(bullColorInput,90), border_width=1))
+    if array.size(liqBull) > liqMaxZonesInput
+        box.delete(array.shift(liqBull))
+
+var float nearestLiqDist = 0.0
+if trendChanged
+    nearestLiqDist := mAtr * 10.0
+    if array.size(liqBull) > 0
+        for i = 0 to array.size(liqBull) - 1
+            nearestLiqDist := math.min(nearestLiqDist, math.abs(close - box.get_top(array.get(liqBull, i))))
+    if array.size(liqBear) > 0
+        for i = 0 to array.size(liqBear) - 1
+            nearestLiqDist := math.min(nearestLiqDist, math.abs(close - box.get_bottom(array.get(liqBear, i))))
+
+if showLiqInput and array.size(liqBull) > 0
+    int idx = array.size(liqBull) - 1
+    while idx >= 0
+        box b = array.get(liqBull, idx)
+        box.set_right(b, bar_index+5)
+        if low < box.get_bottom(b) and nz(low[1],low) >= box.get_bottom(b)
+            box.delete(b)
+            array.remove(liqBull, idx)
+        idx -= 1
+
+if showLiqInput and array.size(liqBear) > 0
+    int idx = array.size(liqBear) - 1
+    while idx >= 0
+        box b = array.get(liqBear, idx)
+        box.set_right(b, bar_index+5)
+        if high > box.get_top(b) and nz(high[1],high) <= box.get_top(b)
+            box.delete(b)
+            array.remove(liqBear, idx)
+        idx -= 1
+
+// ── ORDER BLOCKS ──
+// FIX v3.2.0: search back for the last OPPOSITE-direction candle before
+// the flip (matching the tooltip), instead of blindly taking bar[1].
+// Bullish flip → last bearish candle (demand). Bearish flip → last
+// bullish candle (supply). Falls back to bar[1] if none found within
+// obSearchInput bars.
+var box[] obDemand = array.new_box(0)
+var box[] obSupply = array.new_box(0)
+
+if showOBInput and trendChanged and isWarmedUp
+    int obOffset = 1
+    bool obFound = false
+    for i = 1 to obSearchInput
+        float cI = nz(close[i], close)
+        float oI = nz(open[i], open)
+        bool isOpposite = isBullish ? cI < oI : cI > oI
+        if isOpposite and not obFound
+            obOffset := i
+            obFound := true
+    float obLow = nz(low[obOffset], low)
+    float obHigh = nz(high[obOffset], high)
+    if isBullish
+        array.push(obDemand, box.new(bar_index-obOffset, obHigh, bar_index+5, obLow, border_color=color.new(bullColorInput,50), bgcolor=color.new(bullColorInput,92), border_width=1))
+        if array.size(obDemand) > obMaxInput
+            box.delete(array.shift(obDemand))
+    else
+        array.push(obSupply, box.new(bar_index-obOffset, obHigh, bar_index+5, obLow, border_color=color.new(bearColorInput,50), bgcolor=color.new(bearColorInput,92), border_width=1))
+        if array.size(obSupply) > obMaxInput
+            box.delete(array.shift(obSupply))
+
+if showOBInput and array.size(obDemand) > 0
+    int idx = array.size(obDemand) - 1
+    while idx >= 0
+        box b = array.get(obDemand, idx)
+        box.set_right(b, bar_index + 5)
+        if close < box.get_bottom(b) and bar_index - box.get_left(b) > 3
+            box.delete(b)
+            array.remove(obDemand, idx)
+        idx -= 1
+
+if showOBInput and array.size(obSupply) > 0
+    int idx = array.size(obSupply) - 1
+    while idx >= 0
+        box b = array.get(obSupply, idx)
+        box.set_right(b, bar_index + 5)
+        if close > box.get_top(b) and bar_index - box.get_left(b) > 3
+            box.delete(b)
+            array.remove(obSupply, idx)
+        idx -= 1
+
+// ── SIGNALS ──
+// NEW v3.3.0: trend flips inside a range are suppressed. If the trend
+// direction at range exit differs from the last SIGNALED direction, a
+// resume signal fires (optional) so the trend isn't missed entirely.
+var int lastSignaledState = 0
+
+bool baseBuy   = trendChanged and isBullish and barstate.isconfirmed and isWarmedUp and not isFlat
+bool baseSell  = trendChanged and not isBullish and barstate.isconfirmed and isWarmedUp and not isFlat
+bool resumeBuy  = resumeSignalsInput and flatExited and isBullish and lastSignaledState != 1 and barstate.isconfirmed and isWarmedUp
+bool resumeSell = resumeSignalsInput and flatExited and not isBullish and lastSignaledState != -1 and barstate.isconfirmed and isWarmedUp
+
+bool confirmedBuy  = baseBuy or resumeBuy
+bool confirmedSell = baseSell or resumeSell
+bool isSignal = confirmedBuy or confirmedSell
+
+var float lastSignalScore = 0.0
+var string lastGrade = "—"
+var string lastSignalType = "—"
+var bool lastWasResume = false
+if isSignal
+    lastSignalScore := calcSignalScore(trendStrength, preResetVolDelta, isBullish, efficiencyRatio, prevER, nearestLiqDist, mAtr)
+    lastGrade := gradeFromScore(lastSignalScore)
+    lastSignalType := confirmedBuy ? "BUY" : "SELL"
+    lastWasResume := not (baseBuy or baseSell)
+    lastSignaledState := isBullish ? 1 : -1
+
+// ── PER-SIGNAL RISK LEVELS ──
+// v3.3.1: single source of truth. Previously the win/loss tracker
+// duplicated the SL/TP math with its own wlSL/wlTP1 — same formula in
+// two places is a divergence bug waiting to happen. Now every consumer
+// (drawing, hit tracking, win/loss stats, dashboard, alerts) reads the
+// same slPrice/tp1Price/tp2Price/tp3Price.
+var float slPrice = na
+var float tp1Price = na
+var float tp2Price = na
+var float tp3Price = na
+var int   sltpDir = 0
+var float sltpEntry = na
+var bool  sltpActive = false
+
+if isSignal
+    sltpDir := confirmedBuy ? 1 : -1
+    sltpEntry := close
+    float risk = mAtr * slMultInput
+    slPrice  := close - risk*sltpDir
+    tp1Price := close + risk*tp1MultInput*sltpDir
+    tp2Price := close + risk*tp2MultInput*sltpDir
+    tp3Price := close + risk*tp3MultInput*sltpDir
+    sltpActive := true
+
+// ── WIN/LOSS TRACKING ──
+// FIX v3.2.0: trades interrupted by an opposite signal are no longer
+// silently dropped — they are closed at the flip bar's close and counted
+// as a win (profit) or loss (loss). The resulting metric is an honest
+// "TP1-before-SL or flip outcome" rate, NOT full-strategy performance:
+// it uses the configured R:R and ignores fees/slippage.
+var float wlEntry = na
+var int   wlDir = 0
+var int   wlBar = 0
+var float wlLow = na
+var float wlHigh = na
+var int   wlWins = 0
+var int   wlLosses = 0
+
+drawWlMarker(int atBar, float refLow, float refHigh, int dir, bool won, float atr) =>
+    float yPos = dir == 1 ? refLow - atr * 0.3 : refHigh + atr * 0.3
+    label.new(atBar, yPos, "●", color=color.new(color.black,100), textcolor=won ? #00E676 : #FF5252, style=label.style_label_center, size=size.tiny)
+
+if isSignal
+    // Resolve a still-open tracked trade at the flip price before opening the new one
+    if wlDir != 0 and not na(wlEntry)
+        bool flipWon = (close - wlEntry) * wlDir > 0
+        if flipWon
+            wlWins += 1
+        else
+            wlLosses += 1
+        if showWinLossInput
+            drawWlMarker(wlBar, wlLow, wlHigh, wlDir, flipWon, mAtr)
+    wlDir := sltpDir
+    wlEntry := close
+    wlBar := bar_index
+    wlLow := low
+    wlHigh := high
+
+if wlDir != 0 and bar_index > wlBar
+    // v3.3.1: reads shared slPrice/tp1Price (identical between signals)
+    bool slReached = (wlDir == 1 and low <= slPrice) or (wlDir == -1 and high >= slPrice)
+    bool tp1Reached = (wlDir == 1 and high >= tp1Price) or (wlDir == -1 and low <= tp1Price)
+    if slReached
+        wlLosses += 1
+        if showWinLossInput
+            drawWlMarker(wlBar, wlLow, wlHigh, wlDir, false, mAtr)
+        wlDir := 0
+    else if tp1Reached
+        wlWins += 1
+        if showWinLossInput
+            drawWlMarker(wlBar, wlLow, wlHigh, wlDir, true, mAtr)
+        wlDir := 0
+
+// ── TRADE TRACKER ──
+var float entryPrice = na
+var int   tradeDir   = 0
+var line  entryHLine = na
+var line  connVLine  = na
+var label pnlLbl     = na
+// FIX v3.2.0: entry marker verticals are pooled and pruned so they can't
+// crowd out SL/TP lines on long histories.
+var line[] entryMarkers = array.new_line(0)
+int ENTRY_MARKERS_MAX = 50
+
+if isSignal and showTrackerInput
+    array.push(entryMarkers, line.new(bar_index, low, bar_index, high, color=confirmedBuy ? bullColorInput : bearColorInput, style=line.style_solid, width=2))
+    if array.size(entryMarkers) > ENTRY_MARKERS_MAX
+        line.delete(array.shift(entryMarkers))
+    line.delete(entryHLine)
+    line.delete(connVLine)
+    label.delete(pnlLbl)
+    entryPrice  := close
+    tradeDir    := confirmedBuy ? 1 : -1
+    entryHLine := line.new(bar_index, close, bar_index+1, close, color=ENTRY_COLOR, style=line.style_dashed, width=1)
+    connVLine  := line.new(bar_index, close, bar_index, close, color=ENTRY_COLOR, style=line.style_dashed, width=1)
+    pnlLbl     := label.new(bar_index+1, close, "PnL: 0.0%", color=#00E676, textcolor=#000000, style=label.style_label_left, size=size.small)
+
+if tradeDir != 0 and not na(entryHLine) and not isSignal
+    float pnl = safeDiv(close - entryPrice, entryPrice, 0.0) * 100.0 * tradeDir
+    line.set_y1(entryHLine, close)
+    line.set_xy2(entryHLine, bar_index, close)
+    line.set_y1(connVLine, entryPrice)
+    line.set_y2(connVLine, close)
+    label.set_xy(pnlLbl, bar_index, close)
+    label.set_text(pnlLbl, "PnL: " + (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.##") + "%")
+    label.set_color(pnlLbl, pnl >= 0 ? #00E676 : #FF5252)
+    label.set_textcolor(pnlLbl, #000000)
+
+float currentPnl = tradeDir != 0 and not na(entryPrice) ? safeDiv(close - entryPrice, entryPrice, 0.0) * 100.0 * tradeDir : na
+
+// ── SL / TP DRAWING & HIT TRACKING ──
+// Prices come from the shared PER-SIGNAL RISK LEVELS block above.
+// showSltpInput gates drawing only.
+// v3.3.1 fixes:
+// • SL is now checked BEFORE the TPs (consistent with the win/loss
+//   tracker). Previously, on a bar that touched both a TP and the SL,
+//   the label showed ✓ TP while the tracker counted a loss.
+// • Once SL is hit the trade is dead — TPs reached afterwards are no
+//   longer marked ✓ (previously they kept collecting checkmarks).
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+var label slLbl = na
+var label tp1Lbl = na
+var label tp2Lbl = na
+var label tp3Lbl = na
+var bool stp1Hit = false
+var bool stp2Hit = false
+var bool stp3Hit = false
+var bool sslHit = false
+
+if isSignal
+    stp1Hit := false
+    stp2Hit := false
+    stp3Hit := false
+    sslHit  := false
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(slLbl)
+    label.delete(tp1Lbl)
+    label.delete(tp2Lbl)
+    label.delete(tp3Lbl)
+    if showSltpInput
+        float slPct = safeDiv(math.abs(slPrice - close), close, 0.0) * 100.0
+        float tp1Pct = safeDiv(math.abs(tp1Price - close), close, 0.0) * 100.0
+        float tp2Pct = safeDiv(math.abs(tp2Price - close), close, 0.0) * 100.0
+        float tp3Pct = safeDiv(math.abs(tp3Price - close), close, 0.0) * 100.0
+        slLine  := line.new(bar_index, slPrice, bar_index+1, slPrice, color=#FF5252, style=line.style_dashed, width=1)
+        tp1Line := line.new(bar_index, tp1Price, bar_index+1, tp1Price, color=#4CAF50, style=line.style_dashed, width=1)
+        tp2Line := line.new(bar_index, tp2Price, bar_index+1, tp2Price, color=#00E676, style=line.style_dashed, width=1)
+        tp3Line := line.new(bar_index, tp3Price, bar_index+1, tp3Price, color=#00BCD4, style=line.style_dashed, width=1)
+        slLbl  := label.new(bar_index+1, slPrice, "SL "+str.tostring(slPrice,format.mintick)+" (−"+str.tostring(slPct,"#.##")+"%)", color=#FF5252, textcolor=#000000, style=label.style_label_left, size=size.small)
+        tp1Lbl := label.new(bar_index+1, tp1Price, "TP1 "+str.tostring(tp1Price,format.mintick)+" (+"+str.tostring(tp1Pct,"#.##")+"%)", color=color.new(color.black,100), textcolor=#4CAF50, style=label.style_label_left, size=size.small)
+        tp2Lbl := label.new(bar_index+1, tp2Price, "TP2 "+str.tostring(tp2Price,format.mintick)+" (+"+str.tostring(tp2Pct,"#.##")+"%)", color=color.new(color.black,100), textcolor=#00E676, style=label.style_label_left, size=size.small)
+        tp3Lbl := label.new(bar_index+1, tp3Price, "TP3 "+str.tostring(tp3Price,format.mintick)+" (+"+str.tostring(tp3Pct,"#.##")+"%)", color=color.new(color.black,100), textcolor=#00BCD4, style=label.style_label_left, size=size.small)
+
+if sltpActive and not isSignal
+    bool isLong = sltpDir == 1
+    float entryRef = nz(sltpEntry, close)
+    // SL first: on an ambiguous bar that touches both, assume the worst
+    if not sslHit and ((isLong and low <= slPrice) or (not isLong and high >= slPrice))
+        sslHit := true
+        if not na(slLbl)
+            string pct = str.tostring(safeDiv(math.abs(slPrice - entryRef), entryRef, 0.0)*100.0, "#.##")
+            label.set_text(slLbl, "✗ SL "+str.tostring(slPrice,format.mintick)+" (−"+pct+"%)")
+    if not sslHit and not stp1Hit and ((isLong and high >= tp1Price) or (not isLong and low <= tp1Price))
+        stp1Hit := true
+        if not na(tp1Lbl)
+            string pct = str.tostring(safeDiv(math.abs(tp1Price - entryRef), entryRef, 0.0)*100.0, "#.##")
+            label.set_text(tp1Lbl, "✓ TP1 "+str.tostring(tp1Price,format.mintick)+" (+"+pct+"%)")
+            label.set_color(tp1Lbl, #4CAF50)
+            label.set_textcolor(tp1Lbl, #000000)
+    if not sslHit and not stp2Hit and ((isLong and high >= tp2Price) or (not isLong and low <= tp2Price))
+        stp2Hit := true
+        if not na(tp2Lbl)
+            string pct = str.tostring(safeDiv(math.abs(tp2Price - entryRef), entryRef, 0.0)*100.0, "#.##")
+            label.set_text(tp2Lbl, "✓ TP2 "+str.tostring(tp2Price,format.mintick)+" (+"+pct+"%)")
+            label.set_color(tp2Lbl, #00E676)
+            label.set_textcolor(tp2Lbl, #000000)
+    if not sslHit and not stp3Hit and ((isLong and high >= tp3Price) or (not isLong and low <= tp3Price))
+        stp3Hit := true
+        if not na(tp3Lbl)
+            string pct = str.tostring(safeDiv(math.abs(tp3Price - entryRef), entryRef, 0.0)*100.0, "#.##")
+            label.set_text(tp3Lbl, "✓ TP3 "+str.tostring(tp3Price,format.mintick)+" (+"+pct+"%)")
+            label.set_color(tp3Lbl, #00BCD4)
+            label.set_textcolor(tp3Lbl, #000000)
+    if not na(slLine)
+        line.set_x2(slLine, bar_index+3)
+        line.set_x2(tp1Line, bar_index+3)
+        line.set_x2(tp2Line, bar_index+3)
+        line.set_x2(tp3Line, bar_index+3)
+        label.set_x(slLbl, bar_index+3)
+        label.set_x(tp1Lbl, bar_index+3)
+        label.set_x(tp2Lbl, bar_index+3)
+        label.set_x(tp3Lbl, bar_index+3)
+
+// ── PLOTS ──
+bgcolor(enableFlatInput and showFlatBgInput and isFlat ? color.new(neutralColorInput, 94) : na, title="Range Mode Background")
+p1 = plot(trendLinePlot, "Trend", color=trendColor, linewidth=2, style=plot.style_linebr)
+p2 = plot(hl2, display=display.none)
+fill(p1, p2, trendLinePlot, hl2, gradientFill, na)
+
+if showSignalsInput and confirmedBuy
+    label.new(bar_index, low, "Long "+lastGrade, color=bullColorInput, textcolor=color.white, style=label.style_label_up, size=signalSize)
+if showSignalsInput and confirmedSell
+    label.new(bar_index, high, "Short "+lastGrade, color=bearColorInput, textcolor=color.white, style=label.style_label_down, size=signalSize)
+
+// ── DASHBOARD ──
+int totalTrades = wlWins + wlLosses
+string wrStr = totalTrades > 0 ? str.tostring(math.round(wlWins * 100.0 / totalTrades)) + "% (" + str.tostring(wlWins) + "W/" + str.tostring(wlLosses) + "L)" : "—"
+
+var table dashTable = table.new(dashPos, 2, 14, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+if showDashInput and barstate.islast
+    table.cell(dashTable, 0, 0, "⦿ Pulse Radar", text_color=#FFFFFF, bgcolor=HEADER_BG, text_size=dashFont, text_halign=text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+    string trendCell = isFlat ? "◆ Range" : (isBullish?"▲ Bullish":"▼ Bearish")
+    color trendCellCol = isFlat ? TBL_NEUTRAL : (isBullish?TBL_BULL:TBL_BEAR)
+    table.cell(dashTable, 0, 1, "Trend", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 1, 1, trendCell, text_color=trendCellCol, text_size=dashFont, bgcolor=TABLE_BG, tooltip=isFlat ? "Smoothed ER "+str.tostring(erSmooth,"#.0")+"% — below range threshold. Signals suppressed until ER > "+str.tostring(flatOffLevel,"#.0")+"%" : "")
+    string sd = lastSignalType != "—" ? lastSignalType+(lastWasResume?"·R":"")+" ["+lastGrade+"]" : "—"
+    table.cell(dashTable, 0, 2, "Last Signal", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, sd, text_color=lastSignalType=="BUY"?TBL_BULL:lastSignalType=="SELL"?TBL_BEAR:TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 3, "Score", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 1, 3, lastSignalScore>0?str.tostring(lastSignalScore,"#.0")+"/100":"—", text_color=lastSignalScore>0?gradeColorFromScore(lastSignalScore,TBL_BULL,TBL_NEUTRAL,TBL_BEAR):TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 0, 4, "Strength", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, str.tostring(trendStrength,"#.0")+"%", text_color=trendStrength>60?TBL_BULL:trendStrength>30?TBL_NEUTRAL:TBL_BEAR, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    string pnlD = not na(currentPnl) ? "PnL: "+(currentPnl>=0?"+":"")+str.tostring(currentPnl,"#.##")+"%" : "—"
+    table.cell(dashTable, 0, 5, "P&L", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 1, 5, pnlD, text_color=not na(currentPnl)?(currentPnl>=0?TBL_PNL_UP:TBL_PNL_DN):TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 0, 6, "Win Rate (est.)", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT, tooltip="TP1-before-SL rate at the configured R:R. Trades interrupted by an opposite signal are closed at the flip price. Ignores fees/slippage — NOT full-strategy performance.")
+    table.cell(dashTable, 1, 6, wrStr, text_color=wlWins>=wlLosses?TBL_BULL:TBL_BEAR, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 7, "SL", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    string slDash = sltpActive ? (sslHit?"✗ ":"") + str.tostring(slPrice,format.mintick) : "—"
+    table.cell(dashTable, 1, 7, slDash, text_color=TBL_BEAR, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 0, 8, "TP1", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    string tp1Dash = sltpActive ? (stp1Hit?"✓ ":"") + str.tostring(tp1Price,format.mintick) : "—"
+    table.cell(dashTable, 1, 8, tp1Dash, text_color=TBL_TP1, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 9, "Vol Regime", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 1, 9, volRegimeStr, text_color=isDark?volRegimeCol:(obvDelta>0?TBL_BULL:TBL_BEAR), text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 0, 10, "Vol Delta", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 10, str.tostring(volDeltaPct,"#.0")+"%", text_color=volDeltaPct>0?TBL_BULL:TBL_BEAR, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 11, "Efficiency", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 1, 11, str.tostring(efficiencyRatio,"#.0")+"%", text_color=TEXT_COLOR, text_size=dashFont, bgcolor=TABLE_BG, tooltip="Raw ER. Smoothed ER used by the range filter: "+str.tostring(erSmooth,"#.0")+"%")
+    table.cell(dashTable, 0, 12, "TF", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 12, timeframe.period, text_color=TEXT_COLOR, text_size=dashFont, bgcolor=TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 13, "Version", text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+    table.cell(dashTable, 1, 13, INDICATOR_VERSION, text_color=TEXT_MUTED, text_size=dashFont, bgcolor=TABLE_BG)
+
+var table wmTable = table.new(position=position.bottom_center, columns=1, rows=1, bgcolor=color.new(color.black,100), border_color=color.new(color.black,100), border_width=0, frame_color=color.new(color.black,100), frame_width=0)
+if barstate.islast and showWatermarkInput
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color=WM_COLOR, text_size=size.normal, text_halign=text.align_center, bgcolor=color.new(color.black,100))
+
+// ── ALERTS ──
+// v3.2.0: slPrice/tpPrice are always populated on a signal, so the JSON
+// payload is valid regardless of the "Show SL/TP Levels" toggle.
+if confirmedBuy
+    string p = str.tostring(close, format.mintick)
+    string sl = str.tostring(slPrice, format.mintick)
+    string t1 = str.tostring(tp1Price, format.mintick)
+    string t3 = str.tostring(tp3Price, format.mintick)
+    string tk = syminfo.tickerid
+    string tf = timeframe.period
+    string jm = '{"action":"buy","ticker":"'+tk+'","price":'+p+',"tf":"'+tf+'","grade":"'+lastGrade+'","sl":'+sl+',"tp1":'+t1+',"tp3":'+t3+'}'
+    string tm = "🟢 BUY ["+lastGrade+"] | "+tk+" | TF: "+tf+" | Price: "+p+" | SL: "+sl+" | TP1: "+t1+" | TP3: "+t3
+    alert(webhookInput ? jm : tm, alert.freq_once_per_bar_close)
+
+if confirmedSell
+    string p = str.tostring(close, format.mintick)
+    string sl = str.tostring(slPrice, format.mintick)
+    string t1 = str.tostring(tp1Price, format.mintick)
+    string t3 = str.tostring(tp3Price, format.mintick)
+    string tk = syminfo.tickerid
+    string tf = timeframe.period
+    string jm = '{"action":"sell","ticker":"'+tk+'","price":'+p+',"tf":"'+tf+'","grade":"'+lastGrade+'","sl":'+sl+',"tp1":'+t1+',"tp3":'+t3+'}'
+    string tm = "🔴 SELL ["+lastGrade+"] | "+tk+" | TF: "+tf+" | Price: "+p+" | SL: "+sl+" | TP1: "+t1+" | TP3: "+t3
+    alert(webhookInput ? jm : tm, alert.freq_once_per_bar_close)
+
+// NEW v3.3.0: optional regime-change alerts
+if alertFlatInput and enableFlatInput and (flatEntered or flatExited) and barstate.isconfirmed and isWarmedUp
+    string tk = syminfo.tickerid
+    string tf = timeframe.period
+    string act = flatEntered ? "range_on" : "range_off"
+    string jm = '{"action":"'+act+'","ticker":"'+tk+'","tf":"'+tf+'","er":'+str.tostring(erSmooth,"#.0")+'}'
+    string tm = (flatEntered ? "⚪ RANGE ON" : "🔵 RANGE OFF") + " | "+tk+" | TF: "+tf+" | ER: "+str.tostring(erSmooth,"#.0")+"%"
+    alert(webhookInput ? jm : tm, alert.freq_once_per_bar_close)

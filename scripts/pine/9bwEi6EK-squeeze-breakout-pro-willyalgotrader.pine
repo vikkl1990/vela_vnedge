@@ -1,0 +1,953 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// SQUEEZE BREAKOUT PRO [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 2.0.2
+
+indicator(
+    title            = "Squeeze Breakout Pro [WillyAlgoTrader]",
+    shorttitle       = "SqzBreakout",
+    overlay          = true,
+    max_lines_count  = 500,
+    max_labels_count = 500,
+    max_boxes_count  = 500,
+    max_bars_back    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_RISK   = "🛡️ Risk Management"
+GRP_VISUAL = "🎨 Visual"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v2.0.2"
+
+LINE_FORWARD_BARS = 20
+LINE_UPDATE_BARS  = 5
+LABEL_OFFSET_BARS = 1
+BE_DIM_TRANSP     = 70
+FORM_LEN          = 10
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main ─────────────────────────────
+squeezeLenInput = input.int(13, "Squeeze Length", minval = 10, maxval = 100, group = GRP_MAIN, tooltip = "Period for Bollinger Bands and Keltner Channel.\nHigher = detects longer consolidations.\nRecommended: 15-30")
+bbMultInput     = input.float(2.0, "BB Multiplier", minval = 0.5, maxval = 4.0, step = 0.1, group = GRP_MAIN, tooltip = "Bollinger Bands std dev multiplier.\nHigher = wider BB, squeeze triggers more often.\nRecommended: 1.5-2.5")
+kcMultInput     = input.float(1.2, "KC Multiplier", minval = 0.5, maxval = 4.0, step = 0.1, group = GRP_MAIN, tooltip = "Keltner Channel ATR multiplier.\nLower = narrower KC, squeeze triggers less.\nRecommended: 1.0-2.0")
+sourceInput     = input.source(close, "Source", group = GRP_MAIN)
+
+// ── Filters ──────────────────────────
+useAdxInput     = input.bool(true, "ADX Filter", group = GRP_FILTER, tooltip = "Only detect squeeze when ADX < threshold (range-bound market)")
+adxThreshInput  = input.int(21, "ADX Threshold", minval = 10, maxval = 50, group = GRP_FILTER, tooltip = "Max ADX for squeeze. Lower = stricter.\nRecommended: 20-30")
+adxLenInput     = input.int(13, "ADX Length", minval = 5, maxval = 50, group = GRP_FILTER, tooltip = "ADX calculation period. Recommended: 14")
+useVolInput     = input.bool(true, "Volume Confirmation", group = GRP_FILTER, tooltip = "Require volume spike on breakout bar to filter false breakouts.\nAutomatically bypassed on symbols without volume data (e.g. some forex feeds)")
+volMultInput    = input.float(1.3, "Volume Spike Mult", minval = 1.0, maxval = 3.0, step = 0.1, group = GRP_FILTER, tooltip = "Min volume vs SMA for confirmation.\n1.3 = 30% above average.\nRecommended: 1.2-1.8")
+volSmaLenInput  = input.int(21, "Volume SMA Length", minval = 5, maxval = 100, group = GRP_FILTER, tooltip = "Volume moving average period. Recommended: 20")
+minSqzBarsInput = input.int(5, "Min Squeeze Bars", minval = 2, maxval = 50, group = GRP_FILTER, tooltip = "Minimum consecutive squeeze bars for valid range.\nHigher = fewer but better setups.\nRecommended: 4-10")
+preventOverlapInput = input.bool(true, "Prevent Overlap", group = GRP_FILTER, tooltip = "Prevent new squeeze zones from overlapping previous ones")
+rngExpiryInput  = input.int(50, "Range Expiry (bars)", minval = 5, maxval = 500, group = GRP_FILTER, tooltip = "Pending range is invalidated if no breakout occurs\nwithin this many bars after the squeeze ends.\nPrevents breakouts from stale, irrelevant ranges.\nRecommended: 30-100")
+minRngWidthInput = input.float(1.0, "Min Range Width (ATR)", minval = 0.0, maxval = 10.0, step = 0.1, group = GRP_FILTER, tooltip = "Discard ranges narrower than this many ATRs.\nMicro-ranges put TP1 a few ticks from entry and\npollute win-rate stats with meaningless wins.\n0 = disabled. Recommended: 0.8-1.5")
+useMomBiasInput = input.bool(true, "Momentum Bias Filter", group = GRP_FILTER, tooltip = "TTM-style linear regression momentum.\nOnly take breakouts aligned with momentum direction:\nlongs when momentum > 0, shorts when momentum < 0")
+momLenInput     = input.int(20, "Momentum Length", minval = 5, maxval = 100, group = GRP_FILTER, tooltip = "Linear regression momentum period.\nRecommended: match or slightly exceed Squeeze Length")
+strengthLenInput = input.int(100, "Strength Lookback", minval = 20, maxval = 500, group = GRP_FILTER, tooltip = "Bars of history for the squeeze strength percentile.\nHigher strength = tighter squeeze = stronger\nexpected expansion. Recommended: 100-200")
+
+// ── Risk Management ──────────────────
+riskPresetInput = input.string("Range Fib", "Risk Preset", options = ["Range Fib", "Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RISK, tooltip = "Quick risk presets:\n• Range Fib: TP from range width ×0.618/1.0/1.618 (indicator signature)\n• Conservative: TP 1R/2R/4R, ATR SL ×2.5\n• Balanced: TP 1R/2R/3R, ATR SL ×1.5\n• Aggressive: TP 1.5R/2.5R/4R, ATR SL ×1.0\n• Scalping: TP 0.8R/1.5R/2R, ATR SL ×0.8\n• Custom: manual TP Basis + multipliers below.\nNote: the SL part of presets applies to ATR mode;\nRange Boundary / Wick-Anchored place the stop structurally")
+tpBasisInput    = input.string("Range Width", "TP Basis (Custom)", options = ["Range Width", "Risk (R)"], group = GRP_RISK, tooltip = "Used only with the Custom preset:\n• Range Width: targets project the consolidation range\n• Risk (R): targets are multiples of the actual SL distance")
+tp1MultInput    = input.float(0.618, "TP1 Multiplier (Custom)", minval = 0.1, maxval = 5.0, step = 0.1, group = GRP_RISK, tooltip = "TP1 multiplier for the Custom preset.\nApplied to the selected TP Basis")
+tp2MultInput    = input.float(1.0, "TP2 Multiplier (Custom)", minval = 0.2, maxval = 10.0, step = 0.1, group = GRP_RISK, tooltip = "TP2 multiplier for the Custom preset.\nMust be greater than TP1")
+tp3MultInput    = input.float(1.618, "TP3 Multiplier (Custom)", minval = 0.3, maxval = 15.0, step = 0.1, group = GRP_RISK, tooltip = "TP3 multiplier for the Custom preset.\nMust be greater than TP2")
+slModeInput     = input.string("Range Boundary", "SL Mode", options = ["Range Boundary", "Wick-Anchored", "ATR"], group = GRP_RISK, tooltip = "How the stop-loss is placed at entry:\n• Range Boundary: opposite side of the broken range\n  + ATR padding (structural, indicator signature)\n• Wick-Anchored: beyond the signal bar's wick + 0.25×ATR\n  buffer (min distance 0.5×ATR enforced)\n• ATR: fixed SL Multiplier × ATR distance from entry")
+slMultInput     = input.float(1.5, "SL Multiplier ×ATR (ATR mode)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK, tooltip = "Stop distance for ATR mode.\n• 1.0 = tight, aggressive\n• 1.5 = balanced (recommended)\n• 2.0-3.0 = wide, conservative")
+slPadInput      = input.float(0.2, "SL Padding ×ATR (Range mode)", minval = 0.0, maxval = 2.0, step = 0.05, group = GRP_RISK, tooltip = "Extra padding beyond the range boundary for\nRange Boundary SL mode. 0.2 = 20% of ATR.\nRecommended: 0.1-0.5")
+atrLenRiskInput = input.int(14, "ATR Length (Risk)", minval = 5, maxval = 50, group = GRP_RISK, tooltip = "ATR period for stop-loss calculation.\n• 14 = standard, works on most timeframes\n• Lower = tighter stops, Higher = wider stops")
+beInput         = input.bool(true, "Break-Even After TP1", group = GRP_RISK, tooltip = "Move stop-loss to entry price once TP1 is reached.\nPositions stopped at break-even after TP1 count as wins")
+beOffsetInput   = input.float(0.0, "BE Offset ×ATR", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_RISK, tooltip = "Optional offset for the break-even stop,\nas a fraction of entry-bar ATR.\n0 = exactly at entry price (recommended)")
+showSlTpInput   = input.bool(true, "Show SL/TP Lines", group = GRP_RISK, tooltip = "Draw entry, stop-loss and take-profit lines at entry.\nLines persist after the trade closes (as a chart record)\nand are replaced at the next entry")
+showSlTpLabelsInput = input.bool(true, "Show SL/TP Labels", group = GRP_RISK, tooltip = "Show price labels on SL/TP lines")
+showPctOnLabelsInput = input.bool(true, "Show % Distance on Labels", group = GRP_RISK, tooltip = "Append % distance from entry to SL/TP labels,\ne.g. 'SL 1.2300 (-0.36%)'")
+entryLineStyleInput = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Entry is a reference, not an action level — keep it subtle")
+slLineStyleInput = input.string("Solid", "SL Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "SL is an action level — solid width 2 recommended")
+tpLineStyleInput = input.string("Dashed", "TP Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RISK, tooltip = "Style for TP1/TP2/TP3. On hit, a TP line turns solid teal")
+
+// ── Visual ───────────────────────────
+showSignalsInput    = input.bool(true, "Show Breakout Signals", group = GRP_VISUAL)
+signalFontSizeInput = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for breakout signal labels")
+labelFontSizeInput  = input.string("Small", "SL/TP Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_VISUAL, tooltip = "Font size for SL/TP level labels")
+showSqueezeInput    = input.bool(true, "Show Squeeze Zones", group = GRP_VISUAL, tooltip = "Highlight consolidation zones on chart")
+showBgInput         = input.bool(false, "Show Background Tint", group = GRP_VISUAL, tooltip = "Tint background during active squeeze")
+showWatermarkInput  = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+themeInput          = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+
+// ── Dashboard ────────────────────────
+showDashInput      = input.bool(true, "Show Dashboard", group = GRP_DASH)
+dashPosStr         = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH)
+dashFontSizeInput  = input.string("Small", "Dashboard Font Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH, tooltip = "Font size for the dashboard table. Section dividers and the\nversion footer render one step smaller to preserve hierarchy")
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH)
+showTradeSecInput  = input.bool(true, "  ├ Trade section", group = GRP_DASH)
+showStatsSecInput  = input.bool(true, "  └ Stats section", group = GRP_DASH)
+
+// ── Alerts ───────────────────────────
+webhookInput      = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send entry alerts in JSON format for webhook integrations.\nRemember: alert condition must be set to\n'Any alert() function call'")
+tpBeAlertInput    = input.bool(true, "Alert on TP & Break-Even", group = GRP_ALERT, tooltip = "Send alerts on TP1/TP2 touches, break-even activation\nand TP3 final target")
+slRevAlertInput   = input.bool(true, "Alert on SL Hit & Reversal", group = GRP_ALERT, tooltip = "Send alerts on stop-outs (SL / BE stop-out) and reversals")
+sqzInfoAlertInput = input.bool(false, "Alert on Squeeze Events", group = GRP_ALERT, tooltip = "Informational alerts when a squeeze starts and when a\nvalid range is locked (squeeze ends)")
+
+// ── Colors ───────────────────────────
+bullColorInput    = input.color(#00E676, "Bull", inline = "sigcol", group = GRP_COLORS)
+bearColorInput    = input.color(#FF5252, "Bear", inline = "sigcol", group = GRP_COLORS)
+squeezeColorInput = input.color(#FFEB3B, "Squeeze Zone", group = GRP_COLORS, tooltip = "Color for consolidation zone boxes")
+
+// ══════════════════════════════════════
+// RISK PRESETS — effective multipliers
+// ══════════════════════════════════════
+// [basis, tp1, tp2, tp3, slMult(ATR mode)]
+[effBasis, effT1m, effT2m, effT3m, effSlMult] = switch riskPresetInput
+    "Conservative" => ["Risk", 1.0, 2.0, 4.0, 2.5]
+    "Balanced"     => ["Risk", 1.0, 2.0, 3.0, 1.5]
+    "Aggressive"   => ["Risk", 1.5, 2.5, 4.0, 1.0]
+    "Scalping"     => ["Risk", 0.8, 1.5, 2.0, 0.8]
+    "Custom"       => [tpBasisInput == "Range Width" ? "Range" : "Risk", tp1MultInput, tp2MultInput, tp3MultInput, slMultInput]
+    => ["Range", 0.618, 1.0, 1.618, 1.5]  // Range Fib (default)
+
+// ══════════════════════════════════════
+// INPUT VALIDATION (std §20)
+// ══════════════════════════════════════
+if effT1m >= effT2m or effT2m >= effT3m
+    runtime.error("Invalid TP multipliers: required TP1 < TP2 < TP3")
+if effSlMult <= 0
+    runtime.error("SL Multiplier must be greater than 0")
+// Dimensionally correct: in ATR mode TP1 distance = effT1m × effSlMult × ATR,
+// BE offset = beOffsetInput × ATR. For structural SL modes the risk is not
+// known statically — a runtime clamp at BE activation covers those.
+if beInput and effBasis == "Risk" and slModeInput == "ATR" and beOffsetInput >= effT1m * effSlMult
+    runtime.error("BE Offset too large: breakeven level would be at or beyond TP1")
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+// ── Texts ───────────────────────────
+TEXT_COLOR   = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED   = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+
+// ── Adaptive signal text colors (dashboard, lines) ──
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #F57F17
+
+// ── Label text (on label backgrounds) ──
+BULL_LABEL_TEXT = #004D25  // dark green on bright green — contrast 7.8:1
+BEAR_LABEL_TEXT = #FFFFFF  // white on red — contrast ~4.0:1
+
+// ── Dashboard / tables ──────────────
+TABLE_BG       = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER   = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT  = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_TEXT    = #FFFFFF
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+
+// ── Risk palette (premium, muted, theme-aware — std §23) ──
+SL_COLOR       = isDark ? color.new(#E57373, 0)  : color.new(#B71C1C, 0)
+TP1_COLOR      = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+TP2_COLOR      = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+TP3_COLOR      = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+ENTRY_COLOR    = isDark ? color.new(#5C8AAE, 0)  : color.new(#34495E, 0)
+TP_LABEL_COLOR = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+TP_HIT_COLOR   = isDark ? color.new(#4DB6AC, 0)  : color.new(#00695C, 0)
+BE_COLOR       = isDark ? color.new(#FFA726, 0)  : color.new(#E65100, 0)
+LABEL_TEXT     = isDark ? #1A1A1A                : #FFFFFF
+
+// ── Misc ────────────────────────────
+WM_COLOR = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+calcAdx(int len) =>
+    float upMove = nz(high - high[1], 0.0)
+    float downMove = nz(low[1] - low, 0.0)
+    float plusDM = upMove > downMove and upMove > 0 ? upMove : 0.0
+    float minusDM = downMove > upMove and downMove > 0 ? downMove : 0.0
+    float smoothTR = nz(ta.rma(nz(ta.tr, 0.0), len), 0.0001)
+    float plusDI = safeDiv(nz(ta.rma(plusDM, len), 0.0), smoothTR) * 100
+    float minusDI = safeDiv(nz(ta.rma(minusDM, len), 0.0), smoothTR) * 100
+    float diSum = plusDI + minusDI
+    float dx = safeDiv(math.abs(plusDI - minusDI), diSum) * 100
+    nz(ta.rma(dx, len), 50.0)
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small : s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct   = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+// ── Derived sizes / styles ───────────
+signalSize      = sizeFromString(signalFontSizeInput)
+riskLabelSize   = sizeFromString(labelFontSizeInput)
+dashFontSize    = sizeFromString(dashFontSizeInput)
+dashFontSizeSub = sizeDownFromString(dashFontSizeInput)
+entryLineStyle  = lineStyleFromString(entryLineStyleInput)
+slLineStyle     = lineStyleFromString(slLineStyleInput)
+tpLineStyle     = lineStyleFromString(tpLineStyleInput)
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CALCULATIONS (na-protected)
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(math.max(squeezeLenInput, strengthLenInput), 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// ── Bollinger Bands ──────────────────
+float bbBasis = nz(ta.sma(sourceInput, squeezeLenInput), sourceInput)
+float bbDev   = nz(ta.stdev(sourceInput, squeezeLenInput), 0.0) * bbMultInput
+float bbUpper = bbBasis + bbDev
+float bbLower = bbBasis - bbDev
+
+// ── Keltner Channel ──────────────────
+float kcBasis = bbBasis
+float kcRange = nz(ta.atr(squeezeLenInput), 0.0) * kcMultInput
+float kcUpper = kcBasis + kcRange
+float kcLower = kcBasis - kcRange
+
+// ── Squeeze = BB inside KC ───────────
+bool isSqueeze = bbUpper < kcUpper and bbLower > kcLower
+
+// ── ADX ──────────────────────────────
+float adxValue = calcAdx(adxLenInput)
+bool adxOk = useAdxInput ? adxValue < adxThreshInput : true
+
+// ── Combined squeeze ─────────────────
+bool sqzActive = isSqueeze and adxOk and isWarmedUp
+
+// ── Momentum bias (TTM-style) ────────
+float momMid = math.avg(math.avg(ta.highest(high, momLenInput), ta.lowest(low, momLenInput)), ta.sma(close, momLenInput))
+float momVal = nz(ta.linreg(close - momMid, momLenInput, 0), 0.0)
+bool momBullOk = useMomBiasInput ? momVal > 0 : true
+bool momBearOk = useMomBiasInput ? momVal < 0 : true
+
+// ── Squeeze strength (BB width percentile) ──
+float bbWidthPct  = safeDiv(bbUpper - bbLower, bbBasis) * 100
+float sqzStrength = isWarmedUp ? 100.0 - nz(ta.percentrank(bbWidthPct, strengthLenInput), 50.0) : na
+
+// ── Squeeze duration tracking ────────
+var int sqzCount = 0
+sqzCount := sqzActive ? sqzCount + 1 : 0
+
+// ── ATR for risk calculations ────────
+float riskAtr = nz(ta.atr(atrLenRiskInput), 0.0)
+
+// ── Range boundaries ─────────────────
+var float rngHigh = na
+var float rngLow  = na
+var int rngStart  = na
+var int rngEnd    = na
+var bool rngReady = false
+var float actHigh = na
+var float actLow  = na
+var int lastRngEnd = 0
+var float actStrength = na
+
+if sqzActive and sqzCount == 1
+    rngHigh := high
+    rngLow  := low
+    rngStart := bar_index
+
+if sqzActive and sqzCount > 1
+    rngHigh := math.max(nz(rngHigh, high), high)
+    rngLow  := math.min(nz(rngLow, low), low)
+
+bool sqzJustEnded = not sqzActive and nz(sqzCount[1], 0) >= minSqzBarsInput
+bool sqzFailed    = not sqzActive and nz(sqzCount[1], 0) > 0 and nz(sqzCount[1], 0) < minSqzBarsInput
+bool overlapOk = preventOverlapInput ? nz(rngStart, 0) > lastRngEnd : true
+bool widthOk = minRngWidthInput <= 0.0 or (not na(rngHigh) and not na(rngLow) and (rngHigh - rngLow) >= riskAtr * minRngWidthInput)
+
+bool rngLocked = false
+if sqzJustEnded and not na(rngHigh) and not na(rngLow) and overlapOk and widthOk
+    rngReady := true
+    rngLocked := true
+    actHigh  := rngHigh
+    actLow   := rngLow
+    rngEnd   := bar_index[1]
+    lastRngEnd := bar_index[1]
+    actStrength := nz(sqzStrength[1], sqzStrength)
+
+// ── Range expiry ─────────────────────
+bool rngExpired = rngReady and not na(rngEnd) and bar_index - rngEnd > rngExpiryInput
+if rngExpired
+    rngReady := false
+
+// ── Volume (forex-safe) ──────────────
+bool hasVolume = nz(volume, 0) > 0
+float volSma   = hasVolume ? nz(ta.sma(volume, volSmaLenInput), 0.0) : 0.0
+bool volOk     = useVolInput ? (hasVolume ? volume > volSma * volMultInput : true) : true
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC (bar-close confirmed + warmup)
+// ══════════════════════════════════════
+bool bullBreak = rngReady and close > actHigh and barstate.isconfirmed and volOk and momBullOk and isWarmedUp
+bool bearBreak = rngReady and close < actLow and barstate.isconfirmed and volOk and momBearOk and isWarmedUp
+
+// A breakout consumes the pending range regardless of whether it
+// opens a trade (same-direction signals while in trade are ignored,
+// std §17.7 — no pyramiding, no level overwrites)
+float sigRngWidth = nz(actHigh - actLow, 0.0)
+if bullBreak or bearBreak
+    rngReady := false
+
+// ══════════════════════════════════════
+// TRADE ENGINE (std §17, canonical)
+// ══════════════════════════════════════
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var float activeTP3   = na
+var int   activeDir   = 0
+var int   entryBarIdx = na
+var float entryAtr    = na
+var float entryRisk   = na  // initial |entry - SL|, frozen at entry (R:R stays meaningful after BE)
+var bool  tp1Reached  = false
+var bool  tp2Reached  = false
+var bool  tp3Reached  = false
+var bool  beActive    = false
+
+// Session stats (reset on chart reload — disclosed, std §21)
+var int    winCount    = 0
+var int    lossCount   = 0
+var int    slCount     = 0
+var int    beCount     = 0
+var int    tp3Count    = 0
+var int    revCount    = 0
+var string formStr     = ""
+
+// ── Bar-start captures: BE moved THIS bar cannot stop THIS bar ──
+bool  beActiveAtBarStart = beActive
+float effectiveSL        = activeSL
+
+// ── Hit detection: entry-bar guard + confirmed only ──
+bool canCheckHit = activeDir != 0 and not na(entryBarIdx) and bar_index > entryBarIdx and barstate.isconfirmed
+
+bool slHitRaw  = canCheckHit and (activeDir == 1 ? low  <= effectiveSL : high >= effectiveSL)
+bool tp1HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP1   : low  <= activeTP1)
+bool tp2HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP2   : low  <= activeTP2)
+bool tp3HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP3   : low  <= activeTP3)
+
+// ── TP-priority (std §18): TP touches register regardless of SL ──
+bool tp1FirstTouch = tp1HitRaw and not tp1Reached
+bool tp2FirstTouch = tp2HitRaw and not tp2Reached
+bool tp3FirstTouch = tp3HitRaw and not tp3Reached
+
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+if tp3FirstTouch
+    tp3Reached := true
+
+// ── Break-even after TP1 (std §19) ──
+bool beJustActivated = false
+float beLevelSet = na
+if beInput and tp1FirstTouch and not beActive and activeDir != 0
+    float beLvl = activeEntry + (activeDir == 1 ? 1.0 : -1.0) * beOffsetInput * nz(entryAtr, 0.0)
+    // Runtime clamp: BE stop must stay on the entry side of TP1
+    // (covers structural SL modes where risk is unknown statically)
+    bool beLvlOk = activeDir == 1 ? beLvl < activeTP1 : beLvl > activeTP1
+    activeSL        := beLvlOk ? beLvl : activeEntry
+    beActive        := true
+    beJustActivated := true
+    beLevelSet      := activeSL
+
+// ── Snapshots BEFORE reset (std §17.5) ──
+var float hitSL    = na
+var float hitEntry = na
+if slHitRaw
+    hitSL    := effectiveSL
+    hitEntry := activeEntry
+
+float exitEntry         = activeEntry
+int   exitDir           = activeDir
+float exitTP1           = activeTP1
+float exitTP2           = activeTP2
+float exitTP3           = activeTP3
+bool  exitBeActive      = beActiveAtBarStart
+bool  displayTp1Reached = tp1Reached
+bool  displayTp2Reached = tp2Reached
+bool  displayTp3Reached = tp3Reached
+
+// ── Closure: SL blocked by any first TP touch this bar (TP priority) ──
+bool closeBySl = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
+bool evSlHit   = false
+bool evTp3Hit  = false
+
+if (tp3HitRaw or closeBySl) and activeDir != 0
+    bool tradeWin = tp1Reached
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    if tp3HitRaw
+        evTp3Hit := true
+        tp3Count += 1
+    else
+        evSlHit := true
+        if exitBeActive
+            beCount += 1
+        else
+            slCount += 1
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    entryAtr    := na
+    entryRisk   := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+
+// ── Signal-Trade Parity: reversal on strictly opposite signal ──
+int sigDir = bullBreak ? 1 : bearBreak ? -1 : 0
+bool reverseToShort = sigDir == -1 and activeDir == 1
+bool reverseToLong  = sigDir ==  1 and activeDir == -1
+
+bool evReversal = false
+bool revWin     = false
+if reverseToShort or reverseToLong
+    evReversal := true
+    revWin     := tp1Reached
+    if revWin
+        winCount += 1
+    else
+        lossCount += 1
+    revCount += 1
+    formStr := formStr + (revWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeDir   := 0
+    activeEntry := na
+    activeSL    := na
+    activeTP1   := na
+    activeTP2   := na
+    activeTP3   := na
+    entryBarIdx := na
+    entryAtr    := na
+    entryRisk   := na
+    tp1Reached  := false
+    tp2Reached  := false
+    tp3Reached  := false
+    beActive    := false
+
+// ── Entries (engine is flat here — initially or freed by close/reversal) ──
+bool evLongEntry  = false
+bool evShortEntry = false
+
+if bullBreak and activeDir == 0
+    float slRangeLong = nz(actLow, close - riskAtr) - riskAtr * slPadInput
+    float slWickLong  = math.min(low - riskAtr * 0.25, close - riskAtr * 0.5)
+    float slAtrLong   = close - riskAtr * effSlMult
+    float slLong      = slModeInput == "ATR" ? slAtrLong : slModeInput == "Wick-Anchored" ? slWickLong : slRangeLong
+    float riskLong    = close - slLong
+    if riskLong > 0
+        float tpBaseLong = effBasis == "Range" ? sigRngWidth : riskLong
+        activeEntry := close
+        activeSL    := slLong
+        activeTP1   := close + tpBaseLong * effT1m
+        activeTP2   := close + tpBaseLong * effT2m
+        activeTP3   := close + tpBaseLong * effT3m
+        activeDir   := 1
+        entryBarIdx := bar_index
+        entryAtr    := riskAtr
+        entryRisk   := riskLong
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        evLongEntry := true
+
+if bearBreak and activeDir == 0
+    float slRangeShort = nz(actHigh, close + riskAtr) + riskAtr * slPadInput
+    float slWickShort  = math.max(high + riskAtr * 0.25, close + riskAtr * 0.5)
+    float slAtrShort   = close + riskAtr * effSlMult
+    float slShort      = slModeInput == "ATR" ? slAtrShort : slModeInput == "Wick-Anchored" ? slWickShort : slRangeShort
+    float riskShort    = slShort - close
+    if riskShort > 0
+        float tpBaseShort = effBasis == "Range" ? sigRngWidth : riskShort
+        activeEntry  := close
+        activeSL     := slShort
+        activeTP1    := close - tpBaseShort * effT1m
+        activeTP2    := close - tpBaseShort * effT2m
+        activeTP3    := close - tpBaseShort * effT3m
+        activeDir    := -1
+        entryBarIdx  := bar_index
+        entryAtr     := riskAtr
+        entryRisk    := riskShort
+        tp1Reached   := false
+        tp2Reached   := false
+        tp3Reached   := false
+        beActive     := false
+        evShortEntry := true
+
+// ── Derived stats ────────────────────
+int   closedTrades = winCount + lossCount
+float winRate      = closedTrades > 0 ? winCount / float(closedTrades) * 100.0 : 0.0
+
+// ══════════════════════════════════════
+// PLOTS & VISUALS — SQUEEZE ZONES
+// ══════════════════════════════════════
+var box sqzBox = na
+
+if showSqueezeInput
+    if sqzActive and sqzCount == 1
+        sqzBox := box.new(bar_index, nz(rngHigh, high), bar_index, nz(rngLow, low), bgcolor = color.new(squeezeColorInput, 88), border_color = color.new(squeezeColorInput, 50), border_width = 1)
+    if sqzActive and sqzCount > 1 and not na(sqzBox)
+        box.set_right(sqzBox, bar_index)
+        box.set_top(sqzBox, nz(rngHigh, high))
+        box.set_bottom(sqzBox, nz(rngLow, low))
+    if sqzFailed and not na(sqzBox)
+        box.delete(sqzBox)
+        sqzBox := na
+    if sqzJustEnded and (not overlapOk or not widthOk) and not na(sqzBox)
+        box.delete(sqzBox)
+        sqzBox := na
+    if sqzJustEnded
+        sqzBox := na
+
+bgcolor(showBgInput and sqzActive ? color.new(squeezeColorInput, 95) : na, title = "Squeeze BG")
+
+// ══════════════════════════════════════
+// LABELS & SHAPES — TRADE ENTRIES
+// ══════════════════════════════════════
+// Labels mark trade ENTRIES (parity with entry alerts, std checklist:
+// "alert conditions match visual signals"). Same-direction breakouts
+// while a position is open produce neither a trade nor a label.
+// Contrast per std §2-3: dark-green text on bull labels, white on bear.
+string strengthTag = not na(actStrength) ? " ⚡" + str.tostring(actStrength, "#") + "%" : ""
+if showSignalsInput and evLongEntry
+    label.new(bar_index, low, "Long ▲" + strengthTag, style = label.style_label_up, color = bullColorInput, textcolor = BULL_LABEL_TEXT, size = signalSize, tooltip = "Bull breakout of locked squeeze range\nTrade entry: Long" + (evReversal ? " (reversal)" : ""))
+if showSignalsInput and evShortEntry
+    label.new(bar_index, high, "Short ▼" + strengthTag, style = label.style_label_down, color = bearColorInput, textcolor = BEAR_LABEL_TEXT, size = signalSize, tooltip = "Bear breakout of locked squeeze range\nTrade entry: Short" + (evReversal ? " (reversal)" : ""))
+
+// ══════════════════════════════════════
+// SL/TP LINES & LABELS (std §23)
+// ══════════════════════════════════════
+var line entryLine  = na
+var line slLine     = na
+var line tp1Line    = na
+var line tp2Line    = na
+var line tp3Line    = na
+var label entryLabel = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+
+// Draw at entry; previous trade's lines persist until this moment
+// (chart record — std §23.5 persistence)
+if showSlTpInput and (evLongEntry or evShortEntry)
+    line.delete(entryLine), line.delete(slLine)
+    line.delete(tp1Line), line.delete(tp2Line), line.delete(tp3Line)
+    label.delete(entryLabel), label.delete(slLabel)
+    label.delete(tp1Label), label.delete(tp2Label), label.delete(tp3Label)
+
+    int startBar = bar_index
+    entryLine := line.new(startBar, activeEntry, startBar + LINE_FORWARD_BARS, activeEntry, color = ENTRY_COLOR, style = entryLineStyle, width = 1)
+    slLine    := line.new(startBar, activeSL, startBar + LINE_FORWARD_BARS, activeSL, color = SL_COLOR, style = slLineStyle, width = 2)
+    tp1Line   := line.new(startBar, activeTP1, startBar + LINE_FORWARD_BARS, activeTP1, color = TP1_COLOR, style = tpLineStyle, width = 1)
+    tp2Line   := line.new(startBar, activeTP2, startBar + LINE_FORWARD_BARS, activeTP2, color = TP2_COLOR, style = tpLineStyle, width = 1)
+    tp3Line   := line.new(startBar, activeTP3, startBar + LINE_FORWARD_BARS, activeTP3, color = TP3_COLOR, style = tpLineStyle, width = 1)
+
+    if showSlTpLabelsInput
+        int lblBar = startBar + LINE_FORWARD_BARS + LABEL_OFFSET_BARS
+        string entryTxt = "ENTRY " + fmtPrice(activeEntry)
+        string slTxt  = "SL " + fmtPrice(activeSL) + formatPctFromEntry(activeSL, activeEntry)
+        string tp1Txt = "TP1 " + fmtPrice(activeTP1) + formatPctFromEntry(activeTP1, activeEntry)
+        string tp2Txt = "TP2 " + fmtPrice(activeTP2) + formatPctFromEntry(activeTP2, activeEntry)
+        string tp3Txt = "TP3 " + fmtPrice(activeTP3) + formatPctFromEntry(activeTP3, activeEntry)
+        entryLabel := label.new(lblBar, activeEntry, entryTxt, color = ENTRY_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = riskLabelSize)
+        slLabel    := label.new(lblBar, activeSL, slTxt, color = SL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = riskLabelSize)
+        tp1Label   := label.new(lblBar, activeTP1, tp1Txt, color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = riskLabelSize)
+        tp2Label   := label.new(lblBar, activeTP2, tp2Txt, color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = riskLabelSize)
+        tp3Label   := label.new(lblBar, activeTP3, tp3Txt, color = TP_LABEL_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = riskLabelSize)
+
+// Extend active lines forward (std §23.5) — never shrink: on the
+// first bars after entry the drawn span (entry+20) exceeds bar+5
+if showSlTpInput and activeDir != 0 and not na(slLine) and not (evLongEntry or evShortEntry)
+    int newX2 = math.max(bar_index + LINE_UPDATE_BARS, line.get_x2(slLine))
+    line.set_x2(entryLine, newX2)
+    line.set_x2(slLine, newX2)
+    line.set_x2(tp1Line, newX2)
+    line.set_x2(tp2Line, newX2)
+    line.set_x2(tp3Line, newX2)
+    if showSlTpLabelsInput and not na(slLabel)
+        int lblX = newX2 + LABEL_OFFSET_BARS
+        label.set_x(entryLabel, lblX)
+        label.set_x(slLabel, lblX)
+        label.set_x(tp1Label, lblX)
+        label.set_x(tp2Label, lblX)
+        label.set_x(tp3Label, lblX)
+
+// TP-hit recolor — solid teal + ✓, from snapshots, gated against
+// fresh lines of a new entry on a reversal bar (std §23.5)
+if showSlTpInput and not (evLongEntry or evShortEntry)
+    if not na(tp1Line) and displayTp1Reached
+        line.set_color(tp1Line, TP_HIT_COLOR)
+        line.set_style(tp1Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp1Label)
+            label.set_text(tp1Label, "TP1 ✓ " + fmtPrice(exitTP1) + formatPctFromEntry(exitTP1, exitEntry))
+            label.set_color(tp1Label, TP_HIT_COLOR)
+    if not na(tp2Line) and displayTp2Reached
+        line.set_color(tp2Line, TP_HIT_COLOR)
+        line.set_style(tp2Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp2Label)
+            label.set_text(tp2Label, "TP2 ✓ " + fmtPrice(exitTP2) + formatPctFromEntry(exitTP2, exitEntry))
+            label.set_color(tp2Label, TP_HIT_COLOR)
+    if not na(tp3Line) and displayTp3Reached
+        line.set_color(tp3Line, TP_HIT_COLOR)
+        line.set_style(tp3Line, line.style_solid)
+        if showSlTpLabelsInput and not na(tp3Label)
+            label.set_text(tp3Label, "TP3 ✓ " + fmtPrice(exitTP3) + formatPctFromEntry(exitTP3, exitEntry))
+            label.set_color(tp3Label, TP_HIT_COLOR)
+
+// BE visuals (§19.4, RTS style): the SL line/label stay at the ORIGINAL
+// level as a dimmed record of the initial risk; the effective stop is
+// shown by the annotated entry label and the dashboard "BE @" row
+if showSlTpInput and beActive and activeDir != 0
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, BE_DIM_TRANSP))
+    if showSlTpLabelsInput
+        if not na(slLabel)
+            label.set_color(slLabel, color.new(SL_COLOR, BE_DIM_TRANSP))
+        if not na(entryLabel)
+            label.set_text(entryLabel, "ENTRY " + fmtPrice(activeEntry) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+
+// ══════════════════════════════════════
+// DASHBOARD 2.0 — sectional (std §24)
+// ══════════════════════════════════════
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    int marketRows = showMarketSecInput ? 6 : 0
+    int tradeRows  = showTradeSecInput  ? (activeDir != 0 ? 8 : 2) : 0
+    int statsRows  = showStatsSecInput  ? 7 : 0
+    int totalRows  = 2 + marketRows + tradeRows + statsRows
+
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(dashPos, 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    int  r   = 0
+    bool zeb = false
+    color rb = TABLE_BG
+
+    // ── Header — colored by momentum trend ──
+    string trendWord = momVal > 0 ? "Bullish" : momVal < 0 ? "Bearish" : "Neutral"
+    color headerBg = momVal >= 0 ? HEADER_BG_BULL : HEADER_BG_BEAR
+    table.cell(dashTable, 0, r, "◆ SqzBreakout · " + trendWord, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    // ── Market section ──
+    if showMarketSecInput
+        table.cell(dashTable, 0, r, "— Market —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        zeb := false
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        string sqzStr = sqzActive ? "ACTIVE (" + str.tostring(sqzCount) + ")" : rngReady ? "Range locked" : "None"
+        color sqzClr = sqzActive ? NEUTRAL_TEXT : rngReady ? NEUTRAL_TEXT : TEXT_MUTED
+        table.cell(dashTable, 0, r, "Squeeze", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "BB inside KC + ADX filter.\nNumber = consecutive squeeze bars")
+        table.cell(dashTable, 1, r, sqzStr, text_color = sqzClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        float dispStrength = sqzActive ? sqzStrength : actStrength
+        string strengthStr = na(dispStrength) ? "—" : str.tostring(dispStrength, "#") + "%"
+        color strengthClr = na(dispStrength) ? TEXT_MUTED : dispStrength >= 70 ? BULL_TEXT : dispStrength >= 40 ? NEUTRAL_TEXT : TEXT_MUTED
+        table.cell(dashTable, 0, r, "Strength", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "BB-width percentile vs lookback.\nHigher = tighter squeeze = stronger expected expansion")
+        table.cell(dashTable, 1, r, strengthStr, text_color = strengthClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        string momStr = momVal > 0 ? "▲ Bull" : momVal < 0 ? "▼ Bear" : "—"
+        color momClr = momVal > 0 ? BULL_TEXT : momVal < 0 ? BEAR_TEXT : TEXT_MUTED
+        table.cell(dashTable, 0, r, "Momentum", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "TTM-style linreg momentum.\nBreakouts against momentum are filtered when the\nMomentum Bias Filter is enabled")
+        table.cell(dashTable, 1, r, momStr, text_color = momClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        string adxStr = na(adxValue) ? "—" : str.tostring(adxValue, "#.0")
+        color adxClr = not na(adxValue) and adxValue < adxThreshInput ? BULL_TEXT : BEAR_TEXT
+        table.cell(dashTable, 0, r, "ADX", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Trend strength. Squeeze requires ADX below threshold\n(range-bound market)")
+        table.cell(dashTable, 1, r, adxStr, text_color = adxClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        string sigStr = activeDir == 1 ? "Long active" : activeDir == -1 ? "Short active" : rngReady ? "Pending" : "Wait"
+        color sigClr = activeDir == 1 ? BULL_TEXT : activeDir == -1 ? BEAR_TEXT : rngReady ? NEUTRAL_TEXT : TEXT_MUTED
+        table.cell(dashTable, 0, r, "Signal", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Pending = locked range awaiting breakout.\nActive = position open in the trade engine")
+        table.cell(dashTable, 1, r, sigStr, text_color = sigClr, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+
+    // ── Trade section ──
+    if showTradeSecInput
+        table.cell(dashTable, 0, r, "— Trade —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        zeb := false
+
+        if activeDir == 0
+            table.cell(dashTable, 0, r, "Flat · waiting for breakout", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = TABLE_BG, text_halign = text.align_center)
+            table.merge_cells(dashTable, 0, r, 1, r)
+            r += 1
+        else
+            // R:R from the INITIAL risk (frozen at entry) — after a BE move
+            // the live |entry - SL| collapses to ~0 and would be meaningless
+            float rrVal   = safeDiv(math.abs(nz(activeTP1) - nz(activeEntry)), nz(entryRisk, 0.0))
+            float riskPct = safeDiv(math.abs(nz(activeEntry) - nz(activeSL)), nz(activeEntry, 1.0)) * 100
+            color rrColor = rrVal >= 1.5 ? BULL_TEXT : rrVal >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+            color riskPctColor = riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            string dirStr = activeDir == 1 ? "LONG @ " + fmtPrice(activeEntry) : "SHORT @ " + fmtPrice(activeEntry)
+            color dirClr = activeDir == 1 ? BULL_TEXT : BEAR_TEXT
+            table.cell(dashTable, 0, r, "Entry", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dirStr, text_color = dirClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            string dashSlStr = beActive ? "BE @ " + fmtPrice(activeSL) : fmtPrice(activeSL)
+            color dashSlClr = beActive ? BE_COLOR : SL_COLOR
+            table.cell(dashTable, 0, r, "SL", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Stop-loss. 'BE @' = moved to break-even after TP1")
+            table.cell(dashTable, 1, r, dashSlStr, text_color = dashSlClr, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            string dashTp1 = (tp1Reached ? "✓ " : "") + fmtPrice(activeTP1)
+            table.cell(dashTable, 0, r, "TP1", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dashTp1, text_color = tp1Reached ? TP_HIT_COLOR : TP1_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            string dashTp2 = (tp2Reached ? "✓ " : "") + fmtPrice(activeTP2)
+            table.cell(dashTable, 0, r, "TP2", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dashTp2, text_color = tp2Reached ? TP_HIT_COLOR : TP2_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            string dashTp3 = (tp3Reached ? "✓ " : "") + fmtPrice(activeTP3)
+            table.cell(dashTable, 0, r, "TP3", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dashTp3, text_color = tp3Reached ? TP_HIT_COLOR : TP3_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "R:R", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Risk:Reward to TP1 from entry and initial stop")
+            table.cell(dashTable, 1, r, str.tostring(rrVal, "#.#") + "R", text_color = rrColor, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Risk", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Distance from entry to stop, % of entry price")
+            table.cell(dashTable, 1, r, str.tostring(riskPct, "#.##") + "%", text_color = riskPctColor, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+
+    // ── Stats section ──
+    if showStatsSecInput
+        table.cell(dashTable, 0, r, "— Stats —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        zeb := false
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Trades", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Closed trades this session (resets on chart reload)")
+        table.cell(dashTable, 1, r, closedTrades > 0 ? str.tostring(closedTrades) : "—", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "W", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Wins: TP3 hits, BE stop-outs, reversals after TP1")
+        table.cell(dashTable, 1, r, closedTrades > 0 ? str.tostring(winCount) : "—", text_color = BULL_TEXT, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "L", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Losses: SL hits and reversals before TP1")
+        table.cell(dashTable, 1, r, closedTrades > 0 ? str.tostring(lossCount) : "—", text_color = BEAR_TEXT, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        string dashWR = closedTrades > 0 ? str.tostring(winRate, "#.#") + "%  " + buildGauge(winRate, 100, 8) : "—"
+        color wrCol = closedTrades == 0 ? TEXT_MUTED : winRate >= 55.0 ? BULL_TEXT : winRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+        table.cell(dashTable, 0, r, "Win rate", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "A trade is a WIN once TP1 is touched.\nOptimistic intrabar fill model (TP priority)")
+        table.cell(dashTable, 1, r, dashWR, text_color = wrCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        string exitsStr = closedTrades > 0 ? str.tostring(tp3Count) + "·" + str.tostring(beCount) + "·" + str.tostring(slCount) + "·" + str.tostring(revCount) : "—"
+        table.cell(dashTable, 0, r, "Exits", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Closure breakdown: TP3 · BE stop · SL · Reversal")
+        table.cell(dashTable, 1, r, exitsStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Form", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "▰ = win · ▱ = loss (newest right)")
+        table.cell(dashTable, 1, r, str.length(formStr) > 0 ? formStr : "—", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+
+    // ── Footer ──
+    table.cell(dashTable, 0, r, "SqzBreakout · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS — intrabar chronology (std §25)
+// management → closures → reversal → entries → info
+// ══════════════════════════════════════
+string tickerStr = syminfo.tickerid
+string tfStr     = timeframe.period
+string priceStr  = str.tostring(close, format.mintick)
+
+// 1) Trade management
+if beJustActivated and tpBeAlertInput
+    string beMsg = "🛡️ BREAK-EVEN | " + tickerStr + " | TF: " + tfStr + " | SL moved to " + fmtPrice(beLevelSet)
+    alert(beMsg, alert.freq_once_per_bar_close)
+
+if tp1FirstTouch and not evTp3Hit and tpBeAlertInput
+    string tp1Msg = "🎯 TP1 HIT | " + tickerStr + " | TF: " + tfStr + " | TP1: " + fmtPrice(exitTP1)
+    alert(tp1Msg, alert.freq_once_per_bar_close)
+
+if tp2FirstTouch and not evTp3Hit and tpBeAlertInput
+    string tp2Msg = "🎯🎯 TP2 HIT | " + tickerStr + " | TF: " + tfStr + " | TP2: " + fmtPrice(exitTP2)
+    alert(tp2Msg, alert.freq_once_per_bar_close)
+
+// 2) Closures — snapshot variables only (std §17.5)
+if evTp3Hit and tpBeAlertInput
+    string tp3Msg = "🏆 TP3 HIT | " + tickerStr + " | TF: " + tfStr + " | Entry: " + fmtPrice(exitEntry) + " | TP3: " + fmtPrice(exitTP3)
+    alert(tp3Msg, alert.freq_once_per_bar_close)
+
+if evSlHit and slRevAlertInput
+    string slDirStr = exitDir == 1 ? "Long" : "Short"
+    string slMsg = (exitBeActive ? "🛡️ BE STOP-OUT | " : "🛑 SL HIT | ") + tickerStr + " | TF: " + tfStr + " | " + slDirStr + " | Entry: " + fmtPrice(hitEntry) + " | SL: " + fmtPrice(hitSL)
+    alert(slMsg, alert.freq_once_per_bar_close)
+
+// 3) Reversal
+if evReversal and slRevAlertInput
+    string revDirStr = sigDir == 1 ? "to LONG" : "to SHORT"
+    string revOutStr = revWin ? "Closed after TP1 (win)" : "Closed before TP1 (loss)"
+    string revMsg = "🔄 REVERSAL " + revDirStr + " | " + tickerStr + " | TF: " + tfStr + " | " + revOutStr
+    alert(revMsg, alert.freq_once_per_bar_close)
+
+// 4) New entries — from active* (valid on the entry bar)
+if evLongEntry
+    string eSl  = fmtPrice(activeSL)
+    string eT1  = fmtPrice(activeTP1)
+    string eT2  = fmtPrice(activeTP2)
+    string eT3  = fmtPrice(activeTP3)
+    string eRR  = str.tostring(safeDiv(math.abs(nz(activeTP1) - nz(activeEntry)), math.abs(nz(activeEntry) - nz(activeSL))), "#.#")
+    string jsonBuy = '{"action":"buy","ticker":"' + tickerStr + '","tf":"' + tfStr + '","price":' + priceStr + ',"sl":' + eSl + ',"tp1":' + eT1 + ',"tp2":' + eT2 + ',"tp3":' + eT3 + ',"rr":' + eRR + '}'
+    string textBuy = "🟢 LONG | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | SL: " + eSl + " | TP1: " + eT1 + " | TP2: " + eT2 + " | TP3: " + eT3 + " | R:R: " + eRR
+    alert(webhookInput ? jsonBuy : textBuy, alert.freq_once_per_bar_close)
+
+if evShortEntry
+    string eSl  = fmtPrice(activeSL)
+    string eT1  = fmtPrice(activeTP1)
+    string eT2  = fmtPrice(activeTP2)
+    string eT3  = fmtPrice(activeTP3)
+    string eRR  = str.tostring(safeDiv(math.abs(nz(activeTP1) - nz(activeEntry)), math.abs(nz(activeEntry) - nz(activeSL))), "#.#")
+    string jsonSell = '{"action":"sell","ticker":"' + tickerStr + '","tf":"' + tfStr + '","price":' + priceStr + ',"sl":' + eSl + ',"tp1":' + eT1 + ',"tp2":' + eT2 + ',"tp3":' + eT3 + ',"rr":' + eRR + '}'
+    string textSell = "🔴 SHORT | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | SL: " + eSl + " | TP1: " + eT1 + " | TP2: " + eT2 + " | TP3: " + eT3 + " | R:R: " + eRR
+    alert(webhookInput ? jsonSell : textSell, alert.freq_once_per_bar_close)
+
+// 5) Info — squeeze events. RANGE LOCKED is suppressed when the same
+// bar also produced an entry/reversal (std §25: no info duplicates on
+// action bars — the lock bar can be the breakout bar itself)
+if sqzActive and sqzCount == 1 and sqzInfoAlertInput and barstate.isconfirmed
+    string sqzStartMsg = "🟡 SQUEEZE STARTED | " + tickerStr + " | TF: " + tfStr
+    alert(sqzStartMsg, alert.freq_once_per_bar_close)
+
+if rngLocked and sqzInfoAlertInput and barstate.isconfirmed and not (evLongEntry or evShortEntry or evReversal)
+    string sqzEndMsg = "⚪ RANGE LOCKED | " + tickerStr + " | TF: " + tfStr + " | High: " + fmtPrice(actHigh) + " | Low: " + fmtPrice(actLow)
+    alert(sqzEndMsg, alert.freq_once_per_bar_close)
+
+// ── Static alertcondition() entries ──
+// Supplementary to dynamic alert() calls (kept by explicit user
+// request as a dropdown convenience; std §4.1 prefers alert()).
+alertcondition(evLongEntry, "Long Entry", "🟢 Long Entry | {{ticker}} | TF: {{interval}} | Price: {{close}}")
+alertcondition(evShortEntry, "Short Entry", "🔴 Short Entry | {{ticker}} | TF: {{interval}} | Price: {{close}}")
+alertcondition(evReversal, "Reversal", "🔄 Reversal | {{ticker}} | TF: {{interval}} | Price: {{close}}")
+alertcondition(sqzActive and sqzCount == 1, "Squeeze Started", "🟡 Squeeze Started | {{ticker}} | TF: {{interval}}")
+alertcondition(rngLocked, "Range Locked", "⚪ Range Locked | {{ticker}} | TF: {{interval}}")
+alertcondition(tp1FirstTouch, "TP1 Hit", "🎯 TP1 Hit | {{ticker}} | TF: {{interval}} | Price: {{close}}")
+alertcondition(evTp3Hit, "TP3 Hit", "🏆 TP3 Hit | {{ticker}} | TF: {{interval}} | Price: {{close}}")
+alertcondition(evSlHit, "SL Hit", "🛑 SL Hit | {{ticker}} | TF: {{interval}} | Price: {{close}}")

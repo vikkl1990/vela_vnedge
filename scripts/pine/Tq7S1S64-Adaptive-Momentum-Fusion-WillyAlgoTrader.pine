@@ -1,0 +1,689 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE MOMENTUM FUSION [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.2.1
+
+indicator(
+    title            = "Adaptive Momentum Fusion [WillyAlgoTrader]",
+    shorttitle       = "AMF",
+    overlay          = false,
+    precision        = 2,
+    max_labels_count = 500,
+    max_lines_count  = 500)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+GRP_ADV    = "🔧 Advanced"
+
+VERSION_NUM       = "1.2.1"
+INDICATOR_VERSION = "v" + VERSION_NUM
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main Settings ───────────────────
+sourceInput = input.source(close, "Source", group = GRP_MAIN, tooltip = "Price source for calculation.\nTypically 'close'. Use 'hlc3' or 'ohlc4' for smoother readings")
+engineInput = input.string("Efficiency", "Adaptation Engine", options = ["Efficiency", "Volatility", "Fractal", "Momentum", "Volume", "Composite"], group = GRP_MAIN, tooltip = "Core adaptation method:\n• Efficiency: Kaufman-style efficiency ratio — best all-around\n• Volatility: ATR-normalized responsiveness — great for ranging\n• Fractal: FRAMA fractal dimension — detects trending vs mean-reverting\n• Momentum: Rate-of-change adaptive — fast reaction to breakouts\n• Volume: Volume-weighted adaptation — confirms with participation\n• Composite: Blends all engines — most robust; weights mode in Advanced")
+fastLenInput = input.int(8, "Fast Length", minval = 2, maxval = 100, step = 1, group = GRP_MAIN, tooltip = "Fast adaptive MA period.\nLower = more responsive, more noise\nHigher = smoother, more lag\nRecommended: 5–15")
+slowLenInput = input.int(21, "Slow Length", minval = 5, maxval = 200, step = 1, group = GRP_MAIN, tooltip = "Slow adaptive MA period.\nShould be 2–4x the fast length\nRecommended: 15–50")
+signalLenInput = input.int(7, "Signal Length", minval = 2, maxval = 50, step = 1, group = GRP_MAIN, tooltip = "Signal line smoothing period.\nLower = faster crossovers, more whipsaws\nHigher = smoother, fewer false signals\nRecommended: 5–12")
+modeInput = input.string("MACD", "Output Mode", options = ["MACD", "PPO"], group = GRP_MAIN, tooltip = "MACD = absolute difference (price-scaled)\nPPO = percentage difference (normalized, better for cross-market comparison)")
+// [P4 v1.2.0]
+normInput = input.string("Off", "Normalization", options = ["Off", "Z-Score", "Percent Rank"], group = GRP_MAIN, tooltip = "Post-normalization of the oscillator:\n• Off: raw MACD/PPO values\n• Z-Score: value in standard deviations — fixed OB/OS at ±2.0σ, cross-instrument comparable\n• Percent Rank: percentile recentered to -50..+50 — fixed OB/OS at ±40\nNOTE: with normalization on, zero = rolling mean (Z-Score) / rolling median (Percent Rank) of the window,\nso zero crosses mean crossing that baseline — not fastMA vs slowMA")
+normLenInput = input.int(100, "Normalization Lookback", minval = 30, maxval = 500, step = 10, group = GRP_MAIN, tooltip = "Window for Z-Score mean/stdev and Percent Rank.\nHigher = more stable, slower to adapt to regime shifts\nRecommended: 100–200")
+
+// ── Filters ─────────────────────────
+useDivergenceInput = input.bool(true, "Detect Divergences", group = GRP_FILTER, tooltip = "Detect regular divergences between price and momentum.\nSignal fires on the CLOSE of the bar that completes the divergence — no repaint, no offset")
+useHiddenDivInput = input.bool(false, "Detect Hidden Divergences", group = GRP_FILTER, tooltip = "Continuation divergences: price higher low / lower high while momentum goes deeper.\nNoisier than regular — off by default.\nSame no-offset rules: bar-close signal, one per anchor")
+pivotStrengthInput = input.int(5, "Pivot Strength", minval = 2, maxval = 20, step = 1, group = GRP_FILTER, tooltip = "Bars required on each side to confirm an anchor pivot.\nHigher = stronger, rarer anchors\nRecommended: 3–8")
+divMaxDistInput = input.int(60, "Max Divergence Distance", minval = 20, maxval = 200, step = 5, group = GRP_FILTER, tooltip = "Maximum bars between the anchor pivot and the divergence signal.\nOlder anchors are ignored\nRecommended: 40–80")
+divZoneFilterInput = input.bool(true, "Divergence Zone Filter", group = GRP_FILTER, tooltip = "Regular bullish divergence only while oscillator is below the zone level,\nbearish only while above it.\nLevel by normalization mode: 0 (Off) / ±1.0σ (Z-Score) / ±20 (Percent Rank).\nNot applied to hidden divergences")
+useZeroCrossInput = input.bool(true, "Zero Line Cross Signals", group = GRP_FILTER, tooltip = "Generate signals when the oscillator crosses the zero line.\nUseful as trend confirmation filter")
+
+// ── Visual Settings ─────────────────
+showSignalsInput = input.bool(false, "Show Buy/Sell Signals", group = GRP_VISUAL, tooltip = "Display signal arrows on crossovers")
+labelSizeInput = input.string("Small", "Label Size", options = ["Auto", "Tiny", "Small", "Normal", "Large"], group = GRP_VISUAL, tooltip = "Size of signal and divergence labels.\n• Tiny: minimal footprint\n• Small: default, readable on most screens\n• Normal: larger, good for presentations\n• Large: maximum visibility\n• Auto: Small for signals, Tiny for secondary")
+showHistInput = input.bool(true, "Show Histogram", group = GRP_VISUAL, tooltip = "Display momentum histogram bars")
+showFillInput = input.bool(true, "Show Fill Between Lines", group = GRP_VISUAL, tooltip = "Shade area between oscillator and signal line")
+showDivInput = input.bool(true, "Show Divergence Lines", group = GRP_VISUAL, tooltip = "Draw lines from the anchor pivot to the signal bar,\nplus divergence labels")
+showLevelsInput = input.bool(true, "Show OB/OS Levels", group = GRP_VISUAL, tooltip = "Plot overbought/oversold levels.\nOnly visible when Normalization is Z-Score (±2.0σ) or Percent Rank (±40)")
+showBgInput = input.bool(false, "Show Background Color", group = GRP_VISUAL, tooltip = "Tint background based on momentum direction")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+
+// ── Dashboard ───────────────────────
+showDashInput = input.bool(false, "Show Dashboard", group = GRP_DASH, tooltip = "Display info panel with trend, last signal, strength, and regime")
+dashPosStr = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH, tooltip = "Corner placement of the dashboard panel")
+
+// ── Alerts ──────────────────────────
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations (3Commas, Autoview, etc.)")
+
+// ── Colors ──────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "col1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "col1", group = GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Neutral", inline = "col1", group = GRP_COLORS)
+
+// ── Advanced ────────────────────────
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_ADV, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+smoothFactorInput = input.float(0.7, "Jitter Reduction", minval = 0.0, maxval = 1.0, step = 0.1, group = GRP_ADV, tooltip = "Extra EMA smoothing applied AFTER the Jurik filter.\n0.0 = off (pure Jurik output)\n1.0 = heavy smoothing (internally capped so the line never freezes)\nRecommended: 0.3–0.7")
+// [P7 v1.2.0]
+compModeInput = input.string("Static", "Composite Weights", options = ["Static", "Regime-Adaptive"], group = GRP_ADV, tooltip = "Weights for the Composite engine:\n• Static: fixed blend (Eff 30/35%, Vol, Fractal, Mom, Volume)\n• Regime-Adaptive: weights shift with smoothed Efficiency Ratio —\n  trending markets favor Efficiency+Momentum,\n  ranging markets favor Volatility+Fractal.\nWeights always sum to 1.0")
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG    = color.new(#2962FF, 0)
+HEADER_TEXT  = #FFFFFF
+LABEL_TEXT   = #FFFFFF
+LINE_SUBTLE  = isDark ? color.new(#555555, 0) : color.new(#AAAAAA, 0)
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+BULL_BG = color.new(bullColorInput, 85)
+BEAR_BG = color.new(bearColorInput, 85)
+
+// Label size resolution
+LABEL_SIZE_MAIN = switch labelSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+LABEL_SIZE_SEC = switch labelSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.tiny
+    "Normal" => size.small
+    "Large"  => size.normal
+    => size.tiny
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+// Безопасное деление
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// ── Kaufman Efficiency Ratio ────────
+efficiencyRatio(float src, int len) =>
+    float direction = math.abs(src - nz(src[len], src))
+    float volatility = math.sum(math.abs(src - nz(src[1], src)), len)
+    safeDiv(direction, volatility, 0.5)
+
+// ── Adaptive EMA core ───────────────
+adaptiveEma(float src, float alpha) =>
+    var float result = na
+    float safeSrc = nz(src, 0.0)
+    float safeAlpha = math.max(0.01, math.min(alpha, 1.0))
+    result := na(result) ? safeSrc : safeAlpha * safeSrc + (1.0 - safeAlpha) * result
+    result
+
+// ── Engine: Efficiency (Kaufman AMA style) ──
+engineEfficiency(float src, int len) =>
+    float er = efficiencyRatio(src, len)
+    float fastSc = 2.0 / (2.0 + 1.0)
+    float slowSc = 2.0 / (30.0 + 1.0)
+    float sc = math.pow(er * (fastSc - slowSc) + slowSc, 2)
+    adaptiveEma(src, sc)
+
+// ── Engine: Volatility (ATR-based) ──
+engineVolatility(float src, int len) =>
+    float atrSeries = nz(ta.atr(len), 0.0)
+    float atrSma = nz(ta.sma(atrSeries, len * 2), atrSeries)
+    float volRatio = safeDiv(atrSeries, atrSma, 1.0)
+    float baseAlpha = 2.0 / (len + 1.0)
+    float alpha = math.max(0.01, math.min(baseAlpha * volRatio, 1.0))
+    adaptiveEma(src, alpha)
+
+// ── Engine: Fractal (FRAMA) ─────────
+// [C1 v1.1.0] D = (log(N1+N2) - log(N3)) / log(2), диапазоны
+// нормированы на период — масштабо-инвариантен.
+engineFractal(float src, int len) =>
+    int half = math.max(2, math.floor(len / 2))
+    float n1 = (nz(ta.highest(src, half), src) - nz(ta.lowest(src, half), src)) / half
+    float n2 = (nz(ta.highest(src[half], half), src) - nz(ta.lowest(src[half], half), src)) / half
+    float n3 = (nz(ta.highest(src, len), src) - nz(ta.lowest(src, len), src)) / len
+    float fracDim = n1 > 0 and n2 > 0 and n3 > 0 ? (math.log(n1 + n2) - math.log(n3)) / math.log(2.0) : 1.5
+    fracDim := math.max(1.0, math.min(fracDim, 2.0))
+    float alpha = math.max(0.01, math.min(math.exp(-4.6 * (fracDim - 1.0)), 1.0))
+    adaptiveEma(src, alpha)
+
+// ── Engine: Momentum (ROC-based) ────
+engineMomentum(float src, int len) =>
+    float base = nz(src[len], src)
+    float roc = safeDiv(src - base, base, 0.0) * 100.0
+    float rocAbs = math.abs(roc)
+    float rocMax = nz(ta.highest(rocAbs, len * 2), rocAbs)
+    float norm = rocMax > 0 ? math.min(rocAbs / rocMax, 1.0) : 0.5
+    float baseAlpha = 2.0 / (len + 1.0)
+    float alpha = math.max(0.01, math.min(baseAlpha + norm * (1.0 - baseAlpha) * 0.5, 1.0))
+    adaptiveEma(src, alpha)
+
+// ── Engine: Volume ──────────────────
+engineVolume(float src, int len) =>
+    float volRaw = nz(volume, 0.0)
+    float volSma = nz(ta.sma(volRaw, len), 1.0)
+    bool hasVol = volRaw > 0
+    float volRatio = hasVol ? safeDiv(volRaw, volSma, 1.0) : 1.0
+    float baseAlpha = 2.0 / (len + 1.0)
+    float alpha = math.max(0.01, math.min(baseAlpha * math.sqrt(math.max(volRatio, 0.01)), 1.0))
+    adaptiveEma(src, alpha)
+
+// ── All engines, unconditional ──────
+calcEngines(float src, int len) =>
+    float eEff = engineEfficiency(src, len)
+    float eVol = engineVolatility(src, len)
+    float eFra = engineFractal(src, len)
+    float eMom = engineMomentum(src, len)
+    float eVlm = engineVolume(src, len)
+    [eEff, eVol, eFra, eMom, eVlm]
+
+// ── Composite: static weights (v1.0.0 blend) ──
+blendCompositeStatic(float eEff, float eVol, float eFra, float eMom, float eVlm, bool hasVol) =>
+    hasVol ? eEff * 0.30 + eVol * 0.20 + eFra * 0.20 + eMom * 0.15 + eVlm * 0.15 : eEff * 0.35 + eVol * 0.25 + eFra * 0.25 + eMom * 0.15
+
+// ── Composite: regime-adaptive weights ──
+// [P7 v1.2.0] t = 0 (флэт) → Volatility/Fractal, t = 1 (тренд) →
+// Efficiency/Momentum. Суммы весов = 1.0 при любом t в обеих ветках:
+// hasVol t=0: .15+.30+.30+.10+.15 | t=1: .35+.10+.10+.30+.15
+// noVol  t=0: .20+.35+.35+.10     | t=1: .40+.15+.15+.30
+blendCompositeRegime(float eEff, float eVol, float eFra, float eMom, float eVlm, bool hasVol, float t) =>
+    float wEff = hasVol ? 0.15 + t * 0.20 : 0.20 + t * 0.20
+    float wVol = hasVol ? 0.30 - t * 0.20 : 0.35 - t * 0.20
+    float wFra = hasVol ? 0.30 - t * 0.20 : 0.35 - t * 0.20
+    float wMom = 0.10 + t * 0.20
+    float wVlm = hasVol ? 0.15 : 0.0
+    eEff * wEff + eVol * wVol + eFra * wFra + eMom * wMom + eVlm * wVlm
+
+// ── Jurik-style smoothing ───────────
+// [C4 v1.1.0] Полная JMA-рекурсия: jma := jma[1] + e2 (накопитель).
+// Без него DC-gain был ~(1-alpha)/2 и сигнальная прижималась к нулю.
+// Phase ratio = 1.5 (нейтральный).
+jurikSmooth(float src, int len) =>
+    float beta = 0.45 * (len - 1.0) / (0.45 * (len - 1.0) + 2.0)
+    float alphaJ = math.pow(beta, 3)
+    float PR = 1.5
+    float s = nz(src, 0.0)
+    var float e0 = na
+    var float e1 = na
+    var float e2 = na
+    var float jma = na
+    if na(jma)
+        e0 := s
+        e1 := 0.0
+        e2 := 0.0
+        jma := s
+    else
+        e0 := (1.0 - alphaJ) * s + alphaJ * e0
+        e1 := (s - e0) * (1.0 - beta) + beta * e1
+        e2 := (e0 + PR * e1 - jma) * math.pow(1.0 - alphaJ, 2) + math.pow(alphaJ, 2) * e2
+        jma := jma + e2
+    jma
+
+// ── Pivot detection ─────────────────
+// [M2 v1.1.0] Строго справа, нестрого слева.
+pivotLowStrict(float src, int lb, int rb) =>
+    float pv = src[rb]
+    bool ok = not na(pv)
+    if ok
+        for i = 0 to rb - 1
+            if nz(src[i], pv - 1.0) <= pv
+                ok := false
+                break
+    if ok
+        for i = rb + 1 to rb + lb
+            if nz(src[i], pv + 1.0) < pv
+                ok := false
+                break
+    ok ? pv : float(na)
+
+pivotHighStrict(float src, int lb, int rb) =>
+    float pv = src[rb]
+    bool ok = not na(pv)
+    if ok
+        for i = 0 to rb - 1
+            if nz(src[i], pv + 1.0) >= pv
+                ok := false
+                break
+    if ok
+        for i = rb + 1 to rb + lb
+            if nz(src[i], pv - 1.0) > pv
+                ok := false
+                break
+    ok ? pv : float(na)
+
+// ── Divergence quality (pure arithmetic) ──
+// [P5 v1.2.0] 50% — глубина пробоя/отступа якоря в ATR (cap 2 ATR),
+// 50% — дельта осциллятора в единицах 2σ(osc,50) (cap 1.0).
+calcDivQuality(float prcDelta, float oscDelta, float atrRef, float oscRef) =>
+    float dPrc = atrRef > 0 ? math.min(math.abs(prcDelta) / atrRef, 2.0) / 2.0 : 0.5
+    float dOsc = oscRef > 0 ? math.min(math.abs(oscDelta) / (2.0 * oscRef), 1.0) : 0.5
+    int(math.round(50.0 * dPrc + 50.0 * dOsc))
+
+// ── Alert dispatch helper ───────────
+// [L6 v1.2.1] Единая сборка текста/JSON: ticker/price/tf в одном месте
+fireAlert(string action, string emojiText, string extraJson, string extraText) =>
+    string tickerStr = syminfo.tickerid
+    string priceStr = str.tostring(close, format.mintick)
+    string tfStr = timeframe.period
+    string js = '{"ind":"AMF","v":"' + VERSION_NUM + '","action":"' + action + '"' + extraJson + ',"ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string tx = emojiText + " | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + extraText
+    alert(webhookInput ? js : tx, alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CALCULATIONS
+// ══════════════════════════════════════
+
+// Прогрев — [v1.2.0] учитывает окно нормализации
+int WARMUP_BARS = math.max(math.max(slowLenInput * 2, normInput != "Off" ? normLenInput : 0), 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// [L2 v1.2.1] One-way latch: раз увидели объём — инструмент объёмный,
+// единичные нулевые бары не переключают ветку весов Composite
+var bool hasVolGlobal = false
+if nz(volume, 0) > 0
+    hasVolGlobal := true
+
+// [P7] Режимный ER — глобально и безусловно
+float regimeER = efficiencyRatio(sourceInput, slowLenInput)
+float erSm = nz(ta.sma(regimeER, 10), regimeER)
+float regimeT = math.max(0.0, math.min((erSm - 0.15) / 0.35, 1.0))
+
+// Adaptive MAs — оба набора движков считаются безусловно каждый бар
+[fEff, fVol, fFra, fMom, fVlm] = calcEngines(sourceInput, fastLenInput)
+[sEff, sVol, sFra, sMom, sVlm] = calcEngines(sourceInput, slowLenInput)
+
+float fastMA = switch engineInput
+    "Efficiency" => fEff
+    "Volatility" => fVol
+    "Fractal"    => fFra
+    "Momentum"   => fMom
+    "Volume"     => fVlm
+    "Composite"  => compModeInput == "Static" ? blendCompositeStatic(fEff, fVol, fFra, fMom, fVlm, hasVolGlobal) : blendCompositeRegime(fEff, fVol, fFra, fMom, fVlm, hasVolGlobal, regimeT)
+    => fEff
+
+float slowMA = switch engineInput
+    "Efficiency" => sEff
+    "Volatility" => sVol
+    "Fractal"    => sFra
+    "Momentum"   => sMom
+    "Volume"     => sVlm
+    "Composite"  => compModeInput == "Static" ? blendCompositeStatic(sEff, sVol, sFra, sMom, sVlm, hasVolGlobal) : blendCompositeRegime(sEff, sVol, sFra, sMom, sVlm, hasVolGlobal, regimeT)
+    => sEff
+
+// Raw oscillator
+float oscRaw = modeInput == "PPO" ? safeDiv(fastMA - slowMA, slowMA, 0.0) * 100.0 : fastMA - slowMA
+
+// [P4] Normalization — все ta.* считаются безусловно, switch выбирает
+float oscMean = nz(ta.sma(oscRaw, normLenInput), oscRaw)
+float oscStdN = nz(ta.stdev(oscRaw, normLenInput), 0.0)
+float oscPR = nz(ta.percentrank(oscRaw, normLenInput), 50.0)
+
+float osc = switch normInput
+    "Z-Score"      => safeDiv(oscRaw - oscMean, oscStdN, 0.0)
+    "Percent Rank" => oscPR - 50.0
+    => oscRaw
+
+// OB/OS уровни по режиму нормализации
+float obLevel = normInput == "Z-Score" ? 2.0 : normInput == "Percent Rank" ? 40.0 : float(na)
+float zoneThr = normInput == "Z-Score" ? 1.0 : normInput == "Percent Rank" ? 20.0 : 0.0
+
+// Signal line — Jurik + [C2] EMA-догладка поверх
+float sigJurik = jurikSmooth(osc, signalLenInput)
+float smoothK = smoothFactorInput * 0.85
+var float signalLine = na
+signalLine := na(signalLine) ? sigJurik : smoothK * signalLine + (1.0 - smoothK) * sigJurik
+
+// Histogram
+float hist = nz(osc, 0.0) - nz(signalLine, 0.0)
+
+// Momentum acceleration (histogram slope)
+float histPrev = nz(hist[1], 0.0)
+bool histAccelUp = hist > 0 and hist > histPrev
+bool histDecelUp = hist > 0 and hist <= histPrev
+bool histAccelDn = hist < 0 and hist < histPrev
+bool histDecelDn = hist < 0 and hist >= histPrev
+
+// Trend state
+int trendState = osc > signalLine ? 1 : osc < signalLine ? -1 : 0
+
+// [P5] Референсы для quality score — глобально и безусловно
+float atrRef = nz(ta.atr(14), syminfo.mintick)
+float oscStdRef = nz(ta.stdev(osc, 50), 0.0)
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC
+// ══════════════════════════════════════
+
+// Crossover signals
+bool bullCross = ta.crossover(osc, signalLine)
+bool bearCross = ta.crossunder(osc, signalLine)
+
+// Zero line crosses — [L4 v1.2.1] ta.* безусловно, инпут применяется после
+bool zcUp = ta.crossover(osc, 0.0)
+bool zcDn = ta.crossunder(osc, 0.0)
+bool zeroBullCross = useZeroCrossInput and zcUp
+bool zeroBearCross = useZeroCrossInput and zcDn
+
+// Confirmed signals
+bool confirmedBuy = bullCross and barstate.isconfirmed and isWarmedUp
+bool confirmedSell = bearCross and barstate.isconfirmed and isWarmedUp
+bool confirmedZeroBuy = zeroBullCross and barstate.isconfirmed and isWarmedUp
+bool confirmedZeroSell = zeroBearCross and barstate.isconfirmed and isWarmedUp
+
+// ── Divergence Engine — no-offset ───
+// [M3 v1.1.0] Якорь = последний подтверждённый ценовой пивот.
+// Сигнал/лейбл/алерт — строго на закрытии текущего бара, один на якорь.
+int pStr = pivotStrengthInput
+
+float pl = pivotLowStrict(low, pStr, pStr)
+float ph = pivotHighStrict(high, pStr, pStr)
+
+var float ancPrcLo = na
+var float ancOscLo = na
+var int   ancLoBar = na
+var bool  bullFired = false
+var bool  hidBullFired = false
+var float ancPrcHi = na
+var float ancOscHi = na
+var int   ancHiBar = na
+var bool  bearFired = false
+var bool  hidBearFired = false
+
+// [L1 v1.2.1] Якоря только после прогрева — до него osc фиктивен
+// (nz-фоллбеки нормализации дают 0.0)
+if not na(pl) and isWarmedUp
+    ancPrcLo := pl
+    ancOscLo := osc[pStr]
+    ancLoBar := bar_index - pStr
+    bullFired := false
+    hidBullFired := false
+
+if not na(ph) and isWarmedUp
+    ancPrcHi := ph
+    ancOscHi := osc[pStr]
+    ancHiBar := bar_index - pStr
+    bearFired := false
+    hidBearFired := false
+
+bool loInWindow = not na(ancLoBar) and bar_index - ancLoBar <= divMaxDistInput
+bool hiInWindow = not na(ancHiBar) and bar_index - ancHiBar <= divMaxDistInput
+
+// [P4] Zone filter теперь уровневый
+bool bullZoneOk = not divZoneFilterInput or osc < -zoneThr
+bool bearZoneOk = not divZoneFilterInput or osc > zoneThr
+
+// Regular: цена пробивает якорный экстремум, осц не подтверждает и разворачивается
+bool regBullDiv = useDivergenceInput and isWarmedUp and barstate.isconfirmed and not bullFired and loInWindow and low < ancPrcLo and osc > ancOscLo and osc > nz(osc[1], osc) and bullZoneOk
+bool regBearDiv = useDivergenceInput and isWarmedUp and barstate.isconfirmed and not bearFired and hiInWindow and high > ancPrcHi and osc < ancOscHi and osc < nz(osc[1], osc) and bearZoneOk
+
+// [P5] Hidden: цена HL/LH, осц глубже якоря и разворачивается.
+// Мин. дистанция > pStr, zone filter не применяется, один сигнал на якорь.
+bool hidBullDiv = useDivergenceInput and useHiddenDivInput and isWarmedUp and barstate.isconfirmed and not hidBullFired and loInWindow and bar_index - ancLoBar > pStr and low > ancPrcLo and osc < ancOscLo and osc > nz(osc[1], osc)
+bool hidBearDiv = useDivergenceInput and useHiddenDivInput and isWarmedUp and barstate.isconfirmed and not hidBearFired and hiInWindow and bar_index - ancHiBar > pStr and high < ancPrcHi and osc > ancOscHi and osc < nz(osc[1], osc)
+
+if regBullDiv
+    bullFired := true
+if regBearDiv
+    bearFired := true
+if hidBullDiv
+    hidBullFired := true
+if hidBearDiv
+    hidBearFired := true
+
+// [P5] Quality score текущего дивергентного сигнала
+int qBull = regBullDiv ? calcDivQuality(ancPrcLo - low, osc - ancOscLo, atrRef, oscStdRef) : 0
+int qBear = regBearDiv ? calcDivQuality(high - ancPrcHi, ancOscHi - osc, atrRef, oscStdRef) : 0
+int qHBull = hidBullDiv ? calcDivQuality(low - ancPrcLo, ancOscLo - osc, atrRef, oscStdRef) : 0
+int qHBear = hidBearDiv ? calcDivQuality(ancPrcHi - high, osc - ancOscHi, atrRef, oscStdRef) : 0
+
+// Divergence state for dashboard
+var string divSignalStr = "None"
+var color  divSignalCol = color.gray
+var int    divFiredBar = na
+var int    divQualityVal = 0
+
+if regBullDiv
+    divSignalStr := "Bull Div"
+    divSignalCol := bullColorInput
+    divFiredBar := bar_index
+    divQualityVal := qBull
+if regBearDiv
+    divSignalStr := "Bear Div"
+    divSignalCol := bearColorInput
+    divFiredBar := bar_index
+    divQualityVal := qBear
+if hidBullDiv
+    divSignalStr := "H-Bull Div"
+    divSignalCol := bullColorInput
+    divFiredBar := bar_index
+    divQualityVal := qHBull
+if hidBearDiv
+    divSignalStr := "H-Bear Div"
+    divSignalCol := bearColorInput
+    divFiredBar := bar_index
+    divQualityVal := qHBear
+if not regBullDiv and not regBearDiv and not hidBullDiv and not hidBearDiv and not na(divFiredBar) and bar_index - divFiredBar > 20
+    divSignalStr := "None"
+    divSignalCol := color.gray
+    divQualityVal := 0
+
+// [P3] Signal strength: перцентиль |hist| за 100 баров — стабилен,
+// не скачет при выпадении экстремума из окна
+float strengthScore = nz(ta.percentrank(math.abs(hist), 100), 50.0)
+
+// ══════════════════════════════════════
+// PLOTS & VISUALS
+// ══════════════════════════════════════
+
+// Zero line
+hline(0, "Zero", color = LINE_SUBTLE, linestyle = hline.style_dotted, linewidth = 1)
+
+// [P4] OB/OS уровни (только при включённой нормализации)
+plot(showLevelsInput and isWarmedUp ? obLevel : na, "Overbought", color = color.new(bearColorInput, 65), linewidth = 1)
+plot(showLevelsInput and isWarmedUp ? -obLevel : na, "Oversold", color = color.new(bullColorInput, 65), linewidth = 1)
+
+// Histogram colors
+color histColor = histAccelUp ? color.new(bullColorInput, 15) : histDecelUp ? color.new(bullColorInput, 55) : histAccelDn ? color.new(bearColorInput, 15) : histDecelDn ? color.new(bearColorInput, 55) : color.new(color.gray, 50)
+
+plot(showHistInput and isWarmedUp ? hist : na, "Histogram", color = histColor, style = plot.style_columns, linewidth = 1)
+
+// Oscillator and signal
+color oscColor = osc > signalLine ? bullColorInput : bearColorInput
+plotOsc = plot(isWarmedUp ? osc : na, "AMF Line", color = oscColor, linewidth = 2)
+plotSig = plot(isWarmedUp ? signalLine : na, "Signal", color = color.new(oscColor, 40), linewidth = 1)
+
+// Fill
+fill(plotOsc, plotSig, color = showFillInput ? color.new(oscColor, 88) : na, title = "Momentum Fill")
+
+// Background
+bgcolor(showBgInput ? (trendState == 1 ? BULL_BG : trendState == -1 ? BEAR_BG : na) : na, title = "Trend Background")
+
+// ══════════════════════════════════════
+// LABELS & SHAPES
+// ══════════════════════════════════════
+
+// Buy/Sell signals
+if showSignalsInput and confirmedBuy
+    label.new(bar_index, osc, "▲", color = bullColorInput, textcolor = LABEL_TEXT, style = label.style_label_up, size = LABEL_SIZE_MAIN, tooltip = "BUY Signal\nEngine: " + engineInput + "\nPrice: " + str.tostring(close, format.mintick))
+
+if showSignalsInput and confirmedSell
+    label.new(bar_index, osc, "▼", color = bearColorInput, textcolor = LABEL_TEXT, style = label.style_label_down, size = LABEL_SIZE_MAIN, tooltip = "SELL Signal\nEngine: " + engineInput + "\nPrice: " + str.tostring(close, format.mintick))
+
+// Zero line cross markers
+if showSignalsInput and confirmedZeroBuy
+    label.new(bar_index, 0.0, "●", color = color.new(bullColorInput, 30), textcolor = bullColorInput, style = label.style_none, size = LABEL_SIZE_SEC, tooltip = "Zero Line Bullish Cross")
+
+if showSignalsInput and confirmedZeroSell
+    label.new(bar_index, 0.0, "●", color = color.new(bearColorInput, 30), textcolor = bearColorInput, style = label.style_none, size = LABEL_SIZE_SEC, tooltip = "Zero Line Bearish Cross")
+
+// Дивергенции: линия якорь → сигнальный бар, лейбл на текущем баре
+if regBullDiv and showDivInput
+    line.new(ancLoBar, ancOscLo, bar_index, osc, xloc = xloc.bar_index, color = bullColorInput, style = line.style_dashed, width = 1)
+    label.new(bar_index, osc, "Bull\nDiv", color = color.new(bullColorInput, 20), textcolor = LABEL_TEXT, style = label.style_label_up, size = LABEL_SIZE_MAIN, tooltip = "Regular Bullish Divergence\nQuality: " + str.tostring(qBull) + "/100\nPrice broke below anchor low\nMomentum held higher + turned up")
+
+if regBearDiv and showDivInput
+    line.new(ancHiBar, ancOscHi, bar_index, osc, xloc = xloc.bar_index, color = bearColorInput, style = line.style_dashed, width = 1)
+    label.new(bar_index, osc, "Bear\nDiv", color = color.new(bearColorInput, 20), textcolor = LABEL_TEXT, style = label.style_label_down, size = LABEL_SIZE_MAIN, tooltip = "Regular Bearish Divergence\nQuality: " + str.tostring(qBear) + "/100\nPrice broke above anchor high\nMomentum held lower + turned down")
+
+// [P5] Hidden: пунктирнее и вторичным размером
+if hidBullDiv and showDivInput
+    line.new(ancLoBar, ancOscLo, bar_index, osc, xloc = xloc.bar_index, color = color.new(bullColorInput, 40), style = line.style_dotted, width = 1)
+    label.new(bar_index, osc, "H-Bull", color = color.new(bullColorInput, 45), textcolor = LABEL_TEXT, style = label.style_label_up, size = LABEL_SIZE_SEC, tooltip = "Hidden Bullish Divergence (continuation)\nQuality: " + str.tostring(qHBull) + "/100\nPrice held higher low\nMomentum went deeper + turned up")
+
+if hidBearDiv and showDivInput
+    line.new(ancHiBar, ancOscHi, bar_index, osc, xloc = xloc.bar_index, color = color.new(bearColorInput, 40), style = line.style_dotted, width = 1)
+    label.new(bar_index, osc, "H-Bear", color = color.new(bearColorInput, 45), textcolor = LABEL_TEXT, style = label.style_label_down, size = LABEL_SIZE_SEC, tooltip = "Hidden Bearish Divergence (continuation)\nQuality: " + str.tostring(qHBear) + "/100\nPrice held lower high\nMomentum went deeper + turned down")
+
+// ══════════════════════════════════════
+// LAST SIGNAL STATE  [M4]
+// ══════════════════════════════════════
+var string lastSigStr = "—"
+var color  lastSigCol = TEXT_MUTED
+var int    lastSigBar = na
+
+if confirmedBuy
+    lastSigStr := "BUY"
+    lastSigCol := bullColorInput
+    lastSigBar := bar_index
+if confirmedSell
+    lastSigStr := "SELL"
+    lastSigCol := bearColorInput
+    lastSigBar := bar_index
+
+// ══════════════════════════════════════
+// DASHBOARD  (9 строк — [P7] добавлен Regime)
+// ══════════════════════════════════════
+if showDashInput and barstate.islast
+    var dashTable = table.new(dashPos, 2, 9, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    string trendStr = trendState == 1 ? "Bullish" : trendState == -1 ? "Bearish" : "Neutral"
+    color trendCol = trendState == 1 ? bullColorInput : trendState == -1 ? bearColorInput : neutralColorInput
+
+    string lastSigDisplay = lastSigStr + (na(lastSigBar) ? "" : " · " + str.tostring(bar_index - lastSigBar) + " bars")
+
+    string strengthStr = strengthScore >= 70 ? "Strong" : strengthScore >= 40 ? "Medium" : "Weak"
+    color strengthCol = strengthScore >= 70 ? bullColorInput : strengthScore >= 40 ? neutralColorInput : TEXT_MUTED
+
+    string momStr = hist > 0 ? (histAccelUp ? "Accel ▲" : "Decel ▽") : (histAccelDn ? "Accel ▼" : "Decel △")
+    color momCol = hist > 0 ? bullColorInput : bearColorInput
+
+    string divDisplay = divSignalStr == "None" ? "None" : divSignalStr + " · Q" + str.tostring(divQualityVal)
+
+    string regimeStr = (regimeT >= 0.5 ? "Trending " : "Ranging ") + str.tostring(regimeT * 100, "#") + "%"
+    color regimeCol = regimeT >= 0.5 ? bullColorInput : neutralColorInput
+
+    // Header
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader — AMF", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    // Row 1: Trend
+    table.cell(dashTable, 0, 1, "Trend", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, trendStr, text_color = trendCol, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 2: Last Signal
+    table.cell(dashTable, 0, 2, "Last Signal", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, lastSigDisplay, text_color = lastSigCol, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 3: Strength
+    table.cell(dashTable, 0, 3, "Strength", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, strengthStr + " (" + str.tostring(strengthScore, "#") + "%)", text_color = strengthCol, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 4: Momentum
+    table.cell(dashTable, 0, 4, "Momentum", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, momStr, text_color = momCol, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 5: Divergence
+    table.cell(dashTable, 0, 5, "Divergence", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, divDisplay, text_color = divSignalCol, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 6: Regime
+    table.cell(dashTable, 0, 6, "Regime", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, regimeStr, text_color = regimeCol, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Row 7: Engine + TF
+    table.cell(dashTable, 0, 7, "Engine / TF", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 7, engineInput + " / " + timeframe.period, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    // Row 8: Version
+    table.cell(dashTable, 0, 8, "Version", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 8, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTCONDITIONS  [P6 v1.2.0]
+// ══════════════════════════════════════
+// Все флаги ставятся только на isconfirmed → срабатывание на закрытии бара
+alertcondition(confirmedBuy, "AMF: Buy", "AMF Buy signal (crossover)")
+alertcondition(confirmedSell, "AMF: Sell", "AMF Sell signal (crossunder)")
+alertcondition(confirmedBuy or confirmedSell, "AMF: Buy/Sell Any", "AMF Buy or Sell signal")
+alertcondition(confirmedZeroBuy, "AMF: Zero Cross Bull", "AMF bullish zero line cross")
+alertcondition(confirmedZeroSell, "AMF: Zero Cross Bear", "AMF bearish zero line cross")
+alertcondition(regBullDiv, "AMF: Bullish Divergence", "AMF regular bullish divergence")
+alertcondition(regBearDiv, "AMF: Bearish Divergence", "AMF regular bearish divergence")
+alertcondition(hidBullDiv, "AMF: Hidden Bullish Divergence", "AMF hidden bullish divergence")
+alertcondition(hidBearDiv, "AMF: Hidden Bearish Divergence", "AMF hidden bearish divergence")
+alertcondition(regBullDiv or regBearDiv or hidBullDiv or hidBearDiv, "AMF: Any Divergence", "AMF divergence detected")
+
+// ══════════════════════════════════════
+// ALERTS (dynamic text / webhook JSON)  [L6 v1.2.1 — через fireAlert]
+// ══════════════════════════════════════
+if confirmedBuy
+    fireAlert("buy", "🟢 BUY", ',"engine":"' + engineInput + '"', " | Engine: " + engineInput)
+
+if confirmedSell
+    fireAlert("sell", "🔴 SELL", ',"engine":"' + engineInput + '"', " | Engine: " + engineInput)
+
+if confirmedZeroBuy
+    fireAlert("zero_bull", "🟡 ZERO BULL CROSS", "", "")
+
+if confirmedZeroSell
+    fireAlert("zero_bear", "🟡 ZERO BEAR CROSS", "", "")
+
+// [P5] Дивергентные алерты с kind и quality
+if regBullDiv
+    fireAlert("bull_divergence", "🔵 BULL DIVERGENCE (Q" + str.tostring(qBull) + ")", ',"kind":"regular","q":' + str.tostring(qBull), "")
+
+if regBearDiv
+    fireAlert("bear_divergence", "🔵 BEAR DIVERGENCE (Q" + str.tostring(qBear) + ")", ',"kind":"regular","q":' + str.tostring(qBear), "")
+
+if hidBullDiv
+    fireAlert("bull_divergence", "🟣 HIDDEN BULL DIV (Q" + str.tostring(qHBull) + ")", ',"kind":"hidden","q":' + str.tostring(qHBull), "")
+
+if hidBearDiv
+    fireAlert("bear_divergence", "🟣 HIDDEN BEAR DIV (Q" + str.tostring(qHBear) + ")", ',"kind":"hidden","q":' + str.tostring(qHBear), "")

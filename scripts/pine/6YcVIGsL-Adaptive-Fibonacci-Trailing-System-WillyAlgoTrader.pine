@@ -1,0 +1,1392 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE FIBONACCI TRAILING SYSTEM [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.8.0
+
+indicator(
+     title            = "Adaptive Fibonacci Trailing System [WillyAlgoTrader]",
+     shorttitle       = "AFT",
+     overlay          = true,
+     max_lines_count  = 500,
+     max_labels_count = 500)
+
+// ══════════════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════════════
+GRP_STRUCT  = "🏛️ Structure Engine"
+GRP_REGIME  = "📡 Market Regime"
+GRP_TRAIL   = "🎯 Trailing Stop"
+GRP_FIB     = "🌀 Fib Cloud"
+GRP_RISK    = "🛡️ Risk Management"
+GRP_CONF    = "🎓 Confidence & Sizing"
+GRP_BT      = "📈 Backtest Tracker"
+GRP_VISUAL  = "🎨 Visual"
+GRP_DASH    = "📊 Dashboard"
+GRP_ALERT   = "🔔 Alerts"
+GRP_COLORS  = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.8.0"
+
+// ── Regime states ───────────────────────────────────────────
+REGIME_TREND    = 1
+REGIME_RANGE    = 0
+REGIME_VOLATILE = 2
+
+// ── Direction states ────────────────────────────────────────
+DIR_LONG  = 1
+DIR_SHORT = -1
+DIR_FLAT  = 0
+
+// ── Signal modes ────────────────────────────────────────────
+SIGMODE_TRAIL = "Trail Flip"
+SIGMODE_CROSS = "0.5 Cross"
+
+// ── Cross strictness levels (v1.2.2) ────────────────────────
+STRICT_FULL    = "Strict"    // body + penetration + regime/ADX (original)
+STRICT_RELAXED = "Relaxed"   // body + penetration, no regime/ADX
+STRICT_NONE    = "None"      // pure close cross, no filters
+
+// ── Backtest exit models (v1.6.0) ───────────────────────────
+BT_EXIT_SCALE = "Scale Out (⅓ per TP)"
+BT_EXIT_HOLD  = "Hold to TP3"
+
+// ── Tunable algorithmic constants ───────────────────────────
+SWINGS_MEMORY_SIZE     = 5      // how many recent swings to keep
+REGIME_HYSTERESIS      = 0.85   // exit threshold = enter × 0.85 (smooth transitions)
+TREND_EXIT_FACTOR      = 0.9    // trend regime exit at adx × 0.9
+RANGE_ADX_FALLBACK     = 18.0   // ranging market needs adx >= this for breakout confirmation
+REGIME_TINT_DURATION   = 10     // bars to highlight regime change
+SL_TP_LINE_EXTEND      = 5      // SL/TP lines project this many bars ahead while active
+VOL_SPIKE_TAPER        = 3.0    // volume factor starts decaying above this × SMA
+
+// ══════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════
+
+// ── Structure Engine ────────────────────────────────────────
+pivotLenInput = input.int(13, "Pivot Length", minval = 3, maxval = 50, group = GRP_STRUCT,
+     tooltip = "Lookback bars for swing detection.\n" +
+               "• 5-8: scalping, more swings, more noise\n" +
+               "• 10-15: balanced (recommended)\n" +
+               "• 20+: position trading, fewer but stronger swings")
+
+minSwingScoreInput = input.float(1.0, "Min Swing Score", minval = 0.0, maxval = 5.0, step = 0.1, group = GRP_STRUCT,
+     tooltip = "Minimum significance score to validate a swing.\n" +
+               "Score = (distance to last opposing swing / ATR) × volume confirmation\n" +
+               "• 0.5: accept weak swings (more structure)\n" +
+               "• 1.0: balanced (filters noise)\n" +
+               "• 2.0: only strong impulse swings")
+
+// ── Regime Detection ────────────────────────────────────────
+adxLenInput = input.int(14, "ADX Length", minval = 7, maxval = 50, group = GRP_REGIME,
+     tooltip = "ADX period for trend strength detection")
+
+adxTrendInput = input.float(22.0, "Trend Threshold", minval = 15.0, maxval = 40.0, step = 0.5, group = GRP_REGIME,
+     tooltip = "ADX value above this = Trending market.\n• 18-20: aggressive\n• 22-25: balanced\n• 28+: only strong trends\nHysteresis: regime exits at threshold × 0.9")
+
+volatilityMultInput = input.float(1.6, "Volatile Threshold (×ATR)", minval = 1.2, maxval = 3.0, step = 0.1, group = GRP_REGIME,
+     tooltip = "Current ATR / Avg ATR ratio above this = Volatile regime.\nWidens trailing stops in volatile conditions.\nHysteresis: regime exits at threshold × 0.85")
+
+// ── Trailing Stop / Signal ──────────────────────────────────
+trailModeInput = input.string("Adaptive (Auto)", "Trailing Mode",
+     options = ["Aggressive (0.382)", "Balanced (0.5)", "Conservative (0.618)", "Adaptive (Auto)"],
+     group = GRP_TRAIL,
+     tooltip = "Trailing stop placement strategy.\n" +
+               "Numbers = how much of the swing range price may retrace before the stop is hit:\n" +
+               "• Aggressive (0.382): only 38.2% retracement allowed → TIGHT stop, fast exits\n" +
+               "• Balanced (0.5): midpoint, balanced exits\n" +
+               "• Conservative (0.618): 61.8% retracement allowed → WIDE stop, lets trends run\n" +
+               "• Adaptive: tight (0.382) in ranging, wide (0.618) in trends, midpoint in volatile")
+
+signalModeInput = input.string(SIGMODE_CROSS, "Signal Mode",
+     options = [SIGMODE_TRAIL, SIGMODE_CROSS],
+     group = GRP_TRAIL,
+     tooltip = "Signal generation strategy:\n" +
+               "• Trail Flip: signal fires when adaptive trailing stop flips direction (original behavior). " +
+                 "Best for trend-following — sticks with the move until structure breaks.\n" +
+               "• 0.5 Cross: signal fires when close crosses Fib 0.5 (premium/discount inflection) " +
+                 "with full triple-confirmation. Earlier signals, but more whipsaw in ranging markets. " +
+                 "Trail stop and SL/TP remain unchanged in both modes.")
+
+crossStrictnessInput = input.string(STRICT_FULL, "0.5 Cross Strictness",
+     options = [STRICT_FULL, STRICT_RELAXED, STRICT_NONE],
+     group = GRP_TRAIL,
+     tooltip = "Filter strictness for 0.5 Cross mode (ignored in Trail Flip):\n" +
+               "• Strict: body + penetration + regime/ADX filter " +
+                 "(needs ADX ≥ 18 in ranging markets — original behavior)\n" +
+               "• Relaxed: body + penetration only, no ADX gate " +
+                 "(recommended for ranging/sideways markets)\n" +
+               "• None: pure close cross of 0.5, no filters " +
+                 "(maximum signal count, expect noise)")
+
+confirmFilterInput = input.float(0.2, "Breakout Confirmation (×ATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_TRAIL,
+     tooltip = "Minimum penetration beyond stop (in ATR units) to confirm direction change.\nFilters wick-based false breakouts.\n• 0.0: any close past stop\n• 0.2: balanced anti-whipsaw (recommended)\n• 0.5: very strict")
+
+bodyFilterInput = input.float(0.5, "Min Body Ratio", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_TRAIL,
+     tooltip = "Minimum candle body / range ratio for breakout confirmation.\nFilters out doji/wick breakouts.")
+
+forceFlipBarsInput = input.int(3, "Force Flip After N Bars", minval = 0, maxval = 20, group = GRP_TRAIL,
+     tooltip = "v1.6.0 anti-zombie guard. If price closes on the wrong side of the\n" +
+               "trailing stop for N consecutive confirmed bars, the trail flips even if\n" +
+               "the body/penetration/ADX filters keep rejecting the breakout.\n" +
+               "Prevents the stop from sitting above price forever in flat markets.\n" +
+               "• 0: disabled (original behavior)\n" +
+               "• 3: balanced (recommended)")
+
+// ── Fib Cloud ───────────────────────────────────────────────
+showCloudInput = input.bool(true, "Show Fib Cloud", group = GRP_FIB,
+     tooltip = "Display adaptive Fibonacci cloud (premium/discount zone)")
+
+cloudStyleInput = input.string("Gradient", "Cloud Style",
+     options = ["Gradient", "Solid", "Pulsing"],
+     group = GRP_FIB,
+     tooltip = "• Gradient: premium zone (upper) bear-tinted, discount zone (lower) bull-tinted; the zone matching trail direction is brighter\n• Solid: flat semi-transparent fill\n• Pulsing: brightens when price near 0.5 line")
+
+showConfluenceInput = input.bool(false, "Show Confluence Markers", group = GRP_FIB,
+     tooltip = "Mark Fib levels that align with SMA50 (key reaction zones)")
+
+showFibLevelsInput = input.bool(true, "Show Fib Levels", group = GRP_FIB,
+     tooltip = "Display 0.382/0.5/0.618 lines")
+
+// ── Risk Management ─────────────────────────────────────────
+enableRMInput = input.bool(true, "Enable Risk Management", group = GRP_RISK,
+     tooltip = "Generate Buy/Sell signals with SL/TP levels on direction change")
+
+riskPresetInput = input.string("Balanced", "Risk Preset",
+     options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"],
+     group = GRP_RISK,
+     tooltip = "Quick risk presets:\n• Conservative: SL 2.5×ATR, TP 1R/2R/4R\n• Balanced: SL 1.5×ATR, TP 1R/2R/3R\n• Aggressive: SL 1.0×ATR, TP 1.5R/2.5R/4R\n• Scalping: SL 0.8×ATR, TP 0.8R/1.5R/2R\n• Custom: use manual values below")
+
+atrLenRiskInput = input.int(14, "ATR Length (RM)", minval = 5, maxval = 50, group = GRP_RISK,
+     tooltip = "ATR period for stop-loss calculation")
+
+slMultInput = input.float(1.5, "SL ×ATR (Custom)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK)
+tp1MultInput = input.float(1.0, "TP1 ×Risk (Custom)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK)
+tp2MultInput = input.float(2.0, "TP2 ×Risk (Custom)", minval = 1.0, maxval = 10.0, step = 0.1, group = GRP_RISK)
+tp3MultInput = input.float(3.0, "TP3 ×Risk (Custom)", minval = 1.5, maxval = 15.0, step = 0.1, group = GRP_RISK)
+
+showSlTpInput = input.bool(true, "Show SL/TP Lines", group = GRP_RISK)
+showSlTpLabelsInput = input.bool(true, "Show SL/TP Labels", group = GRP_RISK)
+
+useBreakEvenInput = input.bool(true, "Break-Even After TP1", group = GRP_RISK,
+     tooltip = "When TP1 is hit, move stop-loss to entry price (break-even).\n" +
+               "The trailed SL replaces the original — trade closes at break-even\n" +
+               "instead of original SL if price reverses.\n" +
+               "Lets winners run to TP2/TP3 risk-free.")
+
+// ── Confidence & Sizing (v1.4.0) ────────────────────────────
+useConfidenceInput = input.bool(true, "Enable Confidence Score", group = GRP_CONF,
+     tooltip = "Compute 0–100% confidence score for every signal.\n" +
+               "Score combines: structural strength, regime alignment, ADX,\n" +
+               "volume, volatility, and SMA50 confluence.\n" +
+               "Grade letters: D / C / B / A / A+")
+
+minConfidenceInput = input.float(50.0, "Min Confidence %", minval = 0.0, maxval = 100.0, step = 5.0, group = GRP_CONF,
+     tooltip = "Block signals below this confidence level.\n" +
+               "• 40 (D): take everything — only filters worst sigs\n" +
+               "• 50 (low C): balanced (default)\n" +
+               "• 60 (B): only above-average setups\n" +
+               "• 75 (A): only high-confidence — fewer but cleaner\n" +
+               "• 90 (A+): only premium setups, very rare")
+
+useAdaptiveSizingInput = input.bool(true, "Adaptive Position Sizing", group = GRP_CONF,
+     tooltip = "Scale recommended risk % by confidence grade (needs Confidence enabled):\n" +
+               "• D grade: 0.25× base risk\n" +
+               "• C grade: 0.5× base risk\n" +
+               "• B grade: 0.75× base risk\n" +
+               "• A grade: 1.0× base risk (full size)\n" +
+               "• A+ grade: 1.5× base risk (oversize on best setups)")
+
+baseRiskPctInput = input.float(1.0, "Base Risk per Trade %", minval = 0.1, maxval = 5.0, step = 0.1, group = GRP_CONF,
+     tooltip = "Reference risk % for an A-grade signal (1× multiplier).\n" +
+               "Other grades scale from this base.\n" +
+               "Common values: 0.5–2.0% per trade.")
+
+// ── Backtest Tracker (v1.4.0, reworked v1.6.0) ─────────────
+useBacktestInput = input.bool(true, "Enable Backtest Tracker", group = GRP_BT,
+     tooltip = "Track every completed trade (closed by SL, BE-stop or TP3).\n" +
+               "Stats shown in dashboard: trades (W/L/BE), win rate, avg R,\n" +
+               "profit factor, total R.\n" +
+               "This is an indicator-level estimate, not a strategy() backtest:\n" +
+               "no fees, no slippage, and same-bar SL/TP ties resolve as SL-first\n" +
+               "(pessimistic). Counters reset whenever any input changes.")
+
+btExitModelInput = input.string(BT_EXIT_SCALE, "Backtest Exit Model",
+     options = [BT_EXIT_SCALE, BT_EXIT_HOLD],
+     group = GRP_BT,
+     tooltip = "How realized R is computed when a trade closes:\n" +
+               "• Scale Out: ⅓ position booked at each TP; the remainder is\n" +
+               "  stopped at BE (0R) or original SL (−1R per unit).\n" +
+               "• Hold to TP3: full size held; +TP3·R on TP3, 0R if stopped\n" +
+               "  at BE, −1R if stopped at original SL.")
+
+showPerGradeInput = input.bool(true, "Show Per-Grade Stats", group = GRP_BT,
+     tooltip = "Break down backtest by confidence grade (A+/A/B/C).\n" +
+               "Diagnostic feature: shows whether high-confidence signals\n" +
+               "actually outperform low-confidence ones. If A+ winrate\n" +
+               "isn't notably higher than C, the confidence engine\n" +
+               "needs tuning.")
+
+// ── Visual ──────────────────────────────────────────────────
+themeInput = input.string("Auto", "Theme",
+     options = ["Auto", "Dark", "Light"],
+     group = GRP_VISUAL,
+     tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light backgrounds")
+
+showSignalsInput = input.bool(true, "Show Buy/Sell Signals", group = GRP_VISUAL)
+showTrailLineInput = input.bool(true, "Show Trailing Line", group = GRP_VISUAL)
+showRegimeBgInput = input.bool(false, "Highlight Regime Changes", group = GRP_VISUAL,
+     tooltip = "Tint chart background for 10 bars after regime change")
+showSwingLabelsInput = input.bool(false, "Show Swing Labels", group = GRP_VISUAL)
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL)
+
+labelFontSizeInput = input.string("Small", "Label Font Size",
+     options = ["Tiny", "Small", "Normal", "Large", "Huge"],
+     group = GRP_VISUAL,
+     tooltip = "Font size for signal labels (Long/Short) and SL/TP/Entry labels.\n" +
+               "Use Small or Normal for better readability on busy charts.")
+
+// ── Dashboard ───────────────────────────────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH)
+dashPosStr = input.string("Top Right", "Position",
+     options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"],
+     group = GRP_DASH)
+
+dashFontSizeInput = input.string("Tiny", "Dashboard Font Size",
+     options = ["Tiny", "Small", "Normal"],
+     group = GRP_DASH,
+     tooltip = "Font size for dashboard body rows.\n" +
+               "Section headers (main + Backtest) are always one step larger.\n" +
+               "Default: Tiny (Pro-style compact dashboard).\n" +
+               "Switch to Small or Normal if rows are hard to read.")
+
+// ── Colors ──────────────────────────────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "c1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "c1", group = GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Neutral", inline = "c2", group = GRP_COLORS)
+volatileColorInput = input.color(#FF9800, "Volatile", inline = "c2", group = GRP_COLORS)
+
+// ── Alerts ──────────────────────────────────────────────────
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+     tooltip = "Send ALL alerts (entries and exits) in JSON format for webhook integrations.\n" +
+               "Entry:  {\"action\":\"buy\"|\"sell\", ...}\n" +
+               "Exit:   {\"action\":\"exit\",\"reason\":\"sl\"|\"be_stop\"|\"tp1\"|\"tp2\"|\"tp3\", ...}\n" +
+               "Update: {\"action\":\"update\",\"reason\":\"be_moved\",\"new_sl\":...}")
+alertSlHitInput = input.bool(true, "Alert on SL Hit", group = GRP_ALERT)
+alertTpHitInput = input.bool(false, "Alert on TP Hit", group = GRP_ALERT)
+
+// ══════════════════════════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════════════════════════
+float bgLuma = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         bgLuma < 128
+
+// ── Text colors ─────────────────────────────────────────────
+TEXT_COLOR   = isDark ? #E0E0E0                : #1A1A1A
+TEXT_MUTED   = isDark ? #9E9E9E                : #757575
+
+// ── Adaptive signal colors (for text on chart) ──────────────
+BULL_TEXT    = isDark ? #00E676  : #00A152
+BEAR_TEXT    = isDark ? #FF5252  : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B  : #F57F17
+VOLAT_TEXT   = isDark ? #FF9800  : #E65100
+
+// ── Label backgrounds (always vivid) ────────────────────────
+BULL_LABEL_TEXT = #004D25
+BEAR_LABEL_TEXT = #FFFFFF
+
+// ── Dashboard / Tables (v1.5.0: softer borders for Pro look) ──
+TABLE_BG       = isDark ? color.new(#131722, 5)  : color.new(#FFFFFF, 5)
+TABLE_BORDER   = isDark ? color.new(#2A2E39, 50) : color.new(#D0D0D0, 50)
+HEADER_BG      = isDark ? #1A237E                : #283593
+HEADER_TEXT    = #FFFFFF
+BT_HEADER_BG   = isDark ? #4527A0                : #311B92
+
+// ── Fib cloud colors ─────────────────────────────────────────
+FIB_PREMIUM_BG  = color.new(#EF5350, 90)   // upper zone (0.382 → 0.5): sell area
+FIB_DISCOUNT_BG = color.new(#26A69A, 90)   // lower zone (0.5 → 0.618): buy area
+FIB_MID_LINE    = isDark ? color.new(#FFCA28, 30) : color.new(#FF8F00, 30)
+
+// ── Fib level edge colors (v1.6.0 fix #6: correct semantics) ──
+// Levels are measured DOWN from the swing high:
+//   fib382 = top − 0.382·range → UPPER level → premium zone edge → red
+//   fib618 = top − 0.618·range → LOWER level → discount zone edge → green
+FIB_382_LINE  = isDark ? color.new(#EF5350, 30) : color.new(#C62828, 30)
+FIB_618_LINE  = isDark ? color.new(#26A69A, 30) : color.new(#00796B, 30)
+
+// ── Risk Management colors (theme-adaptive, v1.5.0 Pro palette) ──
+SL_COLOR    = isDark ? #EF5350                : #C62828
+TP1_COLOR   = isDark ? color.new(#26A69A, 25) : color.new(#00796B, 25)
+TP2_COLOR   = isDark ? color.new(#26A69A, 35) : color.new(#00796B, 35)
+TP3_COLOR   = isDark ? #26A69A                : #00796B   // full opacity for emphasis
+ENTRY_COLOR = isDark ? #42A5F5                : #1565C0
+
+// ── Pro-style accent + utility colors ──
+TP_HIT_COLOR  = isDark ? #26C6DA               : #00838F
+BE_COLOR      = isDark ? #FFA726               : #E65100
+LABEL_TEXT    = #FFFFFF
+
+// ── Watermark ───────────────────────────────────────────────
+WM_COLOR = isDark ? color.new(#FFFFFF, 88) : color.new(#000000, 88)
+
+// ══════════════════════════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+clampVal(float val, float minVal, float maxVal) =>
+    math.max(minVal, math.min(maxVal, val))
+
+// Format percent distance from entry, with sign. Returns "" if entry/level invalid.
+formatPctFromEntry(float level, float entry) =>
+    if na(level) or na(entry) or entry == 0
+        ""
+    else
+        float pct = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        " (" + sign + str.tostring(pct, "#.##") + "%)"
+
+// Dashboard position resolver
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    => position.top_right
+
+// Font size resolvers (v1.5.2)
+sizeFromString(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.tiny
+
+// Bump dashboard body size up one notch for section headers
+sizeOneStepUp(string s) =>
+    switch s
+        "Tiny"   => size.small
+        "Small"  => size.normal
+        "Normal" => size.large
+        => size.small
+
+// Pre-resolved sizes
+labelSize    = sizeFromString(labelFontSizeInput)
+dashSizeBody = sizeFromString(dashFontSizeInput)
+dashSizeHead = sizeOneStepUp(dashFontSizeInput)
+
+// ══════════════════════════════════════════════════════════
+// CALCULATIONS — CORE INDICATORS
+// ══════════════════════════════════════════════════════════
+// Longest lookback in the script: ATR-avg(50) on ATR(14) ≈ 64, SMA50,
+// DMI ≈ 2×len. 100 bars covers all of them at default settings.
+int  WARMUP_BARS = math.max(pivotLenInput * 3, adxLenInput * 3, 100)
+bool isWarmedUp  = bar_index >= WARMUP_BARS
+
+// ATR (multiple periods for different layers)
+float atr14    = nz(ta.atr(14), 0.0)
+float atrRisk  = nz(ta.atr(atrLenRiskInput), 0.0)
+float atrAvg50 = nz(ta.sma(atr14, 50), atr14)
+
+// Volatility ratio (current ATR vs average)
+float volRatio = safeDiv(atr14, atrAvg50, 1.0)
+
+// Trend reference (for confluence / alignment)
+float sma50 = ta.sma(close, 50)
+
+// Volume normalization (works on FX where volume == 0).
+// ta.sma is called unconditionally so its history is consistent.
+float volSma20 = ta.sma(volume, 20)
+bool  hasVolume = nz(volume, 0) > 0 and nz(volSma20, 0) > 0
+float volMult   = hasVolume ? volume / volSma20 : 1.0
+
+// ADX for regime detection (we only need ADX value, not +DI/-DI)
+[_, _, adxValue] = ta.dmi(adxLenInput, adxLenInput)
+float adx = nz(adxValue, 0.0)
+
+// ── Shared candle-quality helpers (used by trail flip AND 0.5 cross) ──
+bodyRatioOk() =>
+    float candleRange = high - low
+    float bodyRatio   = candleRange != 0 ? math.abs(close - open) / candleRange : 0.0
+    bodyRatio >= bodyFilterInput
+
+penetrationOk(bool isLong, float level) =>
+    (isLong ? close - level : level - close) > confirmFilterInput * atr14
+
+// ══════════════════════════════════════════════════════════
+// REGIME ENGINE — with hysteresis (anti-flickering)
+// ══════════════════════════════════════════════════════════
+var int currentRegime = REGIME_RANGE
+
+float volExitLevel   = volatilityMultInput * REGIME_HYSTERESIS
+float trendExitLevel = adxTrendInput * TREND_EXIT_FACTOR
+
+if isWarmedUp and barstate.isconfirmed
+    if volRatio >= volatilityMultInput
+        currentRegime := REGIME_VOLATILE
+    else if currentRegime == REGIME_VOLATILE
+        // Stay volatile until the ratio drops below the exit level
+        if volRatio < volExitLevel
+            currentRegime := adx >= adxTrendInput ? REGIME_TREND : REGIME_RANGE
+    else if adx >= adxTrendInput
+        currentRegime := REGIME_TREND
+    else if currentRegime == REGIME_TREND and adx < trendExitLevel
+        currentRegime := REGIME_RANGE
+    // (TREND between exit/enter levels and RANGE below enter level both keep their state)
+
+// Regime-dependent gate shared by trail flip and strict 0.5 cross
+regimeGateOk() =>
+    switch currentRegime
+        REGIME_TREND    => true
+        REGIME_VOLATILE => bodyRatioOk()
+        =>                  adx >= RANGE_ADX_FALLBACK
+
+// ══════════════════════════════════════════════════════════
+// STRUCTURE ENGINE — Score-filtered swings
+// ══════════════════════════════════════════════════════════
+type Swing
+    int   bar
+    float price
+    int   dir       // 1 = high, -1 = low
+    float score
+    label lbl
+
+var array<Swing> swings = array.new<Swing>()
+
+float rawPivotHigh = ta.pivothigh(pivotLenInput, pivotLenInput)
+float rawPivotLow  = ta.pivotlow(pivotLenInput, pivotLenInput)
+
+// Swing score: distance to last OPPOSING swing, normalized by ATR, × volume
+calcSwingScore(float swingPrice, int swingDir) =>
+    float refAtr = nz(atr14[pivotLenInput], 0.0)
+    float prevPrice = swingPrice
+    bool foundOpposing = false
+    if array.size(swings) > 0
+        for i = 0 to array.size(swings) - 1
+            Swing s = array.get(swings, i)
+            if s.dir != swingDir
+                prevPrice := s.price
+                foundOpposing := true
+                break
+    float swingRange = foundOpposing ? math.abs(swingPrice - prevPrice) : refAtr
+    float rangeScore = refAtr != 0 ? swingRange / refAtr : 0.0
+    float volScoreLocal = hasVolume ? nz(volMult[pivotLenInput], 1.0) : 1.0
+    rangeScore * math.max(volScoreLocal, 0.5)
+
+// Register a validated swing, keep the array bounded, draw optional label.
+// Highs are resistance (bear color), lows are support (bull color).
+registerSwing(float price, int dir, float score) =>
+    label lbl = na
+    if showSwingLabelsInput
+        lbl := label.new(bar_index - pivotLenInput, price,
+             (dir == 1 ? "H " : "L ") + str.tostring(score, "#.#"),
+             color = color.new(dir == 1 ? BEAR_TEXT : BULL_TEXT, 70),
+             textcolor = TEXT_COLOR,
+             style = dir == 1 ? label.style_label_down : label.style_label_up,
+             size = size.tiny)
+    array.unshift(swings, Swing.new(bar_index - pivotLenInput, price, dir, score, lbl))
+    if array.size(swings) > SWINGS_MEMORY_SIZE
+        Swing oldest = array.pop(swings)
+        if not na(oldest.lbl)
+            label.delete(oldest.lbl)
+
+if not na(rawPivotHigh) and isWarmedUp
+    float score = calcSwingScore(rawPivotHigh, 1)
+    if score >= minSwingScoreInput
+        registerSwing(rawPivotHigh, 1, score)
+
+if not na(rawPivotLow) and isWarmedUp
+    float score = calcSwingScore(rawPivotLow, -1)
+    if score >= minSwingScoreInput
+        registerSwing(rawPivotLow, -1, score)
+
+// Latest high and latest low (with their scores — the confidence engine
+// scores the swing that actually anchors the Fib in the signal direction)
+float latestHigh      = na
+float latestLow       = na
+float latestHighScore = na
+float latestLowScore  = na
+
+if array.size(swings) >= 2
+    for i = 0 to array.size(swings) - 1
+        Swing s = array.get(swings, i)
+        if s.dir == 1 and na(latestHigh)
+            latestHigh      := s.price
+            latestHighScore := s.score
+        if s.dir == -1 and na(latestLow)
+            latestLow      := s.price
+            latestLowScore := s.score
+        if not na(latestHigh) and not na(latestLow)
+            break
+
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE FIB LEVELS
+// ══════════════════════════════════════════════════════════
+// Levels are measured DOWN from the swing high:
+//   fib382 = UPPER level (premium side), fib618 = LOWER level (discount side)
+float fibRange  = na
+float fibTop    = na
+float fibBottom = na
+float fib382    = na
+float fib500    = na
+float fib618    = na
+
+if not na(latestHigh) and not na(latestLow) and latestHigh > latestLow
+    fibTop    := latestHigh
+    fibBottom := latestLow
+    fibRange  := fibTop - fibBottom
+    fib382    := fibTop - fibRange * 0.382
+    fib500    := fibTop - fibRange * 0.5
+    fib618    := fibTop - fibRange * 0.618
+
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE TRAILING STOP
+// ══════════════════════════════════════════════════════════
+float selectedFibBull = na
+float selectedFibBear = na
+
+if not na(fibRange) and fibRange > 0
+    // Allowed retracement of the swing range before the stop is hit.
+    float retrace = switch trailModeInput
+        "Aggressive (0.382)"   => 0.382   // tight
+        "Balanced (0.5)"       => 0.5
+        "Conservative (0.618)" => 0.618   // wide
+        => currentRegime == REGIME_TREND ? 0.618 : currentRegime == REGIME_VOLATILE ? 0.5 : 0.382
+
+    // Low vol → stop closer to price, high vol → farther away
+    float volAdjust = clampVal(1.0 / math.max(volRatio, 0.01), 0.7, 1.5)
+
+    // Distance of the stop from the FAR side of the range
+    float distFromFarSide = fibRange * (1.0 - retrace) * volAdjust
+
+    selectedFibBull := clampVal(fibBottom + distFromFarSide, fibBottom, fibTop)
+    selectedFibBear := clampVal(fibTop    - distFromFarSide, fibBottom, fibTop)
+
+var float trailStop     = na
+var int   trailDir      = DIR_FLAT
+var int   wrongSideBars = 0     // consecutive closes past the stop without a flip
+
+// Triple-confirmation breakout: body + penetration + regime gate
+confirmBreakout(bool isLong, float stopLevel) =>
+    bodyRatioOk() and penetrationOk(isLong, stopLevel) and regimeGateOk()
+
+if isWarmedUp and barstate.isconfirmed and not na(selectedFibBull) and not na(selectedFibBear)
+    if na(trailStop)
+        // Initialization
+        trailDir  := close > fib500 ? DIR_LONG : DIR_SHORT
+        trailStop := trailDir == DIR_LONG ? selectedFibBull : selectedFibBear
+    else if trailDir == DIR_LONG
+        trailStop := math.max(trailStop, selectedFibBull)          // ratchet up only
+        if close < trailStop
+            wrongSideBars += 1
+            bool forceFlip = forceFlipBarsInput > 0 and wrongSideBars >= forceFlipBarsInput
+            if confirmBreakout(false, trailStop) or forceFlip
+                trailStop     := selectedFibBear
+                trailDir      := DIR_SHORT
+                wrongSideBars := 0
+        else
+            wrongSideBars := 0
+    else
+        trailStop := math.min(trailStop, selectedFibBear)          // ratchet down only
+        if close > trailStop
+            wrongSideBars += 1
+            bool forceFlip = forceFlipBarsInput > 0 and wrongSideBars >= forceFlipBarsInput
+            if confirmBreakout(true, trailStop) or forceFlip
+                trailStop     := selectedFibBull
+                trailDir      := DIR_LONG
+                wrongSideBars := 0
+        else
+            wrongSideBars := 0
+
+// ══════════════════════════════════════════════════════════
+// RISK MANAGEMENT — CLOSE THE EXISTING TRADE
+// ══════════════════════════════════════════════════════════
+// Per-bar order: (1) hit detection on the existing trade → (2) latch TPs /
+// break-even → (3) snapshot for alerts → (4) record in backtest → (5) reset.
+// Signal detection and the new-trade open come AFTER this block, so a
+// fresh trade is never hit-tested against its own opening bar, and a trade
+// closed on the same bar a new one opens is always recorded.
+
+// ── State ──
+var float activeSL     = na
+var float activeSLOrig = na      // original SL, kept for risk % display after BE
+var float activeTP1    = na
+var float activeTP2    = na
+var float activeTP3    = na
+var float activeEntry  = na
+var int   activeDir    = DIR_FLAT
+var bool  tp1Reached   = false
+var bool  tp2Reached   = false
+var bool  beActive     = false
+
+// Confidence/grade captured at trade open (labels, alerts, per-grade stats)
+var float  signalConfidence = na
+var string signalGrade      = na
+var float  signalRiskPct    = na
+
+[effSLMult, effTP1, effTP2, effTP3] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.0]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.0]
+    "Custom"       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    => [1.5, 1.0, 2.0, 3.0]  // Balanced
+
+float slDistance = atrRisk * effSLMult
+
+// ── 1. Hit detection ────────────────────────────────────────
+// SL is tested against its value AT THE START of this bar (effectiveSL),
+// not against a BE level applied later in the same bar.
+float effectiveSL = activeSL
+bool  isLongTrade  = activeDir == DIR_LONG
+bool  isShortTrade = activeDir == DIR_SHORT
+
+bool slHit  = isLongTrade ? low  <= effectiveSL : isShortTrade ? high >= effectiveSL : false
+bool tp1Hit = isLongTrade ? high >= activeTP1   : isShortTrade ? low  <= activeTP1   : false
+bool tp2Hit = isLongTrade ? high >= activeTP2   : isShortTrade ? low  <= activeTP2   : false
+bool tp3Hit = isLongTrade ? high >= activeTP3   : isShortTrade ? low  <= activeTP3   : false
+
+// Same-bar ambiguity: if a bar touches both the SL and a TP we cannot know
+// which came first. Resolve PESSIMISTICALLY (SL first): TP touches on a
+// stop-out bar are not latched and are not booked.
+bool tp1FirstTouch = tp1Hit and not tp1Reached and not slHit
+bool tp2FirstTouch = tp2Hit and not tp2Reached and not slHit
+bool tp3Close      = tp3Hit and not slHit
+bool tradeClosedThisBar = slHit or tp3Close
+
+// ── 2. Latch TPs, break-even ────────────────────────────────
+if tp1FirstTouch
+    tp1Reached := true
+if tp2FirstTouch
+    tp2Reached := true
+
+// On TP1 first touch, move SL to entry. From the NEXT bar onward any wick
+// crossing entry = stop-out at break-even.
+bool beJustActivated = useBreakEvenInput and tp1FirstTouch
+if beJustActivated
+    activeSL := activeEntry
+    beActive := true
+
+// ── 3. Snapshot for alerts / visuals (captured BEFORE the reset) ──
+float  snapEntry   = activeEntry
+float  snapSL      = effectiveSL           // the SL that was actually hit
+float  snapTP1     = activeTP1
+float  snapTP2     = activeTP2
+float  snapTP3     = activeTP3
+int    snapDir     = activeDir
+string snapGrade   = na(signalGrade) ? "—" : signalGrade
+float  snapRiskPct = na(signalRiskPct) ? baseRiskPctInput : signalRiskPct
+bool   slHitAtBE   = slHit and beActive
+
+// Realized R of the trade closing on this bar (na if none).
+//   Hold to TP3:  +TP3 on TP3; 0 on BE stop; −1 on original SL.
+//   Scale Out:    ⅓ booked at each TP; remainder stopped at BE (0) or SL (−1).
+float closedR = na
+if tradeClosedThisBar
+    if btExitModelInput == BT_EXIT_HOLD
+        closedR := tp3Close ? effTP3 : slHitAtBE ? 0.0 : -1.0
+    else
+        float booked     = (tp1Reached ? effTP1 : 0.0) + (tp2Reached ? effTP2 : 0.0) + (tp3Close ? effTP3 : 0.0)
+        int   legsClosed = (tp1Reached ? 1 : 0) + (tp2Reached ? 1 : 0) + (tp3Close ? 1 : 0)
+        float remaining  = (3 - legsClosed) / 3.0
+        closedR := booked / 3.0 + remaining * (slHitAtBE ? 0.0 : -1.0)
+
+// ══════════════════════════════════════════════════════════
+// BACKTEST TRACKER
+// ══════════════════════════════════════════════════════════
+// Indicator-level estimate: no fees, no slippage, SL-first tie rule.
+// Win = R > 0, Loss = R < 0, BE = R == 0. Counters reset on any input change.
+var int   btTrades     = 0
+var int   btWins       = 0
+var int   btLosses     = 0
+var int   btBreakeven  = 0
+var float btTotalR     = 0.0
+var float btGrossWin   = 0.0
+var float btGrossLoss  = 0.0   // absolute value
+
+var float btPeakR         = 0.0   // equity high-water mark, in R
+var float btMaxDDR        = 0.0   // deepest peak-to-trough drop, in R (positive)
+var float btTotalPct      = 0.0   // account % P&L = Σ closedR × risk% at open (no compounding)
+var float btPeakPct       = 0.0
+var float btMaxDDPct      = 0.0
+var int   btLossStreak    = 0     // BE leaves the streak unchanged
+var int   btMaxLossStreak = 0
+
+// Per-grade counters
+var int   btTradesAplus  = 0,  var int btWinsAplus  = 0,  var float btTotalRAplus  = 0.0
+var int   btTradesA      = 0,  var int btWinsA      = 0,  var float btTotalRA      = 0.0
+var int   btTradesB      = 0,  var int btWinsB      = 0,  var float btTotalRB      = 0.0
+var int   btTradesC      = 0,  var int btWinsC      = 0,  var float btTotalRC      = 0.0
+var int   btTradesD      = 0,  var int btWinsD      = 0,  var float btTotalRD      = 0.0
+
+// ── 4. Record closure ───────────────────────────────────────
+if tradeClosedThisBar and useBacktestInput
+    bool isWin = closedR > 0.0
+    if isWin
+        btWins     += 1
+        btGrossWin += closedR
+    else if closedR < 0.0
+        btLosses    += 1
+        btGrossLoss += -closedR
+    else
+        btBreakeven += 1
+    btTrades += 1
+    btTotalR += closedR
+
+    btPeakR    := math.max(btPeakR, btTotalR)
+    btMaxDDR   := math.max(btMaxDDR, btPeakR - btTotalR)
+    btTotalPct += closedR * snapRiskPct
+    btPeakPct  := math.max(btPeakPct, btTotalPct)
+    btMaxDDPct := math.max(btMaxDDPct, btPeakPct - btTotalPct)
+    if closedR < 0.0
+        btLossStreak    += 1
+        btMaxLossStreak := math.max(btMaxLossStreak, btLossStreak)
+    else if closedR > 0.0
+        btLossStreak := 0
+
+    if snapGrade == "A+"
+        btTradesAplus += 1,  btTotalRAplus += closedR
+        if isWin
+            btWinsAplus += 1
+    else if snapGrade == "A"
+        btTradesA += 1,  btTotalRA += closedR
+        if isWin
+            btWinsA += 1
+    else if snapGrade == "B"
+        btTradesB += 1,  btTotalRB += closedR
+        if isWin
+            btWinsB += 1
+    else if snapGrade == "C"
+        btTradesC += 1,  btTotalRC += closedR
+        if isWin
+            btWinsC += 1
+    else if snapGrade == "D"
+        btTradesD += 1,  btTotalRD += closedR
+        if isWin
+            btWinsD += 1
+
+// ── 5. Reset closed trade ───────────────────────────────────
+if tradeClosedThisBar
+    activeDir    := DIR_FLAT
+    activeSL     := na
+    activeSLOrig := na
+    activeTP1    := na
+    activeTP2    := na
+    activeTP3    := na
+    activeEntry  := na
+    beActive     := false
+    tp1Reached   := false
+    tp2Reached   := false
+    signalConfidence := na
+    signalGrade      := na
+    signalRiskPct    := na
+
+// ══════════════════════════════════════════════════════════
+// SIGNAL DETECTION — dual mode
+// ══════════════════════════════════════════════════════════
+bool signalWindow = barstate.isconfirmed and isWarmedUp
+
+// ── Mode A: Trail Flip ──────────────────────────────────────
+bool dirChanged    = ta.change(trailDir) != 0
+bool trailFlipBuy  = signalWindow and dirChanged and trailDir == DIR_LONG
+bool trailFlipSell = signalWindow and dirChanged and trailDir == DIR_SHORT
+
+// ── Mode B: 0.5 Cross ───────────────────────────────────────
+// A cross requires PRICE to move across the CURRENT level: previous close on
+// one side, this close on the other. Comparing both closes against today's
+// fib500 means a structure update that shifts the level past a stationary
+// price does not fire (that was the v1.7 phantom-signal case). Requiring
+// fib500[1] to exist prevents firing on the bar the Fib first appears.
+bool fibReady    = not na(fib500) and not na(fib500[1])
+bool crossedUp   = fibReady and close > fib500 and close[1] <= fib500
+bool crossedDown = fibReady and close < fib500 and close[1] >= fib500
+
+confirmCross(bool isLong) =>
+    crossStrictnessInput == STRICT_NONE    ? true :
+     crossStrictnessInput == STRICT_RELAXED ? bodyRatioOk() and penetrationOk(isLong, fib500) :
+     bodyRatioOk() and penetrationOk(isLong, fib500) and regimeGateOk()
+
+bool crossBuy  = signalWindow and crossedUp   and confirmCross(true)
+bool crossSell = signalWindow and crossedDown and confirmCross(false)
+
+bool isCrossMode = signalModeInput == SIGMODE_CROSS
+bool rawBuy  = isCrossMode ? crossBuy  : trailFlipBuy
+bool rawSell = isCrossMode ? crossSell : trailFlipSell
+
+// ══════════════════════════════════════════════════════════
+// CONFIDENCE SCORE ENGINE
+// ══════════════════════════════════════════════════════════
+// Six factors normalized to 0–1, weighted (sum = 1.0):
+//   1. Structure (20%)  — score of the swing anchoring the Fib in signal direction
+//   2. Regime    (20%)  — regime × trail/SMA50 alignment
+//   3. ADX       (15%)
+//   4. Volume    (15%)  — ramps to 1.0 at 1.5× SMA, decays above VOL_SPIKE_TAPER×
+//   5. Volatility(15%)  — peak at volRatio 1.0, continuous taper to 0.3 / 2.5
+//   6. SMA50 confluence (15%) — reference level within 2 ATR of SMA50
+calcConfidence(bool isLong) =>
+    // 1. Structure — latest low for longs (support), latest high for shorts (resistance)
+    float anchorScore = isLong ? latestLowScore : latestHighScore
+    float structScore = na(anchorScore) ? 0.0 : clampVal(anchorScore / 2.0, 0.0, 1.0)
+
+    // 2. Regime alignment
+    bool  trailAligned = isLong ? trailDir == DIR_LONG : trailDir == DIR_SHORT
+    bool  smaAligned   = not na(sma50) and (isLong ? close > sma50 : close < sma50)
+    float crossQuality = crossStrictnessInput == STRICT_FULL ? 0.7 : crossStrictnessInput == STRICT_RELAXED ? 0.6 : 0.5
+    float regimeScore  = switch currentRegime
+        REGIME_TREND    => trailAligned ? 1.0 : (isCrossMode ? crossQuality : 0.3)
+        REGIME_VOLATILE => smaAligned ? 0.6 : 0.4
+        =>                  isCrossMode ? clampVal(crossQuality - 0.1 + (smaAligned ? 0.2 : 0.0), 0.0, 1.0) : (smaAligned ? 0.5 : 0.3)
+
+    // 3. ADX strength — 0–40 maps to 0–1
+    float adxScore = clampVal(adx / 40.0, 0.0, 1.0)
+
+    // 4. Volume — ramp to 1.0 at 1.5×, hold, then decay above the spike taper
+    //    (panic / news candles should not auto-boost confidence)
+    float volScore = not hasVolume ? 0.5 :
+                     volMult <= 1.5 ? volMult / 1.5 :
+                     volMult <= VOL_SPIKE_TAPER ? 1.0 :
+                     clampVal(1.0 - (volMult - VOL_SPIKE_TAPER) / 3.0, 0.3, 1.0)
+
+    // 5. Volatility — continuous tent: 0 at 0.3, 1 at 1.0, 0 at 2.5
+    float volFavor = volRatio < 1.0 ? (volRatio - 0.3) / 0.7 : 1.0 - (volRatio - 1.0) / 1.5
+    volFavor := clampVal(volFavor, 0.0, 1.0)
+
+    // 6. SMA50 confluence — reference level is the cross level or the stop level
+    float refLevel = isCrossMode ? fib500 : (isLong ? selectedFibBull : selectedFibBear)
+    float confScore = 0.5
+    if not na(refLevel) and not na(sma50) and atr14 > 0
+        confScore := clampVal(1.0 - math.abs(refLevel - sma50) / atr14 / 2.0, 0.0, 1.0)
+
+    (structScore * 0.20 + regimeScore * 0.20 + adxScore * 0.15 +
+     volScore    * 0.15 + volFavor    * 0.15 + confScore * 0.15) * 100.0
+
+float candidateLong  = calcConfidence(true)
+float candidateShort = calcConfidence(false)
+
+gradeFromScore(float score) =>
+    score >= 90.0 ? "A+" : score >= 75.0 ? "A" : score >= 60.0 ? "B" : score >= 40.0 ? "C" : "D"
+
+// Position size multiplier from score (D = 0.25× so a signal that passes
+// a low Min Confidence never comes with a 0% size)
+sizingFromScore(float score) =>
+    score >= 90.0 ? 1.5 : score >= 75.0 ? 1.0 : score >= 60.0 ? 0.75 : score >= 40.0 ? 0.5 : 0.25
+
+riskPctFromScore(float score) =>
+    useConfidenceInput and useAdaptiveSizingInput ? baseRiskPctInput * sizingFromScore(score) : baseRiskPctInput
+
+// Dashboard confidence: raw signal direction if any, else prevailing trail direction
+float displayConfidence = rawBuy ? candidateLong : rawSell ? candidateShort :
+                          trailDir == DIR_LONG ? candidateLong : trailDir == DIR_SHORT ? candidateShort :
+                          math.max(candidateLong, candidateShort)
+string displayGrade = gradeFromScore(displayConfidence)
+
+// ══════════════════════════════════════════════════════════
+// CONFIRMED SIGNALS → OPEN NEW TRADE
+// ══════════════════════════════════════════════════════════
+// Position lock: the close/reset block above already ran, so activeDir is
+// FLAT if this bar closed the previous trade.
+bool positionActive   = activeDir != DIR_FLAT
+bool confidenceOkBuy  = not useConfidenceInput or candidateLong  >= minConfidenceInput
+bool confidenceOkSell = not useConfidenceInput or candidateShort >= minConfidenceInput
+
+bool confirmedBuy  = rawBuy  and not positionActive and confidenceOkBuy
+bool confirmedSell = rawSell and not positionActive and confidenceOkSell
+bool newSignal     = confirmedBuy or confirmedSell
+
+if newSignal
+    float chosen = confirmedBuy ? candidateLong : candidateShort
+    signalConfidence := chosen
+    signalGrade      := gradeFromScore(chosen)
+    signalRiskPct    := riskPctFromScore(chosen)
+
+if newSignal and enableRMInput
+    float sign = confirmedBuy ? 1.0 : -1.0
+    activeEntry  := close
+    activeSL     := close - sign * slDistance
+    activeSLOrig := activeSL
+    activeTP1    := close + sign * slDistance * effTP1
+    activeTP2    := close + sign * slDistance * effTP2
+    activeTP3    := close + sign * slDistance * effTP3
+    activeDir    := confirmedBuy ? DIR_LONG : DIR_SHORT
+
+// ══════════════════════════════════════════════════════════
+// PLOTS — TRAILING LINE & FIB CLOUD
+// ══════════════════════════════════════════════════════════
+color trailColor = trailDir == DIR_LONG ? bullColorInput : bearColorInput
+
+plot(showTrailLineInput ? trailStop : na, "Trail Stop",
+     color = trailColor, linewidth = 1, style = plot.style_linebr)
+
+// Fib levels — plotted (possibly invisibly) whenever the cloud needs them as anchors
+bool  needFibPlots = showFibLevelsInput or showCloudInput
+color hiddenColor  = color.new(color.black, 100)
+
+p382 = plot(needFibPlots ? fib382 : na, "Fib 0.382 (premium edge)",  color = showFibLevelsInput ? FIB_382_LINE : hiddenColor, linewidth = 1)
+p500 = plot(needFibPlots ? fib500 : na, "Fib 0.500",                 color = showFibLevelsInput ? FIB_MID_LINE : hiddenColor, linewidth = 1, style = plot.style_circles)
+p618 = plot(needFibPlots ? fib618 : na, "Fib 0.618 (discount edge)", color = showFibLevelsInput ? FIB_618_LINE : hiddenColor, linewidth = 1)
+
+// Cloud: premium (upper) zone bear-tinted, discount (lower) zone bull-tinted
+color cloudColorPremium  = na
+color cloudColorDiscount = na
+
+if showCloudInput and not na(fib382)
+    if cloudStyleInput == "Pulsing"
+        float distFrom500   = math.abs(close - fib500)
+        float pulseStrength = 1.0 - math.min(distFrom500 / (fibRange * 0.2), 1.0)
+        float alpha         = clampVal(85.0 - pulseStrength * 30.0, 0.0, 100.0)
+        cloudColorPremium  := color.new(bearColorInput, alpha)
+        cloudColorDiscount := color.new(bullColorInput, alpha)
+    else if cloudStyleInput == "Solid"
+        cloudColorPremium  := FIB_PREMIUM_BG
+        cloudColorDiscount := FIB_DISCOUNT_BG
+    else  // Gradient — the zone matching trail direction is brighter
+        cloudColorPremium  := color.new(bearColorInput, trailDir == DIR_SHORT ? 80 : 92)
+        cloudColorDiscount := color.new(bullColorInput, trailDir == DIR_LONG  ? 80 : 92)
+
+fill(p382, p500, color = cloudColorPremium,  title = "Premium Zone (0.382–0.5)")
+fill(p500, p618, color = cloudColorDiscount, title = "Discount Zone (0.5–0.618)")
+
+// ══════════════════════════════════════════════════════════
+// REGIME CHANGE HIGHLIGHT
+// ══════════════════════════════════════════════════════════
+var int regimeChangeBar = -1
+if ta.change(currentRegime) != 0
+    regimeChangeBar := bar_index
+
+color regimeBgColor = na
+if showRegimeBgInput and regimeChangeBar >= 0 and bar_index - regimeChangeBar < REGIME_TINT_DURATION
+    regimeBgColor := switch currentRegime
+        REGIME_TREND    => color.new(trailDir == DIR_LONG ? bullColorInput : bearColorInput, 92)
+        REGIME_VOLATILE => color.new(volatileColorInput, 90)
+        =>                  color.new(neutralColorInput, 92)
+
+bgcolor(regimeBgColor, title = "Regime Change Highlight")
+
+// ══════════════════════════════════════════════════════════
+// SIGNAL LABELS
+// ══════════════════════════════════════════════════════════
+if showSignalsInput and newSignal
+    string gradeSuffix = useConfidenceInput ? " " + signalGrade : ""
+    if confirmedBuy
+        label.new(bar_index, low, "▲ Long" + gradeSuffix,
+             color = bullColorInput, textcolor = BULL_LABEL_TEXT,
+             style = label.style_label_up, size = labelSize, yloc = yloc.belowbar)
+    else
+        label.new(bar_index, high, "▼ Short" + gradeSuffix,
+             color = bearColorInput, textcolor = BEAR_LABEL_TEXT,
+             style = label.style_label_down, size = labelSize, yloc = yloc.abovebar)
+
+// ══════════════════════════════════════════════════════════
+// CONFLUENCE MARKERS — Fib × SMA50 alignment (last bar only)
+// ══════════════════════════════════════════════════════════
+var label conf382Label = na
+var label conf500Label = na
+var label conf618Label = na
+
+confluenceLabel(float level, string tip) =>
+    label.new(bar_index + 5, level, "◉ SMA",
+         color = hiddenColor, textcolor = NEUTRAL_TEXT,
+         style = label.style_label_left, size = size.tiny, tooltip = tip)
+
+if showConfluenceInput and barstate.islast
+    label.delete(conf382Label)
+    label.delete(conf500Label)
+    label.delete(conf618Label)
+    float confBand = atr14 * 0.5
+    if not na(fib382) and not na(sma50)
+        if math.abs(fib382 - sma50) < confBand
+            conf382Label := confluenceLabel(fib382, "Fib 0.382 (premium edge) confluence with SMA50")
+        if math.abs(fib500 - sma50) < confBand
+            conf500Label := confluenceLabel(fib500, "Fib 0.500 confluence with SMA50")
+        if math.abs(fib618 - sma50) < confBand
+            conf618Label := confluenceLabel(fib618, "Fib 0.618 (discount edge) confluence with SMA50")
+
+// ══════════════════════════════════════════════════════════
+// SL/TP LINES & LABELS
+// ══════════════════════════════════════════════════════════
+// Lifecycle: drawn on entry → extended while active → updated on events
+// (TP touch, BE, stop-out) → frozen at the closing bar → deleted on the
+// NEXT entry. Keeping the closed trade visible lets the user see how it
+// ended (✓ / ✗) instead of the lines vanishing on the closing bar.
+var line  slLine     = na
+var line  tp1Line    = na
+var line  tp2Line    = na
+var line  tp3Line    = na
+var line  entryLine  = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+var label entryLabel = na
+var bool  riskLinesActive = false
+
+bool drawRisk   = showSlTpInput and enableRMInput
+bool drawLabels = drawRisk and showSlTpLabelsInput
+
+// Label text helper: "TP1 ✓ 123.45 (+1.5%)"
+levelText(string prefix, float level, float entry) =>
+    prefix + " " + str.tostring(level, format.mintick) + formatPctFromEntry(level, entry)
+
+// ── Event updates for the trade that was open at the start of this bar ──
+if riskLinesActive and drawRisk
+    if tp1FirstTouch
+        line.set_color(tp1Line, TP_HIT_COLOR)
+        line.set_style(tp1Line, line.style_solid)
+        if drawLabels
+            label.set_text(tp1Label, levelText("TP1 ✓", snapTP1, snapEntry))
+            label.set_color(tp1Label, TP_HIT_COLOR)
+    if tp2FirstTouch
+        line.set_color(tp2Line, TP_HIT_COLOR)
+        line.set_style(tp2Line, line.style_solid)
+        if drawLabels
+            label.set_text(tp2Label, levelText("TP2 ✓", snapTP2, snapEntry))
+            label.set_color(tp2Label, TP_HIT_COLOR)
+    if tp3Close
+        line.set_color(tp3Line, TP_HIT_COLOR)
+        line.set_style(tp3Line, line.style_solid)
+        if drawLabels
+            label.set_text(tp3Label, levelText("TP3 ✓", snapTP3, snapEntry))
+            label.set_color(tp3Label, TP_HIT_COLOR)
+    if beJustActivated
+        // Original SL line stays as a dimmed reference; ENTRY label announces the effective stop
+        line.set_color(slLine, color.new(SL_COLOR, 70))
+        if drawLabels
+            label.set_color(slLabel, color.new(SL_COLOR, 70))
+            label.set_text(entryLabel, "ENTRY " + str.tostring(snapEntry, format.mintick) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+    if slHit and drawLabels
+        if slHitAtBE
+            label.set_text(entryLabel, "ENTRY " + str.tostring(snapEntry, format.mintick) + "  → BE ✗")
+        else
+            label.set_text(slLabel, levelText("SL ✗", snapSL, snapEntry))
+
+// ── Freeze at the closing bar ───────────────────────────────
+if tradeClosedThisBar and riskLinesActive and drawRisk
+    line.set_x2(slLine, bar_index)
+    line.set_x2(tp1Line, bar_index)
+    line.set_x2(tp2Line, bar_index)
+    line.set_x2(tp3Line, bar_index)
+    line.set_x2(entryLine, bar_index)
+    if drawLabels
+        label.set_x(slLabel, bar_index + 1)
+        label.set_x(tp1Label, bar_index + 1)
+        label.set_x(tp2Label, bar_index + 1)
+        label.set_x(tp3Label, bar_index + 1)
+        label.set_x(entryLabel, bar_index + 1)
+    riskLinesActive := false
+
+// ── Draw on entry (replaces the previous trade's drawings) ──
+if newSignal and drawRisk
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    line.delete(entryLine)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    label.delete(entryLabel)
+
+    int x2 = bar_index + SL_TP_LINE_EXTEND
+    entryLine := line.new(bar_index, activeEntry, x2, activeEntry, color = ENTRY_COLOR, style = line.style_dotted, width = 1)
+    slLine    := line.new(bar_index, activeSL,    x2, activeSL,    color = SL_COLOR,    style = line.style_solid,  width = 1)
+    tp1Line   := line.new(bar_index, activeTP1,   x2, activeTP1,   color = TP1_COLOR,   style = line.style_dashed, width = 1)
+    tp2Line   := line.new(bar_index, activeTP2,   x2, activeTP2,   color = TP2_COLOR,   style = line.style_dashed, width = 1)
+    tp3Line   := line.new(bar_index, activeTP3,   x2, activeTP3,   color = TP3_COLOR,   style = line.style_dashed, width = 1)
+
+    if drawLabels
+        int lx = x2 + 1
+        entryLabel := label.new(lx, activeEntry, "ENTRY " + str.tostring(activeEntry, format.mintick), color = ENTRY_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        slLabel    := label.new(lx, activeSL,  levelText("SL",  activeSL,  activeEntry), color = SL_COLOR,  textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp1Label   := label.new(lx, activeTP1, levelText("TP1", activeTP1, activeEntry), color = TP1_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp2Label   := label.new(lx, activeTP2, levelText("TP2", activeTP2, activeEntry), color = TP2_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp3Label   := label.new(lx, activeTP3, levelText("TP3", activeTP3, activeEntry), color = TP3_COLOR, textcolor = LABEL_TEXT, style = label.style_label_left, size = labelSize)
+
+    riskLinesActive := true
+
+// ── Extend while active (not on the entry bar — the draw block set x2) ──
+if riskLinesActive and drawRisk and not newSignal
+    int x2 = bar_index + SL_TP_LINE_EXTEND
+    line.set_x2(slLine, x2)
+    line.set_x2(tp1Line, x2)
+    line.set_x2(tp2Line, x2)
+    line.set_x2(tp3Line, x2)
+    line.set_x2(entryLine, x2)
+    if drawLabels
+        label.set_x(slLabel, x2 + 1)
+        label.set_x(tp1Label, x2 + 1)
+        label.set_x(tp2Label, x2 + 1)
+        label.set_x(tp3Label, x2 + 1)
+        label.set_x(entryLabel, x2 + 1)
+
+// ══════════════════════════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════════════════════════
+bool inTrade = activeDir != DIR_FLAT
+
+string regimeStr = currentRegime == REGIME_TREND ? "Trending" : currentRegime == REGIME_VOLATILE ? "Volatile" : "Ranging"
+color  regimeColor = currentRegime == REGIME_TREND ? (trailDir == DIR_LONG ? BULL_TEXT : BEAR_TEXT) : currentRegime == REGIME_VOLATILE ? VOLAT_TEXT : NEUTRAL_TEXT
+
+string trendStr   = trailDir == DIR_LONG ? "Bullish ▲" : trailDir == DIR_SHORT ? "Bearish ▼" : "Flat —"
+color  trendColor = trailDir == DIR_LONG ? BULL_TEXT : trailDir == DIR_SHORT ? BEAR_TEXT : NEUTRAL_TEXT
+string trailStr   = na(trailStop) ? "—" : str.tostring(trailStop, format.mintick)
+
+string adxStr   = str.tostring(adx, "#.#")
+color  adxColor = adx >= adxTrendInput ? BULL_TEXT : adx >= RANGE_ADX_FALLBACK ? NEUTRAL_TEXT : TEXT_MUTED
+string volStr   = str.tostring(volRatio, "#.##") + "×"
+color  volColor = volRatio >= volatilityMultInput ? VOLAT_TEXT : volRatio >= 1.0 ? BULL_TEXT : TEXT_MUTED
+
+// Trade rows. Risk % uses the ORIGINAL SL so it stays meaningful after BE.
+float  riskPct      = inTrade and not na(activeSLOrig) and activeEntry != 0 ? math.abs(activeEntry - activeSLOrig) / activeEntry * 100 : 0.0
+color  rrColor      = effTP1 >= 1.5 ? BULL_TEXT : effTP1 >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+color  riskPctColor = riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+string dashSL      = inTrade ? (beActive ? "BE @ " : "") + str.tostring(activeSL, format.mintick) : "—"
+string dashTP1     = inTrade ? str.tostring(activeTP1, format.mintick) : "—"
+string dashTP2     = inTrade ? str.tostring(activeTP2, format.mintick) : "—"
+string dashTP3     = inTrade ? str.tostring(activeTP3, format.mintick) : "—"
+string dashRR      = inTrade ? str.tostring(effTP1, "#.#") + "R" : "—"
+string dashRiskStr = inTrade ? str.tostring(riskPct, "#.##") + "%" : "—"
+
+// Confidence rows
+string dashConfStr   = useConfidenceInput ? str.tostring(displayConfidence, "#.0") + "% · " + displayGrade : "—"
+color  dashConfColor = displayConfidence >= 75.0 ? BULL_TEXT : displayConfidence >= 60.0 ? NEUTRAL_TEXT : displayConfidence >= 40.0 ? VOLAT_TEXT : BEAR_TEXT
+float  candidateBest = math.max(candidateLong, candidateShort)
+bool   suggBlocked   = useConfidenceInput and candidateBest < minConfidenceInput
+float  suggestedRisk = riskPctFromScore(candidateBest)
+string dashSuggRisk  = suggBlocked ? "blocked" : str.tostring(suggestedRisk, "#.##") + "%"
+color  dashSuggColor = suggBlocked ? BEAR_TEXT : suggestedRisk >= baseRiskPctInput ? BULL_TEXT : NEUTRAL_TEXT
+
+// Backtest rows
+bool   btHas         = btTrades > 0
+float  btWinRate     = btHas ? btWins * 100.0 / btTrades : 0.0
+float  btAvgR        = btHas ? btTotalR / btTrades : 0.0
+float  btAvgWin      = btWins   > 0 ? btGrossWin  / btWins   : 0.0
+float  btAvgLoss     = btLosses > 0 ? btGrossLoss / btLosses : 0.0
+bool   btPFInfinite  = btGrossLoss == 0 and btGrossWin > 0
+float  btProfitFactor = btGrossLoss > 0 ? btGrossWin / btGrossLoss : 0.0
+
+string dashBtExit     = btExitModelInput == BT_EXIT_HOLD ? "Hold TP3" : "Scale ⅓"
+string dashBtTrades   = str.tostring(btTrades) + " (" + str.tostring(btWins) + "W/" + str.tostring(btLosses) + "L/" + str.tostring(btBreakeven) + "BE)"
+string dashBtWinRate  = btHas ? str.tostring(btWinRate, "#.0") + "%" : "—"
+color  dashBtWrColor  = not btHas ? TEXT_MUTED : btWinRate >= 55.0 ? BULL_TEXT : btWinRate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+string dashBtAvgR     = btHas ? str.tostring(btAvgR, "#.##") + "R" : "—"
+color  dashBtAvgRColor = not btHas ? TEXT_MUTED : btAvgR > 0.5 ? BULL_TEXT : btAvgR > 0 ? NEUTRAL_TEXT : BEAR_TEXT
+string dashBtAvgWL    = btHas ? "+" + str.tostring(btAvgWin, "#.##") + "R / −" + str.tostring(btAvgLoss, "#.##") + "R" : "—"
+string dashBtPF       = btPFInfinite ? "∞" : btGrossLoss > 0 ? str.tostring(btProfitFactor, "#.##") : "—"
+color  dashBtPFColor  = btPFInfinite ? BULL_TEXT : btGrossLoss == 0 ? TEXT_MUTED : btProfitFactor >= 1.5 ? BULL_TEXT : btProfitFactor >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+string dashBtTotal    = btHas ? str.tostring(btTotalR, "#.##") + "R / " + str.tostring(btTotalPct, "+#.##;-#.##") + "%" : "—"
+color  dashBtTotalColor = not btHas ? TEXT_MUTED : btTotalR > 0 ? BULL_TEXT : btTotalR < 0 ? BEAR_TEXT : NEUTRAL_TEXT
+string dashBtMaxDD    = not btHas ? "—" : btMaxDDR == 0 ? "0R / 0%" : "−" + str.tostring(btMaxDDR, "#.##") + "R / −" + str.tostring(btMaxDDPct, "#.##") + "%"
+color  dashBtMaxDDColor = not btHas ? TEXT_MUTED : btMaxDDPct >= 15.0 ? BEAR_TEXT : btMaxDDPct >= 7.0 ? NEUTRAL_TEXT : BULL_TEXT
+string dashBtStreak   = btHas ? str.tostring(btLossStreak) + " (max " + str.tostring(btMaxLossStreak) + ")" : "—"
+color  dashBtStreakColor = not btHas ? TEXT_MUTED : btMaxLossStreak >= 6 ? BEAR_TEXT : btMaxLossStreak >= 4 ? NEUTRAL_TEXT : BULL_TEXT
+
+// Per-grade row: "5W/8 (62.5%) +9.0R"
+formatGradeRow(int wins, int trades, float totalR) =>
+    trades == 0 ? "—" :
+     str.tostring(wins) + "W/" + str.tostring(trades) + " (" + str.tostring(wins * 100.0 / trades, "#.0") + "%) " + str.tostring(totalR, "+#.0;-#.0") + "R"
+
+gradeRowColor(int trades, int wins) =>
+    float wr = trades == 0 ? 0.0 : wins * 100.0 / trades
+    trades == 0 ? TEXT_MUTED : wr >= 55.0 ? BULL_TEXT : wr >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+
+// Fixed table size (Pine tables can't grow)
+int dashRowsTotal = 8   // header + regime + adx + vol + signal + dir + trail + tf
+dashRowsTotal += useConfidenceInput ? 2 : 0                      // confidence + sugg risk
+dashRowsTotal += enableRMInput ? 6 : 0                           // sl + tp1..3 + rr + risk
+dashRowsTotal += useBacktestInput ? 10 : 0                       // header + exit + trades + winrate + expectancy + avgWL + PF + total + maxDD + streak
+dashRowsTotal += useBacktestInput and showPerGradeInput and useConfidenceInput ? 6 : 0   // subheader + 5 grades
+dashRowsTotal += 1                                               // version
+
+if showDashInput and barstate.islast
+    var table dashTable = table.new(dashPos, 2, dashRowsTotal, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+    int row = 0
+
+    // Two-cell row helper is not possible in Pine (no closures over `row`), so rows are explicit.
+    table.cell(dashTable, 0, row, "AFT — WillyAlgoTrader", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = dashSizeHead, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, row, 1, row)
+    row += 1
+
+    table.cell(dashTable, 0, row, "Regime",    text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, regimeStr, text_color = regimeColor, text_size = dashSizeBody)
+    row += 1
+    table.cell(dashTable, 0, row, "ADX",       text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, adxStr,    text_color = adxColor,    text_size = dashSizeBody)
+    row += 1
+    table.cell(dashTable, 0, row, "Vol Ratio", text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, volStr,    text_color = volColor,    text_size = dashSizeBody)
+    row += 1
+
+    string sigModeDisplay = isCrossMode ? signalModeInput + " · " + crossStrictnessInput : signalModeInput
+    table.cell(dashTable, 0, row, "Signal", text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, sigModeDisplay, text_color = TEXT_COLOR, text_size = dashSizeBody)
+    row += 1
+
+    if useConfidenceInput
+        table.cell(dashTable, 0, row, "Confidence", text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashConfStr,  text_color = dashConfColor, text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Sugg. Risk", text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashSuggRisk, text_color = dashSuggColor, text_size = dashSizeBody)
+        row += 1
+
+    table.cell(dashTable, 0, row, "Direction",  text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, trendStr,         text_color = trendColor, text_size = dashSizeBody)
+    row += 1
+    table.cell(dashTable, 0, row, "Trail Stop", text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, trailStr,         text_color = trendColor, text_size = dashSizeBody)
+    row += 1
+    table.cell(dashTable, 0, row, "TF",         text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, timeframe.period, text_color = TEXT_COLOR, text_size = dashSizeBody)
+    row += 1
+
+    if enableRMInput
+        table.cell(dashTable, 0, row, "SL",   text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashSL,      text_color = beActive and inTrade ? BE_COLOR : SL_COLOR, text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "TP1",  text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashTP1,     text_color = TP1_COLOR,    text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "TP2",  text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashTP2,     text_color = TP2_COLOR,    text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "TP3",  text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashTP3,     text_color = TP3_COLOR,    text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "R:R",  text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashRR,      text_color = rrColor,      text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Risk", text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashRiskStr, text_color = riskPctColor, text_size = dashSizeBody)
+        row += 1
+
+    if useBacktestInput
+        table.cell(dashTable, 0, row, "📈 Backtest", text_color = HEADER_TEXT, bgcolor = BT_HEADER_BG, text_size = dashSizeHead, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, row, 1, row)
+        row += 1
+
+        table.cell(dashTable, 0, row, "Exit Model",    text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtExit,    text_color = TEXT_COLOR,        text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Trades",        text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtTrades,  text_color = TEXT_COLOR,        text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Win Rate",      text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtWinRate, text_color = dashBtWrColor,     text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Expectancy",    text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtAvgR,    text_color = dashBtAvgRColor,   text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Avg W / L",     text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtAvgWL,   text_color = btHas ? TEXT_COLOR : TEXT_MUTED, text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Profit Factor", text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtPF,      text_color = dashBtPFColor,     text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Total R / %",   text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtTotal,   text_color = dashBtTotalColor,  text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Max DD",        text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtMaxDD,   text_color = dashBtMaxDDColor,  text_size = dashSizeBody)
+        row += 1
+        table.cell(dashTable, 0, row, "Loss Streak",   text_color = TEXT_MUTED, text_size = dashSizeBody)
+        table.cell(dashTable, 1, row, dashBtStreak,  text_color = dashBtStreakColor, text_size = dashSizeBody)
+        row += 1
+
+        if showPerGradeInput and useConfidenceInput
+            table.cell(dashTable, 0, row, "By Grade", text_color = TEXT_MUTED, bgcolor = color.new(BT_HEADER_BG, 75), text_size = dashSizeBody, text_halign = text.align_center)
+            table.merge_cells(dashTable, 0, row, 1, row)
+            row += 1
+            table.cell(dashTable, 0, row, "A+", text_color = BULL_TEXT,    text_size = dashSizeBody)
+            table.cell(dashTable, 1, row, formatGradeRow(btWinsAplus, btTradesAplus, btTotalRAplus), text_color = gradeRowColor(btTradesAplus, btWinsAplus), text_size = dashSizeBody)
+            row += 1
+            table.cell(dashTable, 0, row, "A",  text_color = BULL_TEXT,    text_size = dashSizeBody)
+            table.cell(dashTable, 1, row, formatGradeRow(btWinsA,     btTradesA,     btTotalRA),     text_color = gradeRowColor(btTradesA,     btWinsA),     text_size = dashSizeBody)
+            row += 1
+            table.cell(dashTable, 0, row, "B",  text_color = NEUTRAL_TEXT, text_size = dashSizeBody)
+            table.cell(dashTable, 1, row, formatGradeRow(btWinsB,     btTradesB,     btTotalRB),     text_color = gradeRowColor(btTradesB,     btWinsB),     text_size = dashSizeBody)
+            row += 1
+            table.cell(dashTable, 0, row, "C",  text_color = VOLAT_TEXT,   text_size = dashSizeBody)
+            table.cell(dashTable, 1, row, formatGradeRow(btWinsC,     btTradesC,     btTotalRC),     text_color = gradeRowColor(btTradesC,     btWinsC),     text_size = dashSizeBody)
+            row += 1
+            table.cell(dashTable, 0, row, "D",  text_color = BEAR_TEXT,    text_size = dashSizeBody)
+            table.cell(dashTable, 1, row, formatGradeRow(btWinsD,     btTradesD,     btTotalRD),     text_color = gradeRowColor(btTradesD,     btWinsD),     text_size = dashSizeBody)
+            row += 1
+
+    table.cell(dashTable, 0, row, "Version", text_color = TEXT_MUTED, text_size = dashSizeBody)
+    table.cell(dashTable, 1, row, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashSizeBody)
+
+// ══════════════════════════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var table wmTable = table.new(position.bottom_center, 1, 1, bgcolor = hiddenColor, frame_width = 0, border_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.small, text_halign = text.align_center, bgcolor = hiddenColor)
+
+// ══════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════
+// Entry alerts read the live active* vars (set by the open block).
+// Exit alerts read the snap* values captured before the reset.
+string tickerTf = '"ticker":"' + syminfo.tickerid + '","tf":"' + timeframe.period + '"'
+
+if newSignal
+    string action   = confirmedBuy ? "buy" : "sell"
+    string priceStr = str.tostring(close, format.mintick)
+    string slStr    = str.tostring(nz(activeSL),  format.mintick)
+    string tp1Str   = str.tostring(nz(activeTP1), format.mintick)
+    string tp2Str   = str.tostring(nz(activeTP2), format.mintick)
+    string tp3Str   = str.tostring(nz(activeTP3), format.mintick)
+    string rrStr    = str.tostring(effTP1, "#.#")
+    string confStr  = str.tostring(signalConfidence, "#.0")
+    string riskStr  = str.tostring(signalRiskPct, "#.##")
+
+    string jsonEntry = '{"action":"' + action + '",' + tickerTf + ',"price":' + priceStr + ',"sl":' + slStr +
+                       ',"tp1":' + tp1Str + ',"tp2":' + tp2Str + ',"tp3":' + tp3Str + ',"rr":' + rrStr +
+                       ',"regime":"' + regimeStr + '","mode":"' + signalModeInput + '","confidence":' + confStr +
+                       ',"grade":"' + signalGrade + '","risk_pct":' + riskStr + '}'
+    string textEntry = (confirmedBuy ? "🟢 BUY " : "🔴 SELL ") + signalGrade + " | " + syminfo.tickerid + " | TF: " + timeframe.period +
+                       " | Conf: " + confStr + "% | Risk: " + riskStr + "% | Price: " + priceStr + " | SL: " + slStr +
+                       " | TP1: " + tp1Str + " | TP2: " + tp2Str + " | TP3: " + tp3Str + " | R:R: " + rrStr + " | Regime: " + regimeStr
+    alert(webhookInput ? jsonEntry : textEntry, alert.freq_once_per_bar_close)
+
+// Exit / update alerts
+string snapEntryStr = str.tostring(nz(snapEntry, 0.0), format.mintick)
+string snapDirStr   = snapDir == DIR_LONG ? "long" : snapDir == DIR_SHORT ? "short" : "flat"
+string snapRStr     = na(closedR) ? "null" : str.tostring(closedR, "#.##")
+
+exitJson(string reason, float level, string realizedR) =>
+    '{"action":"exit","reason":"' + reason + '",' + tickerTf + ',"dir":"' + snapDirStr + '","price":' + str.tostring(close, format.mintick) +
+     ',"entry":' + snapEntryStr + ',"level":' + str.tostring(nz(level, 0.0), format.mintick) + ',"r":' + realizedR +
+     ',"grade":"' + snapGrade + '","risk_pct":' + str.tostring(snapRiskPct, "#.##") + '}'
+
+exitText(string head, string tag, float level, string realizedR) =>
+    head + " | " + syminfo.tickerid + " | " + snapDirStr + " | Entry: " + snapEntryStr + " | " + tag + ": " + str.tostring(nz(level, 0.0), format.mintick) +
+     (realizedR == "null" ? "" : " | R: " + realizedR)
+
+if barstate.isconfirmed
+    if slHit and alertSlHitInput
+        string slReason = slHitAtBE ? "be_stop" : "sl"
+        string slHead   = slHitAtBE ? "🛡️ BE STOP" : "🛑 SL HIT"
+        string slMsg    = webhookInput ? exitJson(slReason, snapSL, snapRStr) : exitText(slHead, "SL", snapSL, snapRStr)
+        alert(slMsg, alert.freq_once_per_bar_close)
+    if alertTpHitInput
+        if tp1FirstTouch
+            alert(webhookInput ? exitJson("tp1", snapTP1, "null") : exitText("🎯 TP1 HIT", "TP1", snapTP1, "null"), alert.freq_once_per_bar_close)
+        if beJustActivated
+            string beJson = '{"action":"update","reason":"be_moved",' + tickerTf + ',"dir":"' + snapDirStr + '","entry":' + snapEntryStr + ',"new_sl":' + snapEntryStr + '}'
+            string beText = "🛡️ BREAK-EVEN | " + syminfo.tickerid + " | " + snapDirStr + " | SL moved to " + snapEntryStr
+            alert(webhookInput ? beJson : beText, alert.freq_once_per_bar_close)
+        if tp2FirstTouch
+            alert(webhookInput ? exitJson("tp2", snapTP2, "null") : exitText("🎯 TP2 HIT", "TP2", snapTP2, "null"), alert.freq_once_per_bar_close)
+        if tp3Close
+            alert(webhookInput ? exitJson("tp3", snapTP3, snapRStr) : exitText("🏆 TP3 HIT", "TP3", snapTP3, snapRStr), alert.freq_once_per_bar_close)

@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "vnedge-server", "runtimeExecutable": "npm", "runtimeArgs": ["start"], "port": 8787 },
+    { "name": "vnedge-dashboard-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev:dashboard"], "port": 5173 }
+  ]
+}

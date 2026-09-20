@@ -1,0 +1,525 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE MOMENTUM CLASSIFIER [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.1.0
+
+
+indicator(
+    title            = "Adaptive Momentum Classifier [WillyAlgoTrader]",
+    shorttitle       = "AMC",
+    overlay          = true,
+    max_labels_count = 500,
+    max_lines_count  = 500,
+    max_bars_back    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_FEAT   = "📊 Feature Engine"
+GRP_FILTER = "🔍 Filters"
+GRP_VISUAL = "🎨 Visual"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.1.0"
+
+// ══════════════════════════════════════
+// INPUTS — Main Settings
+// ══════════════════════════════════════
+sensitivityInput = input.string("Default", "Sensitivity Preset",
+    options  = ["Conservative", "Default", "Aggressive", "Scalping"],
+    group    = GRP_MAIN,
+    tooltip  = "Quick presets:\n• Conservative: fewer signals, higher win rate\n• Default: balanced for 15M–4H\n• Aggressive: more signals, faster entries\n• Scalping: optimized for 1–5M charts")
+
+sourceInput = input.source(close, "Price Source", group = GRP_MAIN,
+    tooltip = "Price source for all calculations. Close is recommended")
+
+lookbackInput = input.int(89, "Scoring Lookback", minval = 30, maxval = 500, step = 10,
+    group   = GRP_MAIN,
+    tooltip = "Historical window for percentile ranking.\nHigher = more stable scoring, slower adaptation\nRecommended: 80–200")
+
+thresholdInput = input.float(0.618, "Signal Threshold", minval = 0.5, maxval = 0.95, step = 0.05,
+    group   = GRP_MAIN,
+    tooltip = "Minimum consensus score to trigger a signal.\nHigher = fewer but stronger signals\nRecommended: 0.65–0.85")
+
+// ══════════════════════════════════════
+// INPUTS — Feature Engine
+// ══════════════════════════════════════
+rsiLenInput = input.int(13, "RSI Length", minval = 2, maxval = 50, group = GRP_FEAT,
+    tooltip = "RSI period for momentum axis. Default 14 is standard")
+rocLenInput = input.int(9, "ROC Length", minval = 1, maxval = 50, group = GRP_FEAT,
+    tooltip = "Rate of Change period. Blended with RSI for momentum axis")
+
+macdFastInput = input.int(12, "MACD Fast", minval = 2, maxval = 50, group = GRP_FEAT,
+    tooltip = "Fast EMA period for trend axis MACD calculation")
+macdSlowInput = input.int(26, "MACD Slow", minval = 5, maxval = 100, group = GRP_FEAT,
+    tooltip = "Slow EMA period for trend axis MACD calculation")
+macdSigInput  = input.int(9, "MACD Signal", minval = 2, maxval = 30, group = GRP_FEAT,
+    tooltip = "Signal line smoothing for MACD histogram")
+
+bbLenInput = input.int(21, "Bollinger Length", minval = 5, maxval = 100, group = GRP_FEAT,
+    tooltip = "Bollinger Bands lookback for volatility-position axis")
+
+mfiLenInput = input.int(13, "MFI Length", minval = 2, maxval = 50, group = GRP_FEAT,
+    tooltip = "Money Flow Index period for flow axis.\nAuto-disabled if volume unavailable (forex)")
+obvSmoothInput = input.int(21, "OBV Smooth", minval = 5, maxval = 100, group = GRP_FEAT,
+    tooltip = "OBV slope smoothing period for flow axis")
+
+// ══════════════════════════════════════
+// INPUTS — Filters
+// ══════════════════════════════════════
+useVolRegimeInput = input.bool(true, "Volatility Regime Filter", group = GRP_FILTER,
+    tooltip = "Suppress signals in extremely low or high volatility.\nReduces false signals in choppy/crash markets")
+
+useTrendFilterInput = input.bool(true, "Trend Alignment Filter", group = GRP_FILTER,
+    tooltip = "Only allow longs above trend EMA, shorts below.\nGreatly reduces counter-trend noise")
+
+trendEmaLenInput = input.int(34, "Trend EMA Length", minval = 10, maxval = 200, group = GRP_FILTER,
+    tooltip = "EMA period for trend alignment filter.\nHigher = stronger trend bias, fewer signals")
+
+useVolFilterInput = input.bool(true, "Volume Confirmation", group = GRP_FILTER,
+    tooltip = "Require above-average volume for signal confirmation.\nAuto-disabled on instruments without volume")
+
+minAccelInput = input.float(0.02, "Min Score Acceleration", minval = 0.0, maxval = 0.2, step = 0.01,
+    group   = GRP_FILTER,
+    tooltip = "Minimum rate of score change to confirm a signal.\nFilters out slow drift crossovers (noise).\n0 = disabled\nRecommended: 0.01–0.05")
+
+htfInput = input.timeframe("", "Higher TF Bias", group = GRP_FILTER,
+    tooltip = "Optional higher timeframe trend bias.\nLeave empty to disable.\nExample: use 1H when trading on 15M")
+
+// ══════════════════════════════════════
+// INPUTS — Visual
+// ══════════════════════════════════════
+themeInput = input.string("Auto", "Theme",
+    options = ["Auto", "Dark", "Light"],
+    group   = GRP_VISUAL,
+    tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+
+showSignalsInput   = input.bool(true, "Show Buy/Sell Signals", group = GRP_VISUAL,
+    tooltip = "Display arrow markers on chart for confirmed signals")
+showTrendBandInput = input.bool(true, "Show Trend Band", group = GRP_VISUAL,
+    tooltip = "Display dynamic EMA band colored by trend direction")
+showBgInput        = input.bool(false, "Show Background Tint", group = GRP_VISUAL,
+    tooltip = "Subtle background coloring based on momentum bias")
+showBarColorInput  = input.bool(false, "Dynamic Bar Coloring", group = GRP_VISUAL,
+    tooltip = "Color candles based on composite momentum score")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL,
+    tooltip = "Display 'WillyAlgoTrader - by Willy' watermark on chart")
+
+// ══════════════════════════════════════
+// INPUTS — Dashboard
+// ══════════════════════════════════════
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH,
+    tooltip = "Display info panel with trend, signal, score, and timeframe")
+dashPosStr    = input.string("Top Right", "Dashboard Position",
+    options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"],
+    group   = GRP_DASH,
+    tooltip = "Position of the dashboard on chart")
+
+// ══════════════════════════════════════
+// INPUTS — Alerts
+// ══════════════════════════════════════
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+    tooltip = "Send alerts as JSON for webhook/bot integrations.\nFormat: {\"action\":\"buy\",\"ticker\":\"...\",\"price\":...}")
+
+// ══════════════════════════════════════
+// INPUTS — Colors
+// ══════════════════════════════════════
+bullColorInput    = input.color(#00E676, "Bull", inline = "sig_colors", group = GRP_COLORS)
+bearColorInput    = input.color(#FF5252, "Bear", inline = "sig_colors", group = GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Neutral", inline = "sig_colors", group = GRP_COLORS)
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    =>         color.r(chart.bg_color) < 128
+
+TEXT_COLOR   = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED   = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG    = color.new(#2962FF, 0)
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+BULL_BG = color.new(bullColorInput, 88)
+BEAR_BG = color.new(bearColorInput, 88)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+// Safe division — na and zero protected
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// Percentile rank over lookback — returns 0.0 to 1.0
+// Counts what fraction of recent values are below current value
+// Much better than sigmoid(z-score): no dead zone, uniform distribution
+pctRank(float src, int len) =>
+    float safeSrc = nz(src, 0.0)
+    int count = 0
+    int total = 0
+    for i = 1 to len
+        if not na(src[i])
+            total += 1
+            if safeSrc > src[i]
+                count += 1
+    total > 0 ? count * 1.0 / total : 0.5
+
+// ══════════════════════════════════════
+// PRESET RESOLUTION
+// ══════════════════════════════════════
+presetThreshold = switch sensitivityInput
+    "Conservative" => 0.80
+    "Aggressive"   => 0.60
+    "Scalping"     => 0.55
+    => thresholdInput
+
+presetLookback = switch sensitivityInput
+    "Conservative" => 150
+    "Aggressive"   => 60
+    "Scalping"     => 40
+    => lookbackInput
+
+int   effectiveLookback  = sensitivityInput == "Default" ? lookbackInput : presetLookback
+float effectiveThreshold = sensitivityInput == "Default" ? thresholdInput : presetThreshold
+
+// ══════════════════════════════════════
+// WARMUP & VOLUME CHECK
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(effectiveLookback, macdSlowInput, trendEmaLenInput, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+bool hasVolume  = nz(volume, 0) > 0
+
+// ══════════════════════════════════════
+// CORE DATA (computed once, reused)
+// ══════════════════════════════════════
+float atrValue = nz(ta.atr(14), 0.0)
+float trendEma = nz(ta.ema(sourceInput, trendEmaLenInput), sourceInput)
+
+// ══════════════════════════════════════
+// AXIS 1: MOMENTUM (RSI + ROC blend)
+// Measures: speed and magnitude of price movement
+// Orthogonal to: trend direction, volatility, volume flow
+// ══════════════════════════════════════
+float rawRsi = nz(ta.rsi(sourceInput, rsiLenInput), 50.0)
+float rawRoc = nz(ta.roc(sourceInput, rocLenInput), 0.0)
+
+// Percentile rank each, then blend 60/40 (RSI more stable, ROC faster)
+float pctRsi = pctRank(rawRsi - 50.0, effectiveLookback)
+float pctRoc = pctRank(rawRoc, effectiveLookback)
+float axisMomentum = pctRsi * 0.6 + pctRoc * 0.4
+
+// ══════════════════════════════════════
+// AXIS 2: TREND (MACD histogram + EMA slope)
+// Measures: directional conviction and trend strength
+// Orthogonal to: momentum oscillation, volatility, flow
+// ══════════════════════════════════════
+float macdLine   = nz(ta.ema(sourceInput, macdFastInput) - ta.ema(sourceInput, macdSlowInput), 0.0)
+float macdSignal = nz(ta.ema(macdLine, macdSigInput), 0.0)
+float macdHist   = macdLine - macdSignal
+
+// EMA slope (normalized by ATR to be scale-independent)
+float emaSlope = safeDiv(trendEma - nz(trendEma[5], trendEma), math.max(atrValue, 0.00001) * 5.0, 0.0)
+
+float pctMacd  = pctRank(macdHist, effectiveLookback)
+float pctSlope = pctRank(emaSlope, effectiveLookback)
+float axisTrend = pctMacd * 0.6 + pctSlope * 0.4
+
+// ══════════════════════════════════════
+// AXIS 3: VOLATILITY POSITION (BB%B + ATR regime)
+// Measures: where price sits within its volatility envelope
+// Orthogonal to: momentum direction, trend, volume
+// ══════════════════════════════════════
+float bbBasis = nz(ta.sma(sourceInput, bbLenInput), sourceInput)
+float bbDev   = nz(ta.stdev(sourceInput, bbLenInput), 0.0)
+float bbUpper = bbBasis + 2.0 * bbDev
+float bbLower = bbBasis - 2.0 * bbDev
+float bbRange = bbUpper - bbLower
+// BB%B: 0 = at lower band, 1 = at upper band
+float bbPctB  = bbRange > 0 ? (sourceInput - bbLower) / bbRange : 0.5
+
+// ATR expansion/contraction relative to its own average
+float atrAvg   = nz(ta.sma(atrValue, effectiveLookback), atrValue)
+float atrRatio = safeDiv(atrValue, atrAvg, 1.0)
+
+// Combine: BB%B shows position, ATR ratio shows regime
+// In expanding vol + price at upper band = strong bullish
+float volPositionRaw = (bbPctB - 0.5) * math.min(atrRatio, 2.5)
+float pctVolPos = pctRank(volPositionRaw, effectiveLookback)
+float axisVolatility = pctVolPos
+
+// ══════════════════════════════════════
+// AXIS 4: FLOW (MFI + OBV slope)
+// Measures: money flow direction and accumulation/distribution
+// Orthogonal to: price-only momentum, trend, volatility
+// Only active when volume data is available
+// ══════════════════════════════════════
+float rawMfi = hasVolume ? nz(ta.mfi(hlc3, mfiLenInput), 50.0) : 50.0
+
+float obvValue   = hasVolume ? nz(ta.obv, 0.0) : 0.0
+float obvEma     = hasVolume ? nz(ta.ema(obvValue, obvSmoothInput), obvValue) : 0.0
+float obvSlope   = hasVolume ? safeDiv(obvEma - nz(obvEma[5], obvEma), math.max(math.abs(nz(obvEma, 1.0)), 1.0), 0.0) : 0.0
+
+float pctMfi     = hasVolume ? pctRank(rawMfi - 50.0, effectiveLookback) : 0.5
+float pctObvSlope = hasVolume ? pctRank(obvSlope, effectiveLookback) : 0.5
+float axisFlow   = hasVolume ? pctMfi * 0.5 + pctObvSlope * 0.5 : 0.5
+
+// ══════════════════════════════════════
+// COMPOSITE SCORING ENGINE
+// ══════════════════════════════════════
+
+// Weights: each axis represents a genuinely different market dimension
+float wMomentum   = 1.0
+float wTrend      = 1.2
+float wVolatility = 0.8
+float wFlow       = hasVolume ? 1.0 : 0.0
+
+float totalWeight = wMomentum + wTrend + wVolatility + wFlow
+
+// Composite score: 0 = strongly bearish, 1 = strongly bullish, 0.5 = neutral
+float compositeScore = safeDiv(wMomentum * axisMomentum + wTrend * axisTrend + wVolatility * axisVolatility + wFlow * axisFlow, totalWeight, 0.5)
+
+// Score acceleration — how fast the score is changing (positive = accelerating bullish)
+float scoreAccel = compositeScore - nz(compositeScore[2], compositeScore)
+
+// ══════════════════════════════════════
+// FEATURE AGREEMENT (4 axes, wider dead zone)
+// ══════════════════════════════════════
+int bullCount = 0
+if axisMomentum > 0.6
+    bullCount += 1
+if axisTrend > 0.6
+    bullCount += 1
+if axisVolatility > 0.6
+    bullCount += 1
+if axisFlow > 0.6 and hasVolume
+    bullCount += 1
+
+int bearCount = 0
+if axisMomentum < 0.4
+    bearCount += 1
+if axisTrend < 0.4
+    bearCount += 1
+if axisVolatility < 0.4
+    bearCount += 1
+if axisFlow < 0.4 and hasVolume
+    bearCount += 1
+
+int activeAxes = hasVolume ? 4 : 3
+float agreementRatio = safeDiv(math.max(bullCount, bearCount) * 1.0, activeAxes * 1.0, 0.0)
+
+// ══════════════════════════════════════
+// FILTERS
+// ══════════════════════════════════════
+
+// Trend alignment filter
+bool emaBullish = sourceInput > trendEma
+bool emaBearish = sourceInput < trendEma
+bool trendAllowLong  = useTrendFilterInput ? emaBullish : true
+bool trendAllowShort = useTrendFilterInput ? emaBearish : true
+
+// Volatility regime filter — suppress in dead/extreme zones
+bool volRegimeOk = useVolRegimeInput ? (atrRatio > 0.4 and atrRatio < 3.0) : true
+
+// Volume confirmation filter
+float volAvg     = hasVolume ? nz(ta.sma(volume, 20), 0.0) : 0.0
+bool  volConfirm = useVolFilterInput and hasVolume ? volume > volAvg * 0.8 : true
+
+// Score acceleration filter — only fire on decisive moves, not slow drift
+bool accelOk = math.abs(scoreAccel) >= minAccelInput
+
+// Higher timeframe bias (non-repainting: [1] + lookahead_on)
+float htfEma = htfInput != "" ? nz(request.security(syminfo.tickerid, htfInput, ta.ema(close, 21)[1], barmerge.gaps_off, barmerge.lookahead_on), sourceInput) : na
+bool  htfBull = na(htfEma) ? true : sourceInput > htfEma
+bool  htfBear = na(htfEma) ? true : sourceInput < htfEma
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC (non-repainting)
+// ══════════════════════════════════════
+
+// Raw conditions — score crosses threshold with minimum agreement
+bool rawBullSignal = compositeScore > effectiveThreshold and nz(compositeScore[1], 0.5) <= effectiveThreshold and agreementRatio >= 0.5
+bool rawBearSignal = compositeScore < (1.0 - effectiveThreshold) and nz(compositeScore[1], 0.5) >= (1.0 - effectiveThreshold) and agreementRatio >= 0.5
+
+// Apply all filters
+bool filteredBull = rawBullSignal and trendAllowLong  and volRegimeOk and volConfirm and accelOk and htfBull
+bool filteredBear = rawBearSignal and trendAllowShort and volRegimeOk and volConfirm and accelOk and htfBear
+
+// Direction lock — prevent consecutive same-direction signals
+var int lastSignalDir = 0
+
+bool buyCondition  = filteredBull and lastSignalDir <= 0
+bool sellCondition = filteredBear and lastSignalDir >= 0
+
+// Confirmed signals — bar close only + warmup
+bool confirmedBuy  = buyCondition  and barstate.isconfirmed and isWarmedUp
+bool confirmedSell = sellCondition and barstate.isconfirmed and isWarmedUp
+
+if confirmedBuy
+    lastSignalDir := 1
+if confirmedSell
+    lastSignalDir := -1
+
+// ══════════════════════════════════════
+// PERSISTENT SIGNAL MEMORY (for dashboard)
+// ══════════════════════════════════════
+var string lastSignalType   = "—"
+var int    lastSignalBar    = 0
+var float  lastSignalScore  = 0.0
+
+if confirmedBuy
+    lastSignalType  := "BUY"
+    lastSignalBar   := bar_index
+    lastSignalScore := compositeScore
+if confirmedSell
+    lastSignalType  := "SELL"
+    lastSignalBar   := bar_index
+    lastSignalScore := 1.0 - compositeScore
+
+int barsSinceSignal = bar_index - lastSignalBar
+
+// Signal strength classification
+string strengthStr = lastSignalScore >= 0.85 ? "Strong" : lastSignalScore >= 0.75 ? "Medium" : "Weak"
+
+// ══════════════════════════════════════
+// TREND STATE
+// ══════════════════════════════════════
+string trendState = compositeScore > 0.55 ? "Bullish" : compositeScore < 0.45 ? "Bearish" : "Neutral"
+color  trendColor = compositeScore > 0.55 ? bullColorInput : compositeScore < 0.45 ? bearColorInput : neutralColorInput
+
+// ══════════════════════════════════════
+// PLOTS — Trend Band
+// ══════════════════════════════════════
+float emaUpper = trendEma + atrValue * 0.5
+float emaLower = trendEma - atrValue * 0.5
+
+color bandColor = compositeScore > 0.55 ? color.new(bullColorInput, 75) : compositeScore < 0.45 ? color.new(bearColorInput, 75) : color.new(neutralColorInput, 80)
+
+p1 = plot(showTrendBandInput ? emaUpper : na, "Band Upper", color = bandColor, linewidth = 1)
+p2 = plot(showTrendBandInput ? emaLower : na, "Band Lower", color = bandColor, linewidth = 1)
+fill(p1, p2, color = bandColor, title = "Trend Band Fill")
+
+// ══════════════════════════════════════
+// PLOTS — Background Tint
+// ══════════════════════════════════════
+bgcolor(showBgInput and compositeScore > 0.6 ? BULL_BG : showBgInput and compositeScore < 0.4 ? BEAR_BG : na, title = "Momentum Background")
+
+// ══════════════════════════════════════
+// PLOTS — Bar Coloring
+// ══════════════════════════════════════
+color barCol = compositeScore > 0.6 ? color.from_gradient(compositeScore, 0.6, 1.0, color.new(bullColorInput, 40), bullColorInput) : compositeScore < 0.4 ? color.from_gradient(compositeScore, 0.0, 0.4, bearColorInput, color.new(bearColorInput, 40)) : color.new(neutralColorInput, 60)
+barcolor(showBarColorInput ? barCol : na, title = "Momentum Bar Color")
+
+// ══════════════════════════════════════
+// SIGNALS VISUAL
+// ══════════════════════════════════════
+plotshape(showSignalsInput and confirmedBuy ? low : na, "Buy Signal",
+    style     = shape.labelup,
+    location  = location.belowbar,
+    color     = bullColorInput,
+    textcolor = color.white,
+    text      = "▲",
+    size      = size.small)
+
+plotshape(showSignalsInput and confirmedSell ? high : na, "Sell Signal",
+    style     = shape.labeldown,
+    location  = location.abovebar,
+    color     = bearColorInput,
+    textcolor = color.white,
+    text      = "▼",
+    size      = size.small)
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+string scoreStr  = na(compositeScore) ? "—" : str.tostring(compositeScore * 100, "#.0") + "%"
+string agreeStr  = str.tostring(math.max(bullCount, bearCount)) + "/" + str.tostring(activeAxes)
+string volStr    = na(atrRatio) ? "—" : atrRatio > 1.5 ? "High" : atrRatio < 0.6 ? "Low" : "Normal"
+color  volColor  = atrRatio > 1.5 ? bearColorInput : atrRatio < 0.6 ? neutralColorInput : bullColorInput
+
+string lastSigDisplay = lastSignalType + (lastSignalType != "—" ? " (" + str.tostring(barsSinceSignal) + " bars)" : "")
+color  lastSigColor   = lastSignalType == "BUY" ? bullColorInput : lastSignalType == "SELL" ? bearColorInput : TEXT_MUTED
+
+if showDashInput and barstate.islast
+    var dashTable = table.new(dashPos, 2, 9, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader AMC", text_color = color.white, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    table.cell(dashTable, 0, 1, "Trend",       text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, trendState,     text_color = trendColor, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 2, "Last Signal",  text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, lastSigDisplay, text_color = lastSigColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    table.cell(dashTable, 0, 3, "Strength",    text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, lastSignalType != "—" ? strengthStr : "—", text_color = lastSigColor, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 4, "Score",       text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, scoreStr,      text_color = trendColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    table.cell(dashTable, 0, 5, "Agreement",   text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, agreeStr,      text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 6, "Volatility",  text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, volStr,        text_color = volColor,   text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    table.cell(dashTable, 0, 7, "TF",          text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 7, timeframe.period, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 8, "Version",     text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 8, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(
+        position     = position.bottom_center,
+        columns      = 1,
+        rows         = 1,
+        bgcolor      = color.new(color.black, 100),
+        border_color = color.new(color.black, 100),
+        border_width = 0,
+        frame_color  = color.new(color.black, 100),
+        frame_width  = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader - by Willy",
+        text_color  = WM_COLOR,
+        text_size   = size.normal,
+        text_halign = text.align_center,
+        bgcolor     = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string tickerStr     = syminfo.tickerid
+string priceStr      = str.tostring(close, format.mintick)
+string tfStr         = timeframe.period
+string scoreAlertStr = str.tostring(math.round(compositeScore * 100, 1))
+
+string buyJsonMsg  = '{"action":"buy","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '","score":' + scoreAlertStr + '}'
+string buyTextMsg  = "🟢 BUY | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + scoreAlertStr + "%"
+string sellJsonMsg = '{"action":"sell","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '","score":' + scoreAlertStr + '}'
+string sellTextMsg = "🔴 SELL | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + scoreAlertStr + "%"
+
+if confirmedBuy
+    alert(webhookInput ? buyJsonMsg : buyTextMsg, alert.freq_once_per_bar_close)
+
+if confirmedSell
+    alert(webhookInput ? sellJsonMsg : sellTextMsg, alert.freq_once_per_bar_close)

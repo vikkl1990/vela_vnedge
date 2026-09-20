@@ -1,0 +1,1045 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// DAILY VOLUME PROFILE PRO [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 2.2.3
+
+indicator(
+    title              = "Daily Volume Profile Pro [WillyAlgoTrader]",
+    shorttitle         = "DailyVPro",
+    overlay            = true,
+    max_labels_count   = 500,
+    max_lines_count    = 500,
+    max_boxes_count    = 500,
+    max_bars_back      = 5000,
+    calc_bars_count    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN    = "⚙️ Main Settings"
+GRP_PROFILE = "📊 Volume Profile"
+GRP_LEVELS  = "📏 Levels & Lines"
+GRP_IB      = "🔲 Initial Balance"
+GRP_VISUAL  = "🎨 Visual Settings"
+GRP_DASH    = "📊 Dashboard"
+GRP_ALERT   = "🔔 Alerts"
+GRP_COLORS  = "🎨 Colors"
+GRP_ADV     = "🔧 Advanced"
+
+INDICATOR_VERSION = "v2.2.3"
+TRANSPARENT       = color.new(color.black, 100)
+VA_PERCENT        = 0.70
+MAX_DAYS          = 7
+MAX_BINS          = 50
+SINGLE_PRINT_THR  = 0.15
+HVN_THR           = 0.55
+LVN_THR           = 0.30
+MAX_VOL_NODES     = 3
+MAX_FUT_BARS      = 480  // TV hard limit: objects max 500 bars into the future
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main ────────────────────────────────────────────────
+daysBackInput = input.int(7, "Days to Show", minval = 1, maxval = 7, group = GRP_MAIN, tooltip = "Number of daily session profiles to display (1–7)")
+binCountInput = input.int(34, "Profile Bins", minval = 8, maxval = 50, step = 1, group = GRP_MAIN, tooltip = "Number of price bins per daily profile.\nRecommended: 20–30.\nThis exact count is always used.")
+
+// ── Profile ─────────────────────────────────────────────
+showProfileInput = input.bool(true, "Show Profile Boxes", group = GRP_PROFILE, tooltip = "Display volume distribution as horizontal boxes")
+showDeltaColorInput = input.bool(true, "Delta Coloring", group = GRP_PROFILE, tooltip = "Color each bin by net buy/sell pressure (close vs open proxy)")
+showSinglePrintsInput = input.bool(true, "Show Single Prints", group = GRP_PROFILE, tooltip = "Highlight low-volume bins (<15% of POC) as imbalance zones.\nThese are thin-volume areas where price moved too fast — likely to be revisited.")
+profileSideInput = input.string("Left", "Profile Side", options = ["Left", "Right"], group = GRP_PROFILE, tooltip = "Draw profile bars on left or right side of the session")
+
+// ── Levels & Lines ──────────────────────────────────────
+showPocInput = input.bool(true, "Show POC", group = GRP_LEVELS, tooltip = "Point of Control — highest volume price per day")
+pocWidthInput = input.int(2, "POC Width", minval = 1, maxval = 5, group = GRP_LEVELS, tooltip = "Line thickness for POC")
+pocExtDaysInput = input.int(3, "POC Extend Days", minval = 0, maxval = 7, group = GRP_LEVELS, tooltip = "Extend each day's POC line forward as dashed reference (0 = no extension)")
+showNakedPocInput = input.bool(true, "Show Naked POCs", group = GRP_LEVELS, tooltip = "Unvisited POCs from prior days. These are strong magnets — price tends to revisit them.\nA POC stays 'naked' until price trades through it AFTER its session has closed, then it is removed.")
+showHvnLvnInput = input.bool(true, "Show HVN/LVN (today)", group = GRP_LEVELS, tooltip = "High/Low Volume Nodes of today's developing profile.\nHVN — significant local volume peaks (act as support/resistance).\nLVN — local valleys (fast-transit zones, price tends to slip through).\nUp to 3 of each; the POC bin is excluded.")
+showVaInput = input.bool(true, "Show Value Area (VAH/VAL)", group = GRP_LEVELS, tooltip = "70% Value Area boundaries per day")
+showVaBgInput = input.bool(true, "Show VA Background", group = GRP_LEVELS, tooltip = "Fill the Value Area zone between VAH and VAL with a subtle background")
+showVwapInput = input.bool(false, "Show Session VWAP", group = GRP_LEVELS, tooltip = "Volume-weighted average price per session")
+showPrevPocInput = input.bool(true, "Show Previous Day POC", group = GRP_LEVELS, tooltip = "Extend yesterday's POC into today as yPOC reference")
+extendTodayInput = input.bool(true, "Extend Today's Levels", group = GRP_LEVELS, tooltip = "Extend today's POC/VAH/VAL lines to right edge of chart")
+
+// ── Initial Balance ─────────────────────────────────────
+showIbInput = input.bool(true, "Show Initial Balance", group = GRP_IB, tooltip = "Display the Initial Balance range — the high and low of the first N minutes of each session.\nPrice above IB High = bullish bias, below IB Low = bearish.")
+ibMinutesInput = input.int(60, "IB Period (minutes)", minval = 15, maxval = 120, step = 15, group = GRP_IB, tooltip = "Duration of the Initial Balance period.\n• 30 min: aggressive IB (futures)\n• 60 min: standard IB\n• 90–120 min: conservative IB")
+showIbBgInput = input.bool(true, "Show IB Background", group = GRP_IB, tooltip = "Fill the IB range with a subtle background")
+showIbExtInput = input.bool(true, "Extend IB Lines", group = GRP_IB, tooltip = "Extend IB High/Low lines to end of session")
+showIbTargetsInput = input.bool(true, "Show IB Extensions (×1.5 / ×2)", group = GRP_IB, tooltip = "Classic IB breakout targets for the current session:\nIB High/Low ± 0.5× and ± 1.0× of the IB range.\nCommonly used as intraday take-profit levels after an IB break.")
+
+// ── Visual ──────────────────────────────────────────────
+showSepInput = input.bool(true, "Show Day Separators", group = GRP_VISUAL, tooltip = "Vertical lines between sessions")
+showDayLabelInput = input.bool(true, "Show Day Labels", group = GRP_VISUAL, tooltip = "Mon/Tue/Wed... under each session")
+showDayTypeInput = input.bool(true, "Show Day Type Label", group = GRP_VISUAL, tooltip = "Show profile shape classification (Normal/Trend/Neutral/DD) above each session")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark")
+labelSizeInput = input.string("Small", "Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_VISUAL, tooltip = "Size of on-chart labels (day names, day type, IB H/L, nPOC, yPOC).\nSecondary tags (HVN/LVN, IB targets, POC volume text) render one step smaller.")
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme")
+
+// ── Dashboard ───────────────────────────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Display real-time stats panel")
+dashPosInput = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH, tooltip = "Dashboard position")
+dashSizeInput = input.string("Small", "Text Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_DASH, tooltip = "Font size of all dashboard rows")
+
+// ── Alerts ──────────────────────────────────────────────
+enableAlertsInput = input.bool(true, "Enable Alerts", group = GRP_ALERT, tooltip = "Fire alerts on POC/VA level crosses.\nNote: intraday levels develop in real time — a cross is evaluated against the level as it stood on that bar (developing profile).")
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "JSON format for webhook integrations")
+npocAlertsInput = input.bool(true, "Naked POC Alerts", group = GRP_ALERT, tooltip = "Alert when a naked POC gets tested, and once when price first comes within N ticks of one.")
+npocProxTicksInput = input.int(10, "nPOC Proximity (ticks)", minval = 1, maxval = 200, group = GRP_ALERT, tooltip = "Distance in ticks (syminfo.mintick) for the naked-POC proximity alert.\nFires once per level (resets if a new nPOC forms).\nForex note: on 5-digit quotes 1 pip = 10 ticks, so the default 10 = 1 pip. For a wider zone use 30–50.")
+rule80BarsInput = input.int(2, "80% Rule: Closes Inside VA", minval = 1, maxval = 60, group = GRP_ALERT, tooltip = "Consecutive bar closes back inside yesterday's Value Area (after the session opened OUTSIDE it) required to trigger the 80% Rule.\nClassic definition uses two 30-min periods — scale to your TF:\n• 30m chart: 2\n• 15m chart: 4\n• 5m chart: 12\n• 1m chart: 30–60")
+
+// ── Colors ──────────────────────────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "mc", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "mc", group = GRP_COLORS)
+pocColorInput = input.color(#FFEB3B, "POC", inline = "lc", group = GRP_COLORS)
+vaColorInput = input.color(#2196F3, "Value Area", inline = "lc", group = GRP_COLORS)
+vwapColorInput = input.color(#E040FB, "VWAP", inline = "lc2", group = GRP_COLORS)
+profileColorInput = input.color(#7E57C2, "Profile", inline = "lc2", group = GRP_COLORS)
+ibColorInput = input.color(#FF9800, "IB Range", inline = "lc3", group = GRP_COLORS)
+nakedPocColorInput = input.color(#F44336, "Naked POC", inline = "lc3", group = GRP_COLORS)
+singlePrintColorInput = input.color(#FFD54F, "Single Prints", inline = "lc4", group = GRP_COLORS)
+
+// ── Advanced ────────────────────────────────────────────
+maTypeInput = input.string("None", "MA Type", options = ["None", "SMA", "EMA", "RMA", "WMA", "VWMA"], group = GRP_ADV, tooltip = "Optional moving average overlay")
+maLenInput = input.int(25, "MA Length", minval = 1, maxval = 500, group = GRP_ADV)
+maSrcInput = input.source(close, "MA Source", group = GRP_ADV)
+updateOnCloseInput = input.bool(false, "Redraw Only on Bar Close", group = GRP_ADV, tooltip = "Performance mode: rebuild the developing (current-day) profile once per bar close instead of on every realtime tick.\nRecommended on 1s–1m charts with very liquid symbols.\nDashboard price-dependent rows (Trend, Price Zone) still update every tick.")
+
+bool isLeftSide = profileSideInput == "Left"
+
+// ── SIZE MAPPING ──
+// Main tier: primary on-chart labels. Sub tier: secondary tags, one step
+// smaller so the hierarchy is preserved at any user-selected size.
+labelSizeMain = switch labelSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+labelSizeSub = switch labelSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.tiny
+    "Normal" => size.small
+    "Large"  => size.normal
+    => size.tiny
+dashTextSize = switch dashSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+// ══════════════════════════════════════
+// RUNTIME ENVIRONMENT
+// ══════════════════════════════════════
+// Daily-session profiles only make sense below the 1D timeframe
+bool isIntraday = timeframe.isintraday
+
+// Many forex/CFD symbols provide no volume at all. Detect once: if the
+// symbol has never printed volume, fall back to TPO mode (each bar = 1
+// unit), producing a time-based profile instead of a degenerate one.
+var bool volSeen = false
+if nz(volume, 0.0) > 0
+    volSeen := true
+bool tpoMode = not volSeen
+
+// IB is only meaningful when one chart bar is not longer than the IB
+// period (a 60-min IB on a 4H chart would just be the first bar's range)
+bool ibValid = timeframe.in_seconds() <= ibMinutesInput * 60
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG     = color.new(#2962FF, 0)
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+SEP_COLOR     = isDark ? color.new(#FFFFFF, 90) : color.new(#000000, 90)
+POC_LINE_CLR  = isDark ? pocColorInput : #000000
+// Yellow hues are unreadable as text/thin lines on light backgrounds —
+// derive dark-gold variants for the light theme (fills keep user colors)
+POC_TEXT_CLR  = isDark ? pocColorInput : #9A7B00
+SP_LINE_CLR   = isDark ? singlePrintColorInput : #A67C00
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+calcMa(float src, int len, string maType) =>
+    switch maType
+        "SMA"  => ta.sma(src, len)
+        "EMA"  => ta.ema(src, len)
+        "RMA"  => ta.rma(src, len)
+        "WMA"  => ta.wma(src, len)
+        "VWMA" => ta.vwma(src, len)
+        => float(na)
+
+getDayName(int t) =>
+    switch dayofweek(t, syminfo.timezone)
+        dayofweek.monday    => "Mon"
+        dayofweek.tuesday   => "Tue"
+        dayofweek.wednesday => "Wed"
+        dayofweek.thursday  => "Thu"
+        dayofweek.friday    => "Fri"
+        dayofweek.saturday  => "Sat"
+        dayofweek.sunday    => "Sun"
+        => ""
+
+// Day type classification based on profile shape
+// Returns: "Normal" / "Trend" / "Neutral" / "DD" (Double Distribution)
+classifyDayType(array<float> volArr, int pocBin, int bins, float totalVol) =>
+    string result = "Neutral"
+    if totalVol <= 0 or bins < 4
+        result
+    else
+        float pocVol = pocBin < volArr.size() ? nz(volArr.get(pocBin), 0.0) : 0.0
+        if pocVol <= 0
+            result
+        else
+            int significantBins = 0
+            int topThirdSig = 0
+            int botThirdSig = 0
+            int third = bins / 3
+            for k = 0 to bins - 1
+                if k < volArr.size() and volArr.get(k) > pocVol * 0.25
+                    significantBins += 1
+                    if k >= bins - third
+                        topThirdSig += 1
+                    if k < third
+                        botThirdSig += 1
+            float sigRatio = significantBins / float(bins)
+            bool topHeavy = topThirdSig > third / 2
+            bool botHeavy = botThirdSig > third / 2
+            if topHeavy and botHeavy and not (pocBin > third and pocBin < bins - third)
+                result := "DD"
+            else if sigRatio > 0.65
+                result := "Neutral"
+            else if sigRatio < 0.35
+                result := "Trend"
+            else
+                result := "Normal"
+            result
+
+// Pad a variable-length array into a fixed-width row for matrix storage
+padRow(array<float> src, int cols) =>
+    array<float> out = array.new<float>(cols, 0.0)
+    int n = math.min(src.size(), cols)
+    if n > 0
+        for k = 0 to n - 1
+            out.set(k, src.get(k))
+    out
+
+// ══════════════════════════════════════
+// TYPES
+// ══════════════════════════════════════
+type ProfileData
+    float pocPrice
+    float vahPrice
+    float valPrice
+    float vwapPrice
+    float totalVol
+    float buyVol
+    float sellVol
+    float deltaPct
+    int   pocBin
+    int   vaLoBin
+    int   vaHiBin
+
+// ══════════════════════════════════════
+// BUILD PROFILE FOR A SESSION
+// ══════════════════════════════════════
+buildDayProfile(int fromIdx, int toIdx, float priceBot, float priceTop, int bins, bool useTpo) =>
+    float binStep = (priceTop - priceBot) / bins
+    array<float> volArr  = array.new<float>(bins, 0.0)
+    array<float> buyArr  = array.new<float>(bins, 0.0)
+    array<float> sellArr = array.new<float>(bins, 0.0)
+    float cVwap = 0.0
+    float cVol  = 0.0
+    int offset = bar_index - toIdx
+    int span   = toIdx - fromIdx
+    // History safety: never reference further back than max_bars_back (5000)
+    // allows. Relevant on sub-minute TFs where a single 24h forex session
+    // can exceed 5000 bars — the oldest part of the session is truncated.
+    if span + offset > 4900
+        span := math.max(4900 - offset, 0)
+    for i = offset to span + offset
+        float cH  = nz(high[i], nz(close[i]))
+        float cL  = nz(low[i], nz(close[i]))
+        float cC  = nz(close[i])
+        float cO  = nz(open[i])
+        float v   = useTpo ? 1.0 : nz(volume[i], 0.0)
+        bool  buy = cC >= cO
+        cVwap += (cH + cL + cC) / 3.0 * v
+        cVol  += v
+        if v > 0 and cH > cL
+            float rng = cH - cL
+            int kS = math.max(math.floor((cL - priceBot) / binStep), 0)
+            int kE = math.min(math.floor((cH - priceBot) / binStep), bins - 1)
+            for k = kS to kE
+                if k >= 0 and k < bins
+                    float bL = priceBot + k * binStep
+                    float bH = bL + binStep
+                    float oL = math.max(cL, bL)
+                    float oH = math.min(cH, bH)
+                    if oH > oL
+                        float aV = v * (oH - oL) / rng
+                        volArr.set(k, volArr.get(k) + aV)
+                        if buy
+                            buyArr.set(k, buyArr.get(k) + aV)
+                        else
+                            sellArr.set(k, sellArr.get(k) + aV)
+        else if v > 0
+            int nb = binStep > 0 ? math.min(math.floor((cC - priceBot) / binStep), bins - 1) : 0
+            nb := math.max(nb, 0)
+            if nb >= 0 and nb < bins
+                volArr.set(nb, volArr.get(nb) + v)
+                if buy
+                    buyArr.set(nb, buyArr.get(nb) + v)
+                else
+                    sellArr.set(nb, sellArr.get(nb) + v)
+    float maxV = nz(volArr.max(), 0.0)
+    int pocIdx = 0
+    if maxV > 0
+        for k = 0 to bins - 1
+            if volArr.get(k) == maxV
+                pocIdx := k
+                break
+    float pocPr = priceBot + pocIdx * binStep + binStep / 2.0
+    float totV = volArr.sum()
+    float vahPr = priceTop
+    float valPr = priceBot
+    int vaLoBin = 0
+    int vaHiBin = bins - 1
+    if totV > 0
+        float vaTgt = totV * VA_PERCENT
+        float vaAcc = volArr.get(pocIdx)
+        int vaU = pocIdx
+        int vaL = pocIdx
+        int sf = 0
+        while vaAcc < vaTgt and (vaU < bins - 1 or vaL > 0) and sf < bins
+            sf += 1
+            float aU = vaU < bins - 1 ? volArr.get(vaU + 1) : 0.0
+            float aL = vaL > 0 ? volArr.get(vaL - 1) : 0.0
+            if aU >= aL and vaU < bins - 1
+                vaU += 1
+                vaAcc += aU
+            else if vaL > 0
+                vaL -= 1
+                vaAcc += aL
+            else if vaU < bins - 1
+                vaU += 1
+                vaAcc += aU
+            else
+                break
+        vahPr := priceBot + (vaU + 1) * binStep
+        valPr := priceBot + vaL * binStep
+        vaLoBin := vaL
+        vaHiBin := vaU
+    float vwPr = safeDiv(cVwap, cVol, (priceTop + priceBot) / 2.0)
+    float tB = buyArr.sum()
+    float tS = sellArr.sum()
+    float dP = safeDiv(tB - tS, totV, 0.0) * 100.0
+    [volArr, buyArr, sellArr, ProfileData.new(pocPr, vahPr, valPr, vwPr, totV, tB, tS, dP, pocIdx, vaLoBin, vaHiBin)]
+
+// ══════════════════════════════════════
+// SESSION DETECTION + PROFILE CACHE
+// ══════════════════════════════════════
+// ta.change must be evaluated unconditionally on every bar (Pine v6 uses
+// lazy and/or evaluation, so it cannot live inside a boolean expression)
+float dayTimeChange = ta.change(time("D"))
+// Session tracking only makes sense on intraday TFs; on D/W/M every bar
+// would register as a "new day" and just churn the cache with garbage.
+bool newDay = isIntraday and (barstate.isfirst or dayTimeChange != 0)
+
+var array<int>   dayStarts = array.new<int>()
+var array<int>   dayEnds   = array.new<int>()
+var array<float> dayHighs  = array.new<float>()
+var array<float> dayLows   = array.new<float>()
+var array<int>   dayTimes  = array.new<int>()
+
+// IB tracking per day
+var array<float> ibHighs   = array.new<float>()
+var array<float> ibLows    = array.new<float>()
+var array<int>   ibEnds    = array.new<int>()
+
+// Cached profiles of COMPLETED sessions (computed once at session close).
+// Invariant: profCache.size() == dayStarts.size() - 1 (no entry for the live day).
+var array<ProfileData> profCache = array.new<ProfileData>()
+var array<int>         cacheBins = array.new<int>()
+var matrix<float>      volMat    = matrix.new<float>(0, MAX_BINS, 0.0)
+var matrix<float>      buyMat    = matrix.new<float>(0, MAX_BINS, 0.0)
+var matrix<float>      sellMat   = matrix.new<float>(0, MAX_BINS, 0.0)
+
+// Naked POC registry — tracked incrementally on every bar.
+// A POC is registered when its session CLOSES and removed on the first bar
+// AFTER session close that trades through it.
+var array<float> nakedPocPrices = array.new<float>()
+var array<int>   nakedPocStarts = array.new<int>()
+// Per-nPOC flag: proximity alert already fired for this level
+var array<bool>  nakedPocProxDone = array.new<bool>()
+
+// Session context & 80% Rule state
+var float sessOpen       = na    // today's session open price
+var float yVahG          = na    // yesterday's VAH (global copy for rule/context)
+var float yValG          = na    // yesterday's VAL
+var bool  rule80Setup    = false // today opened outside yesterday's VA
+var int   rule80OpenSide = 0     // 1 = opened above yVA, -1 = opened below
+var int   r80InsideCount = 0
+var bool  rule80Fired    = false
+
+var float curDayHigh = high
+var float curDayLow  = low
+var float curIbHigh  = high
+var float curIbLow   = low
+var int   curDayStartTime = time
+var bool  curIbComplete = false
+
+if newDay
+    if dayStarts.size() > 0
+        int lastI = dayStarts.size() - 1
+        dayEnds.set(lastI, bar_index - 1)
+        dayHighs.set(lastI, curDayHigh)
+        dayLows.set(lastI, curDayLow)
+
+        // ── CACHE THE COMPLETED SESSION'S PROFILE (computed exactly once) ──
+        int   cS  = dayStarts.get(lastI)
+        int   cE  = bar_index - 1
+        float cHi = curDayHigh
+        float cLo = curDayLow
+        if cHi > cLo and cE > cS
+            int cBins = math.min(binCountInput, MAX_BINS)
+            [cVolA, cBuyA, cSellA, cProf] = buildDayProfile(cS, cE, cLo, cHi, cBins, tpoMode)
+            profCache.push(cProf)
+            cacheBins.push(cBins)
+            volMat.add_row(volMat.rows(), padRow(cVolA, MAX_BINS))
+            buyMat.add_row(buyMat.rows(), padRow(cBuyA, MAX_BINS))
+            sellMat.add_row(sellMat.rows(), padRow(cSellA, MAX_BINS))
+            // Register this session's POC as a naked candidate
+            if not na(cProf.pocPrice) and cProf.totalVol > 0
+                nakedPocPrices.push(cProf.pocPrice)
+                nakedPocStarts.push(cS)
+                nakedPocProxDone.push(false)
+        else
+            // Degenerate session — push placeholder to keep cache aligned
+            profCache.push(ProfileData.new(na, na, na, na, 0.0, 0.0, 0.0, 0.0, 0, 0, 0))
+            cacheBins.push(0)
+            volMat.add_row(volMat.rows(), array.new<float>(MAX_BINS, 0.0))
+            buyMat.add_row(buyMat.rows(), array.new<float>(MAX_BINS, 0.0))
+            sellMat.add_row(sellMat.rows(), array.new<float>(MAX_BINS, 0.0))
+
+    dayStarts.push(bar_index)
+    dayEnds.push(bar_index)
+    dayHighs.push(high)
+    dayLows.push(low)
+    dayTimes.push(time)
+    ibHighs.push(high)
+    ibLows.push(low)
+    ibEnds.push(bar_index)
+    curDayHigh := high
+    curDayLow  := low
+    curIbHigh  := high
+    curIbLow   := low
+    curDayStartTime := time
+    curIbComplete := false
+
+    while dayStarts.size() > MAX_DAYS + 2
+        dayStarts.shift()
+        dayEnds.shift()
+        dayHighs.shift()
+        dayLows.shift()
+        dayTimes.shift()
+        ibHighs.shift()
+        ibLows.shift()
+        ibEnds.shift()
+        if profCache.size() > 0
+            profCache.shift()
+            cacheBins.shift()
+            volMat.remove_row(0)
+            buyMat.remove_row(0)
+            sellMat.remove_row(0)
+
+    // Prune naked POCs that fell out of the retained day window
+    while nakedPocStarts.size() > 0 and dayStarts.size() > 0 and nakedPocStarts.get(0) < dayStarts.get(0)
+        nakedPocStarts.shift()
+        nakedPocPrices.shift()
+        nakedPocProxDone.shift()
+
+    // ── SESSION CONTEXT: yesterday's VA, today's open, 80% Rule reset ──
+    if profCache.size() > 0
+        ProfileData yp = profCache.get(profCache.size() - 1)
+        yVahG := yp.vahPrice
+        yValG := yp.valPrice
+    sessOpen := open
+    rule80Fired := false
+    r80InsideCount := 0
+    rule80OpenSide := 0
+    if not na(yVahG) and not na(yValG)
+        rule80OpenSide := open > yVahG ? 1 : open < yValG ? -1 : 0
+    rule80Setup := rule80OpenSide != 0
+else
+    curDayHigh := math.max(curDayHigh, high)
+    curDayLow  := math.min(curDayLow, low)
+    if dayEnds.size() > 0
+        dayEnds.set(dayEnds.size() - 1, bar_index)
+        dayHighs.set(dayHighs.size() - 1, curDayHigh)
+        dayLows.set(dayLows.size() - 1, curDayLow)
+    // Update IB if still within IB period.
+    // Strict `<`: a bar OPENING exactly at the boundary lies outside the IB
+    // (with <= a 60-min IB became 75 min on 15m and 2 full bars on 60m).
+    if not curIbComplete
+        int elapsedMs = time - curDayStartTime
+        int ibMs = ibMinutesInput * 60 * 1000
+        if elapsedMs < ibMs
+            curIbHigh := math.max(curIbHigh, high)
+            curIbLow  := math.min(curIbLow, low)
+            if ibHighs.size() > 0
+                ibHighs.set(ibHighs.size() - 1, curIbHigh)
+                ibLows.set(ibLows.size() - 1, curIbLow)
+                ibEnds.set(ibEnds.size() - 1, bar_index)
+        else
+            curIbComplete := true
+
+// ── NAKED POC TOUCH CHECK (every bar, strictly AFTER session close) ──
+// POCs are only registered once their session has closed, so every check
+// here happens on post-session bars by construction.
+float npocTouchedPrice = na
+if nakedPocPrices.size() > 0
+    int npIdx = nakedPocPrices.size() - 1
+    while npIdx >= 0
+        float npP = nakedPocPrices.get(npIdx)
+        if low <= npP and high >= npP
+            npocTouchedPrice := npP
+            nakedPocPrices.remove(npIdx)
+            nakedPocStarts.remove(npIdx)
+            nakedPocProxDone.remove(npIdx)
+        npIdx -= 1
+
+// ── NAKED POC PROXIMITY (first approach within N ticks, once per level) ──
+float npocNearPrice = na
+if nakedPocPrices.size() > 0
+    float proxTol = npocProxTicksInput * syminfo.mintick
+    for pi = 0 to nakedPocPrices.size() - 1
+        if not nakedPocProxDone.get(pi) and math.abs(close - nakedPocPrices.get(pi)) <= proxTol
+            nakedPocProxDone.set(pi, true)
+            npocNearPrice := nakedPocPrices.get(pi)
+
+// ── 80% RULE STATE MACHINE (evaluated on confirmed bars only) ──
+// Setup: session opened OUTSIDE yesterday's VA. Trigger: N consecutive
+// closes back inside it → statistically high odds of a full traversal to
+// the opposite VA boundary (Dalton's 80% Rule).
+bool rule80Trigger = false
+if isIntraday and rule80Setup and not rule80Fired and not na(yVahG) and not na(yValG) and barstate.isconfirmed
+    bool closeInsideVa = close <= yVahG and close >= yValG
+    r80InsideCount := closeInsideVa ? r80InsideCount + 1 : 0
+    if r80InsideCount >= rule80BarsInput
+        rule80Fired := true
+        rule80Trigger := true
+
+// ══════════════════════════════════════
+// DRAW PROFILES (on last bar only)
+// ══════════════════════════════════════
+var float todayPoc   = na
+var float todayVah   = na
+var float todayVal   = na
+var float todayVol   = na
+var float todayDelta = na
+var float prevDayPoc = na
+var string todayDayType = "—"
+var float todayIbH   = na
+var float todayIbL   = na
+var int   nakedPocCount = 0
+
+var array<box>   rtBoxes  = array.new<box>()
+var array<line>  rtLines  = array.new<line>()
+var array<label> rtLabels = array.new<label>()
+
+// Performance mode: when enabled, the full redraw runs once per bar close
+// instead of on every realtime tick. drawnOnce guarantees at least one
+// initial draw on chart load (before the first realtime bar confirms).
+var bool drawnOnce = false
+bool doRedraw = not updateOnCloseInput or barstate.isconfirmed or not drawnOnce
+
+if barstate.islast and isIntraday and dayStarts.size() >= 1 and doRedraw
+    drawnOnce := true
+    // ── CLEANUP ──
+    for b in rtBoxes
+        b.delete()
+    rtBoxes.clear()
+    for l in rtLines
+        l.delete()
+    rtLines.clear()
+    for lb in rtLabels
+        lb.delete()
+    rtLabels.clear()
+
+    int totalDays = dayStarts.size()
+    int showDays = math.min(daysBackInput, totalDays)
+
+    // Average bars per day
+    int totalSpan = 0
+    int spanCount = 0
+    for s = 0 to totalDays - 1
+        int ds = dayEnds.get(s) - dayStarts.get(s)
+        if ds > 0
+            totalSpan += ds
+            spanCount += 1
+    int avgDaySpan = spanCount > 0 ? totalSpan / spanCount : 100
+
+    // ── DRAW EACH DAY ──
+    for d = 0 to showDays - 1
+        int idx = totalDays - 1 - d
+        if idx < 0
+            continue
+        int sIdx  = dayStarts.get(idx)
+        int eIdx  = dayEnds.get(idx)
+        float dHi = dayHighs.get(idx)
+        float dLo = dayLows.get(idx)
+        int dTime = dayTimes.get(idx)
+        bool isCur = d == 0
+
+        if dHi <= dLo or eIdx <= sIdx
+            continue
+
+        // ── GET PROFILE: live for current day, cached for completed days ──
+        array<float> volArr  = na
+        array<float> buyArr  = na
+        array<float> sellArr = na
+        ProfileData  prof    = na
+        int bins = 0
+
+        if isCur
+            int liveBins = math.min(binCountInput, MAX_BINS)
+            [v1, b1, s1, p1] = buildDayProfile(sIdx, eIdx, dLo, dHi, liveBins, tpoMode)
+            volArr  := v1
+            buyArr  := b1
+            sellArr := s1
+            prof    := p1
+            bins    := liveBins
+        else if idx < profCache.size()
+            prof    := profCache.get(idx)
+            bins    := cacheBins.get(idx)
+            volArr  := volMat.row(idx)
+            buyArr  := buyMat.row(idx)
+            sellArr := sellMat.row(idx)
+
+        if na(prof) or bins <= 0 or na(prof.pocPrice)
+            continue
+
+        float binStep = (dHi - dLo) / bins
+        int span = eIdx - sIdx
+        float maxV = nz(volArr.max(), 1.0)
+        int anchor = isLeftSide ? sIdx : eIdx
+
+        // ── PROFILE BOXES ──
+        if showProfileInput
+            for k = 0 to bins - 1
+                if k < volArr.size()
+                    float binLow  = dLo + k * binStep
+                    float binHigh = binLow + binStep
+                    float vol = volArr.get(k)
+                    float ratio = safeDiv(vol, maxV, 0.0)
+                    int profW = math.max(int(ratio * math.max(span / 3, 5)), 1)
+                    color binClr = profileColorInput
+                    if showDeltaColorInput and k < buyArr.size() and k < sellArr.size()
+                        binClr := buyArr.get(k) >= sellArr.get(k) ? bullColorInput : bearColorInput
+                    bool isPoc = k == prof.pocBin
+                    color fillClr = color.from_gradient(ratio, 0.0, 1.0, color.new(binClr, 90), color.new(isPoc and showPocInput ? pocColorInput : binClr, 45))
+                    // Single print highlighting
+                    bool isSinglePrint = showSinglePrintsInput and ratio < SINGLE_PRINT_THR and ratio > 0
+                    if isSinglePrint
+                        fillClr := color.new(SP_LINE_CLR, 70)
+                    // VA background — exact bin bounds from the profile
+                    bool inVa = k >= prof.vaLoBin and k <= prof.vaHiBin
+                    if showVaInput and showVaBgInput and inVa and not isPoc and not isSinglePrint
+                        fillClr := color.from_gradient(ratio, 0.0, 1.0, color.new(vaColorInput, 88), color.new(vaColorInput, 55))
+                    string bTxt = isPoc and not tpoMode ? str.tostring(vol, format.volume) : ""
+                    color borderClr = isSinglePrint ? color.new(SP_LINE_CLR, 40) : TRANSPARENT
+                    int borderW = isSinglePrint ? 1 : 0
+                    if isLeftSide
+                        rtBoxes.push(box.new(anchor, binHigh, anchor + profW, binLow, borderClr, borderW, bgcolor = fillClr, text = bTxt, text_color = TEXT_COLOR, text_size = labelSizeSub))
+                    else
+                        rtBoxes.push(box.new(anchor - profW, binHigh, anchor, binLow, borderClr, borderW, bgcolor = fillClr, text = bTxt, text_color = TEXT_COLOR, text_size = labelSizeSub))
+
+        // ── POC LINE (solid + dashed extension) ──
+        if showPocInput
+            color pocClr = isCur ? POC_LINE_CLR : color.new(POC_LINE_CLR, 50)
+            rtLines.push(line.new(sIdx, prof.pocPrice, eIdx, prof.pocPrice, color = pocClr, width = isCur ? pocWidthInput : 1, style = line.style_solid))
+            if pocExtDaysInput > 0
+                int extRight = eIdx + avgDaySpan * pocExtDaysInput
+                if isCur and extendTodayInput
+                    extRight := bar_index + avgDaySpan * pocExtDaysInput
+                // TV limit: max 500 bars into the future (RE10020 on low TFs otherwise)
+                extRight := math.min(extRight, bar_index + MAX_FUT_BARS)
+                rtLines.push(line.new(eIdx, prof.pocPrice, extRight, prof.pocPrice, color = color.new(pocClr, 40), width = 1, style = line.style_dashed))
+
+        // ── VAH / VAL ──
+        if showVaInput
+            int vaRight = isCur and extendTodayInput ? bar_index + 20 : eIdx
+            color vaClr = isCur ? vaColorInput : color.new(vaColorInput, 60)
+            rtLines.push(line.new(sIdx, prof.vahPrice, vaRight, prof.vahPrice, color = vaClr, width = 1, style = line.style_dashed))
+            rtLines.push(line.new(sIdx, prof.valPrice, vaRight, prof.valPrice, color = vaClr, width = 1, style = line.style_dashed))
+            // VA background fill
+            if showVaBgInput
+                rtBoxes.push(box.new(sIdx, prof.vahPrice, eIdx, prof.valPrice, TRANSPARENT, 0, bgcolor = color.new(vaColorInput, 92)))
+
+        // ── VWAP ──
+        if showVwapInput
+            rtLines.push(line.new(sIdx, prof.vwapPrice, eIdx, prof.vwapPrice, color = isCur ? vwapColorInput : color.new(vwapColorInput, 60), width = isCur ? 2 : 1, style = line.style_dotted))
+
+        // ── HVN / LVN (significant volume nodes, current session only) ──
+        if showHvnLvnInput and isCur and bins >= 5
+            int nodeRight = extendTodayInput ? bar_index + 20 : eIdx
+            color hvnClr = color.new(profileColorInput, 25)
+            color lvnClr = color.new(SP_LINE_CLR, 25)
+            int hvnCount = 0
+            int lvnCount = 0
+            for kn = 1 to bins - 2
+                float vNode = volArr.get(kn)
+                float vPrev = volArr.get(kn - 1)
+                float vNext = volArr.get(kn + 1)
+                float nodePrice = dLo + kn * binStep + binStep / 2.0
+                bool isHvn = vNode > vPrev and vNode > vNext and vNode >= maxV * HVN_THR and kn != prof.pocBin
+                bool isLvn = vNode < vPrev and vNode < vNext and vNode > 0 and vNode <= maxV * LVN_THR
+                if isHvn and hvnCount < MAX_VOL_NODES
+                    hvnCount += 1
+                    rtLines.push(line.new(sIdx, nodePrice, nodeRight, nodePrice, color = hvnClr, width = 1, style = line.style_solid))
+                    rtLabels.push(label.new(nodeRight, nodePrice, "HVN", style = label.style_none, textcolor = hvnClr, size = labelSizeSub))
+                else if isLvn and lvnCount < MAX_VOL_NODES
+                    lvnCount += 1
+                    rtLines.push(line.new(sIdx, nodePrice, nodeRight, nodePrice, color = lvnClr, width = 1, style = line.style_dotted))
+                    rtLabels.push(label.new(nodeRight, nodePrice, "LVN", style = label.style_none, textcolor = lvnClr, size = labelSizeSub))
+
+        // ── INITIAL BALANCE (auto-disabled when chart TF > IB period) ──
+        if showIbInput and ibValid and idx < ibHighs.size() and idx < ibLows.size()
+            float ibH = ibHighs.get(idx)
+            float ibL = ibLows.get(idx)
+            int ibE   = ibEnds.get(idx)
+            if not na(ibH) and not na(ibL) and ibH > ibL
+                int ibRight = showIbExtInput ? eIdx : ibE
+                color ibClr = isCur ? ibColorInput : color.new(ibColorInput, 60)
+                rtLines.push(line.new(sIdx, ibH, ibRight, ibH, color = ibClr, width = 1, style = line.style_solid))
+                rtLines.push(line.new(sIdx, ibL, ibRight, ibL, color = ibClr, width = 1, style = line.style_solid))
+                if showIbBgInput
+                    rtBoxes.push(box.new(sIdx, ibH, ibRight, ibL, TRANSPARENT, 0, bgcolor = color.new(ibColorInput, 92)))
+                if isCur
+                    rtLabels.push(label.new(sIdx, ibH, "IB H", style = label.style_none, textcolor = ibClr, size = labelSizeMain))
+                    rtLabels.push(label.new(sIdx, ibL, "IB L", style = label.style_none, textcolor = ibClr, size = labelSizeMain))
+                // IB breakout extensions ×1.5 / ×2 (current session only)
+                if isCur and showIbTargetsInput
+                    float ibRange = ibH - ibL
+                    int tgtRight = extendTodayInput ? bar_index + 20 : eIdx
+                    color tgtClr = color.new(ibColorInput, 45)
+                    array<float>  tgtLvls = array.from(ibH + ibRange * 0.5, ibH + ibRange, ibL - ibRange * 0.5, ibL - ibRange)
+                    array<string> tgtTxts = array.from("IB×1.5", "IB×2", "IB×1.5", "IB×2")
+                    for t = 0 to 3
+                        float tgtLvl = tgtLvls.get(t)
+                        rtLines.push(line.new(sIdx, tgtLvl, tgtRight, tgtLvl, color = tgtClr, width = 1, style = line.style_dotted))
+                        rtLabels.push(label.new(tgtRight, tgtLvl, tgtTxts.get(t), style = label.style_none, textcolor = tgtClr, size = labelSizeSub))
+
+        // ── DAY SEPARATOR ──
+        if showSepInput
+            rtLines.push(line.new(sIdx, dLo, sIdx, dHi, color = SEP_COLOR, width = 1, style = line.style_dotted))
+
+        // ── DAY LABEL ──
+        if showDayLabelInput
+            string dayName = getDayName(dTime)
+            rtLabels.push(label.new(int(math.avg(sIdx, eIdx)), dLo, dayName, style = label.style_label_up, color = TRANSPARENT, textcolor = TEXT_MUTED, size = labelSizeMain))
+
+        // ── DAY TYPE (always computed — dashboard needs it; label is optional) ──
+        string dayType = classifyDayType(volArr, prof.pocBin, bins, prof.totalVol)
+        if isCur
+            todayDayType := dayType
+        if showDayTypeInput
+            color dtClr = dayType == "Trend" ? bullColorInput : dayType == "DD" ? bearColorInput : dayType == "Normal" ? vaColorInput : TEXT_MUTED
+            rtLabels.push(label.new(int(math.avg(sIdx, eIdx)), dHi, dayType, style = label.style_label_down, color = TRANSPARENT, textcolor = dtClr, size = labelSizeMain))
+
+        // ── STORE TODAY'S DATA ──
+        if isCur
+            todayPoc   := prof.pocPrice
+            todayVah   := prof.vahPrice
+            todayVal   := prof.valPrice
+            todayVol   := prof.totalVol
+            todayDelta := prof.deltaPct
+            if ibValid and idx < ibHighs.size()
+                todayIbH := ibHighs.get(idx)
+                todayIbL := ibLows.get(idx)
+            else
+                todayIbH := na
+                todayIbL := na
+
+    // ── PREVIOUS DAY POC (from cache — works even with Days to Show = 1) ──
+    prevDayPoc := profCache.size() > 0 ? profCache.get(profCache.size() - 1).pocPrice : na
+    bool prevPocIsNaked = not na(prevDayPoc) and nakedPocPrices.includes(prevDayPoc)
+
+    // ── NAKED POC LINES (registry is maintained bar-by-bar above) ──
+    int oldestVisible = dayStarts.get(math.max(totalDays - showDays, 0))
+    nakedPocCount := 0
+    if nakedPocPrices.size() > 0
+        int npExtRight = math.min(bar_index + avgDaySpan * math.max(pocExtDaysInput, 1), bar_index + MAX_FUT_BARS)
+        for np = 0 to nakedPocPrices.size() - 1
+            float npPrice = nakedPocPrices.get(np)
+            int npBar = nakedPocStarts.get(np)
+            if npBar >= oldestVisible
+                nakedPocCount += 1
+                if showNakedPocInput
+                    rtLines.push(line.new(npBar, npPrice, npExtRight, npPrice, color = nakedPocColorInput, width = 1, style = line.style_dashed))
+                    rtLabels.push(label.new(npBar, npPrice, "nPOC", style = label.style_none, textcolor = nakedPocColorInput, size = labelSizeMain))
+
+    // ── PREVIOUS DAY POC LINE (yPOC) ──
+    // While yesterday's POC is still naked (and nPOCs are shown), the red
+    // nPOC line already marks it — skip the duplicate yellow line. yPOC
+    // appears once the level has been tested.
+    if showPrevPocInput and not na(prevDayPoc) and totalDays >= 2 and not (showNakedPocInput and prevPocIsNaked)
+        int todayStart = dayStarts.get(totalDays - 1)
+        int pocRight = math.min(bar_index + avgDaySpan * math.max(pocExtDaysInput, 1), bar_index + MAX_FUT_BARS)
+        rtLines.push(line.new(todayStart, prevDayPoc, pocRight, prevDayPoc, color = color.new(POC_LINE_CLR, 50), width = 1, style = line.style_dashed))
+        rtLabels.push(label.new(todayStart + 2, prevDayPoc, "yPOC", style = label.style_none, textcolor = color.new(POC_LINE_CLR, 40), size = labelSizeMain))
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC
+// Note: todayPoc/Vah/Val are developing intraday levels — crosses are
+// evaluated against the level as it stood on that bar.
+// ══════════════════════════════════════
+int WARMUP_BARS = 50
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+bool pocCrossUp   = not na(todayPoc) and close > todayPoc and close[1] <= todayPoc and barstate.isconfirmed and isWarmedUp
+bool pocCrossDown = not na(todayPoc) and close < todayPoc and close[1] >= todayPoc and barstate.isconfirmed and isWarmedUp
+bool vahBreakUp   = not na(todayVah) and close > todayVah and close[1] <= todayVah and barstate.isconfirmed and isWarmedUp
+bool valBreakDown = not na(todayVal) and close < todayVal and close[1] >= todayVal and barstate.isconfirmed and isWarmedUp
+
+// ══════════════════════════════════════
+// OPTIONAL MA OVERLAY
+// ══════════════════════════════════════
+float maVal = calcMa(maSrcInput, maLenInput, maTypeInput)
+plot(maVal, "MA", color = isDark ? color.new(#FFD54F, 20) : color.new(#F57F17, 20), linewidth = 2, display = maTypeInput != "None" ? display.all : display.none)
+
+// ══════════════════════════════════════
+// NON-INTRADAY GUARD
+// ══════════════════════════════════════
+if barstate.islast and not isIntraday
+    var warnTable = table.new(position.middle_center, 1, 1, color.new(#131722, 10), color.new(#FF5252, 0), 2, color.new(#FF5252, 0), 2)
+    table.cell(warnTable, 0, 0, "⚠️ DailyVPro builds DAILY session profiles\nPlease switch to an intraday timeframe (below 1D)", text_color = #FFFFFF, text_size = size.normal, text_halign = text.align_center)
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+dashPos = switch dashPosInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+if showDashInput and barstate.islast and isIntraday
+    var dashTable = table.new(dashPos, 2, 17, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader", text_color = #FFFFFF, bgcolor = HEADER_BG, text_size = dashTextSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    // Day Type
+    color dayTypeClr = todayDayType == "Trend" ? bullColorInput : todayDayType == "DD" ? bearColorInput : todayDayType == "Normal" ? vaColorInput : TEXT_MUTED
+    table.cell(dashTable, 0, 1, "Day Type", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, todayDayType, text_color = dayTypeClr, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // Trend
+    string trendStr = not na(todayPoc) ? (close > todayPoc ? "Bullish ▲" : "Bearish ▼") : "—"
+    color trendClr = not na(todayPoc) ? (close > todayPoc ? bullColorInput : bearColorInput) : TEXT_MUTED
+    table.cell(dashTable, 0, 2, "Trend", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, trendStr, text_color = trendClr, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+    // Price Zone
+    string zoneStr = "—"
+    color zoneClr = TEXT_MUTED
+    if not na(todayVah) and not na(todayVal)
+        zoneStr := close > todayVah ? "Above VA" : close < todayVal ? "Below VA" : "Inside VA"
+        zoneClr := close > todayVah ? bullColorInput : close < todayVal ? bearColorInput : POC_TEXT_CLR
+    table.cell(dashTable, 0, 3, "Price Zone", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, zoneStr, text_color = zoneClr, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // Value Shift — today's developing VA vs yesterday's VA
+    string vsStr = "—"
+    color vsClr = TEXT_MUTED
+    if not na(todayVah) and not na(todayVal) and not na(yVahG) and not na(yValG)
+        if todayVal >= yVahG
+            vsStr := "Above ▲"
+            vsClr := bullColorInput
+        else if todayVah <= yValG
+            vsStr := "Below ▼"
+            vsClr := bearColorInput
+        else if todayVal >= yValG and todayVah <= yVahG
+            vsStr := "Inside"
+            vsClr := POC_TEXT_CLR
+        else if todayVal <= yValG and todayVah >= yVahG
+            vsStr := "Outside"
+            vsClr := vaColorInput
+        else if todayVah > yVahG
+            vsStr := "Overlap ▲"
+            vsClr := bullColorInput
+        else
+            vsStr := "Overlap ▼"
+            vsClr := bearColorInput
+    table.cell(dashTable, 0, 4, "Value Shift", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, vsStr, text_color = vsClr, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+    // Open context — where today opened relative to yesterday's VA
+    string openStr = "—"
+    color openClr = TEXT_MUTED
+    if not na(sessOpen) and not na(yVahG) and not na(yValG)
+        openStr := sessOpen > yVahG ? "Above yVA" : sessOpen < yValG ? "Below yVA" : "Inside yVA"
+        openClr := sessOpen > yVahG ? bullColorInput : sessOpen < yValG ? bearColorInput : TEXT_COLOR
+    table.cell(dashTable, 0, 5, "Open", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, openStr, text_color = openClr, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // 80% Rule status
+    string r80Str = "—"
+    color r80Clr = TEXT_MUTED
+    if rule80Fired
+        r80Str := rule80OpenSide == 1 ? "Active → yVAL" : "Active → yVAH"
+        r80Clr := rule80OpenSide == 1 ? bearColorInput : bullColorInput
+    else if rule80Setup
+        r80Str := rule80OpenSide == 1 ? "Armed (open ▲)" : "Armed (open ▼)"
+        r80Clr := TEXT_COLOR
+    table.cell(dashTable, 0, 6, "80% Rule", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, r80Str, text_color = r80Clr, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+    // IB Position
+    string ibStr = "—"
+    color ibClr = TEXT_MUTED
+    if not na(todayIbH) and not na(todayIbL) and todayIbH > todayIbL
+        ibStr := close > todayIbH ? "Above IB" : close < todayIbL ? "Below IB" : "Inside IB"
+        ibClr := close > todayIbH ? bullColorInput : close < todayIbL ? bearColorInput : ibColorInput
+    table.cell(dashTable, 0, 7, "IB Position", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 7, ibStr, text_color = ibClr, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // POC
+    string pocStr = na(todayPoc) ? "—" : str.tostring(todayPoc, format.mintick)
+    table.cell(dashTable, 0, 8, "POC", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 8, pocStr, text_color = POC_TEXT_CLR, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+    // Price vs POC
+    string pvsPoc = "—"
+    color pvsPocClr = TEXT_MUTED
+    if not na(todayPoc)
+        float dist = close - todayPoc
+        pvsPoc := (dist >= 0 ? "+" : "") + str.tostring(dist, format.mintick)
+        pvsPocClr := dist >= 0 ? bullColorInput : bearColorInput
+    table.cell(dashTable, 0, 9, "vs POC", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 9, pvsPoc, text_color = pvsPocClr, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // VAH / VAL
+    string vahStr = na(todayVah) ? "—" : str.tostring(todayVah, format.mintick)
+    string valStr = na(todayVal) ? "—" : str.tostring(todayVal, format.mintick)
+    table.cell(dashTable, 0, 10, "VAH", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 10, vahStr, text_color = vaColorInput, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 0, 11, "VAL", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 11, valStr, text_color = vaColorInput, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // Delta (estimated from close-vs-open per bar, not true tick delta)
+    string deltaStr = na(todayDelta) ? "—" : str.tostring(todayDelta, "0.0") + "%"
+    color deltaClr = nz(todayDelta, 0.0) >= 0 ? bullColorInput : bearColorInput
+    table.cell(dashTable, 0, 12, "Delta (est)", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 12, deltaStr, text_color = deltaClr, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+    // Volume (forex feeds without volume run in time-based TPO mode)
+    string volStr = tpoMode ? "TPO mode" : na(todayVol) ? "—" : str.tostring(todayVol, format.volume)
+    table.cell(dashTable, 0, 13, "Volume", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 13, volStr, text_color = TEXT_COLOR, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // Naked POCs count
+    string nPocStr = str.tostring(nakedPocCount)
+    table.cell(dashTable, 0, 14, "Naked POCs", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 14, nPocStr, text_color = nakedPocColorInput, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+    // TF
+    table.cell(dashTable, 0, 15, "TF", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 15, timeframe.period, text_color = TEXT_COLOR, text_size = dashTextSize, bgcolor = TABLE_BG)
+
+    // Version
+    table.cell(dashTable, 0, 16, "Version", text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 16, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashTextSize, bgcolor = TABLE_ROW_ALT)
+
+// ══════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = TRANSPARENT, border_color = TRANSPARENT, border_width = 0, frame_color = TRANSPARENT, frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = TRANSPARENT)
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string ticker = syminfo.tickerid
+string atf = timeframe.period
+string aPr = str.tostring(close, format.mintick)
+string aPoc = str.tostring(nz(todayPoc), format.mintick)
+string aVah = str.tostring(nz(todayVah), format.mintick)
+string aVal = str.tostring(nz(todayVal), format.mintick)
+
+if enableAlertsInput and pocCrossUp
+    string jsonMsg = '{"action":"buy","type":"poc_cross","ticker":"' + ticker + '","price":' + aPr + ',"poc":' + aPoc + ',"tf":"' + atf + '"}'
+    string textMsg = "🟢 POC CROSS UP | " + ticker + " | TF: " + atf + " | Price: " + aPr + " | POC: " + aPoc
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and pocCrossDown
+    string jsonMsg = '{"action":"sell","type":"poc_cross","ticker":"' + ticker + '","price":' + aPr + ',"poc":' + aPoc + ',"tf":"' + atf + '"}'
+    string textMsg = "🔴 POC CROSS DN | " + ticker + " | TF: " + atf + " | Price: " + aPr + " | POC: " + aPoc
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and vahBreakUp
+    string jsonMsg = '{"action":"buy","type":"vah_break","ticker":"' + ticker + '","price":' + aPr + ',"vah":' + aVah + ',"tf":"' + atf + '"}'
+    string textMsg = "⬆️ VAH BREAK | " + ticker + " | TF: " + atf + " | Price: " + aPr + " | VAH: " + aVah
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and valBreakDown
+    string jsonMsg = '{"action":"sell","type":"val_break","ticker":"' + ticker + '","price":' + aPr + ',"val":' + aVal + ',"tf":"' + atf + '"}'
+    string textMsg = "⬇️ VAL BREAK | " + ticker + " | TF: " + atf + " | Price: " + aPr + " | VAL: " + aVal
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and npocAlertsInput and not na(npocTouchedPrice)
+    string npPr = str.tostring(npocTouchedPrice, format.mintick)
+    string jsonMsg = '{"action":"info","type":"npoc_tested","ticker":"' + ticker + '","price":' + aPr + ',"npoc":' + npPr + ',"tf":"' + atf + '"}'
+    string textMsg = "🎯 NAKED POC TESTED | " + ticker + " | TF: " + atf + " | nPOC: " + npPr + " | Price: " + aPr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and npocAlertsInput and not na(npocNearPrice)
+    string npPr = str.tostring(npocNearPrice, format.mintick)
+    string jsonMsg = '{"action":"info","type":"npoc_near","ticker":"' + ticker + '","price":' + aPr + ',"npoc":' + npPr + ',"tf":"' + atf + '"}'
+    string textMsg = "📍 NAKED POC NEAR | " + ticker + " | TF: " + atf + " | nPOC: " + npPr + " | Price: " + aPr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and rule80Trigger
+    float r80TgtLvl = rule80OpenSide == 1 ? yValG : yVahG
+    string r80Tgt = str.tostring(r80TgtLvl, format.mintick)
+    string r80Act = rule80OpenSide == 1 ? "sell" : "buy"
+    string r80Txt = rule80OpenSide == 1 ? "Open above yVA, re-accepted inside → target yVAL " : "Open below yVA, re-accepted inside → target yVAH "
+    string jsonMsg = '{"action":"' + r80Act + '","type":"rule80","ticker":"' + ticker + '","price":' + aPr + ',"target":' + r80Tgt + ',"tf":"' + atf + '"}'
+    string textMsg = "📐 80% RULE | " + ticker + " | TF: " + atf + " | " + r80Txt + r80Tgt
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════
+// ALERTCONDITIONS
+// Selectable individually in TradingView's "Create Alert" dialog
+// (unlike alert(), which fires as one combined "Any alert() function call")
+// ══════════════════════════════════════
+alertcondition(pocCrossUp,               "POC Cross Up",        "DailyVPro: price crossed above the developing POC")
+alertcondition(pocCrossDown,             "POC Cross Down",      "DailyVPro: price crossed below the developing POC")
+alertcondition(vahBreakUp,               "VAH Break",           "DailyVPro: price broke above the developing VAH")
+alertcondition(valBreakDown,             "VAL Break",           "DailyVPro: price broke below the developing VAL")
+alertcondition(not na(npocTouchedPrice), "Naked POC Tested",    "DailyVPro: a naked POC has been tested")
+alertcondition(not na(npocNearPrice),    "Naked POC Proximity", "DailyVPro: price approached a naked POC")
+alertcondition(rule80Trigger,            "80% Rule Triggered",  "DailyVPro: opened outside yesterday's VA, price re-accepted inside — expect VA traversal")

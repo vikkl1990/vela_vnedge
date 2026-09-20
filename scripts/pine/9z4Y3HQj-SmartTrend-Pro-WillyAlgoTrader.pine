@@ -1,0 +1,805 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// SMARTTREND PRO [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.1.0
+// Date:    2025-06-20
+//
+// ── CHANGELOG ─────────────────────────────────────────────
+// v1.1.0  2025-06-20  Audit & fixes
+//   • FIX: Symmetric momentum scoring (sell signals no longer suppressed)
+//   • FIX: SL hit now resets position state (no phantom TP hits after stop)
+//   • FIX: Swing structure comparison uses actual previous swing, not prev bar
+//   • FIX: Pullback signals now respect all active filters
+//   • FIX: Bar coloring implemented (was commented out / dead input)
+//   • OPT: Eliminated duplicate EMA/ATR calculations
+//   • OPT: Shared EMA50/EMA200/MACD across score + filters
+//   • OPT: Adaptive cloud length uses proper volatility ratio
+//
+// v1.0.0  2025-06-20  Initial release
+// ══════════════════════════════════════════════════════════
+
+
+indicator(
+    title            = "SmartTrend Pro [WillyAlgoTrader]",
+    shorttitle       = "SmartTrend",
+    overlay          = true,
+    max_lines_count  = 500,
+    max_labels_count = 500,
+    max_boxes_count  = 500,
+    max_bars_back    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN    = "⚙️ Main Settings"
+GRP_SIGNAL  = "📡 Signal Tuning"
+GRP_CLOUD   = "☁️ Trend Cloud"
+GRP_VISUAL  = "🎨 Visual Settings"
+GRP_FILTER  = "🔍 Filters"
+GRP_RISK    = "🛡️ Risk Management"
+GRP_DASH    = "📊 Dashboard"
+GRP_ALERT   = "🔔 Alerts"
+GRP_COLORS  = "🎨 Colors"
+
+INDICATOR_VERSION = "v1.1.0"
+
+// ══════════════════════════════════════
+// INPUTS — Main Settings
+// ══════════════════════════════════════
+sensitivityInput = input.float(2.5, "Trend Sensitivity", minval = 0.5, maxval = 8.0, step = 0.1, group = GRP_MAIN, tooltip = "Controls the Adaptive Volatility Trend Engine responsiveness.\n• Lower = more signals, faster reaction, more noise\n• Higher = fewer signals, smoother, more reliable\n• Recommended: 1.5–4.0")
+
+atrPeriodInput = input.int(21, "ATR Period", minval = 5, maxval = 100, group = GRP_MAIN, tooltip = "Lookback for volatility measurement.\n• Lower = reacts faster to volatility changes\n• Higher = smoother volatility estimate\n• Recommended: 14–30")
+
+sourceInput = input.source(close, "Source", group = GRP_MAIN, tooltip = "Price source for calculations. Close is recommended for most strategies")
+
+presetInput = input.string("Balanced", "Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping"], group = GRP_MAIN, tooltip = "Quick presets:\n• Conservative: fewer signals, higher win rate, for swing\n• Balanced: default, good for 15M-4H\n• Aggressive: more signals, faster entries\n• Scalping: optimized for 1-5M, tighter bands")
+
+// ══════════════════════════════════════
+// INPUTS — Signal Tuning
+// ══════════════════════════════════════
+minScoreInput = input.int(55, "Min Signal Score (0-100)", minval = 10, maxval = 95, step = 5, group = GRP_SIGNAL, tooltip = "Minimum confluence score to trigger a signal.\n• Higher = fewer but stronger signals\n• Lower = more signals, more noise\n• 40-60 for most strategies, 70+ for conservative")
+
+showStrongOnlyInput = input.bool(false, "Strong Signals Only (75+)", group = GRP_SIGNAL, tooltip = "Only show signals with confluence score ≥ 75. Best for swing trading")
+
+showPullbackInput = input.bool(true, "Show Pullback Signals", group = GRP_SIGNAL, tooltip = "Show pullback entries when price retraces to trend support/resistance within established trend")
+
+pullbackSensInput = input.int(8, "Pullback Sensitivity", minval = 3, maxval = 20, group = GRP_SIGNAL, tooltip = "Lookback for pullback detection.\n• Lower = detects smaller pullbacks\n• Higher = requires deeper retracement")
+
+// ══════════════════════════════════════
+// INPUTS — Trend Cloud
+// ══════════════════════════════════════
+showCloudInput = input.bool(true, "Show Trend Cloud", group = GRP_CLOUD, tooltip = "Dynamic trend cloud that adapts to volatility")
+
+cloudStyleInput = input.string("Adaptive", "Cloud Style", options = ["Adaptive", "Fast", "Smooth", "Minimal"], group = GRP_CLOUD, tooltip = "• Adaptive: auto-adjusts to current volatility (recommended)\n• Fast: tighter cloud for scalping\n• Smooth: wider cloud for swing trading\n• Minimal: single trend line, no fill")
+
+showTracerInput = input.bool(false, "Show Trend Tracer", group = GRP_CLOUD, tooltip = "Long-term EMA trend tracer line for bias confirmation")
+
+tracerLenInput = input.int(233, "Tracer Length", minval = 50, maxval = 500, group = GRP_CLOUD, tooltip = "EMA length for long-term trend tracer.\n• 200 is the standard institutional level\n• 100-150 for faster reaction")
+
+// ══════════════════════════════════════
+// INPUTS — Filters
+// ══════════════════════════════════════
+useTrendFilterInput = input.bool(false, "Trend Filter (with Cloud)", group = GRP_FILTER, tooltip = "Only show signals aligned with the trend cloud direction")
+
+useVolFilterInput = input.bool(false, "Volume Filter", group = GRP_FILTER, tooltip = "Only show signals with above-average volume confirmation. Auto-disabled for instruments without volume (forex)")
+
+useAdxFilterInput = input.bool(false, "ADX Trend Strength Filter", group = GRP_FILTER, tooltip = "Only show signals when ADX > 20 (trending market). Filters out ranging/choppy conditions")
+
+useMomentumFilterInput = input.bool(false, "Momentum Filter", group = GRP_FILTER, tooltip = "Only show signals with momentum confirmation (MACD histogram aligned)")
+
+// ══════════════════════════════════════
+// INPUTS — Risk Management
+// ══════════════════════════════════════
+showRiskInput = input.bool(true, "Show TP/SL Levels", group = GRP_RISK, tooltip = "Display dynamic take-profit and stop-loss levels based on ATR")
+
+slModeInput = input.string("ATR", "Stop-Loss Mode", options = ["ATR", "Percentage", "Structure"], group = GRP_RISK, tooltip = "• ATR: adaptive to volatility (recommended)\n• Percentage: fixed % from entry\n• Structure: based on recent swing high/low")
+
+slMultInput = input.float(1.5, "SL ATR Multiplier", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RISK, tooltip = "ATR multiplier for stop-loss distance.\n• 1.0-1.5 for scalping\n• 1.5-2.5 for swing\n• 2.5+ for position trading")
+
+slPercInput = input.float(1.0, "SL Percentage", minval = 0.1, maxval = 10.0, step = 0.1, group = GRP_RISK, tooltip = "Fixed percentage stop-loss (only used in Percentage mode)")
+
+tp1MultInput = input.float(1.5, "TP1 Risk:Reward", minval = 0.5, maxval = 10.0, step = 0.1, group = GRP_RISK, tooltip = "Take-Profit 1 as multiple of risk (SL distance)")
+
+tp2MultInput = input.float(2.5, "TP2 Risk:Reward", minval = 0.5, maxval = 15.0, step = 0.1, group = GRP_RISK, tooltip = "Take-Profit 2 as multiple of risk (SL distance)")
+
+tp3MultInput = input.float(4.0, "TP3 Risk:Reward", minval = 1.0, maxval = 20.0, step = 0.1, group = GRP_RISK, tooltip = "Take-Profit 3 as multiple of risk (SL distance)")
+
+showTrailingInput = input.bool(false, "Show Trailing Stop", group = GRP_RISK, tooltip = "Dynamic trailing stop that follows price using Chandelier Exit method")
+
+showSwingsInput = input.bool(false, "Show Market Structure", group = GRP_RISK, tooltip = "Display HH/HL/LH/LL swing structure labels")
+
+swingLenInput = input.int(10, "Swing Lookback", minval = 3, maxval = 50, group = GRP_RISK, tooltip = "Lookback period for swing detection. Lower = more swings, higher = only major swings")
+
+// ══════════════════════════════════════
+// INPUTS — Visual
+// ══════════════════════════════════════
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+
+showSignalsInput = input.bool(true, "Show Buy/Sell Signals", group = GRP_VISUAL, tooltip = "Display buy/sell signal labels on chart")
+
+showBgInput = input.bool(false, "Show Trend Background", group = GRP_VISUAL, tooltip = "Subtle background color showing current trend direction")
+
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+
+// ══════════════════════════════════════
+// INPUTS — Dashboard
+// ══════════════════════════════════════
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Smart dashboard with trend, signal, volatility, session info")
+
+dashPosInput = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH, tooltip = "Position of the dashboard on chart")
+
+dashSizeInput = input.string("Small", "Dashboard Font Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_DASH, tooltip = "Font size for dashboard text")
+
+showMtfInput = input.bool(true, "Show MTF Panel", group = GRP_DASH, tooltip = "Multi-timeframe trend analysis panel inside dashboard")
+
+// ══════════════════════════════════════
+// INPUTS — Colors
+// ══════════════════════════════════════
+bullColorInput = input.color(#089981, "Bull", inline = "colors1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "colors1", group = GRP_COLORS)
+neutralColorInput = input.color(#FFEB3B, "Neutral", inline = "colors1", group = GRP_COLORS)
+
+// ══════════════════════════════════════
+// INPUTS — Alerts
+// ══════════════════════════════════════
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations (3Commas, Cornix, etc.)")
+
+alertBuyInput = input.bool(true, "Buy Signal Alerts", group = GRP_ALERT)
+alertSellInput = input.bool(true, "Sell Signal Alerts", group = GRP_ALERT)
+alertTpSlInput = input.bool(true, "TP/SL Hit Alerts", group = GRP_ALERT)
+alertCloudInput = input.bool(false, "Cloud Cross Alerts", group = GRP_ALERT)
+
+// ══════════════════════════════════════
+// THEME DETECTION & PALETTE
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR   = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED   = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG    = color.new(#2962FF, 0)
+HEADER_TEXT  = #FFFFFF
+LABEL_TEXT   = #FFFFFF
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+BULL_BG = color.new(bullColorInput, 85)
+BEAR_BG = color.new(bearColorInput, 85)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+// Safe division — prevent na and division by zero
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// Ehlers Super Smoother (2-pole) — superior noise reduction vs EMA
+ehlersSS(float src, int period) =>
+    float a1 = math.exp(-math.sqrt(2) * math.pi / math.max(period, 2))
+    float b1 = 2.0 * a1 * math.cos(math.sqrt(2) * math.pi / math.max(period, 2))
+    float c2 = b1
+    float c3 = -a1 * a1
+    float c1 = 1.0 - c2 - c3
+    var float ss = na
+    ss := bar_index < 3 ? nz(src, 0.0) : c1 * (src + nz(src[1], src)) * 0.5 + c2 * nz(ss[1], src) + c3 * nz(ss[2], src)
+    ss
+
+// Adaptive ATR using Kaufman efficiency ratio
+adaptiveAtr(int period) =>
+    float rawAtr = nz(ta.atr(period), 0.0)
+    float direction = math.abs(close - close[period])
+    float volatility = math.sum(math.abs(close - close[1]), period)
+    float er = safeDiv(direction, volatility, 0.5)
+    float fastSc = 2.0 / 3.0
+    float slowSc = 2.0 / 31.0
+    float sc = math.pow(er * (fastSc - slowSc) + slowSc, 2)
+    var float aAtr = na
+    aAtr := na(aAtr[1]) ? rawAtr : aAtr[1] + sc * (rawAtr - aAtr[1])
+    aAtr
+
+// Adaptive Volatility Trend Engine (AVTE) — core algorithm
+avte(float src, float factor, int atrLen) =>
+    float filteredPrice = ehlersSS(src, math.max(math.round(atrLen / 2), 3))
+    float aAtr = adaptiveAtr(atrLen)
+    float upperBand = filteredPrice + factor * aAtr
+    float lowerBand = filteredPrice - factor * aAtr
+    var float upper = na
+    var float lower = na
+    var int dir = 1
+    var float trendLine = na
+    lower := nz(lower[1], lowerBand)
+    upper := nz(upper[1], upperBand)
+    lower := lowerBand > lower or close[1] < lower ? lowerBand : lower
+    upper := upperBand < upper or close[1] > upper ? upperBand : upper
+    if close > upper
+        dir := 1
+    else if close < lower
+        dir := -1
+    trendLine := dir == 1 ? lower : upper
+    [trendLine, dir, filteredPrice, aAtr]
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION MAPPING
+// ══════════════════════════════════════
+dashPos = switch dashPosInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+dashBodySize = switch dashSizeInput
+    "Tiny"   => size.tiny
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.small
+
+dashHeaderSize = switch dashSizeInput
+    "Tiny"   => size.small
+    "Small"  => size.normal
+    "Normal" => size.normal
+    "Large"  => size.large
+    => size.normal
+
+// ══════════════════════════════════════
+// PRESET APPLICATION
+// ══════════════════════════════════════
+float effectiveSensitivity = switch presetInput
+    "Conservative" => sensitivityInput * 1.4
+    "Aggressive"   => sensitivityInput * 0.7
+    "Scalping"     => sensitivityInput * 0.5
+    => sensitivityInput
+
+int effectiveAtr = switch presetInput
+    "Conservative" => math.round(atrPeriodInput * 1.3)
+    "Aggressive"   => math.round(atrPeriodInput * 0.8)
+    "Scalping"     => math.round(atrPeriodInput * 0.6)
+    => atrPeriodInput
+
+int effectiveMinScore = switch presetInput
+    "Conservative" => math.max(minScoreInput, 70)
+    "Aggressive"   => math.min(minScoreInput, 45)
+    "Scalping"     => math.min(minScoreInput, 40)
+    => minScoreInput
+
+// ══════════════════════════════════════
+// SHARED INDICATORS (computed once, used everywhere)
+// ══════════════════════════════════════
+// EMAs — shared between score, filters, MTF, cloud
+float ema50  = nz(ta.ema(close, 50), close)
+float ema200 = nz(ta.ema(close, 200), close)
+
+// MACD — shared between score and momentum filter
+float macdFastLine = nz(ta.ema(close, 12), close)
+float macdSlowLine = nz(ta.ema(close, 26), close)
+float macdLine     = macdFastLine - macdSlowLine
+float macdSignal   = nz(ta.ema(macdLine, 9), 0.0)
+float macdHist     = macdLine - macdSignal
+
+// ADX — computed once, shared between score and filter
+[diP, diM, adxVal] = ta.dmi(14, 14)
+float adxSafe = nz(adxVal, 0.0)
+
+// Volume — shared between score and filter
+bool hasVolume    = nz(volume, 0) > 0
+float volSma20    = hasVolume ? nz(ta.sma(volume, 20), 0.0) : 0.0
+float volEmaFast  = hasVolume ? nz(ta.ema(volume, 10), 0.0) : 0.0
+float volEmaSlow  = hasVolume ? nz(ta.ema(volume, 25), 0.0) : 0.0
+
+// RSI — shared between score and pullback
+float rsi14 = nz(ta.rsi(close, 14), 50.0)
+
+// ══════════════════════════════════════
+// CALCULATIONS — Core Engine
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(effectiveAtr * 3, 200)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// AVTE — main trend engine
+[avteLine, avteDir, filteredSrc, aAtr] = avte(sourceInput, effectiveSensitivity, effectiveAtr)
+
+// Previous direction for crossover detection
+int prevDir = nz(avteDir[1], avteDir)
+bool trendFlipBull = avteDir == 1 and prevDir == -1
+bool trendFlipBear = avteDir == -1 and prevDir == 1
+
+// ══════════════════════════════════════
+// MOMENTUM SCORE — Symmetric (0-100)
+// ══════════════════════════════════════
+// FIX v1.1: Made scoring symmetric around 50.
+// Each factor adds/subtracts equally so sell signals are not suppressed.
+calcMomentumScore() =>
+    float score = 50.0
+
+    // Factor 1: EMA alignment (±15)
+    bool emaAlignBull = close > ema50 and ema50 > ema200
+    bool emaAlignBear = close < ema50 and ema50 < ema200
+    score += emaAlignBull ? 15.0 : emaAlignBear ? -15.0 : 0.0
+
+    // Factor 2: RSI position (±10)
+    score += (rsi14 > 50 and rsi14 < 70) ? 10.0 : (rsi14 <= 50 and rsi14 > 30) ? -10.0 : 0.0
+
+    // Factor 3: MACD histogram (±12)
+    score += (macdHist > 0 and macdHist > macdHist[1]) ? 12.0 : (macdHist < 0 and macdHist < macdHist[1]) ? -12.0 : 0.0
+
+    // Factor 4: Volume confirmation (±8)  — FIX: symmetric
+    bool volAbove = hasVolume and volume > volSma20 * 1.2
+    bool volBelow = hasVolume and volume < volSma20 * 0.8
+    // High volume in direction of price move confirms; low volume weakens
+    float priceChg = close - close[1]
+    score += volAbove and priceChg > 0 ? 8.0 : volAbove and priceChg < 0 ? -8.0 : volBelow ? (priceChg > 0 ? -4.0 : 4.0) : 0.0
+
+    // Factor 5: ADX strength (±8) — FIX: symmetric
+    // Strong trend in bull direction = +, in bear direction = -
+    bool adxTrending = adxSafe > 20
+    score += adxTrending and diP > diM ? 8.0 : adxTrending and diM > diP ? -8.0 : 0.0
+
+    math.max(0.0, math.min(100.0, score))
+
+float mScore = calcMomentumScore()
+
+// ══════════════════════════════════════
+// CLOUD CALCULATION
+// ══════════════════════════════════════
+// FIX v1.1: Improved adaptive cloud length using percentile-based volatility ratio
+float atrPctOfPrice = safeDiv(aAtr, close, 0.01) * 100.0  // ATR as % of price
+float atrPctSma     = nz(ta.sma(atrPctOfPrice, 50), atrPctOfPrice)
+float volRatio      = safeDiv(atrPctOfPrice, atrPctSma, 1.0)
+// High volatility → shorter (faster) cloud; low volatility → longer (smoother) cloud
+
+int cloudFastLen = switch cloudStyleInput
+    "Fast"     => 21
+    "Smooth"   => 55
+    "Minimal"  => 34
+    => math.round(math.max(13, math.min(55, 34.0 / math.max(volRatio, 0.5))))
+
+int cloudSlowLen = math.round(cloudFastLen * 2.618)
+
+float cloudFast = ehlersSS(sourceInput, cloudFastLen)
+float cloudSlow = ehlersSS(sourceInput, math.min(cloudSlowLen, 200))
+
+bool cloudBull = cloudFast > cloudSlow
+bool cloudBear = cloudFast < cloudSlow
+
+// Trend tracer (long-term EMA bias)
+float tracerVal = nz(ta.ema(close, tracerLenInput), close)
+
+// ══════════════════════════════════════
+// FILTERS
+// ══════════════════════════════════════
+bool volConfirm = hasVolume ? volEmaFast > volEmaSlow : true
+bool adxConfirm = adxSafe > 20.0
+bool momentumBull = macdHist > 0 and macdHist > macdHist[1]
+bool momentumBear = macdHist < 0 and macdHist < macdHist[1]
+
+bool volFilterOk   = useVolFilterInput ? volConfirm : true
+bool adxFilterOk   = useAdxFilterInput ? adxConfirm : true
+bool bullTrendOk   = useTrendFilterInput ? cloudBull : true
+bool bearTrendOk   = useTrendFilterInput ? cloudBear : true
+bool bullMomOk     = useMomentumFilterInput ? momentumBull : true
+bool bearMomOk     = useMomentumFilterInput ? momentumBear : true
+
+bool bullFiltersPass = bullTrendOk and volFilterOk and adxFilterOk and bullMomOk
+bool bearFiltersPass = bearTrendOk and volFilterOk and adxFilterOk and bearMomOk
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC
+// ══════════════════════════════════════
+int minScore = showStrongOnlyInput ? math.max(effectiveMinScore, 75) : effectiveMinScore
+int sellThreshold = 100 - minScore
+
+bool rawBuy  = trendFlipBull and mScore >= minScore and bullFiltersPass
+bool rawSell = trendFlipBear and mScore <= sellThreshold and bearFiltersPass
+
+bool confirmedBuy  = rawBuy and barstate.isconfirmed and isWarmedUp
+bool confirmedSell = rawSell and barstate.isconfirmed and isWarmedUp
+
+bool isStrongBuy  = confirmedBuy and mScore >= 75
+bool isStrongSell = confirmedSell and mScore <= 25
+
+// ══════════════════════════════════════
+// POSITION STATE TRACKING
+// ══════════════════════════════════════
+var int   lastSignalDir    = 0
+var float entryPrice       = na
+var float slPrice          = na
+var float frozenSlDistance  = na
+var int   barsSinceSignal  = 0
+var bool  positionActive   = false  // FIX v1.1: track if position is still live
+
+// ATR for risk management — reuse aAtr from AVTE to avoid duplicate calculation
+float currentAtr = nz(aAtr, nz(ta.atr(14), 0.0))
+
+// SL distance at current bar
+float slDistanceNow = switch slModeInput
+    "Percentage" => close * (slPercInput / 100.0)
+    "Structure"  => nz(ta.highest(high, swingLenInput) - ta.lowest(low, swingLenInput), currentAtr * 2.0) * 0.5
+    => currentAtr * slMultInput
+
+if confirmedBuy
+    lastSignalDir   := 1
+    entryPrice      := close
+    slPrice         := close - slDistanceNow
+    frozenSlDistance := slDistanceNow
+    barsSinceSignal := 0
+    positionActive  := true
+else if confirmedSell
+    lastSignalDir   := -1
+    entryPrice      := close
+    slPrice         := close + slDistanceNow
+    frozenSlDistance := slDistanceNow
+    barsSinceSignal := 0
+    positionActive  := true
+else
+    barsSinceSignal += 1
+
+// ══════════════════════════════════════
+// RISK MANAGEMENT — Dynamic TP/SL
+// ══════════════════════════════════════
+float safeSlDist = nz(frozenSlDistance, slDistanceNow)
+
+float tp1Price = lastSignalDir == 1 ? entryPrice + safeSlDist * tp1MultInput : lastSignalDir == -1 ? entryPrice - safeSlDist * tp1MultInput : na
+float tp2Price = lastSignalDir == 1 ? entryPrice + safeSlDist * tp2MultInput : lastSignalDir == -1 ? entryPrice - safeSlDist * tp2MultInput : na
+float tp3Price = lastSignalDir == 1 ? entryPrice + safeSlDist * tp3MultInput : lastSignalDir == -1 ? entryPrice - safeSlDist * tp3MultInput : na
+
+// Trailing stop (Chandelier Exit method)
+float trailAtr = currentAtr * slMultInput
+var float trailingStop = na
+if lastSignalDir == 1 and positionActive
+    float newTrail = close - trailAtr
+    trailingStop := na(trailingStop[1]) or confirmedBuy ? newTrail : math.max(nz(trailingStop[1], newTrail), newTrail)
+else if lastSignalDir == -1 and positionActive
+    float newTrail = close + trailAtr
+    trailingStop := na(trailingStop[1]) or confirmedSell ? newTrail : math.min(nz(trailingStop[1], newTrail), newTrail)
+
+// TP/SL hit detection — FIX v1.1: only when position is active
+bool slHit = false
+var bool tp1Hit = false
+var bool tp2Hit = false
+var bool tp3Hit = false
+
+if confirmedBuy or confirmedSell
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+
+// SL hit — FIX v1.1: reset position state on SL hit
+if positionActive and barsSinceSignal > 0
+    if lastSignalDir == 1 and not na(slPrice) and low <= slPrice
+        slHit := true
+        positionActive := false
+    if lastSignalDir == -1 and not na(slPrice) and high >= slPrice
+        slHit := true
+        positionActive := false
+
+// TP hits — only if position still active
+if positionActive and lastSignalDir == 1 and barsSinceSignal > 0
+    if not na(tp1Price) and high >= tp1Price and not tp1Hit
+        tp1Hit := true
+    if not na(tp2Price) and high >= tp2Price and not tp2Hit
+        tp2Hit := true
+    if not na(tp3Price) and high >= tp3Price and not tp3Hit
+        tp3Hit := true
+
+if positionActive and lastSignalDir == -1 and barsSinceSignal > 0
+    if not na(tp1Price) and low <= tp1Price and not tp1Hit
+        tp1Hit := true
+    if not na(tp2Price) and low <= tp2Price and not tp2Hit
+        tp2Hit := true
+    if not na(tp3Price) and low <= tp3Price and not tp3Hit
+        tp3Hit := true
+
+// ══════════════════════════════════════
+// PULLBACK SIGNALS — FIX v1.1: now respect filters
+// ══════════════════════════════════════
+float pullRsi = nz(ta.rsi(close, pullbackSensInput), 50.0)
+float pullEma = nz(ta.ema(close, pullbackSensInput * 3), close)
+
+bool pullbackBuyRaw  = showPullbackInput and avteDir == 1 and not trendFlipBull and close <= pullEma and pullRsi < 35 and pullRsi > pullRsi[1]
+bool pullbackSellRaw = showPullbackInput and avteDir == -1 and not trendFlipBear and close >= pullEma and pullRsi > 65 and pullRsi < pullRsi[1]
+
+// FIX v1.1: Apply active filters to pullback signals
+bool pullbackBuy  = pullbackBuyRaw and bullFiltersPass and barstate.isconfirmed and isWarmedUp
+bool pullbackSell = pullbackSellRaw and bearFiltersPass and barstate.isconfirmed and isWarmedUp
+
+// ══════════════════════════════════════
+// MARKET STRUCTURE (HH/HL/LH/LL) — FIX v1.1: proper swing tracking
+// ══════════════════════════════════════
+float swingHigh = ta.highestbars(high, swingLenInput) == 0 ? high : na
+float swingLow  = ta.lowestbars(low, swingLenInput) == 0 ? low : na
+
+// FIX v1.1: Store previous swing values BEFORE updating, so comparison works
+var float lastSwingHigh = na
+var float prevSwingHigh = na
+var float lastSwingLow  = na
+var float prevSwingLow  = na
+
+if not na(swingHigh)
+    prevSwingHigh := lastSwingHigh  // save the one before for comparison
+    lastSwingHigh := swingHigh
+
+if not na(swingLow)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := swingLow
+
+// ══════════════════════════════════════
+// ══════════════════════════════════════
+// MTF DATA (non-repainting)
+// ══════════════════════════════════════
+bool mtf5   = request.security(syminfo.tickerid, "5",   close[1] > ta.ema(close, 200)[1], barmerge.gaps_off, barmerge.lookahead_on)
+bool mtf15  = request.security(syminfo.tickerid, "15",  close[1] > ta.ema(close, 200)[1], barmerge.gaps_off, barmerge.lookahead_on)
+bool mtf60  = request.security(syminfo.tickerid, "60",  close[1] > ta.ema(close, 200)[1], barmerge.gaps_off, barmerge.lookahead_on)
+bool mtf240 = request.security(syminfo.tickerid, "240", close[1] > ta.ema(close, 200)[1], barmerge.gaps_off, barmerge.lookahead_on)
+bool mtfD   = request.security(syminfo.tickerid, "D",   close[1] > ta.ema(close, 200)[1], barmerge.gaps_off, barmerge.lookahead_on)
+
+// ══════════════════════════════════════
+// SESSION DETECTION
+// ══════════════════════════════════════
+bool isTokyo   = not na(time(timeframe.period, "0000-0900", "UTC"))
+bool isLondon  = not na(time(timeframe.period, "0700-1600", "UTC"))
+bool isNewYork = not na(time(timeframe.period, "1300-2200", "UTC"))
+bool isSydney  = not na(time(timeframe.period, "2100-0600", "UTC"))
+
+string sessionStr = isNewYork and isLondon ? "London/New York" : isLondon and isTokyo ? "Tokyo/London" : isNewYork ? "New York" : isLondon ? "London" : isTokyo ? "Tokyo" : isSydney ? "Sydney" : "Off-hours"
+
+// ══════════════════════════════════════
+// VOLATILITY GAUGE
+// ══════════════════════════════════════
+float atr10     = nz(ta.atr(10), 0.0)
+float atrSma20  = nz(ta.sma(atr10, 20), atr10)
+float atrStd    = nz(ta.stdev(atr10, 20), 0.0)
+float volGauge  = atrStd != 0 ? math.max(0.0, math.min(100.0, safeDiv(atr10 - (atrSma20 - atrStd), 2.0 * atrStd, 0.5) * 100.0)) : 50.0
+
+string volStr = volGauge > 70 ? "High" : volGauge > 40 ? "Medium" : "Low"
+color volColor = volGauge > 70 ? bearColorInput : volGauge > 40 ? neutralColorInput : bullColorInput
+
+// ══════════════════════════════════════
+// TREND STRINGS FOR DASHBOARD
+// ══════════════════════════════════════
+string trendStr   = avteDir == 1 ? "Bullish" : "Bearish"
+color  trendColor  = avteDir == 1 ? bullColorInput : bearColorInput
+
+string signalStr  = confirmedBuy ? "BUY" : confirmedSell ? "SELL" : "Wait"
+color  signalColor = confirmedBuy ? bullColorInput : confirmedSell ? bearColorInput : TEXT_MUTED
+
+string strengthStr   = na(mScore) ? "—" : str.tostring(mScore, "#.0")
+color  strengthColor = mScore >= 70 ? bullColorInput : mScore >= 40 ? neutralColorInput : bearColorInput
+
+string adxStr   = adxSafe > 25 ? "Trending" : adxSafe > 20 ? "Ranging" : "No Trend"
+color  adxColor = adxSafe > 25 ? bullColorInput : adxSafe > 20 ? neutralColorInput : bearColorInput
+
+// ══════════════════════════════════════
+// PLOTS — Trend Cloud
+// ══════════════════════════════════════
+pCloudFast = plot(showCloudInput and cloudStyleInput != "Minimal" ? cloudFast : na, "Cloud Fast", color.new(na, 100), editable = false)
+pCloudSlow = plot(showCloudInput and cloudStyleInput != "Minimal" ? cloudSlow : na, "Cloud Slow", color.new(na, 100), editable = false)
+fill(pCloudFast, pCloudSlow, cloudBull ? color.new(bullColorInput, 85) : color.new(bearColorInput, 85), "Cloud Fill", editable = false)
+
+plot(showCloudInput and cloudStyleInput == "Minimal" ? cloudFast : na, "Trend Line", cloudBull ? bullColorInput : bearColorInput, 2, editable = false)
+
+plot(showCloudInput ? avteLine : na, "AVTE Trend", avteDir == 1 ? color.new(bullColorInput, 30) : color.new(bearColorInput, 30), 2, plot.style_stepline, editable = false)
+
+plot(showTracerInput ? tracerVal : na, "Trend Tracer", close > tracerVal ? color.new(bullColorInput, 40) : color.new(bearColorInput, 40), 2, editable = false)
+
+bgcolor(showBgInput ? (avteDir == 1 ? BULL_BG : BEAR_BG) : na, title = "Trend Background", editable = false)
+
+// ══════════════════════════════════════
+// PLOTS — Risk Management Lines
+// ══════════════════════════════════════
+// FIX v1.1: only show risk lines while position is active
+bool showRiskLines = showRiskInput and not na(entryPrice) and positionActive and barsSinceSignal < 200
+
+plot(showRiskLines ? entryPrice : na, "Entry", color.new(#FF9800, 30), 1, plot.style_linebr, editable = false)
+plot(showRiskLines ? slPrice : na, "Stop Loss", color.new(bearColorInput, 30), 1, plot.style_linebr, editable = false)
+plot(showRiskLines and not tp1Hit ? tp1Price : na, "TP1", color.new(bullColorInput, 50), 1, plot.style_linebr, editable = false)
+plot(showRiskLines and not tp2Hit ? tp2Price : na, "TP2", color.new(bullColorInput, 40), 1, plot.style_linebr, editable = false)
+plot(showRiskLines and not tp3Hit ? tp3Price : na, "TP3", color.new(bullColorInput, 30), 1, plot.style_linebr, editable = false)
+
+plot(showTrailingInput and positionActive ? trailingStop : na, "Trailing SL", color.new(#FF9800, 20), 1, plot.style_stepline, editable = false)
+
+// ── Right-side TP/SL/Entry labels ──
+var label entryLabel = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+
+if showRiskInput and barstate.islast and not na(entryPrice) and positionActive and barsSinceSignal < 200
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+
+    int labelX = bar_index + 3
+
+    entryLabel := label.new(labelX, entryPrice, "Entry: " + str.tostring(entryPrice, format.mintick), xloc.bar_index, yloc.price, color.new(#FF9800, 20), label.style_label_left, #FFFFFF, size.small)
+
+    if not na(slPrice)
+        slLabel := label.new(labelX, slPrice, "SL: " + str.tostring(slPrice, format.mintick), xloc.bar_index, yloc.price, color.new(bearColorInput, 20), label.style_label_left, #FFFFFF, size.small)
+
+    if not tp1Hit and not na(tp1Price)
+        tp1Label := label.new(labelX, tp1Price, "TP1: " + str.tostring(tp1Price, format.mintick), xloc.bar_index, yloc.price, color.new(bullColorInput, 20), label.style_label_left, #FFFFFF, size.small)
+
+    if not tp2Hit and not na(tp2Price)
+        tp2Label := label.new(labelX, tp2Price, "TP2: " + str.tostring(tp2Price, format.mintick), xloc.bar_index, yloc.price, color.new(bullColorInput, 30), label.style_label_left, #FFFFFF, size.small)
+
+    if not tp3Hit and not na(tp3Price)
+        tp3Label := label.new(labelX, tp3Price, "TP3: " + str.tostring(tp3Price, format.mintick), xloc.bar_index, yloc.price, color.new(bullColorInput, 40), label.style_label_left, #FFFFFF, size.small)
+
+// ══════════════════════════════════════
+// LABELS — Buy/Sell Signals
+// ══════════════════════════════════════
+plotshape(showSignalsInput and confirmedBuy and isStrongBuy ? low : na, "Strong Buy", shape.labelup, location.belowbar, bullColorInput, text = "Strong\nBuy", textcolor = LABEL_TEXT, size = size.small)
+plotshape(showSignalsInput and confirmedBuy and not isStrongBuy ? low : na, "Buy", shape.labelup, location.belowbar, bullColorInput, text = "Buy", textcolor = LABEL_TEXT, size = size.small)
+plotshape(showSignalsInput and confirmedSell and isStrongSell ? high : na, "Strong Sell", shape.labeldown, location.abovebar, bearColorInput, text = "Strong\nSell", textcolor = LABEL_TEXT, size = size.small)
+plotshape(showSignalsInput and confirmedSell and not isStrongSell ? high : na, "Sell", shape.labeldown, location.abovebar, bearColorInput, text = "Sell", textcolor = LABEL_TEXT, size = size.small)
+
+// Pullback signals
+plotshape(pullbackBuy ? low : na, "Pullback Buy", shape.circle, location.belowbar, color.new(bullColorInput, 40), size = size.tiny)
+plotshape(pullbackSell ? high : na, "Pullback Sell", shape.circle, location.abovebar, color.new(bearColorInput, 40), size = size.tiny)
+
+// TP hit markers — long
+plotshape(showRiskInput and tp1Hit and not tp1Hit[1] and lastSignalDir == 1 ? high : na, "TP1 Hit Long", shape.xcross, location.abovebar, bullColorInput, text = "TP1", textcolor = bullColorInput, size = size.tiny)
+plotshape(showRiskInput and tp2Hit and not tp2Hit[1] and lastSignalDir == 1 ? high : na, "TP2 Hit Long", shape.xcross, location.abovebar, bullColorInput, text = "TP2", textcolor = bullColorInput, size = size.tiny)
+plotshape(showRiskInput and tp3Hit and not tp3Hit[1] and lastSignalDir == 1 ? high : na, "TP3 Hit Long", shape.xcross, location.abovebar, bullColorInput, text = "TP3", textcolor = bullColorInput, size = size.tiny)
+// TP hits — short
+plotshape(showRiskInput and tp1Hit and not tp1Hit[1] and lastSignalDir == -1 ? low : na, "TP1 Hit Short", shape.xcross, location.belowbar, bearColorInput, text = "TP1", textcolor = bearColorInput, size = size.tiny)
+plotshape(showRiskInput and tp2Hit and not tp2Hit[1] and lastSignalDir == -1 ? low : na, "TP2 Hit Short", shape.xcross, location.belowbar, bearColorInput, text = "TP2", textcolor = bearColorInput, size = size.tiny)
+plotshape(showRiskInput and tp3Hit and not tp3Hit[1] and lastSignalDir == -1 ? low : na, "TP3 Hit Short", shape.xcross, location.belowbar, bearColorInput, text = "TP3", textcolor = bearColorInput, size = size.tiny)
+
+// SL hit marker — FIX v1.1: visual feedback for stop loss
+plotshape(showRiskInput and slHit and lastSignalDir == 1 ? low : na, "SL Hit Long", shape.xcross, location.belowbar, bearColorInput, text = "SL", textcolor = bearColorInput, size = size.tiny)
+plotshape(showRiskInput and slHit and lastSignalDir == -1 ? high : na, "SL Hit Short", shape.xcross, location.abovebar, bearColorInput, text = "SL", textcolor = bearColorInput, size = size.tiny)
+
+// Market structure labels — FIX v1.1: use proper previous swing comparison
+if showSwingsInput and not na(swingHigh) and isWarmedUp
+    string swLabel = not na(prevSwingHigh) ? (swingHigh > prevSwingHigh ? "HH" : "LH") : "HH"
+    label.new(bar_index - swingLenInput, swingHigh, swLabel, xloc.bar_index, yloc.price, color.new(na, 100), label.style_label_down, avteDir == 1 ? bullColorInput : bearColorInput, size.tiny)
+
+if showSwingsInput and not na(swingLow) and isWarmedUp
+    string swLabel = not na(prevSwingLow) ? (swingLow > prevSwingLow ? "HL" : "LL") : "LL"
+    label.new(bar_index - swingLenInput, swingLow, swLabel, xloc.bar_index, yloc.price, color.new(na, 100), label.style_label_up, avteDir == -1 ? bearColorInput : bullColorInput, size.tiny)
+
+// Clean old labels
+if array.size(label.all) > 450
+    label.delete(array.shift(label.all))
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+if showDashInput and barstate.islast
+    int totalRows = showMtfInput ? 14 : 8
+    var dashTable = table.new(dashPos, 3, totalRows, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    table.cell(dashTable, 0, 0, "SmartTrend Pro", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = dashHeaderSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 2, 0)
+
+    int r = 1
+
+    table.cell(dashTable, 0, r, "Trend", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, r, trendStr, text_color = trendColor, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 2, r, "", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = trendColor)
+    r += 1
+
+    table.cell(dashTable, 0, r, "Signal", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, r, signalStr, text_color = signalColor, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 2, r, "", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    r += 1
+
+    table.cell(dashTable, 0, r, "Score", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, r, strengthStr + "/100", text_color = strengthColor, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 2, r, "", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+    r += 1
+
+    table.cell(dashTable, 0, r, "Market", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, r, adxStr, text_color = adxColor, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 2, r, "", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    r += 1
+
+    table.cell(dashTable, 0, r, "Volatility", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, r, volStr + " (" + str.tostring(volGauge, "#") + "%)", text_color = volColor, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.cell(dashTable, 2, r, "", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+    r += 1
+
+    table.cell(dashTable, 0, r, "Session", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, r, sessionStr, text_color = TEXT_COLOR, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 2, r, "", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+    r += 1
+
+    if showMtfInput
+        table.cell(dashTable, 0, r, "MTF Trend", text_color = HEADER_TEXT, bgcolor = color.new(#1565C0, 0), text_size = dashBodySize, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 2, r)
+        r += 1
+
+        table.cell(dashTable, 0, r, "5M", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+        table.cell(dashTable, 1, r, mtf5 ? "Bull" : "Bear", text_color = mtf5 ? bullColorInput : bearColorInput, text_size = dashBodySize, bgcolor = TABLE_BG)
+        table.cell(dashTable, 2, r, "", bgcolor = mtf5 ? color.new(bullColorInput, 70) : color.new(bearColorInput, 70), text_size = dashBodySize)
+        r += 1
+
+        table.cell(dashTable, 0, r, "15M", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+        table.cell(dashTable, 1, r, mtf15 ? "Bull" : "Bear", text_color = mtf15 ? bullColorInput : bearColorInput, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+        table.cell(dashTable, 2, r, "", bgcolor = mtf15 ? color.new(bullColorInput, 70) : color.new(bearColorInput, 70), text_size = dashBodySize)
+        r += 1
+
+        table.cell(dashTable, 0, r, "1H", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+        table.cell(dashTable, 1, r, mtf60 ? "Bull" : "Bear", text_color = mtf60 ? bullColorInput : bearColorInput, text_size = dashBodySize, bgcolor = TABLE_BG)
+        table.cell(dashTable, 2, r, "", bgcolor = mtf60 ? color.new(bullColorInput, 70) : color.new(bearColorInput, 70), text_size = dashBodySize)
+        r += 1
+
+        table.cell(dashTable, 0, r, "4H", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+        table.cell(dashTable, 1, r, mtf240 ? "Bull" : "Bear", text_color = mtf240 ? bullColorInput : bearColorInput, text_size = dashBodySize, bgcolor = TABLE_ROW_ALT)
+        table.cell(dashTable, 2, r, "", bgcolor = mtf240 ? color.new(bullColorInput, 70) : color.new(bearColorInput, 70), text_size = dashBodySize)
+        r += 1
+
+        table.cell(dashTable, 0, r, "1D", text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+        table.cell(dashTable, 1, r, mtfD ? "Bull" : "Bear", text_color = mtfD ? bullColorInput : bearColorInput, text_size = dashBodySize, bgcolor = TABLE_BG)
+        table.cell(dashTable, 2, r, "", bgcolor = mtfD ? color.new(bullColorInput, 70) : color.new(bearColorInput, 70), text_size = dashBodySize)
+        r += 1
+
+    table.cell(dashTable, 0, r, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashBodySize, bgcolor = TABLE_BG)
+    table.merge_cells(dashTable, 0, r, 2, r)
+
+// ══════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string tickerStr = syminfo.tickerid
+string tfStr     = timeframe.period
+string priceStr  = str.tostring(close, format.mintick)
+string scoreStr  = str.tostring(mScore, "#.0")
+
+if confirmedBuy and alertBuyInput
+    string strength = isStrongBuy ? "STRONG BUY" : "BUY"
+    string jsonMsg = '{"action":"buy","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '","score":' + scoreStr + ',"strength":"' + strength + '"}'
+    string textMsg = "🟢 " + strength + " | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + scoreStr + "/100"
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if confirmedSell and alertSellInput
+    string strength = isStrongSell ? "STRONG SELL" : "SELL"
+    string jsonMsg = '{"action":"sell","ticker":"' + tickerStr + '","price":' + str.tostring(close) + ',"tf":"' + tfStr + '","score":' + scoreStr + ',"strength":"' + strength + '"}'
+    string textMsg = "🔴 " + strength + " | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + scoreStr + "/100"
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if slHit and alertTpSlInput
+    string jsonMsg = '{"action":"sl_hit","ticker":"' + tickerStr + '","price":' + str.tostring(close) + '}'
+    string textMsg = "🛑 SL HIT | " + tickerStr + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if tp1Hit and not tp1Hit[1] and alertTpSlInput
+    string jsonMsg = '{"action":"tp1_hit","ticker":"' + tickerStr + '","price":' + str.tostring(close) + '}'
+    string textMsg = "🎯 TP1 HIT | " + tickerStr + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if tp2Hit and not tp2Hit[1] and alertTpSlInput
+    string jsonMsg = '{"action":"tp2_hit","ticker":"' + tickerStr + '","price":' + str.tostring(close) + '}'
+    string textMsg = "🎯 TP2 HIT | " + tickerStr + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+if tp3Hit and not tp3Hit[1] and alertTpSlInput
+    string jsonMsg = '{"action":"tp3_hit","ticker":"' + tickerStr + '","price":' + str.tostring(close) + '}'
+    string textMsg = "🎯 TP3 HIT | " + tickerStr + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alert.freq_once_per_bar_close)
+
+bool cloudCrossBull = cloudBull and not cloudBull[1] and barstate.isconfirmed
+bool cloudCrossBear = cloudBear and not cloudBear[1] and barstate.isconfirmed
+
+if cloudCrossBull and alertCloudInput
+    alert("☁️ Cloud → BULLISH | " + tickerStr + " | TF: " + tfStr, alert.freq_once_per_bar_close)
+
+if cloudCrossBear and alertCloudInput
+    alert("☁️ Cloud → BEARISH | " + tickerStr + " | TF: " + tfStr, alert.freq_once_per_bar_close)

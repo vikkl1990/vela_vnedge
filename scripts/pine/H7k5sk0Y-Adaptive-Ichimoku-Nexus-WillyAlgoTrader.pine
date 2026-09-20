@@ -1,0 +1,1278 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE ICHIMOKU NEXUS [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 2.3.0
+
+indicator(
+    title            = "Adaptive Ichimoku Nexus [WillyAlgoTrader]",
+    shorttitle       = "IchiNexus",
+    overlay          = true,
+    max_labels_count = 500,
+    max_lines_count  = 500,
+    max_boxes_count  = 200,
+    max_bars_back    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_ADAPT  = "🔄 Adaptive Engine"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_FILTER = "🔍 Filters"
+GRP_TPSL   = "🎯 Smart TP/SL"
+GRP_KUMO   = "💥 Kumo Breakout"
+GRP_DIV    = "🔀 Momentum Divergence"
+GRP_MTF    = "🔄 Multi-Timeframe"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v2.3.0"
+// v2.3.0 [S1/S3]: LTM layout constants
+LINE_FORWARD_BARS = 20
+LINE_UPDATE_BARS  = 5
+LABEL_OFFSET_BARS = 1
+BE_DIM_TRANSP     = 70
+FORM_LEN          = 10    // recent-form strip length
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main Settings ───────────────────
+modeInput = input.string("Adaptive", "Calculation Mode", options = ["Classic", "Adaptive"], group = GRP_MAIN, tooltip = "Classic: fixed Ichimoku periods.\nAdaptive: periods scale with market volatility.\nAdaptive reacts faster in volatile markets, slower in quiet ones.")
+conversionBaseInput = input.int(9, "Conversion Period", minval = 3, maxval = 50, group = GRP_MAIN, tooltip = "Tenkan-Sen lookback. In Adaptive mode scales ±40%.\nLower = faster, noisier. Default: 9")
+baseBaseInput = input.int(26, "Base Period", minval = 10, maxval = 100, group = GRP_MAIN, tooltip = "Kijun-Sen lookback. Adaptive scales with volatility.\nDefault: 26")
+spanBBaseInput = input.int(52, "Span B Period", minval = 20, maxval = 200, group = GRP_MAIN, tooltip = "Senkou Span B lookback. Longer = thicker cloud.\nDefault: 52")
+displacementInput = input.int(26, "Displacement", minval = 1, maxval = 100, group = GRP_MAIN, tooltip = "Cloud/Chikou displacement in bars.\nDefault: 26")
+sourceInput = input.source(close, "Source", group = GRP_MAIN, tooltip = "Price source for calculations.\nDefault: close")
+
+// ── Adaptive Engine ─────────────────
+adaptLenInput = input.int(50, "Volatility Lookback", minval = 10, maxval = 200, group = GRP_ADAPT, tooltip = "ATR measurement window for adaptive scaling.\nHigher = smoother adaptation. Default: 50")
+adaptStrengthInput = input.float(0.4, "Adapt Strength", minval = 0.1, maxval = 0.8, step = 0.05, group = GRP_ADAPT, tooltip = "Period stretch range (0.1=±10%, 0.8=±80%).\nDefault: 0.4")
+
+// ── Filters ─────────────────────────
+minScoreInput = input.int(50, "Min Confluence Score", minval = 0, maxval = 100, step = 5, group = GRP_FILTER, tooltip = "Minimum score (0–100) to trigger TK cross signal.\nHigher = fewer, better signals. Default: 50")
+kumoFilterInput = input.bool(true, "Kumo Thickness Filter", group = GRP_FILTER, tooltip = "Suppress signals in very thin Kumo zones.")
+volFilterInput = input.bool(true, "Volume Filter", group = GRP_FILTER, tooltip = "Require above-average volume.\nAuto-disabled on symbols without volume data.")
+chikouFilterInput = input.bool(true, "Chikou Confirmation", group = GRP_FILTER, tooltip = "Require Chikou Span trend alignment.")
+
+// ── Smart TP/SL ─────────────────────
+showTPSLInput = input.bool(true, "Show TP/SL Lines", group = GRP_TPSL, tooltip = "Display stop-loss and take-profit levels after signals.")
+slModeInput = input.string("Kijun", "SL Mode", options = ["Kumo Edge", "Kijun", "ATR"], group = GRP_TPSL, tooltip = "Stop-loss calculation method:\n• Kumo Edge: nearest cloud boundary + ATR buffer\n• Kijun: Kijun-Sen level + ATR buffer\n• ATR: fixed ATR multiple from entry")
+slAtrMultInput = input.float(0.5, "SL ATR Buffer", minval = 0.1, maxval = 3.0, step = 0.1, group = GRP_TPSL, tooltip = "ATR multiplier added as buffer beyond SL level.\nDefault: 0.5")
+tp1MultInput = input.float(1.5, "TP1 R:R", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_TPSL, tooltip = "Take-profit 1 as risk multiple.\n1.5 = 1.5x the SL distance. Default: 1.5")
+tp2MultInput = input.float(2.5, "TP2 R:R", minval = 1.0, maxval = 8.0, step = 0.1, group = GRP_TPSL, tooltip = "Take-profit 2 as risk multiple.\nDefault: 2.5")
+tp3MultInput = input.float(4.0, "TP3 R:R", minval = 1.5, maxval = 12.0, step = 0.1, group = GRP_TPSL, tooltip = "Take-profit 3 as risk multiple.\nDefault: 4.0")
+// v2.2.0 [F2]: NEW — break-even after TP1
+beInput = input.bool(false, "Break-Even after TP1", group = GRP_TPSL, tooltip = "ON: stop-loss moves to entry price starting from the bar AFTER TP1 is hit.\nThe one-bar delay is intentional: intrabar sequence of TP1 touch vs. a same-bar stop run is unknown, so the move is only applied once TP1 is confirmed on a closed bar.\nA break-even stop counts as 0R in the Stats panel.\nDefault: OFF")
+ignoreWhileActiveInput = input.bool(false, "Ignore Signals While Trade Active", group = GRP_TPSL, tooltip = "ON: new signals do NOT overwrite an active TP/SL setup — the current trade runs to TP3 or SL.\nOFF (default, legacy behavior): every new signal resets entry/TP/SL levels; the replaced trade is closed at market price for Stats purposes.\nSignal labels and alerts still fire either way.")
+showClosedBarsInput = input.int(20, "Show Closed Trade (bars)", minval = 0, maxval = 200, group = GRP_TPSL, tooltip = "Number of bars to keep TP/SL lines visible after a trade closes (TP3 or SL hit).\n0 = hide immediately. Default: 20")
+// v2.3.0 [S1]: LTM-style trade record styling
+showPctOnLabelsInput = input.bool(true, "Show % Distance on Labels", group = GRP_TPSL, tooltip = "Append % distance from entry to SL/TP labels,\ne.g. 'SL 1.2300 (-0.36%)'")
+entryLineStyleInput = input.string("Dotted", "Entry Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_TPSL, tooltip = "Entry is a reference, not an action level — keep it subtle")
+slLineStyleInput = input.string("Solid", "SL Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_TPSL, tooltip = "Visual style of the stop-loss line")
+tpLineStyleInput = input.string("Dashed", "TP Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_TPSL, tooltip = "Style for TP1/TP2/TP3. On hit, a TP line turns solid teal")
+labelFontSizeInput = input.string("Small", "SL/TP Label Font Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_TPSL, tooltip = "Font size for Entry/SL/TP labels")
+
+// ── Kumo Breakout ───────────────────
+showBreakoutInput = input.bool(true, "Show Kumo Breakouts", group = GRP_KUMO, tooltip = "Show signals when price breaks through the cloud.")
+breakVolMultInput = input.float(1.3, "Breakout Vol Mult", minval = 1.0, maxval = 3.0, step = 0.1, group = GRP_KUMO, tooltip = "Volume must exceed SMA * this multiplier for breakout.\nDefault: 1.3")
+breakRetestInput = input.bool(true, "Show Retest Signals", group = GRP_KUMO, tooltip = "Show when price retests Kumo edge after breakout.")
+// v2.2.0 [F3]: NEW — Kumo Twist
+showTwistInput = input.bool(true, "Show Kumo Twist", group = GRP_KUMO, tooltip = "Senkou A crossing Senkou B — an early trend-change warning.\nThe twist occurs in the FUTURE cloud (displaced forward); the marker is placed on the bar where the cross is computed.\nInformational only: does NOT arm TP/SL levels.")
+
+// ── Momentum Divergence ─────────────
+// v2.2.0 [F6]: NEW group
+showDivInput = input.bool(true, "Show Divergence Signals", group = GRP_DIV, tooltip = "Regular divergence between price pivots and the Momentum Pulse:\n• Bearish: higher high in price, lower high in momentum\n• Bullish: lower low in price, higher low in momentum\nSignals appear 'Pivot Length' bars AFTER the pivot (pivot confirmation lag) — non-repainting.\nInformational only: does NOT arm TP/SL levels.")
+divLenInput = input.int(5, "Pivot Length", minval = 2, maxval = 20, group = GRP_DIV, tooltip = "Bars on each side required to confirm a price pivot.\nHigher = fewer, more significant pivots, longer confirmation lag.\nDefault: 5")
+divMaxBarsInput = input.int(60, "Max Bars Between Pivots", minval = 20, maxval = 200, group = GRP_DIV, tooltip = "Two pivots further apart than this are not compared (stale divergence guard).\nDefault: 60")
+
+// ── Multi-Timeframe ─────────────────
+showMTFInput = input.bool(true, "Show MTF Panel", group = GRP_MTF, tooltip = "Display multi-timeframe Ichimoku alignment panel.\nNote: MTF states always use CLASSIC (fixed-period) Ichimoku, even when chart mode is Adaptive.\nTimeframes lower than the chart TF are marked invalid and excluded from alignment.")
+mtfTF1Input = input.timeframe("15", "TF 1", group = GRP_MTF, tooltip = "First timeframe for MTF analysis.\nMust be >= chart timeframe.")
+mtfTF2Input = input.timeframe("60", "TF 2", group = GRP_MTF, tooltip = "Second timeframe for MTF analysis.\nMust be >= chart timeframe.")
+mtfTF3Input = input.timeframe("240", "TF 3", group = GRP_MTF, tooltip = "Third timeframe for MTF analysis.\nMust be >= chart timeframe.")
+
+// ── Visual Settings ─────────────────
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme. Auto detects from background.")
+showCloudInput = input.bool(true, "Show Cloud", group = GRP_VISUAL, tooltip = "Display the Kumo cloud fill.")
+showTKInput = input.bool(true, "Show TK Lines", group = GRP_VISUAL, tooltip = "Display Tenkan-Sen and Kijun-Sen.")
+showChikouInput = input.bool(true, "Show Chikou Span", group = GRP_VISUAL, tooltip = "Display the Chikou (lagging) span.")
+showSignalsInput = input.bool(true, "Show TK Signal Labels", group = GRP_VISUAL, tooltip = "Display Long/Short labels on TK cross signals.")
+showScoreInput = input.bool(true, "Show Score on Signals", group = GRP_VISUAL, tooltip = "Include confluence score % in signal labels.")
+showBreakLabelsInput = input.bool(true, "Show Breakout Labels", group = GRP_VISUAL, tooltip = "Display labels on Kumo breakout signals.")
+showTPSLLabelsInput = input.bool(true, "Show TP/SL Labels", group = GRP_VISUAL, tooltip = "Display price labels next to TP/SL lines.")
+showZonesInput = input.bool(true, "Show S/R Zones", group = GRP_VISUAL, tooltip = "Highlight flat Kijun-Sen as S/R.\nFlatness = Kijun unchanged within 1 mintick over 4 bars (works in both Classic and Adaptive modes).")
+showBgInput = input.bool(false, "Show Trend Background", group = GRP_VISUAL, tooltip = "Tint background by trend direction.")
+signalSizeInput = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large"], group = GRP_VISUAL, tooltip = "Size of Long/Short signal labels on chart.\nDefault: Small")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark.")
+
+// ── Dashboard ───────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Display info dashboard.")
+// v2.2.0 [F1]: NEW — Honest Stats panel toggle
+showStatsInput = input.bool(true, "Show Honest Stats", group = GRP_DASH, tooltip = "Display live statistics for all TP/SL setups tracked since chart load:\nclosed trades, TP1/TP2 touch rate, TP3 rate, SL rate, average R.\n\nR model: 1/3 of position exits at each TP; anything not taken profit exits at the stop (or entry, if break-even is active).\nIntrabar ambiguity resolves worst-case (SL before TP).\n\n⚠ These are on-chart statistics for the loaded history and settings — NOT a backtest, NOT a performance promise.")
+dashPosStr = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH, tooltip = "Screen corner where the dashboard is anchored.")
+dashFontInput = input.string("Small", "Font Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH, tooltip = "Font size for the dashboard table. Section dividers and the\nversion footer render one step smaller to preserve hierarchy")
+// v2.3.0 [S2]: section toggles (MTF section uses "Show MTF Panel",
+// Honest Stats section uses "Show Honest Stats")
+showMarketSecInput = input.bool(true, "  ├ Market section", group = GRP_DASH, tooltip = "Mode, Trend, Momentum, Cloud, Score, Position, Last signal")
+showTradeSecInput = input.bool(true, "  ├ Trade section", group = GRP_DASH, tooltip = "Entry, SL, TP1-3, R:R, SL distance. Collapses to one row when flat")
+
+// ── Alerts ──────────────────────────
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON for webhook integrations.")
+
+// ── Colors ──────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "sig", group = GRP_COLORS, tooltip = "Bullish signals and TP lines color.")
+bearColorInput = input.color(#FF5252, "Bear", inline = "sig", group = GRP_COLORS, tooltip = "Bearish signals and SL line color.")
+tenkanColorInput = input.color(#2962FF, "Tenkan", inline = "lines", group = GRP_COLORS, tooltip = "Tenkan-Sen (conversion) line color.")
+kijunColorInput = input.color(#E91E63, "Kijun", inline = "lines", group = GRP_COLORS, tooltip = "Kijun-Sen (base) line color.")
+chikouColorInput = input.color(#FF9800, "Chikou", inline = "extra", group = GRP_COLORS, tooltip = "Chikou (lagging) span color.")
+breakoutColorInput = input.color(#00BCD4, "Breakout", inline = "extra", group = GRP_COLORS, tooltip = "Kumo breakout signal color.")
+divColorInput = input.color(#AB47BC, "Divergence", inline = "extra2", group = GRP_COLORS, tooltip = "Momentum divergence signal color.")
+twistColorInput = input.color(#FFD54F, "Twist", inline = "extra2", group = GRP_COLORS, tooltip = "Kumo twist marker color.")
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG    = color.new(#2962FF, 0)
+HEADER_TEXT  = #FFFFFF
+LABEL_TEXT   = #FFFFFF
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+NEUTRAL_COLOR = isDark ? color.new(#FFAB00, 0) : color.new(#E65100, 0)
+
+// v2.3.0 [S1/S2]: LTM palette — adaptive text colors, trend headers,
+// muted risk colors (bright bull/bear hues wash out on white)
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #F57F17
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+SL_COLOR        = isDark ? color.new(#E57373, 0)  : color.new(#B71C1C, 0)
+TP1_COLOR       = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+TP2_COLOR       = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+TP3_COLOR       = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+ENTRY_COLOR     = isDark ? color.new(#5C8AAE, 0)  : color.new(#34495E, 0)
+TP_LABEL_COLOR  = isDark ? color.new(#66BB6A, 0)  : color.new(#388E3C, 0)
+TP_HIT_COLOR    = isDark ? color.new(#4DB6AC, 0)  : color.new(#00695C, 0)
+BE_COLOR        = isDark ? color.new(#FFA726, 0)  : color.new(#E65100, 0)
+RISK_LABEL_TEXT = isDark ? #1A1A1A                : #FFFFFF
+FORM_COLOR      = isDark ? #5C8AAE                : #34495E
+
+CLOUD_BULL = color.new(bullColorInput, 88)
+CLOUD_BEAR = color.new(bearColorInput, 88)
+
+// v2.3.0 [S2]: size/style resolution moved to FUNCTIONS (LTM helpers)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+adaptiveDonchian(int basePeriod, float volRatio, float strength) =>
+    int minP = math.max(math.round(basePeriod * (1.0 - strength)), 3)
+    int maxP = math.round(basePeriod * (1.0 + strength))
+    int adaptedLen = math.round(basePeriod * (1.0 + strength * (1.0 - 2.0 * volRatio)))
+    int safePeriod = math.max(math.min(adaptedLen, maxP), minP)
+    float hi = ta.highest(high, safePeriod)
+    float lo = ta.lowest(low, safePeriod)
+    math.avg(nz(hi, high), nz(lo, low))
+
+classicDonchian(int len) =>
+    float hi = ta.highest(high, len)
+    float lo = ta.lowest(low, len)
+    math.avg(nz(hi, high), nz(lo, low))
+
+// v2.3.0 [S1/S2]: UI helpers ported from Liquidity Trail Matrix
+buildGauge(float value, float maxVal, int width) =>
+    string result = ""
+    int filled = maxVal <= 0 ? 0 : math.round(math.min(width, math.max(0.0, value / maxVal * width)))
+    for i = 0 to width - 1
+        result += i < filled ? "▰" : "▱"
+    result
+
+fmtPrice(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+formatPctFromEntry(float level, float entry) =>
+    string res = ""
+    if showPctOnLabelsInput and not na(level) and not na(entry) and entry != 0
+        float pct  = (level - entry) / entry * 100.0
+        string sign = pct >= 0 ? "+" : ""
+        res := " (" + sign + str.tostring(pct, "#.##") + "%)"
+    res
+
+lineStyleFromString(string s) =>
+    s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+sizeFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : s == "Huge" ? size.huge : size.small
+
+// One step smaller — used for section dividers and the version footer
+sizeDownFromString(string s) =>
+    s == "Tiny" ? size.tiny : s == "Small" ? size.tiny : s == "Normal" ? size.small : s == "Large" ? size.normal : s == "Huge" ? size.large : size.tiny
+
+entryLineStyle  = lineStyleFromString(entryLineStyleInput)
+slLineStyle     = lineStyleFromString(slLineStyleInput)
+tpLineStyle     = lineStyleFromString(tpLineStyleInput)
+signalSize      = sizeFromString(signalSizeInput)
+labelSize       = sizeFromString(labelFontSizeInput)
+dashFontSize    = sizeFromString(dashFontInput)
+dashFontSizeSub = sizeDownFromString(dashFontInput)
+
+// MTF: helper expression for request.security (computed at global scope)
+// Tuple approach not supported inside user functions in Pine v6.
+// Instead, we compute a composite state inline per TF at call site.
+
+// ══════════════════════════════════════
+// CALCULATIONS
+// ══════════════════════════════════════
+
+bool isAdaptive = modeInput == "Adaptive"
+
+// v2.1.0 [H3]: warmup accounts for adaptive stretch of Span B period.
+int maxSpanBPeriod = isAdaptive ? math.round(spanBBaseInput * (1.0 + adaptStrengthInput)) : spanBBaseInput
+int WARMUP_BARS = math.max(maxSpanBPeriod + displacementInput, 80)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+// ── Volatility engine ───────────────
+float atrBase = nz(ta.atr(14), 0.0)
+float atrHigh = nz(ta.highest(atrBase, adaptLenInput), atrBase)
+float atrLow = nz(ta.lowest(atrBase, adaptLenInput), 0.0)
+float volRange = atrHigh - atrLow
+float volRatio = volRange > 0 ? math.min(math.max(safeDiv(atrBase - atrLow, volRange, 0.5), 0.0), 1.0) : 0.5
+
+// ── Core Ichimoku lines ─────────────
+float tenkanSen = isAdaptive ? adaptiveDonchian(conversionBaseInput, volRatio, adaptStrengthInput) : classicDonchian(conversionBaseInput)
+float kijunSen = isAdaptive ? adaptiveDonchian(baseBaseInput, volRatio, adaptStrengthInput) : classicDonchian(baseBaseInput)
+float senkouA = math.avg(tenkanSen, kijunSen)
+float senkouB = isAdaptive ? adaptiveDonchian(spanBBaseInput, volRatio, adaptStrengthInput) : classicDonchian(spanBBaseInput)
+float chikouSpan = sourceInput
+
+tenkanSen := nz(tenkanSen, close)
+kijunSen := nz(kijunSen, close)
+senkouA := nz(senkouA, close)
+senkouB := nz(senkouB, close)
+
+// ── Kumo at current bar (displaced) ──
+int dOff = displacementInput - 1
+float kumoSpanACurr = nz(senkouA[dOff], senkouA)
+float kumoSpanBCurr = nz(senkouB[dOff], senkouB)
+float kumoTop = math.max(kumoSpanACurr, kumoSpanBCurr)
+float kumoBot = math.min(kumoSpanACurr, kumoSpanBCurr)
+float kumoThickness = kumoTop - kumoBot
+float kumoThickAvg = nz(ta.sma(kumoThickness, 50), kumoThickness)
+bool isThinKumo = kumoThickness < kumoThickAvg * 0.3
+
+// Price vs Cloud
+bool priceAboveCloud = close > kumoTop
+bool priceBelowCloud = close < kumoBot
+bool priceInCloud = not priceAboveCloud and not priceBelowCloud
+
+// TK relationship
+bool tkBullish = tenkanSen > kijunSen
+bool tkBearish = tenkanSen < kijunSen
+bool tkCrossUp = ta.crossover(tenkanSen, kijunSen)
+bool tkCrossDown = ta.crossunder(tenkanSen, kijunSen)
+
+// v2.2.0 [F3]: Kumo Twist — Senkou A/B cross (future cloud event)
+bool twistUpRaw = ta.crossover(senkouA, senkouB)
+bool twistDownRaw = ta.crossunder(senkouA, senkouB)
+bool twistBull = twistUpRaw and barstate.isconfirmed and isWarmedUp
+bool twistBear = twistDownRaw and barstate.isconfirmed and isWarmedUp
+
+// Chikou confirmation
+float priceAtChikou = nz(sourceInput[displacementInput], close)
+bool chikouBull = chikouSpan > priceAtChikou
+bool chikouBear = chikouSpan < priceAtChikou
+
+// Kijun flatness (S/R)
+// v2.1.0 [L2]: mintick epsilon instead of strict float equality
+float flatEps = syminfo.mintick
+bool kijunFlat = math.abs(kijunSen - nz(kijunSen[1], kijunSen)) <= flatEps and math.abs(kijunSen - nz(kijunSen[2], kijunSen)) <= flatEps and math.abs(kijunSen - nz(kijunSen[3], kijunSen)) <= flatEps
+bool kijunFlatPrev = kijunFlat[1]  // v2.2.2 [B1]: v6 — bool cannot be na, direct history access
+bool kijunWasFlat = kijunFlatPrev and not kijunFlat
+
+// Volume
+bool hasVolume = nz(volume, 0) > 0
+float volSma = hasVolume ? nz(ta.sma(volume, 20), 0.0) : 0.0
+bool volConfirm = hasVolume ? volume > volSma * 1.2 : true
+bool volStrong = hasVolume ? volume > volSma * breakVolMultInput : true
+
+// ══════════════════════════════════════
+// MOMENTUM PULSE ENGINE
+// ══════════════════════════════════════
+// Measures trend acceleration via TK spread rate-of-change + cloud slope
+
+float tkSpread = tenkanSen - kijunSen
+float tkSpreadNorm = atrBase > 0 ? tkSpread / atrBase : 0.0
+float tkSpreadPrev = nz(tkSpreadNorm[3], tkSpreadNorm)
+float tkAcceleration = tkSpreadNorm - tkSpreadPrev
+
+// Cloud slope (future cloud direction)
+float cloudSlope = (senkouA - nz(senkouA[5], senkouA)) - (senkouB - nz(senkouB[5], senkouB))
+float cloudSlopeNorm = atrBase > 0 ? cloudSlope / atrBase : 0.0
+
+// Combined momentum pulse: -100 to +100
+float rawMomentum = (tkSpreadNorm * 40.0) + (tkAcceleration * 100.0) + (cloudSlopeNorm * 30.0)
+float momentumPulse = math.max(math.min(rawMomentum, 100.0), -100.0)
+float momentumSmooth = nz(ta.ema(momentumPulse, 5), 0.0)
+
+// v2.2.1 [A3]: future-cloud slope (confluence Factor 4) hoisted to global
+// scope — was recomputed inside both confluenceScore(true) and
+// confluenceScore(false) every bar.
+float spanAslope3 = senkouA - nz(senkouA[3], senkouA)
+float spanBslope3 = senkouB - nz(senkouB[3], senkouB)
+bool futureCloudBull = spanAslope3 > spanBslope3
+
+// Momentum state
+bool momentumRising = momentumSmooth > nz(momentumSmooth[1], 0.0) and momentumSmooth > 0
+bool momentumFading = momentumSmooth < nz(momentumSmooth[1], 0.0) and momentumSmooth > 0
+bool momentumBearAccel = momentumSmooth < nz(momentumSmooth[1], 0.0) and momentumSmooth < 0
+bool momentumBearFading = momentumSmooth > nz(momentumSmooth[1], 0.0) and momentumSmooth < 0
+
+// ══════════════════════════════════════
+// MOMENTUM DIVERGENCE ENGINE — v2.2.0 [F6]
+// ══════════════════════════════════════
+// Regular divergence between price pivots and momentumSmooth.
+// momentumSmooth is a global unconditional series, so indexing it with
+// [divLenInput] at pivot confirmation is safe (no ring buffer needed).
+// Pivots confirm divLenInput bars after the extreme → signals lag by
+// divLenInput bars and NEVER repaint.
+
+var float lastPHPrice = na
+var float lastPHMom = na
+var int lastPHBar = na
+var float lastPLPrice = na
+var float lastPLMom = na
+var int lastPLBar = na
+
+float ph = ta.pivothigh(high, divLenInput, divLenInput)
+float pl = ta.pivotlow(low, divLenInput, divLenInput)
+
+bool bearDiv = false
+bool bullDiv = false
+// v2.2.1 [A4]: single label offset for all signal labels (defined here,
+// before first use; previously duplicated as divLabelOffset + labelOffset)
+float labelOffset = atrBase * 0.5
+
+if not na(ph) and barstate.isconfirmed and isWarmedUp
+    float momAtPH = nz(momentumSmooth[divLenInput], 0.0)
+    if not na(lastPHPrice) and (bar_index - lastPHBar) <= divMaxBarsInput
+        bearDiv := ph > lastPHPrice and momAtPH < lastPHMom
+    if bearDiv and showDivInput
+        label.new(bar_index - divLenInput, ph + labelOffset, "Div ▼", color = divColorInput, textcolor = LABEL_TEXT, style = label.style_label_down, size = size.tiny, tooltip = "Bearish momentum divergence\nPrice: HH " + str.tostring(ph, format.mintick) + " vs " + str.tostring(lastPHPrice, format.mintick) + "\nMomentum: LH " + str.tostring(math.round(momAtPH)) + " vs " + str.tostring(math.round(lastPHMom)) + "\nConfirmed " + str.tostring(divLenInput) + " bars after pivot")
+    lastPHPrice := ph
+    lastPHMom := momAtPH
+    lastPHBar := bar_index
+
+if not na(pl) and barstate.isconfirmed and isWarmedUp
+    float momAtPL = nz(momentumSmooth[divLenInput], 0.0)
+    if not na(lastPLPrice) and (bar_index - lastPLBar) <= divMaxBarsInput
+        bullDiv := pl < lastPLPrice and momAtPL > lastPLMom
+    if bullDiv and showDivInput
+        label.new(bar_index - divLenInput, pl - labelOffset, "Div ▲", color = divColorInput, textcolor = LABEL_TEXT, style = label.style_label_up, size = size.tiny, tooltip = "Bullish momentum divergence\nPrice: LL " + str.tostring(pl, format.mintick) + " vs " + str.tostring(lastPLPrice, format.mintick) + "\nMomentum: HL " + str.tostring(math.round(momAtPL)) + " vs " + str.tostring(math.round(lastPLMom)) + "\nConfirmed " + str.tostring(divLenInput) + " bars after pivot")
+    lastPLPrice := pl
+    lastPLMom := momAtPL
+    lastPLBar := bar_index
+
+// ══════════════════════════════════════
+// CONFLUENCE SCORING ENGINE (0–100)
+// ══════════════════════════════════════
+// 8 factors for v2.0
+
+confluenceScore(bool isBull) =>
+    float score = 0.0
+    // Factor 1: Price vs Cloud (20 pts)
+    score += isBull ? (priceAboveCloud ? 20.0 : priceInCloud ? 8.0 : 0.0) : (priceBelowCloud ? 20.0 : priceInCloud ? 8.0 : 0.0)
+    // Factor 2: TK alignment (15 pts)
+    score += isBull ? (tkBullish ? 15.0 : 0.0) : (tkBearish ? 15.0 : 0.0)
+    // Factor 3: Chikou (15 pts)
+    score += isBull ? (chikouBull ? 15.0 : 0.0) : (chikouBear ? 15.0 : 0.0)
+    // Factor 4: Cloud direction (10 pts) — v2.2.1 [A3]: uses global futureCloudBull
+    score += isBull ? (futureCloudBull ? 10.0 : 0.0) : (not futureCloudBull ? 10.0 : 0.0)
+    // Factor 5: Kumo thickness (8 pts)
+    score += not isThinKumo ? 8.0 : 2.0
+    // Factor 6: Volume (10 pts)
+    score += volConfirm ? 10.0 : 0.0
+    // Factor 7: Momentum alignment (12 pts)
+    score += isBull ? (momentumSmooth > 20 ? 12.0 : momentumSmooth > 0 ? 6.0 : 0.0) : (momentumSmooth < -20 ? 12.0 : momentumSmooth < 0 ? 6.0 : 0.0)
+    // Factor 8: Momentum acceleration (10 pts)
+    score += isBull ? (momentumRising ? 10.0 : 0.0) : (momentumBearAccel ? 10.0 : 0.0)
+    math.min(score, 100.0)
+
+// ══════════════════════════════════════
+// TK CROSS SIGNAL LOGIC
+// ══════════════════════════════════════
+
+float bullScore = confluenceScore(true)
+float bearScore = confluenceScore(false)
+
+bool passKumo = kumoFilterInput ? not isThinKumo : true
+bool passVol = volFilterInput ? volConfirm : true
+bool passChikou = chikouFilterInput ? chikouBull : true
+bool passChikouSell = chikouFilterInput ? chikouBear : true
+bool passScoreBuy = bullScore >= minScoreInput
+bool passScoreSell = bearScore >= minScoreInput
+
+bool buyCondition = tkCrossUp and passKumo and passVol and passChikou and passScoreBuy
+bool sellCondition = tkCrossDown and passKumo and passVol and passChikouSell and passScoreSell
+
+bool confirmedBuy = buyCondition and barstate.isconfirmed and isWarmedUp
+bool confirmedSell = sellCondition and barstate.isconfirmed and isWarmedUp
+
+string buyGrade = bullScore >= 80 ? "Strong" : bullScore >= 50 ? "Standard" : "Weak"
+string sellGrade = bearScore >= 80 ? "Strong" : bearScore >= 50 ? "Standard" : "Weak"
+
+// ══════════════════════════════════════
+// KUMO BREAKOUT ENGINE
+// ══════════════════════════════════════
+
+// Previous bar cloud position (for transition detection)
+float prevKumoTop = nz(kumoTop[1], kumoTop)
+float prevKumoBot = nz(kumoBot[1], kumoBot)
+bool wasBelowOrIn = nz(close[1], close) <= prevKumoTop
+bool wasAboveOrIn = nz(close[1], close) >= prevKumoBot
+
+bool kumoBreakUp = close > kumoTop and wasBelowOrIn and barstate.isconfirmed and isWarmedUp and volStrong
+bool kumoBreakDown = close < kumoBot and wasAboveOrIn and barstate.isconfirmed and isWarmedUp and volStrong
+
+// Retest detection: price returns to cloud edge within 10 bars of breakout
+// v2.1.0 [L5]: init at -100
+var int lastBreakUpBar = -100
+var int lastBreakDownBar = -100
+
+if kumoBreakUp
+    lastBreakUpBar := bar_index
+if kumoBreakDown
+    lastBreakDownBar := bar_index
+
+bool retestBull = breakRetestInput and (bar_index - lastBreakUpBar > 1) and (bar_index - lastBreakUpBar <= 10) and low <= kumoTop and close > kumoTop and barstate.isconfirmed and isWarmedUp
+bool retestBear = breakRetestInput and (bar_index - lastBreakDownBar > 1) and (bar_index - lastBreakDownBar <= 10) and high >= kumoBot and close < kumoBot and barstate.isconfirmed and isWarmedUp
+
+// ══════════════════════════════════════
+// SMART TP/SL ENGINE
+// ══════════════════════════════════════
+
+var float activeSL = na
+var float activeTP1 = na
+var float activeTP2 = na
+var float activeTP3 = na
+var float activeEntryPrice = na
+var int activeDir = 0
+var bool tp1Hit = false
+var bool tp2Hit = false
+var bool tp3Hit = false
+var bool slHit = false
+// v2.1.0 [H1]: entry bar tracker
+var int activeEntryBar = na
+// v2.1.0 [M1]: bar where the trade closed — drives line timeout
+var int tradeCloseBar = na
+// v2.2.0 [F1]: initial risk distance (fixed at entry, survives BE move)
+var float activeRisk = na
+// v2.2.0 [F2]: break-even state
+var bool beActive = false
+
+// v2.2.0 [F1]: HONEST STATS — counters since chart load
+var int statClosed = 0
+var int statReplaced = 0
+var int statTP1Cnt = 0
+var int statTP2Cnt = 0
+var int statTP3Cnt = 0
+var int statSLCnt = 0
+var float statRSum = 0.0
+// v2.3.0 [S3]: recent-form strip (▰ = TP1 touched, ▱ = closed before TP1)
+var string formStr = ""
+
+// Calculate SL level based on mode
+calcSL(bool isLong, float entry) =>
+    float slLevel = 0.0
+    float atrBuf = atrBase * slAtrMultInput
+    if slModeInput == "Kumo Edge"
+        slLevel := isLong ? kumoBot - atrBuf : kumoTop + atrBuf
+    else if slModeInput == "Kijun"
+        slLevel := isLong ? kijunSen - atrBuf : kijunSen + atrBuf
+    else
+        slLevel := isLong ? entry - atrBase * 2.0 : entry + atrBase * 2.0
+    // v2.2.1 [A1]: side validation — "Kumo Edge"/"Kijun" can produce a
+    // stop on the WRONG side of entry (e.g. TK buy below the cloud →
+    // kumoBot above entry → long "SL" above price → instant stop-out).
+    // Wrong-side results fall back to the ATR stop.
+    bool wrongSide = isLong ? slLevel >= entry : slLevel <= entry
+    if wrongSide
+        slLevel := isLong ? entry - atrBase * 2.0 : entry + atrBase * 2.0
+    slLevel
+
+// Check for new trade entry on any confirmed signal
+bool anyBuy = confirmedBuy or (showBreakoutInput and kumoBreakUp) or (showBreakoutInput and retestBull)
+bool anySell = confirmedSell or (showBreakoutInput and kumoBreakDown) or (showBreakoutInput and retestBear)
+
+// v2.1.0 [M4]: optionally never overwrite an open trade
+bool canOpenTrade = activeDir == 0 or not ignoreWhileActiveInput
+
+// v2.3.0 [S1]: entry events consumed by the trade-record drawing engine
+bool evBuyEntry  = false
+bool evSellEntry = false
+
+if anyBuy and showTPSLInput and canOpenTrade
+    // v2.2.0 [F1]: legacy overwrite — close the replaced trade at market
+    // price for Stats purposes (1/3 scale-out model, remainder at close)
+    if activeDir != 0 and not na(activeRisk)
+        float safeRisk = math.max(activeRisk, syminfo.mintick)
+        float mkR = activeDir == 1 ? (close - activeEntryPrice) / safeRisk : (activeEntryPrice - close) / safeRisk
+        float rRep = ((tp1Hit ? tp1MultInput : mkR) + (tp2Hit ? tp2MultInput : mkR) + mkR) / 3.0
+        statRSum += rRep
+        statReplaced += 1
+        statClosed += 1
+        statTP1Cnt += tp1Hit ? 1 : 0
+        statTP2Cnt += tp2Hit ? 1 : 0
+        formStr := formStr + (tp1Hit ? "▰" : "▱")   // v2.3.0 [S3]
+        if str.length(formStr) > FORM_LEN
+            formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeEntryPrice := close
+    activeSL := calcSL(true, close)
+    float riskDist = math.max(math.abs(close - activeSL), atrBase * 0.5)
+    activeTP1 := close + riskDist * tp1MultInput
+    activeTP2 := close + riskDist * tp2MultInput
+    activeTP3 := close + riskDist * tp3MultInput
+    activeDir := 1
+    activeEntryBar := bar_index
+    activeRisk := riskDist      // v2.2.0 [F1]
+    beActive := false           // v2.2.0 [F2]
+    tradeCloseBar := na
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+    slHit := false
+    evBuyEntry := true   // v2.3.0 [S1]
+
+// v2.2.1 [A2]: "and not anyBuy" — if buy and sell signals collide on the
+// same bar, buy has priority; without this gate the sell block would
+// instantly "replace" the just-opened long, adding a phantom 0R trade
+// to the Stats panel.
+if anySell and not anyBuy and showTPSLInput and canOpenTrade
+    // v2.2.0 [F1]: close replaced trade at market for Stats
+    if activeDir != 0 and not na(activeRisk)
+        float safeRisk = math.max(activeRisk, syminfo.mintick)
+        float mkR = activeDir == 1 ? (close - activeEntryPrice) / safeRisk : (activeEntryPrice - close) / safeRisk
+        float rRep = ((tp1Hit ? tp1MultInput : mkR) + (tp2Hit ? tp2MultInput : mkR) + mkR) / 3.0
+        statRSum += rRep
+        statReplaced += 1
+        statClosed += 1
+        statTP1Cnt += tp1Hit ? 1 : 0
+        statTP2Cnt += tp2Hit ? 1 : 0
+        formStr := formStr + (tp1Hit ? "▰" : "▱")   // v2.3.0 [S3]
+        if str.length(formStr) > FORM_LEN
+            formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeEntryPrice := close
+    activeSL := calcSL(false, close)
+    float riskDist = math.max(math.abs(activeSL - close), atrBase * 0.5)
+    activeTP1 := close - riskDist * tp1MultInput
+    activeTP2 := close - riskDist * tp2MultInput
+    activeTP3 := close - riskDist * tp3MultInput
+    activeDir := -1
+    activeEntryBar := bar_index
+    activeRisk := riskDist      // v2.2.0 [F1]
+    beActive := false           // v2.2.0 [F2]
+    tradeCloseBar := na
+    tp1Hit := false
+    tp2Hit := false
+    tp3Hit := false
+    slHit := false
+    evSellEntry := true  // v2.3.0 [S1]
+
+// Track TP/SL hits
+// v2.1.0 [H1]: tracking starts on the bar AFTER entry.
+// v2.2.0 [C1]: intrabar ambiguity resolves WORST-CASE — SL is checked
+// BEFORE TP levels. A wide bar touching both counts as SL, not TP.
+// v2.2.0 [F2]: break-even move applies from the bar AFTER TP1 was
+// confirmed (tp1Hit[1]) — same-bar sequence of TP1 touch vs. stop run
+// is unknown, so the move is delayed one bar (honest assumption).
+bool canTrack = not na(activeEntryBar) and bar_index > activeEntryBar
+
+if activeDir == 1 and not na(activeSL) and canTrack
+    if beInput and tp1Hit[1] and not beActive
+        activeSL := activeEntryPrice
+        beActive := true
+    if low <= activeSL
+        slHit := true
+        activeDir := 0
+        tradeCloseBar := bar_index
+        float slR = beActive ? 0.0 : -1.0
+        statRSum += ((tp1Hit ? tp1MultInput : slR) + (tp2Hit ? tp2MultInput : slR) + slR) / 3.0
+        statSLCnt += 1
+        statClosed += 1
+        statTP1Cnt += tp1Hit ? 1 : 0
+        statTP2Cnt += tp2Hit ? 1 : 0
+        formStr := formStr + (tp1Hit ? "▰" : "▱")   // v2.3.0 [S3]
+        if str.length(formStr) > FORM_LEN
+            formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    else
+        if not na(activeTP1) and high >= activeTP1 and not tp1Hit
+            tp1Hit := true
+        if not na(activeTP2) and high >= activeTP2 and not tp2Hit
+            tp2Hit := true
+        if not na(activeTP3) and high >= activeTP3 and not tp3Hit
+            tp3Hit := true
+            activeDir := 0
+            tradeCloseBar := bar_index
+            statRSum += (tp1MultInput + tp2MultInput + tp3MultInput) / 3.0
+            statTP3Cnt += 1
+            statClosed += 1
+            statTP1Cnt += 1
+            statTP2Cnt += 1
+            formStr := formStr + (tp1Hit ? "▰" : "▱")   // v2.3.0 [S3]
+            if str.length(formStr) > FORM_LEN
+                formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+
+if activeDir == -1 and not na(activeSL) and canTrack
+    if beInput and tp1Hit[1] and not beActive
+        activeSL := activeEntryPrice
+        beActive := true
+    if high >= activeSL
+        slHit := true
+        activeDir := 0
+        tradeCloseBar := bar_index
+        float slR = beActive ? 0.0 : -1.0
+        statRSum += ((tp1Hit ? tp1MultInput : slR) + (tp2Hit ? tp2MultInput : slR) + slR) / 3.0
+        statSLCnt += 1
+        statClosed += 1
+        statTP1Cnt += tp1Hit ? 1 : 0
+        statTP2Cnt += tp2Hit ? 1 : 0
+        formStr := formStr + (tp1Hit ? "▰" : "▱")   // v2.3.0 [S3]
+        if str.length(formStr) > FORM_LEN
+            formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    else
+        if not na(activeTP1) and low <= activeTP1 and not tp1Hit
+            tp1Hit := true
+        if not na(activeTP2) and low <= activeTP2 and not tp2Hit
+            tp2Hit := true
+        if not na(activeTP3) and low <= activeTP3 and not tp3Hit
+            tp3Hit := true
+            activeDir := 0
+            tradeCloseBar := bar_index
+            statRSum += (tp1MultInput + tp2MultInput + tp3MultInput) / 3.0
+            statTP3Cnt += 1
+            statClosed += 1
+            statTP1Cnt += 1
+            statTP2Cnt += 1
+            formStr := formStr + (tp1Hit ? "▰" : "▱")   // v2.3.0 [S3]
+            if str.length(formStr) > FORM_LEN
+                formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+
+// ══════════════════════════════════════
+// MTF CONFLUENCE
+// ══════════════════════════════════════
+// v2.1.0 [M2]: MTF always uses CLASSIC calc (disclosed in tooltip).
+// TFs lower than the chart TF are flagged invalid and excluded.
+
+mtfCalcState() =>
+    float t = classicDonchian(conversionBaseInput)
+    float k = classicDonchian(baseBaseInput)
+    float sa = math.avg(t, k)
+    float sb = classicDonchian(spanBBaseInput)
+    float c = close
+    float hi = math.max(sa, sb)
+    float lo = math.min(sa, sb)
+    int st = c > hi and t > k ? 1 : c < lo and t < k ? -1 : 0
+    st
+
+// request.security calls stay unconditional (global scope) — validity is
+// applied as a mask afterwards, never by skipping the call.
+bool mtf1Valid = timeframe.in_seconds(mtfTF1Input) >= timeframe.in_seconds()
+bool mtf2Valid = timeframe.in_seconds(mtfTF2Input) >= timeframe.in_seconds()
+bool mtf3Valid = timeframe.in_seconds(mtfTF3Input) >= timeframe.in_seconds()
+
+int mtf1Raw = nz(request.security(syminfo.tickerid, mtfTF1Input, mtfCalcState()[1], barmerge.gaps_off, barmerge.lookahead_on), 0)
+int mtf2Raw = nz(request.security(syminfo.tickerid, mtfTF2Input, mtfCalcState()[1], barmerge.gaps_off, barmerge.lookahead_on), 0)
+int mtf3Raw = nz(request.security(syminfo.tickerid, mtfTF3Input, mtfCalcState()[1], barmerge.gaps_off, barmerge.lookahead_on), 0)
+
+int mtf1State = mtf1Valid ? mtf1Raw : 0
+int mtf2State = mtf2Valid ? mtf2Raw : 0
+int mtf3State = mtf3Valid ? mtf3Raw : 0
+
+bool mtfAllValid = mtf1Valid and mtf2Valid and mtf3Valid
+int mtfSum = mtf1State + mtf2State + mtf3State
+bool mtfAllBull = mtfAllValid and mtfSum == 3
+bool mtfAllBear = mtfAllValid and mtfSum == -3
+
+// ══════════════════════════════════════
+// TRACKING & STATE
+// ══════════════════════════════════════
+
+var string lastSignal = "None"
+var int lastSignalBar = 0
+
+if confirmedBuy
+    lastSignal := "Buy"
+    lastSignalBar := bar_index
+if confirmedSell
+    lastSignal := "Sell"
+    lastSignalBar := bar_index
+if kumoBreakUp and showBreakoutInput
+    lastSignal := "Break ▲"
+    lastSignalBar := bar_index
+if kumoBreakDown and showBreakoutInput
+    lastSignal := "Break ▼"
+    lastSignalBar := bar_index
+
+string trendState = priceAboveCloud and tkBullish ? "Bullish" : priceBelowCloud and tkBearish ? "Bearish" : "Neutral"
+color trendColor = trendState == "Bullish" ? bullColorInput : trendState == "Bearish" ? bearColorInput : NEUTRAL_COLOR
+
+// Momentum state label
+string momentumStr = momentumRising ? "Accelerating" : momentumFading ? "Bull Fading" : momentumBearAccel ? "Bear Accel" : momentumBearFading ? "Bear Fading" : momentumSmooth > 0 ? "Bullish" : momentumSmooth < 0 ? "Bearish" : "Neutral"
+color momentumColor = momentumRising ? bullColorInput : momentumFading ? NEUTRAL_COLOR : momentumBearAccel ? bearColorInput : momentumBearFading ? NEUTRAL_COLOR : momentumSmooth > 0 ? bullColorInput : TEXT_MUTED
+
+// ══════════════════════════════════════
+// PLOTS & VISUALS
+// ══════════════════════════════════════
+
+plot(showTKInput ? tenkanSen : na, "Tenkan-Sen", color = tenkanColorInput, linewidth = 1)
+plot(showTKInput ? kijunSen : na, "Kijun-Sen", color = kijunColorInput, linewidth = 1)
+plot(showChikouInput ? chikouSpan : na, "Chikou Span", color = chikouColorInput, offset = -displacementInput + 1, linewidth = 1)
+
+p1 = plot(showCloudInput ? senkouA : na, "Senkou A", color = color.new(bullColorInput, 100), offset = displacementInput - 1, display = display.pane)
+p2 = plot(showCloudInput ? senkouB : na, "Senkou B", color = color.new(bearColorInput, 100), offset = displacementInput - 1, display = display.pane)
+fill(p1, p2, title = "Kumo Cloud", color = senkouA > senkouB ? CLOUD_BULL : CLOUD_BEAR)
+
+bgcolor(showBgInput ? (priceAboveCloud and tkBullish ? color.new(bullColorInput, 93) : priceBelowCloud and tkBearish ? color.new(bearColorInput, 93) : na) : na, title = "Trend Background")
+
+// ══════════════════════════════════════
+// SIGNALS VISUAL
+// ══════════════════════════════════════
+
+// TK Cross signals — combined label (offset from candles by 0.5 ATR)
+// v2.2.1 [A4]: labelOffset now defined once in the Divergence section
+
+if confirmedBuy and showSignalsInput
+    string buyLabelText = showScoreInput ? "Long " + str.tostring(math.round(bullScore)) + "%" : "Long"
+    label.new(bar_index, low - labelOffset, buyLabelText, color = bullColorInput, textcolor = LABEL_TEXT, style = label.style_label_up, size = signalSize, tooltip = "TK Buy | Score: " + str.tostring(math.round(bullScore)) + "% | Grade: " + buyGrade + " | Momentum: " + str.tostring(math.round(momentumSmooth)))
+
+if confirmedSell and showSignalsInput
+    string sellLabelText = showScoreInput ? "Short " + str.tostring(math.round(bearScore)) + "%" : "Short"
+    label.new(bar_index, high + labelOffset, sellLabelText, color = bearColorInput, textcolor = LABEL_TEXT, style = label.style_label_down, size = signalSize, tooltip = "TK Sell | Score: " + str.tostring(math.round(bearScore)) + "% | Grade: " + sellGrade + " | Momentum: " + str.tostring(math.round(momentumSmooth)))
+
+// Kumo Breakout signals
+plotshape(showBreakLabelsInput and showBreakoutInput and kumoBreakUp ? low : na, "Kumo Break Up", style = shape.diamond, location = location.belowbar, color = breakoutColorInput, textcolor = LABEL_TEXT, text = "☁▲", size = size.small)
+plotshape(showBreakLabelsInput and showBreakoutInput and kumoBreakDown ? high : na, "Kumo Break Down", style = shape.diamond, location = location.abovebar, color = breakoutColorInput, textcolor = LABEL_TEXT, text = "☁▼", size = size.small)
+
+// Retest signals
+plotshape(showBreakLabelsInput and showBreakoutInput and retestBull ? low : na, "Retest Bull", style = shape.circle, location = location.belowbar, color = color.new(breakoutColorInput, 30), size = size.tiny)
+plotshape(showBreakLabelsInput and showBreakoutInput and retestBear ? high : na, "Retest Bear", style = shape.circle, location = location.abovebar, color = color.new(breakoutColorInput, 30), size = size.tiny)
+
+// v2.2.0 [F3]: Kumo Twist markers
+plotshape(showTwistInput and twistBull, "Kumo Twist Bull", style = shape.xcross, location = location.belowbar, color = twistColorInput, text = "⚡▲", textcolor = twistColorInput, size = size.tiny)
+plotshape(showTwistInput and twistBear, "Kumo Twist Bear", style = shape.xcross, location = location.abovebar, color = twistColorInput, text = "⚡▼", textcolor = twistColorInput, size = size.tiny)
+
+// ══════════════════════════════════════
+// SMART TP/SL VISUAL — LTM-STYLE TRADE RECORD
+// ══════════════════════════════════════
+// v2.3.0 [S1]: ported from Liquidity Trail Matrix. Lines are drawn ONCE
+// at entry and persist as a trade record: TP lines recolor to solid teal
+// + "✓" on hit, the SL line dims while break-even is active and the
+// entry label annotates "→ SL (BE)", "SL ✗"/"BE ✗" marks a stop-out.
+// The v2.1.0 closed-trade timeout is retained: the record is removed
+// showClosedBars bars after closure, or on the next entry.
+
+var line  entryLine  = na
+var line  slLine     = na
+var line  tp1Line    = na
+var line  tp2Line    = na
+var line  tp3Line    = na
+var label entryLabel = na
+var label slLabel    = na
+var label tp1Label   = na
+var label tp2Label   = na
+var label tp3Label   = na
+
+bool evAnyEntry = evBuyEntry or evSellEntry
+
+// ── Draw the record at entry (previous record replaced) ──
+if evAnyEntry and showTPSLInput
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+
+    int x1 = bar_index
+    int x2 = bar_index + LINE_FORWARD_BARS
+
+    entryLine := line.new(x1, activeEntryPrice, x2, activeEntryPrice, color = ENTRY_COLOR, style = entryLineStyle, width = 1)
+    slLine    := line.new(x1, activeSL,  x2, activeSL,  color = SL_COLOR,  style = slLineStyle, width = 2)
+    tp1Line   := line.new(x1, activeTP1, x2, activeTP1, color = TP1_COLOR, style = tpLineStyle, width = 1)
+    tp2Line   := line.new(x1, activeTP2, x2, activeTP2, color = TP2_COLOR, style = tpLineStyle, width = 1)
+    tp3Line   := line.new(x1, activeTP3, x2, activeTP3, color = TP3_COLOR, style = tpLineStyle, width = 1)
+
+    if showTPSLLabelsInput
+        int lblX = x2 + LABEL_OFFSET_BARS
+        entryLabel := label.new(lblX, activeEntryPrice, "ENTRY " + fmtPrice(activeEntryPrice), color = ENTRY_COLOR, textcolor = RISK_LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        slLabel    := label.new(lblX, activeSL,  "SL "  + fmtPrice(activeSL)  + formatPctFromEntry(activeSL,  activeEntryPrice), color = SL_COLOR,       textcolor = RISK_LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp1Label   := label.new(lblX, activeTP1, "TP1 " + fmtPrice(activeTP1) + formatPctFromEntry(activeTP1, activeEntryPrice), color = TP_LABEL_COLOR, textcolor = RISK_LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp2Label   := label.new(lblX, activeTP2, "TP2 " + fmtPrice(activeTP2) + formatPctFromEntry(activeTP2, activeEntryPrice), color = TP_LABEL_COLOR, textcolor = RISK_LABEL_TEXT, style = label.style_label_left, size = labelSize)
+        tp3Label   := label.new(lblX, activeTP3, "TP3 " + fmtPrice(activeTP3) + formatPctFromEntry(activeTP3, activeEntryPrice), color = TP_LABEL_COLOR, textcolor = RISK_LABEL_TEXT, style = label.style_label_left, size = labelSize)
+
+// ── TP-hit recolor (solid teal + ✓) ──
+if showTPSLInput and not evAnyEntry and not na(tp1Line) and tp1Hit
+    line.set_color(tp1Line, TP_HIT_COLOR)
+    line.set_style(tp1Line, line.style_solid)
+    if showTPSLLabelsInput and not na(tp1Label)
+        label.set_text(tp1Label, "TP1 ✓ " + fmtPrice(activeTP1) + formatPctFromEntry(activeTP1, activeEntryPrice))
+        label.set_color(tp1Label, TP_HIT_COLOR)
+if showTPSLInput and not evAnyEntry and not na(tp2Line) and tp2Hit
+    line.set_color(tp2Line, TP_HIT_COLOR)
+    line.set_style(tp2Line, line.style_solid)
+    if showTPSLLabelsInput and not na(tp2Label)
+        label.set_text(tp2Label, "TP2 ✓ " + fmtPrice(activeTP2) + formatPctFromEntry(activeTP2, activeEntryPrice))
+        label.set_color(tp2Label, TP_HIT_COLOR)
+if showTPSLInput and not evAnyEntry and not na(tp3Line) and tp3Hit
+    line.set_color(tp3Line, TP_HIT_COLOR)
+    line.set_style(tp3Line, line.style_solid)
+    if showTPSLLabelsInput and not na(tp3Label)
+        label.set_text(tp3Label, "TP3 ✓ " + fmtPrice(activeTP3) + formatPctFromEntry(activeTP3, activeEntryPrice))
+        label.set_color(tp3Label, TP_HIT_COLOR)
+
+// ── Stop-out annotation ──
+if showTPSLInput and not evAnyEntry and slHit and showTPSLLabelsInput and not na(slLabel)
+    label.set_text(slLabel, (beActive ? "BE ✗ " : "SL ✗ ") + fmtPrice(activeSL) + formatPctFromEntry(activeSL, activeEntryPrice))
+    label.set_color(slLabel, beActive ? BE_COLOR : SL_COLOR)
+
+// ── Break-even: dim SL line/label, annotate entry ──
+if showTPSLInput and beActive and activeDir != 0
+    if not na(slLine)
+        line.set_color(slLine, color.new(SL_COLOR, BE_DIM_TRANSP))
+    if showTPSLLabelsInput
+        if not na(slLabel)
+            label.set_color(slLabel, color.new(SL_COLOR, BE_DIM_TRANSP))
+        if not na(entryLabel)
+            label.set_text(entryLabel, "ENTRY " + fmtPrice(activeEntryPrice) + "  → SL (BE)")
+            label.set_color(entryLabel, BE_COLOR)
+
+// ── Extend the active record to the current bar ──
+if activeDir != 0 and showTPSLInput and not na(slLine)
+    int newX2   = bar_index + LINE_UPDATE_BARS
+    int newLblX = newX2 + LABEL_OFFSET_BARS
+    line.set_x2(entryLine, newX2)
+    line.set_x2(slLine,    newX2)
+    line.set_x2(tp1Line,   newX2)
+    line.set_x2(tp2Line,   newX2)
+    line.set_x2(tp3Line,   newX2)
+    if showTPSLLabelsInput and not na(slLabel)
+        label.set_x(entryLabel, newLblX)
+        label.set_x(slLabel,    newLblX)
+        label.set_x(tp1Label,   newLblX)
+        label.set_x(tp2Label,   newLblX)
+        label.set_x(tp3Label,   newLblX)
+
+// ── Closed-trade timeout (v2.1.0 [M1] retained) ──
+if barstate.islast and activeDir == 0 and not na(tradeCloseBar) and (bar_index - tradeCloseBar) > showClosedBarsInput and not na(slLine)
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    entryLine  := na
+    slLine     := na
+    tp1Line    := na
+    tp2Line    := na
+    tp3Line    := na
+    entryLabel := na
+    slLabel    := na
+    tp1Label   := na
+    tp2Label   := na
+    tp3Label   := na
+
+// ══════════════════════════════════════
+// KIJUN S/R ZONES
+// ══════════════════════════════════════
+// v2.1.0 [H2]: gated by barstate.isconfirmed
+if showZonesInput and kijunWasFlat and isWarmedUp and barstate.isconfirmed
+    float srLevel = nz(kijunSen[1], kijunSen)
+    float atrBand = atrBase * 0.15
+    box.new(bar_index - 5, srLevel + atrBand, bar_index + 10, srLevel - atrBand, border_color = color.new(kijunColorInput, 60), bgcolor = color.new(kijunColorInput, 90), border_width = 1)
+
+// Cleanup
+if array.size(label.all) > 450
+    label.delete(array.shift(label.all))
+if array.size(box.all) > 180
+    box.delete(array.shift(box.all))
+
+// ══════════════════════════════════════
+// DASHBOARD — LTM-STYLE SECTIONED TABLE (v2.3.0 [S2])
+// ══════════════════════════════════════
+// Ported from Liquidity Trail Matrix: dynamic height (table rebuilt on
+// the last bar), trend-colored header, zebra rows, per-cell tooltips,
+// section toggles, sub-sized dividers/footer, TP1-rate gauge, Form strip.
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    "Middle Right" => position.middle_right
+    =>                position.top_right
+
+bool statsVisible = showStatsInput and showTPSLInput
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    color headerBg = trendState == "Bullish" ? HEADER_BG_BULL : trendState == "Bearish" ? HEADER_BG_BEAR : HEADER_BG
+    color trendCol = trendState == "Bullish" ? BULL_TEXT : trendState == "Bearish" ? BEAR_TEXT : NEUTRAL_TEXT
+
+    // ── Market values ──
+    string kumoStr = isThinKumo ? "Thin" : priceAboveCloud ? "Above" : priceBelowCloud ? "Below" : "Inside"
+    color  kumoCol = priceAboveCloud ? BULL_TEXT : priceBelowCloud ? BEAR_TEXT : NEUTRAL_TEXT
+    float  dispScore = math.max(bullScore, bearScore)
+    color  scoreCol  = dispScore >= 70 ? BULL_TEXT : dispScore >= 40 ? NEUTRAL_TEXT : TEXT_MUTED
+    string posStr = not showTPSLInput ? "—" : activeDir == 1 ? "LONG" : activeDir == -1 ? "SHORT" : "Flat"
+    color  posCol = activeDir == 1 ? BULL_TEXT : activeDir == -1 ? BEAR_TEXT : TEXT_MUTED
+    string sigAgo     = lastSignal == "None" ? "" : " (" + str.tostring(bar_index - lastSignalBar) + ")"
+    string lastSigStr = lastSignal == "None" ? "—" : lastSignal + sigAgo
+    color  lastSigCol = lastSignal == "Buy" or lastSignal == "Break ▲" ? BULL_TEXT : lastSignal == "None" ? TEXT_MUTED : BEAR_TEXT
+
+    // ── Trade values ──
+    string dashEntry = activeDir != 0 and not na(activeEntryPrice) ? fmtPrice(activeEntryPrice) : "—"
+    string dashSL    = activeDir != 0 and not na(activeSL)  ? (beActive ? "BE @ " : "") + fmtPrice(activeSL) : "—"
+    string dashTP1   = activeDir != 0 and not na(activeTP1) ? (tp1Hit ? "✓ " : "") + fmtPrice(activeTP1) : "—"
+    string dashTP2   = activeDir != 0 and not na(activeTP2) ? (tp2Hit ? "✓ " : "") + fmtPrice(activeTP2) : "—"
+    string dashTP3   = activeDir != 0 and not na(activeTP3) ? (tp3Hit ? "✓ " : "") + fmtPrice(activeTP3) : "—"
+    color  dashSlCol  = beActive ? BE_COLOR     : SL_COLOR
+    color  dashTp1Col = tp1Hit   ? TP_HIT_COLOR : TP_LABEL_COLOR
+    color  dashTp2Col = tp2Hit   ? TP_HIT_COLOR : TP_LABEL_COLOR
+    color  dashTp3Col = tp3Hit   ? TP_HIT_COLOR : TP_LABEL_COLOR
+    string dashRR   = str.tostring(tp1MultInput, "#.#") + "R"
+    color  rrColor  = tp1MultInput >= 1.5 ? BULL_TEXT : tp1MultInput >= 1.0 ? NEUTRAL_TEXT : BEAR_TEXT
+    float  riskPct  = activeDir != 0 and not na(activeEntryPrice) and activeEntryPrice != 0 and not na(activeSL) ? math.abs(activeEntryPrice - activeSL) / activeEntryPrice * 100 : 0.0
+    string dashDist  = str.tostring(riskPct, "#.##") + "%"
+    color  distColor = riskPct > 3.0 ? BEAR_TEXT : riskPct > 1.0 ? NEUTRAL_TEXT : BULL_TEXT
+
+    // ── Honest Stats values ──
+    string closedStr = str.tostring(statClosed) + (statReplaced > 0 ? " (" + str.tostring(statReplaced) + " repl)" : "")
+    float  tp1Rate = statClosed > 0 ? 100.0 * statTP1Cnt / statClosed : 0.0
+    string tp1Str  = statClosed > 0 ? str.tostring(math.round(tp1Rate)) + "%  " + buildGauge(tp1Rate, 100, 8) : "—"
+    color  tp1Col  = statClosed == 0 ? TEXT_MUTED : tp1Rate >= 55.0 ? BULL_TEXT : tp1Rate >= 45.0 ? NEUTRAL_TEXT : BEAR_TEXT
+    string tp23Str = statClosed > 0 ? str.tostring(math.round(100.0 * statTP2Cnt / statClosed)) + "% / " + str.tostring(math.round(100.0 * statTP3Cnt / statClosed)) + "%" : "—"
+    float  slRate  = statClosed > 0 ? 100.0 * statSLCnt / statClosed : 0.0
+    string slStr   = statClosed > 0 ? str.tostring(math.round(slRate)) + "%" : "—"
+    color  slCol   = statClosed == 0 ? TEXT_MUTED : slRate <= 40.0 ? BULL_TEXT : slRate <= 60.0 ? NEUTRAL_TEXT : BEAR_TEXT
+    float  avgR    = statClosed > 0 ? statRSum / statClosed : 0.0
+    string avgRStr = statClosed > 0 ? str.tostring(avgR, "#.##") + "R" : "—"
+    color  avgRCol = statClosed == 0 ? TEXT_MUTED : avgR > 0 ? BULL_TEXT : avgR < 0 ? BEAR_TEXT : NEUTRAL_TEXT
+    string dashForm = formStr == "" ? "—" : formStr
+
+    // ── Row math ──
+    int marketRows = showMarketSecInput ? 8 : 0
+    int mtfRows    = showMTFInput ? 5 : 0
+    int tradeRows  = showTradeSecInput and showTPSLInput ? (activeDir != 0 ? 8 : 2) : 0
+    int statsRows  = statsVisible ? 8 : 0
+    int totalRows  = 2 + marketRows + mtfRows + tradeRows + statsRows
+
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(dashPos, 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    int  r   = 0
+    bool zeb = false
+    color rb = TABLE_BG
+
+    table.cell(dashTable, 0, r, "◆ Ichi Nexus · " + trendState, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = dashFontSize, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    if showMarketSecInput
+        table.cell(dashTable, 0, r, "— Market —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Mode", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Ichimoku period calculation: fixed (Classic) or volatility-scaled (Adaptive).")
+        table.cell(dashTable, 1, r, isAdaptive ? "Adaptive" : "Classic", text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Trend", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Price vs Kumo + Tenkan/Kijun alignment.")
+        table.cell(dashTable, 1, r, trendState, text_color = trendCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Momentum", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Momentum Pulse: TK spread + acceleration + cloud slope (-100..+100).")
+        table.cell(dashTable, 1, r, momentumStr + " (" + str.tostring(math.round(momentumSmooth)) + ")", text_color = momentumColor, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Cloud", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Price position relative to the Kumo. 'Thin' = below 30% of average thickness.")
+        table.cell(dashTable, 1, r, kumoStr, text_color = kumoCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Score", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Best current confluence score (8 factors, 0-100).")
+        table.cell(dashTable, 1, r, str.tostring(math.round(dispScore)) + "%", text_color = scoreCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Position", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Current tracked TP/SL setup direction.")
+        table.cell(dashTable, 1, r, posStr, text_color = posCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Last signal", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Most recent signal. Number in () = bars ago.")
+        table.cell(dashTable, 1, r, lastSigStr, text_color = lastSigCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    if showMTFInput
+        table.cell(dashTable, 0, r, "— MTF —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        string s1 = not mtf1Valid ? "⚠ TF < chart" : mtf1State == 1 ? "Bull ●" : mtf1State == -1 ? "Bear ●" : "Neutral ○"
+        color  c1 = not mtf1Valid ? NEUTRAL_TEXT : mtf1State == 1 ? BULL_TEXT : mtf1State == -1 ? BEAR_TEXT : TEXT_MUTED
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, mtfTF1Input, text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Classic Ichimoku state on this timeframe (closed bars only).")
+        table.cell(dashTable, 1, r, s1, text_color = c1, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        string s2 = not mtf2Valid ? "⚠ TF < chart" : mtf2State == 1 ? "Bull ●" : mtf2State == -1 ? "Bear ●" : "Neutral ○"
+        color  c2 = not mtf2Valid ? NEUTRAL_TEXT : mtf2State == 1 ? BULL_TEXT : mtf2State == -1 ? BEAR_TEXT : TEXT_MUTED
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, mtfTF2Input, text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Classic Ichimoku state on this timeframe (closed bars only).")
+        table.cell(dashTable, 1, r, s2, text_color = c2, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        string s3 = not mtf3Valid ? "⚠ TF < chart" : mtf3State == 1 ? "Bull ●" : mtf3State == -1 ? "Bear ●" : "Neutral ○"
+        color  c3 = not mtf3Valid ? NEUTRAL_TEXT : mtf3State == 1 ? BULL_TEXT : mtf3State == -1 ? BEAR_TEXT : TEXT_MUTED
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, mtfTF3Input, text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Classic Ichimoku state on this timeframe (closed bars only).")
+        table.cell(dashTable, 1, r, s3, text_color = c3, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        string mtfAlignStr = not mtfAllValid ? "Invalid TF" : mtfAllBull ? "ALL BULL ✓" : mtfAllBear ? "ALL BEAR ✓" : "Mixed"
+        color  mtfAlignCol = not mtfAllValid ? NEUTRAL_TEXT : mtfAllBull ? BULL_TEXT : mtfAllBear ? BEAR_TEXT : NEUTRAL_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Align", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "All three timeframes agreeing = strongest context.")
+        table.cell(dashTable, 1, r, mtfAlignStr, text_color = mtfAlignCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+    if showTradeSecInput and showTPSLInput
+        table.cell(dashTable, 0, r, "— Trade —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        if activeDir != 0
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Entry", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dashEntry, text_color = ENTRY_COLOR, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "SL", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Active stop. 'BE @' = moved to entry after TP1.")
+            table.cell(dashTable, 1, r, dashSL, text_color = dashSlCol, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "TP1", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "✓ = touched.")
+            table.cell(dashTable, 1, r, dashTP1, text_color = dashTp1Col, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "TP2", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb)
+            table.cell(dashTable, 1, r, dashTP2, text_color = dashTp2Col, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "TP3", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Final target. Touching it closes the tracked setup.")
+            table.cell(dashTable, 1, r, dashTP3, text_color = dashTp3Col, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "R:R (TP1)", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Reward-to-risk at TP1.")
+            table.cell(dashTable, 1, r, dashRR, text_color = rrColor, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "SL Dist %", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Stop distance as % of entry (not position risk).")
+            table.cell(dashTable, 1, r, dashDist, text_color = distColor, text_size = dashFontSize, bgcolor = rb)
+            r += 1
+            zeb := not zeb
+        else
+            rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+            table.cell(dashTable, 0, r, "Flat · waiting for signal", text_color = TEXT_MUTED, text_size = dashFontSize, text_halign = text.align_center, bgcolor = rb)
+            table.merge_cells(dashTable, 0, r, 1, r)
+            r += 1
+            zeb := not zeb
+
+    if statsVisible
+        table.cell(dashTable, 0, r, "— Honest Stats —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = dashFontSizeSub, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Closed", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Closed TP/SL setups on loaded history. 'repl' = overwritten by a new signal (closed at market for stats).")
+        table.cell(dashTable, 1, r, closedStr, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "TP1 rate", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Share of closed setups that touched TP1.")
+        table.cell(dashTable, 1, r, tp1Str, text_color = tp1Col, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "TP2 / TP3", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Share of closed setups that touched TP2 / ran to TP3.")
+        table.cell(dashTable, 1, r, tp23Str, text_color = TEXT_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "SL rate", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Share of closed setups stopped out (incl. break-even stops).")
+        table.cell(dashTable, 1, r, slStr, text_color = slCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Avg R", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Average result in R. Model: 1/3 out at each TP, remainder at stop; worst-case intrabar (SL before TP); BE-stop = 0R.")
+        table.cell(dashTable, 1, r, avgRStr, text_color = avgRCol, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Form", text_color = TEXT_MUTED, text_size = dashFontSize, bgcolor = rb, tooltip = "Last " + str.tostring(FORM_LEN) + " closed setups.  ▰ = TP1 touched · ▱ = closed before TP1 (newest right).")
+        table.cell(dashTable, 1, r, dashForm, text_color = FORM_COLOR, text_size = dashFontSize, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+        table.cell(dashTable, 0, r, "⚠ 1/3 scale-out model · not a backtest", text_color = TEXT_MUTED, text_size = dashFontSizeSub, bgcolor = TABLE_BG, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+
+    table.cell(dashTable, 0, r, "Ichi Nexus · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = dashFontSizeSub, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+else if not showDashInput and barstate.islast and not na(dashTable)
+    table.delete(dashTable)
+    dashTable := na
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+
+if barstate.islast and showWatermarkInput
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+else if not showWatermarkInput and barstate.islast
+    table.clear(wmTable, 0, 0, 0, 0)
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+// v2.1.0 [L4]: alert strings built only when events fire
+string tickerStr = syminfo.tickerid
+string tfStr = timeframe.period
+
+// TK Cross alerts
+if confirmedBuy
+    string priceStr = str.tostring(close, format.mintick)
+    string bsStr = str.tostring(math.round(bullScore))
+    string slStr = str.tostring(nz(activeSL, 0.0), format.mintick)
+    string tp1Str = str.tostring(nz(activeTP1, 0.0), format.mintick)
+    string tp2Str = str.tostring(nz(activeTP2, 0.0), format.mintick)
+    string tp3Str = str.tostring(nz(activeTP3, 0.0), format.mintick)
+    string buyJson = '{"action":"buy","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '","score":' + bsStr + ',"sl":' + slStr + ',"tp1":' + tp1Str + ',"tp2":' + tp2Str + ',"tp3":' + tp3Str + '}'
+    string buyText = "🟢 BUY | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + bsStr + "% | SL: " + slStr + " | TP1: " + tp1Str + " | TP2: " + tp2Str + " | TP3: " + tp3Str
+    alert(webhookInput ? buyJson : buyText, alert.freq_once_per_bar_close)
+
+if confirmedSell
+    string priceStr = str.tostring(close, format.mintick)
+    string ssStr = str.tostring(math.round(bearScore))
+    string slStr = str.tostring(nz(activeSL, 0.0), format.mintick)
+    string tp1Str = str.tostring(nz(activeTP1, 0.0), format.mintick)
+    string tp2Str = str.tostring(nz(activeTP2, 0.0), format.mintick)
+    string tp3Str = str.tostring(nz(activeTP3, 0.0), format.mintick)
+    string sellJson = '{"action":"sell","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '","score":' + ssStr + ',"sl":' + slStr + ',"tp1":' + tp1Str + ',"tp2":' + tp2Str + ',"tp3":' + tp3Str + '}'
+    string sellText = "🔴 SELL | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr + " | Score: " + ssStr + "% | SL: " + slStr + " | TP1: " + tp1Str + " | TP2: " + tp2Str + " | TP3: " + tp3Str
+    alert(webhookInput ? sellJson : sellText, alert.freq_once_per_bar_close)
+
+// Kumo Breakout alerts
+if kumoBreakUp and showBreakoutInput
+    string priceStr = str.tostring(close, format.mintick)
+    string breakUpJson = '{"action":"kumo_break_up","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string breakUpText = "☁️▲ KUMO BREAK UP | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr
+    alert(webhookInput ? breakUpJson : breakUpText, alert.freq_once_per_bar_close)
+
+if kumoBreakDown and showBreakoutInput
+    string priceStr = str.tostring(close, format.mintick)
+    string breakDnJson = '{"action":"kumo_break_down","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string breakDnText = "☁️▼ KUMO BREAK DOWN | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr
+    alert(webhookInput ? breakDnJson : breakDnText, alert.freq_once_per_bar_close)
+
+// v2.1.0 [M3]: Kumo retest alerts
+if retestBull and showBreakoutInput
+    string priceStr = str.tostring(close, format.mintick)
+    string rtJson = '{"action":"kumo_retest_bull","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string rtText = "🔵 KUMO RETEST BULL | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr
+    alert(webhookInput ? rtJson : rtText, alert.freq_once_per_bar_close)
+
+if retestBear and showBreakoutInput
+    string priceStr = str.tostring(close, format.mintick)
+    string rtJson = '{"action":"kumo_retest_bear","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string rtText = "🔵 KUMO RETEST BEAR | " + tickerStr + " | TF: " + tfStr + " | Price: " + priceStr
+    alert(webhookInput ? rtJson : rtText, alert.freq_once_per_bar_close)
+
+// v2.2.0 [F3]: Kumo Twist alerts
+if twistBull and showTwistInput
+    string priceStr = str.tostring(close, format.mintick)
+    string twJson = '{"action":"kumo_twist_bull","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string twText = "⚡▲ KUMO TWIST BULL | " + tickerStr + " | TF: " + tfStr + " | Senkou A crossed above Senkou B"
+    alert(webhookInput ? twJson : twText, alert.freq_once_per_bar_close)
+
+if twistBear and showTwistInput
+    string priceStr = str.tostring(close, format.mintick)
+    string twJson = '{"action":"kumo_twist_bear","ticker":"' + tickerStr + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+    string twText = "⚡▼ KUMO TWIST BEAR | " + tickerStr + " | TF: " + tfStr + " | Senkou A crossed below Senkou B"
+    alert(webhookInput ? twJson : twText, alert.freq_once_per_bar_close)
+
+// v2.2.0 [F6]: Momentum Divergence alerts
+if bearDiv and showDivInput
+    string dvJson = '{"action":"bear_divergence","ticker":"' + tickerStr + '","tf":"' + tfStr + '"}'
+    string dvText = "🔀▼ BEARISH MOMENTUM DIVERGENCE | " + tickerStr + " | TF: " + tfStr + " | Price HH vs Momentum LH"
+    alert(webhookInput ? dvJson : dvText, alert.freq_once_per_bar_close)
+
+if bullDiv and showDivInput
+    string dvJson = '{"action":"bull_divergence","ticker":"' + tickerStr + '","tf":"' + tfStr + '"}'
+    string dvText = "🔀▲ BULLISH MOMENTUM DIVERGENCE | " + tickerStr + " | TF: " + tfStr + " | Price LL vs Momentum HL"
+    alert(webhookInput ? dvJson : dvText, alert.freq_once_per_bar_close)
+
+// v2.2.0 [F2]: Break-even move alert (edge detection)
+bool beJustSet = beActive and not beActive[1]
+if beJustSet
+    alert("🔒 SL → BREAK-EVEN | " + tickerStr + " | " + str.tostring(nz(activeEntryPrice, 0.0), format.mintick), alert.freq_once_per_bar_close)
+
+// TP/SL hit alerts (edge detection: true now, false previous bar)
+// v2.1.0 [L6] / [M3]
+bool tp1JustHit = tp1Hit and not tp1Hit[1]
+bool tp2JustHit = tp2Hit and not tp2Hit[1]
+bool tp3JustHit = tp3Hit and not tp3Hit[1]
+bool slJustHit = slHit and not slHit[1]
+
+if tp1JustHit
+    alert("🎯 TP1 HIT | " + tickerStr + " | " + str.tostring(nz(activeTP1, 0.0), format.mintick), alert.freq_once_per_bar_close)
+if tp2JustHit
+    alert("🎯 TP2 HIT | " + tickerStr + " | " + str.tostring(nz(activeTP2, 0.0), format.mintick), alert.freq_once_per_bar_close)
+if tp3JustHit
+    alert("🏁 TP3 HIT — TRADE CLOSED | " + tickerStr + " | " + str.tostring(nz(activeTP3, 0.0), format.mintick), alert.freq_once_per_bar_close)
+if slJustHit
+    alert("🛑 SL HIT | " + tickerStr + " | " + str.tostring(nz(activeSL, 0.0), format.mintick), alert.freq_once_per_bar_close)

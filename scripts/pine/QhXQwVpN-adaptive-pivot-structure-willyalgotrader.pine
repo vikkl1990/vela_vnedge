@@ -1,0 +1,637 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// ADAPTIVE PIVOT STRUCTURE [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+
+indicator(
+    title            = "Adaptive Pivot Structure [WillyAlgoTrader]",
+    shorttitle       = "PivotStruct",
+    overlay          = true,
+    max_labels_count = 500,
+    max_lines_count  = 500,
+    max_boxes_count  = 500,
+    max_bars_back    = 5000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN    = "⚙️ Main Settings"
+GRP_VISUAL  = "🎨 Visual Settings"
+GRP_FIB     = "📐 Fibonacci"
+GRP_FILTER  = "🔍 Filters"
+GRP_DASH    = "📊 Dashboard"
+GRP_ALERT   = "🔔 Alerts"
+GRP_COLORS  = "🎨 Colors"
+GRP_ADV     = "🔧 Advanced"
+
+INDICATOR_VERSION = "v2.0.0"
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+
+// ── Main ────────────────────────────────
+pivotLenInput = input.int(13, "Pivot Length", minval = 1, maxval = 100, group = GRP_MAIN, tooltip = "Number of bars to left/right for pivot detection.\n• Lower = faster detection, more repainting\n• Higher = slower but more reliable\n• ⚠️ Pivots may repaint until confirmed\n• Recommended: 3–10 for realtime, 10–50 for confirmed")
+atrLenInput = input.int(14, "ATR Length", minval = 5, maxval = 50, group = GRP_MAIN, tooltip = "Period for ATR calculation.\n• Used for pivot strength grading\n• Recommended: 14")
+minSwingAtrInput = input.float(0.0, "Min Swing Size (ATR×)", minval = 0.0, maxval = 5.0, step = 0.1, group = GRP_MAIN, tooltip = "Minimum swing size as ATR multiple.\n• 0 = show all pivots\n• 0.5+ = filter small swings")
+sourceHighInput = input.source(high, "Pivot High Source", group = GRP_MAIN, tooltip = "Price source for detecting pivot highs")
+sourceLowInput = input.source(low, "Pivot Low Source", group = GRP_MAIN, tooltip = "Price source for detecting pivot lows")
+
+// ── Visual ──────────────────────────────
+showRegularInput = input.bool(true, "Show Regular Pivots", group = GRP_VISUAL, tooltip = "Display pivot high/low labels on chart")
+showLiveInput = input.bool(true, "Show Live Pivot", group = GRP_VISUAL, tooltip = "Show the potential next pivot that is forming right now.\n• ⚠️ This WILL move/repaint — it tracks the current extreme\n• Helps see where the Fibonacci grid is anchored in real-time")
+showMissedInput = input.bool(true, "Show Missed Reversals", group = GRP_VISUAL, tooltip = "Display missed pivot levels skipped by price action")
+showZigzagInput = input.bool(true, "Show Zigzag", group = GRP_VISUAL, tooltip = "Draw zigzag connecting pivot points")
+showLevelsInput = input.bool(true, "Show Active Levels", group = GRP_VISUAL, tooltip = "Extend horizontal lines from missed pivots until broken")
+showBosInput = input.bool(true, "Show BOS/CHoCH", group = GRP_VISUAL, tooltip = "Display Break of Structure / Change of Character labels")
+showBgInput = input.bool(false, "Show Trend Background", group = GRP_VISUAL, tooltip = "Tint chart background based on market structure")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader - by Willy' watermark")
+
+// ── Fibonacci ───────────────────────────
+showFibInput = input.bool(true, "Show Fibonacci Grid", group = GRP_FIB, tooltip = "Draw Fib retracement between last confirmed pivot and live pivot.\n• Grid moves dynamically as price extends\n• Updates instantly on each new pivot")
+showFibExtInput = input.bool(false, "Show Extensions (1.272 / 1.618)", group = GRP_FIB, tooltip = "Show extension levels beyond the swing range")
+showFibLabelsInput = input.bool(true, "Show Fib Price Labels", group = GRP_FIB, tooltip = "Display price at each Fibonacci level")
+showFibFillInput = input.bool(true, "Show Fib Zone Fill", group = GRP_FIB, tooltip = "Fill Premium (sell) and Discount (buy) zones")
+fibColorInput = input.color(#787B86, "Fib Line Color", group = GRP_FIB, tooltip = "Base color for Fibonacci lines")
+fibKeyColorInput = input.color(#FF9800, "Key Levels (0.5/0.618)", group = GRP_FIB, tooltip = "Highlight color for 0.5 and 0.618 levels")
+
+// ── Filters ─────────────────────────────
+strengthFilterInput = input.string("All", "Pivot Strength Filter", options = ["All", "Strong Only", "Weak Only"], group = GRP_FILTER, tooltip = "Filter pivots by ATR-relative significance.\n• Strong = swing > 1.5× ATR")
+maxLevelsInput = input.int(10, "Max Active Levels", minval = 2, maxval = 50, group = GRP_FILTER, tooltip = "Maximum number of horizontal S/R levels shown")
+
+// ── Dashboard ───────────────────────────
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Display info panel")
+dashPosStr = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH, tooltip = "Dashboard corner")
+
+// ── Alerts ──────────────────────────────
+alertConfirmedOnlyInput = input.bool(true, "Alerts: Confirmed Only", group = GRP_ALERT, tooltip = "If ON: alerts fire only on bar close (no repaint).\nIf OFF: alerts fire mid-bar (faster but may repaint).\n• Recommended: ON for trading bots, OFF for notifications")
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations")
+
+// ── Colors ──────────────────────────────
+bullColorInput = input.color(#00E676, "Bull", inline = "col1", group = GRP_COLORS)
+bearColorInput = input.color(#FF5252, "Bear", inline = "col1", group = GRP_COLORS)
+missedBullInput = input.color(#00BCD4, "Missed Bull", inline = "col2", group = GRP_COLORS)
+missedBearInput = input.color(#FF9800, "Missed Bear", inline = "col2", group = GRP_COLORS)
+bosColorInput = input.color(#FFEB3B, "BOS/CHoCH", inline = "col3", group = GRP_COLORS)
+liveColorInput = input.color(#AB47BC, "Live Pivot", inline = "col3", group = GRP_COLORS)
+
+// ── Advanced ────────────────────────────
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_ADV, tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark/Light: manual override")
+
+// ══════════════════════════════════════
+// THEME
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG      = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER  = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+HEADER_BG     = color.new(#2962FF, 0)
+HEADER_TEXT   = #FFFFFF
+LABEL_TEXT    = #FFFFFF
+WM_COLOR      = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+BULL_BG = color.new(bullColorInput, 90)
+BEAR_BG = color.new(bearColorInput, 90)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosStr
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CALCULATIONS
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(pivotLenInput * 2, 30)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+int n = bar_index
+
+float atrVal = nz(ta.atr(atrLenInput), 0.0)
+
+// Pivot detection (standard — these still have pivotLen bar delay inherently)
+float ph = ta.pivothigh(sourceHighInput, pivotLenInput, pivotLenInput)
+float pl = ta.pivotlow(sourceLowInput, pivotLenInput, pivotLenInput)
+
+// ══════════════════════════════════════
+// PIVOT STRENGTH GRADING
+// ══════════════════════════════════════
+var float lastPivotPrice = na
+var bool lastPivotWasHigh = false
+
+float pivotSwingSize = 0.0
+bool pivotIsStrong = false
+
+if not na(ph)
+    pivotSwingSize := not na(lastPivotPrice) ? math.abs(ph - lastPivotPrice) : 0.0
+    pivotIsStrong := atrVal > 0 ? pivotSwingSize > atrVal * 1.5 : true
+
+if not na(pl)
+    pivotSwingSize := not na(lastPivotPrice) ? math.abs(pl - lastPivotPrice) : 0.0
+    pivotIsStrong := atrVal > 0 ? pivotSwingSize > atrVal * 1.5 : true
+
+// Filters
+bool phPassesFilter = not na(ph) and (minSwingAtrInput == 0.0 or (not na(lastPivotPrice) and atrVal > 0 ? math.abs(ph - lastPivotPrice) >= atrVal * minSwingAtrInput : true))
+bool plPassesFilter = not na(pl) and (minSwingAtrInput == 0.0 or (not na(lastPivotPrice) and atrVal > 0 ? math.abs(pl - lastPivotPrice) >= atrVal * minSwingAtrInput : true))
+
+bool phStrengthOk = strengthFilterInput == "All" or (strengthFilterInput == "Strong Only" and pivotIsStrong) or (strengthFilterInput == "Weak Only" and not pivotIsStrong)
+bool plStrengthOk = strengthFilterInput == "All" or (strengthFilterInput == "Strong Only" and pivotIsStrong) or (strengthFilterInput == "Weak Only" and not pivotIsStrong)
+
+bool validPh = phPassesFilter and phStrengthOk and isWarmedUp
+bool validPl = plPassesFilter and plStrengthOk and isWarmedUp
+
+// ══════════════════════════════════════
+// STRUCTURE TRACKING
+// ══════════════════════════════════════
+var float curPH = na
+var float curPL = na
+var int curPHx = 0
+var int curPLx = 0
+var int structDir = 0
+var int prevStructDir = 0
+
+// Missed pivot tracking
+var float trackMax = na
+var int trackMaxX = 0
+var float trackMin = na
+var int trackMinX = 0
+var int lastPivotSide = 0
+
+// Zigzag tracking
+var float zzPrevPrice = na
+var int zzPrevX = 0
+
+// Active level arrays
+var array<line> activeLevels = array.new_line()
+var array<float> levelPrices = array.new_float()
+var array<int> levelSides = array.new_int()
+
+// ── Live pivot tracking ─────────────────
+// Tracks the running high/low since the last confirmed pivot
+// This gives us a "potential next pivot" that moves in real-time
+var float livePrice = na
+var int liveX = 0
+var bool liveIsHigh = false  // true = tracking a potential PH, false = potential PL
+
+// After the last confirmed pivot:
+// - If last was PL → we expect next to be PH → track running high
+// - If last was PH → we expect next to be PL → track running low
+
+// ── Fibonacci state ─────────────────────
+// Fib spans from last confirmed pivot to live pivot (or second-to-last confirmed)
+var float fibAnchorHigh = na
+var int fibAnchorHighX = 0
+var float fibAnchorLow = na
+var int fibAnchorLowX = 0
+
+// Fib drawing objects (redrawn every bar)
+var array<line> fibLines = array.new_line()
+var array<label> fibLabels = array.new_label()
+var array<linefill> fibFills = array.new_linefill()
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC
+// ══════════════════════════════════════
+bool bosUpSignal = false
+bool bosDnSignal = false
+bool chochUpSignal = false
+bool chochDnSignal = false
+bool missedHighSignal = false
+bool missedLowSignal = false
+
+// ── Process Pivot High ──────────────────
+if validPh
+    float phVal = ph
+    int phX = n - pivotLenInput
+
+    // Missed pivots
+    if lastPivotSide == 1 and showMissedInput
+        if not na(trackMin) and not na(zzPrevPrice)
+            missedLowSignal := true
+            label.new(trackMinX, trackMin, "◇", color = missedBullInput, textcolor = LABEL_TEXT, style = label.style_label_up, size = size.small, tooltip = "Missed Low: " + str.tostring(trackMin, format.mintick))
+            if showZigzagInput
+                line.new(zzPrevX, zzPrevPrice, trackMinX, trackMin, color = color.new(missedBullInput, 30), style = line.style_dashed, width = 1)
+                zzPrevPrice := trackMin
+                zzPrevX := trackMinX
+            if showLevelsInput
+                newLevel = line.new(trackMinX, trackMin, n, trackMin, color = color.new(missedBullInput, 50), style = line.style_dotted, width = 1)
+                array.push(activeLevels, newLevel)
+                array.push(levelPrices, trackMin)
+                array.push(levelSides, -1)
+
+    // Structure analysis
+    if not na(curPH)
+        if phVal > curPH
+            if structDir == -1
+                chochUpSignal := true
+                prevStructDir := structDir
+                structDir := 1
+            else
+                bosUpSignal := structDir == 1
+                structDir := 1
+
+    // Update state
+    curPH := phVal
+    curPHx := phX
+    lastPivotPrice := phVal
+    lastPivotWasHigh := true
+    lastPivotSide := 1
+    trackMax := phVal
+    trackMaxX := phX
+    trackMin := low[pivotLenInput]
+    trackMinX := n - pivotLenInput
+
+    // Reset live pivot — now tracking potential PL (low)
+    livePrice := low
+    liveX := n
+    liveIsHigh := false
+
+    // Fib anchor update
+    fibAnchorHigh := phVal
+    fibAnchorHighX := phX
+
+    // Regular pivot label
+    if showRegularInput
+        string strengthTxt = pivotIsStrong ? "▼" : "▽"
+        color phColor = pivotIsStrong ? bearColorInput : color.new(bearColorInput, 40)
+        label.new(phX, phVal, strengthTxt, color = phColor, textcolor = LABEL_TEXT, style = label.style_label_down, size = size.small, tooltip = "Pivot High: " + str.tostring(phVal, format.mintick) + "\nStrength: " + (pivotIsStrong ? "Strong" : "Weak"))
+
+    // Zigzag
+    if showZigzagInput and not na(zzPrevPrice)
+        line.new(zzPrevX, zzPrevPrice, phX, phVal, color = bearColorInput, width = 1)
+    zzPrevPrice := phVal
+    zzPrevX := phX
+
+// ── Process Pivot Low ───────────────────
+if validPl
+    float plVal = pl
+    int plX = n - pivotLenInput
+
+    // Missed pivots
+    if lastPivotSide == -1 and showMissedInput
+        if not na(trackMax) and not na(zzPrevPrice)
+            missedHighSignal := true
+            label.new(trackMaxX, trackMax, "◇", color = missedBearInput, textcolor = LABEL_TEXT, style = label.style_label_down, size = size.small, tooltip = "Missed High: " + str.tostring(trackMax, format.mintick))
+            if showZigzagInput
+                line.new(zzPrevX, zzPrevPrice, trackMaxX, trackMax, color = color.new(missedBearInput, 30), style = line.style_dashed, width = 1)
+                zzPrevPrice := trackMax
+                zzPrevX := trackMaxX
+            if showLevelsInput
+                newLevel = line.new(trackMaxX, trackMax, n, trackMax, color = color.new(missedBearInput, 50), style = line.style_dotted, width = 1)
+                array.push(activeLevels, newLevel)
+                array.push(levelPrices, trackMax)
+                array.push(levelSides, 1)
+
+    // Structure analysis
+    if not na(curPL)
+        if plVal < curPL
+            if structDir == 1
+                chochDnSignal := true
+                prevStructDir := structDir
+                structDir := -1
+            else
+                bosDnSignal := structDir == -1
+                structDir := -1
+
+    // Update state
+    curPL := plVal
+    curPLx := plX
+    lastPivotPrice := plVal
+    lastPivotWasHigh := false
+    lastPivotSide := -1
+    trackMin := plVal
+    trackMinX := plX
+    trackMax := high[pivotLenInput]
+    trackMaxX := n - pivotLenInput
+
+    // Reset live pivot — now tracking potential PH (high)
+    livePrice := high
+    liveX := n
+    liveIsHigh := true
+
+    // Fib anchor update
+    fibAnchorLow := plVal
+    fibAnchorLowX := plX
+
+    // Regular pivot label
+    if showRegularInput
+        string strengthTxt = pivotIsStrong ? "▲" : "△"
+        color plColor = pivotIsStrong ? bullColorInput : color.new(bullColorInput, 40)
+        label.new(plX, plVal, strengthTxt, color = plColor, textcolor = LABEL_TEXT, style = label.style_label_up, size = size.small, tooltip = "Pivot Low: " + str.tostring(plVal, format.mintick) + "\nStrength: " + (pivotIsStrong ? "Strong" : "Weak"))
+
+    // Zigzag
+    if showZigzagInput and not na(zzPrevPrice)
+        line.new(zzPrevX, zzPrevPrice, plX, plVal, color = bullColorInput, width = 1)
+    zzPrevPrice := plVal
+    zzPrevX := plX
+
+// ── Track running max/min between pivots ──
+if not na(trackMax)
+    if high[pivotLenInput] > trackMax
+        trackMax := high[pivotLenInput]
+        trackMaxX := n - pivotLenInput
+if not na(trackMin)
+    if low[pivotLenInput] < trackMin
+        trackMin := low[pivotLenInput]
+        trackMinX := n - pivotLenInput
+
+// ══════════════════════════════════════
+// LIVE PIVOT — update every bar
+// ══════════════════════════════════════
+// Track the running extreme since last confirmed pivot
+if not na(livePrice)
+    if liveIsHigh
+        // Tracking potential PH → follow the highest high
+        if high >= livePrice
+            livePrice := high
+            liveX := n
+    else
+        // Tracking potential PL → follow the lowest low
+        if low <= livePrice
+            livePrice := low
+            liveX := n
+
+// Update fib anchors with live data
+float fibTopPrice = na
+int fibTopX = 0
+float fibBotPrice = na
+int fibBotX = 0
+
+if not na(fibAnchorHigh) and not na(fibAnchorLow)
+    if liveIsHigh and not na(livePrice)
+        // Live is tracking a potential high → use it as top if higher than anchor
+        fibTopPrice := math.max(livePrice, fibAnchorHigh)
+        fibTopX := livePrice >= fibAnchorHigh ? liveX : fibAnchorHighX
+        fibBotPrice := fibAnchorLow
+        fibBotX := fibAnchorLowX
+    else if not liveIsHigh and not na(livePrice)
+        // Live is tracking a potential low → use it as bottom if lower than anchor
+        fibTopPrice := fibAnchorHigh
+        fibTopX := fibAnchorHighX
+        fibBotPrice := math.min(livePrice, fibAnchorLow)
+        fibBotX := livePrice <= fibAnchorLow ? liveX : fibAnchorLowX
+    else
+        fibTopPrice := fibAnchorHigh
+        fibTopX := fibAnchorHighX
+        fibBotPrice := fibAnchorLow
+        fibBotX := fibAnchorLowX
+
+bool fibReady = not na(fibTopPrice) and not na(fibBotPrice) and fibTopPrice > fibBotPrice
+
+// ══════════════════════════════════════
+// BOS / CHoCH LABELS
+// ══════════════════════════════════════
+if showBosInput and isWarmedUp
+    if bosUpSignal
+        label.new(n - pivotLenInput, nz(curPH, high), "BOS ↑", color = color.new(bosColorInput, 20), textcolor = #000000, style = label.style_label_down, size = size.small, tooltip = "Break of Structure — Bullish continuation")
+    if bosDnSignal
+        label.new(n - pivotLenInput, nz(curPL, low), "BOS ↓", color = color.new(bosColorInput, 20), textcolor = #000000, style = label.style_label_up, size = size.small, tooltip = "Break of Structure — Bearish continuation")
+    if chochUpSignal
+        label.new(n - pivotLenInput, nz(curPH, high), "CHoCH ↑", color = bullColorInput, textcolor = LABEL_TEXT, style = label.style_label_down, size = size.normal, tooltip = "Change of Character — Bullish reversal")
+    if chochDnSignal
+        label.new(n - pivotLenInput, nz(curPL, low), "CHoCH ↓", color = bearColorInput, textcolor = LABEL_TEXT, style = label.style_label_up, size = size.normal, tooltip = "Change of Character — Bearish reversal")
+
+// ══════════════════════════════════════
+// ACTIVE LEVEL MANAGEMENT
+// ══════════════════════════════════════
+if array.size(activeLevels) > 0
+    int i = array.size(activeLevels) - 1
+    while i >= 0
+        lvlLine = array.get(activeLevels, i)
+        lvlPrice = array.get(levelPrices, i)
+        lvlSide = array.get(levelSides, i)
+        bool broken = lvlSide == 1 ? close > lvlPrice : close < lvlPrice
+        if broken
+            line.delete(lvlLine)
+            array.remove(activeLevels, i)
+            array.remove(levelPrices, i)
+            array.remove(levelSides, i)
+        else
+            line.set_x2(lvlLine, n)
+        i -= 1
+
+while array.size(activeLevels) > maxLevelsInput
+    line.delete(array.shift(activeLevels))
+    array.shift(levelPrices)
+    array.shift(levelSides)
+
+// ══════════════════════════════════════
+// LIVE PIVOT VISUAL
+// ══════════════════════════════════════
+var line liveLine = na
+var label liveLbl = na
+
+if showLiveInput and not na(livePrice) and isWarmedUp
+    // Delete previous live objects
+    line.delete(liveLine)
+    label.delete(liveLbl)
+
+    // Dashed line from last confirmed pivot to live
+    liveLine := line.new(zzPrevX, zzPrevPrice, liveX, livePrice, color = color.new(liveColorInput, 30), style = line.style_dashed, width = 2)
+
+    string liveTxt = liveIsHigh ? "▲?" : "▼?"
+    if liveIsHigh
+        liveLbl := label.new(liveX, livePrice, liveTxt, color = color.new(liveColorInput, 20), textcolor = LABEL_TEXT, style = label.style_label_down, size = size.small, tooltip = "Live potential PH: " + str.tostring(livePrice, format.mintick) + "\n⚠️ May move — not confirmed yet")
+    else
+        liveLbl := label.new(liveX, livePrice, liveTxt, color = color.new(liveColorInput, 20), textcolor = LABEL_TEXT, style = label.style_label_up, size = size.small, tooltip = "Live potential PL: " + str.tostring(livePrice, format.mintick) + "\n⚠️ May move — not confirmed yet")
+
+// ══════════════════════════════════════
+// FIBONACCI GRID — redrawn every bar
+// ══════════════════════════════════════
+// Clean up previous fib objects every bar
+if array.size(fibLines) > 0
+    for i = 0 to array.size(fibLines) - 1
+        line.delete(array.get(fibLines, i))
+    array.clear(fibLines)
+if array.size(fibLabels) > 0
+    for i = 0 to array.size(fibLabels) - 1
+        label.delete(array.get(fibLabels, i))
+    array.clear(fibLabels)
+if array.size(fibFills) > 0
+    for i = 0 to array.size(fibFills) - 1
+        linefill.delete(array.get(fibFills, i))
+    array.clear(fibFills)
+
+if showFibInput and fibReady and isWarmedUp
+    float swingRange = fibTopPrice - fibBotPrice
+    // Determine anchor X — start fib lines from the earlier pivot
+    int fibStartX = math.min(fibTopX, fibBotX)
+
+    // Fib ratios
+    float[] ratios = array.from(0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0)
+    string[] names = array.from("0", "0.236", "0.382", "0.5", "0.618", "0.786", "1")
+
+    if showFibExtInput
+        array.push(ratios, 1.272)
+        array.push(names, "1.272")
+        array.push(ratios, 1.618)
+        array.push(names, "1.618")
+
+    int totalLevels = array.size(ratios)
+
+    for i = 0 to totalLevels - 1
+        float ratio = array.get(ratios, i)
+        string ratioName = array.get(names, i)
+
+        // Price: 0 = bottom, 1 = top (standard Fib convention)
+        float priceAtLevel = fibBotPrice + ratio * swingRange
+
+        bool isKeyLevel = ratio == 0.5 or ratio == 0.618
+        bool isExtension = ratio > 1.0
+        color lvlColor = isKeyLevel ? fibKeyColorInput : isExtension ? color.new(fibColorInput, 50) : fibColorInput
+        int lvlWidth = isKeyLevel ? 2 : 1
+        string lvlStyle = isExtension ? line.style_dotted : isKeyLevel ? line.style_solid : line.style_dashed
+
+        line fibLn = line.new(fibStartX, priceAtLevel, n + 5, priceAtLevel, color = color.new(lvlColor, 30), width = lvlWidth, style = lvlStyle)
+        array.push(fibLines, fibLn)
+
+        if showFibLabelsInput
+            string lblTxt = ratioName + "  " + str.tostring(priceAtLevel, format.mintick)
+            label fibLbl = label.new(n + 6, priceAtLevel, lblTxt, color = color.new(color.black, 100), textcolor = color.new(lvlColor, 0), style = label.style_label_left, size = size.small)
+            array.push(fibLabels, fibLbl)
+
+    // Zone fills: yellow OTE zones only (0.236–0.382 and 0.618–0.786)
+    // Lines order: [0]=0, [1]=0.236, [2]=0.382, [3]=0.5, [4]=0.618, [5]=0.786, [6]=1.0
+    if showFibFillInput and array.size(fibLines) >= 7
+        line zone1Bot = array.get(fibLines, 1)   // 0.236
+        line zone1Top = array.get(fibLines, 2)   // 0.382
+        line zone2Bot = array.get(fibLines, 4)   // 0.618
+        line zone2Top = array.get(fibLines, 5)   // 0.786
+
+        linefill fill1 = linefill.new(zone1Bot, zone1Top, color.new(#FFEB3B, 85))
+        linefill fill2 = linefill.new(zone2Bot, zone2Top, color.new(#FFEB3B, 85))
+        array.push(fibFills, fill1)
+        array.push(fibFills, fill2)
+
+// ══════════════════════════════════════
+// LABEL / LINE CLEANUP
+// ══════════════════════════════════════
+if array.size(label.all) > 450
+    label.delete(array.shift(label.all))
+if array.size(line.all) > 450
+    line.delete(array.shift(line.all))
+
+// ══════════════════════════════════════
+// PLOTS
+// ══════════════════════════════════════
+string trendStr = structDir == 1 ? "Bullish" : structDir == -1 ? "Bearish" : "Ranging"
+color trendColor = structDir == 1 ? bullColorInput : structDir == -1 ? bearColorInput : TEXT_MUTED
+
+bgcolor(showBgInput ? (structDir == 1 ? BULL_BG : structDir == -1 ? BEAR_BG : na) : na, title = "Trend Background")
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+if showDashInput and barstate.islast
+    int dashRows = showFibInput and fibReady ? 11 : 9
+    var dashTable = table.new(dashPos, 2, dashRows, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    table.cell(dashTable, 0, 0, "Adaptive Pivot Structure", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    table.cell(dashTable, 0, 1, "Structure", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, trendStr, text_color = trendColor, text_size = size.small, bgcolor = TABLE_BG)
+
+    string lastPivotStr = na(lastPivotPrice) ? "—" : (lastPivotWasHigh ? "High " : "Low ") + str.tostring(lastPivotPrice, format.mintick)
+    color lastPivotColor = lastPivotWasHigh ? bearColorInput : bullColorInput
+    table.cell(dashTable, 0, 2, "Last Pivot", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 2, lastPivotStr, text_color = na(lastPivotPrice) ? TEXT_MUTED : lastPivotColor, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    // Live pivot
+    string liveStr = na(livePrice) ? "—" : (liveIsHigh ? "↑ " : "↓ ") + str.tostring(livePrice, format.mintick)
+    table.cell(dashTable, 0, 3, "Live Pivot", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, liveStr, text_color = liveColorInput, text_size = size.small, bgcolor = TABLE_BG)
+
+    string lvlStr = str.tostring(array.size(activeLevels))
+    table.cell(dashTable, 0, 4, "Active Levels", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 4, lvlStr, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    string phStr = na(curPH) ? "—" : str.tostring(curPH, format.mintick)
+    string plStr = na(curPL) ? "—" : str.tostring(curPL, format.mintick)
+    table.cell(dashTable, 0, 5, "Last PH", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, phStr, text_color = bearColorInput, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 6, "Last PL", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 6, plStr, text_color = bullColorInput, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    table.cell(dashTable, 0, 7, "Timeframe", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 7, timeframe.period, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 8, "Version", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+    table.cell(dashTable, 1, 8, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+    if showFibInput and fibReady and dashRows >= 11
+        float fibRange = nz(fibTopPrice, 0.0) - nz(fibBotPrice, 0.0)
+        float fibPct = fibRange != 0 ? (close - nz(fibBotPrice, 0.0)) / fibRange * 100 : 0.0
+        string fibZoneStr = fibPct > 61.8 ? "Premium" : fibPct < 38.2 ? "Discount" : "Equilibrium"
+        color fibZoneColor = fibPct > 61.8 ? bearColorInput : fibPct < 38.2 ? bullColorInput : TEXT_COLOR
+
+        table.cell(dashTable, 0, 9, "Fib Zone", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+        table.cell(dashTable, 1, 9, fibZoneStr + " (" + str.tostring(fibPct, "#.0") + "%)", text_color = fibZoneColor, text_size = size.small, bgcolor = TABLE_BG)
+
+        string fibSwingStr = liveIsHigh ? "↑ Tracking High" : "↓ Tracking Low"
+        table.cell(dashTable, 0, 10, "Fib Live", text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+        table.cell(dashTable, 1, 10, fibSwingStr, text_color = liveColorInput, text_size = size.small, bgcolor = TABLE_ROW_ALT)
+
+// ══════════════════════════════════════
+// WATERMARK
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string ticker = syminfo.tickerid
+string tf = timeframe.period
+string priceStr = str.tostring(close, format.mintick)
+
+// Alert frequency: confirmed or mid-bar based on user setting
+alertFreq = alertConfirmedOnlyInput ? alert.freq_once_per_bar_close : alert.freq_once_per_bar
+
+if bosUpSignal and isWarmedUp
+    string jsonMsg = '{"action":"bos_up","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '"}'
+    string textMsg = "🟢 BOS ↑ | " + ticker + " | TF: " + tf + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alertFreq)
+
+if bosDnSignal and isWarmedUp
+    string jsonMsg = '{"action":"bos_dn","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '"}'
+    string textMsg = "🔴 BOS ↓ | " + ticker + " | TF: " + tf + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alertFreq)
+
+if chochUpSignal and isWarmedUp
+    string jsonMsg = '{"action":"choch_up","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '"}'
+    string textMsg = "🟢 CHoCH ↑ Reversal | " + ticker + " | TF: " + tf + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alertFreq)
+
+if chochDnSignal and isWarmedUp
+    string jsonMsg = '{"action":"choch_dn","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '"}'
+    string textMsg = "🔴 CHoCH ↓ Reversal | " + ticker + " | TF: " + tf + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alertFreq)
+
+if missedHighSignal and isWarmedUp
+    string jsonMsg = '{"action":"missed_high","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '"}'
+    string textMsg = "🟠 Missed High | " + ticker + " | TF: " + tf + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alertFreq)
+
+if missedLowSignal and isWarmedUp
+    string jsonMsg = '{"action":"missed_low","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '"}'
+    string textMsg = "🔵 Missed Low | " + ticker + " | TF: " + tf + " | Price: " + priceStr
+    alert(webhookInput ? jsonMsg : textMsg, alertFreq)

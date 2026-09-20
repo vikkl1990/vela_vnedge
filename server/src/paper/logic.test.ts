@@ -1,0 +1,63 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { DEFAULT_CONFIG } from '../config.ts';
+import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs } from './logic.ts';
+
+const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0 };
+
+test('resolveLevels uses script levels, else ATR fallback', () => {
+  const r = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [110, 120, 130] }, cfg, 0.5);
+  assert.deepEqual(r, { sl: 95, tp: [110, 120, 130], source: 'script' });
+  const f = resolveLevels({ side: 'short', price: 100, atr: 2 }, cfg, 0.5) as any;
+  assert.equal(f.source, 'atr-fallback'); assert.equal(f.sl, 103); assert.deepEqual(f.tp, [97, 94, 91]);
+  const bad = resolveLevels({ side: 'long', price: 100, sl: 105 }, cfg, 0.5) as any;
+  assert.ok('error' in bad);
+  const mixed = resolveLevels({ side: 'long', price: 100, sl: 98 }, cfg, 0.5) as any;
+  assert.equal(mixed.source, 'mixed'); assert.deepEqual(mixed.tp, [102, 104, 106]);
+});
+
+test('sizing respects risk and leverage', () => {
+  const s = sizeContracts(100, 95, { equity: 100_000, contractValue: 0.001, tickSize: 0.5, cfg });
+  assert.equal(s.qty, 200_000); // 1000 risk / (5 * 0.001) = 200000 → but leverage caps: 100000*10/(100*0.001)=10,000,000 so ok
+  const capped = sizeContracts(100, 99.999, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: { ...cfg, maxLeverage: 1 } });
+  assert.equal(capped.qty, 10_000);
+  assert.deepEqual(splitLegs(10, [0.4, 0.3, 0.3], 3), [4, 3, 3]);
+  assert.deepEqual(splitLegs(1, [0.4, 0.3, 0.3], 3), [0, 0, 1]);
+  assert.deepEqual(splitLegs(7, [0.4, 0.3, 0.3], 1), [7]);
+});
+
+function pos(side: 'long' | 'short' = 'long') {
+  return openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side, qty: 10, contractValue: 0.001, entryPrice: 100, at: 0, sl: side === 'long' ? 95 : 105, tp: side === 'long' ? [105, 110, 115] : [95, 90, 85], riskAmount: 0.05, levelsSource: 'script', signalId: null, cfg, bt: true });
+}
+
+test('SL before TP on ambiguous bar; TP legs and break-even', () => {
+  const p = pos();
+  const f = applyBar(p, { time: 1, high: 106, low: 94, close: 100 }, cfg);
+  assert.equal(f.length, 1); assert.equal(f[0].reason, 'sl'); assert.equal(p.status, 'closed');
+  const q = pos();
+  const f1 = applyBar(q, { time: 1, high: 105, low: 99, close: 104 }, cfg);
+  assert.equal(f1[0].reason, 'tp1'); assert.equal(f1[0].qty, 4); assert.equal(q.qtyOpen, 6); assert.equal(q.sl, 100); assert.equal(q.breakEven, true);
+  const f2 = applyBar(q, { time: 2, high: 104, low: 100, close: 101 }, cfg);
+  assert.equal(f2[0].reason, 'be'); assert.equal(q.status, 'closed');
+  assert.ok(Math.abs(q.realizedPnl - 4 * 5 * 0.001) < 1e-9);
+  const r = pos('short');
+  const f3 = applyBar(r, { time: 1, high: 101, low: 84, close: 85 }, cfg);
+  assert.deepEqual(f3.map(x => x.reason), ['tp1', 'tp2', 'tp3']); assert.equal(r.status, 'closed'); assert.equal(r.qtyOpen, 0);
+});
+
+test('script exits honour exit mode', () => {
+  const p = pos();
+  assert.equal(applyScriptExit(p, 'sl', 96, 5, cfg, 'levels', 96).length, 0);
+  const f = applyScriptExit(p, 'tp2', 111, 5, cfg, 'both', 111);
+  assert.deepEqual(f.map(x => x.reason), ['tp1', 'tp2']); assert.equal(p.qtyOpen, 3);
+  const g = applyScriptExit(p, 'flip', 112, 6, cfg, 'script', 112);
+  assert.equal(g[0].reason, 'script_flip'); assert.equal(p.status, 'closed');
+});
+
+test('stats', () => {
+  const a = pos(); applyBar(a, { time: 1, high: 120, low: 99, close: 115 }, cfg);
+  const b = pos(); applyBar(b, { time: 1, high: 101, low: 90, close: 95 }, cfg);
+  const s = computeStats([a, b], 1000);
+  assert.equal(s.trades, 2); assert.equal(s.wins, 1); assert.equal(s.losses, 1);
+  assert.ok(s.profitFactor! > 1);
+});

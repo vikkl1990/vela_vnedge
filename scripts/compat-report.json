@@ -1,0 +1,520 @@
+{
+ "at": "2026-09-20T11:35:37.369Z",
+ "symbol": "BTCUSD",
+ "tf": "15m",
+ "bars": 999,
+ "rows": [
+  {
+   "id": "elliott-impulse-engine",
+   "ok": true,
+   "ms": 312,
+   "patches": [],
+   "alerts": 24,
+   "entryish": 1,
+   "shapes": "",
+   "labels": 26,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "structure-anchored-vwap",
+   "ok": true,
+   "ms": 325,
+   "patches": [],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "Buy:0,Sell:0",
+   "labels": 8,
+   "plots": 1,
+   "warnings": 0
+  },
+  {
+   "id": "bitcoin-almanac",
+   "ok": true,
+   "ms": 361,
+   "patches": [
+    "timeframe.in_seconds-noarg"
+   ],
+   "alerts": 1,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 50,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "amd-po3-with-live-edge-stats",
+   "ok": true,
+   "ms": 822,
+   "patches": [
+    "amd-enum-to-strings"
+   ],
+   "alerts": 29,
+   "entryish": 9,
+   "shapes": "",
+   "labels": 38,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "reactive-trail-system",
+   "ok": true,
+   "ms": 732,
+   "patches": [],
+   "alerts": 88,
+   "entryish": 58,
+   "shapes": "",
+   "labels": 34,
+   "plots": 1,
+   "warnings": 0
+  },
+  {
+   "id": "liquidity-trail-matrix",
+   "ok": true,
+   "ms": 382,
+   "patches": [
+    "ltm-short-circuit"
+   ],
+   "alerts": 24,
+   "entryish": 24,
+   "shapes": "",
+   "labels": 29,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "mirage-liquidity-sweep-pro",
+   "ok": true,
+   "ms": 321,
+   "patches": [],
+   "alerts": 2,
+   "entryish": 1,
+   "shapes": "Bull Sweep:4,Bear Sweep:3,Long:1,Short:0",
+   "labels": 16,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "volume-weighted-s-r-zones",
+   "ok": true,
+   "ms": 296,
+   "patches": [
+    "timeframe.in_seconds-noarg"
+   ],
+   "alerts": 37,
+   "entryish": 37,
+   "shapes": "",
+   "labels": 45,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "liquidity-pools-pro",
+   "ok": true,
+   "ms": 376,
+   "patches": [],
+   "alerts": 57,
+   "entryish": 29,
+   "shapes": "",
+   "labels": 85,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "meridian-flow",
+   "ok": true,
+   "ms": 814,
+   "patches": [],
+   "alerts": 42,
+   "entryish": 22,
+   "shapes": "Buy:12,Sell:10,CHoCH Flip Up:4,CHoCH Flip Down:5",
+   "labels": 79,
+   "plots": 1,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-fibonacci-trailing-system",
+   "ok": true,
+   "ms": 305,
+   "patches": [],
+   "alerts": 4,
+   "entryish": 4,
+   "shapes": "",
+   "labels": 7,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "nexus-fusion-engine-ml",
+   "ok": true,
+   "ms": 605,
+   "patches": [],
+   "alerts": 252,
+   "entryish": 252,
+   "shapes": "Bull Cross:43,Bear Cross:43",
+   "labels": 55,
+   "plots": 11,
+   "warnings": 0
+  },
+  {
+   "id": "synapse-trail-pro",
+   "ok": true,
+   "ms": 1550,
+   "patches": [
+    "timeframe.in_seconds-noarg",
+    "synapse-htf-string"
+   ],
+   "alerts": 42,
+   "entryish": 24,
+   "shapes": "",
+   "labels": 24,
+   "plots": 1,
+   "warnings": 0
+  },
+  {
+   "id": "abcd-harmonic-projection",
+   "ok": true,
+   "ms": 167,
+   "patches": [],
+   "alerts": 12,
+   "entryish": 12,
+   "shapes": "Bullish ABCD:4,Bearish ABCD:8",
+   "labels": 13,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "self-aware-trend-system",
+   "ok": true,
+   "ms": 523,
+   "patches": [],
+   "alerts": 440,
+   "entryish": 116,
+   "shapes": "",
+   "labels": 76,
+   "plots": 1,
+   "warnings": 0
+  },
+  {
+   "id": "trade-strategy-calculator",
+   "ok": true,
+   "ms": 241,
+   "patches": [],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 0,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "pulse-trend-radar",
+   "ok": true,
+   "ms": 233,
+   "patches": [],
+   "alerts": 15,
+   "entryish": 15,
+   "shapes": "",
+   "labels": 35,
+   "plots": 2,
+   "warnings": 0
+  },
+  {
+   "id": "breakout-pattern-setup",
+   "ok": true,
+   "ms": 276,
+   "patches": [],
+   "alerts": 33,
+   "entryish": 9,
+   "shapes": "",
+   "labels": 6,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "fibonacci-structure-engine",
+   "ok": true,
+   "ms": 206,
+   "patches": [
+    "label.all-size"
+   ],
+   "alerts": 75,
+   "entryish": 31,
+   "shapes": "Buy Signal:0,Sell Signal:0",
+   "labels": 137,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "daily-volume-profile-pro",
+   "ok": true,
+   "ms": 285,
+   "patches": [
+    "timeframe.in_seconds-noarg"
+   ],
+   "alerts": 22,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 25,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "strat-trap-vwap-engine",
+   "ok": true,
+   "ms": 3369,
+   "patches": [
+    "strat-inline-security"
+   ],
+   "alerts": 3199,
+   "entryish": 66,
+   "shapes": "Inside (1):173,Two Up (2U):378,Two Down (2D):355,Outside (3):92,Hammer:23,Shooter:25",
+   "labels": 43,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "precision-sniper",
+   "ok": true,
+   "ms": 285,
+   "patches": [
+    "timeframe.in_seconds-noarg"
+   ],
+   "alerts": 192,
+   "entryish": 27,
+   "shapes": "",
+   "labels": 33,
+   "plots": 3,
+   "warnings": 0
+  },
+  {
+   "id": "smart-breakout-targets",
+   "ok": true,
+   "ms": 217,
+   "patches": [],
+   "alerts": 2,
+   "entryish": 1,
+   "shapes": "",
+   "labels": 2,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-ichimoku-nexus",
+   "ok": true,
+   "ms": 616,
+   "patches": [
+    "label.all-size",
+    "timeframe.in_seconds-noarg"
+   ],
+   "alerts": 129,
+   "entryish": 10,
+   "shapes": "Kumo Break Up:12,Kumo Break Down:12,Retest Bull:9,Retest Bear:11,Kumo Twist Bull:13,Kumo Twist Bear:13",
+   "labels": 29,
+   "plots": 5,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-momentum-fusion",
+   "ok": true,
+   "ms": 359,
+   "patches": [],
+   "alerts": 387,
+   "entryish": 94,
+   "shapes": "",
+   "labels": 17,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-spectral-forecast",
+   "ok": true,
+   "ms": 105,
+   "patches": [],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "Buy Signal:0,Sell Signal:0",
+   "labels": 4,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "swing-volume-profile-pro",
+   "ok": true,
+   "ms": 228,
+   "patches": [],
+   "alerts": 59,
+   "entryish": 20,
+   "shapes": "Swing Bullish:0,Swing Bearish:0",
+   "labels": 25,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-momentum-classifier",
+   "ok": true,
+   "ms": 232,
+   "patches": [],
+   "alerts": 20,
+   "entryish": 20,
+   "shapes": "Buy Signal:10,Sell Signal:10",
+   "labels": 0,
+   "plots": 2,
+   "warnings": 0
+  },
+  {
+   "id": "stealthtrail-supertrend",
+   "ok": true,
+   "ms": 289,
+   "patches": [],
+   "alerts": 77,
+   "entryish": 24,
+   "shapes": "Long:12,Short:12",
+   "labels": 5,
+   "plots": 3,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-squeeze-momentum-pro",
+   "ok": true,
+   "ms": 254,
+   "patches": [
+    "label.all-size"
+   ],
+   "alerts": 43,
+   "entryish": 19,
+   "shapes": "",
+   "labels": 19,
+   "plots": 2,
+   "warnings": 0
+  },
+  {
+   "id": "ict-session-zones-sweep-signals",
+   "ok": true,
+   "ms": 323,
+   "patches": [
+    "label.all-size"
+   ],
+   "alerts": 26,
+   "entryish": 26,
+   "shapes": "plot:6",
+   "labels": 56,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "automatic-fibonacci-levels",
+   "ok": true,
+   "ms": 116,
+   "patches": [],
+   "alerts": 13,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 4,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "stealthtrail-supertrend-ml-pro",
+   "ok": true,
+   "ms": 1576,
+   "patches": [],
+   "alerts": 56,
+   "entryish": 24,
+   "shapes": "Long:12,Short:12,MLRejBuy:0,MLRejSell:0,BullDiv:0,BearDiv:0",
+   "labels": 32,
+   "plots": 3,
+   "warnings": 0
+  },
+  {
+   "id": "squeeze-breakout-pro",
+   "ok": true,
+   "ms": 300,
+   "patches": [],
+   "alerts": 71,
+   "entryish": 12,
+   "shapes": "",
+   "labels": 12,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "smart-money-engine",
+   "ok": true,
+   "ms": 368,
+   "patches": [],
+   "alerts": 231,
+   "entryish": 108,
+   "shapes": "",
+   "labels": 146,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "auto-s-r-channels",
+   "ok": true,
+   "ms": 576,
+   "patches": [],
+   "alerts": 0,
+   "entryish": 0,
+   "shapes": "",
+   "labels": 2,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "smarttrend-pro",
+   "ok": true,
+   "ms": 1115,
+   "patches": [
+    "label.all-size"
+   ],
+   "alerts": 33,
+   "entryish": 12,
+   "shapes": "Strong Buy:2,Buy:4,Strong Sell:5,Sell:1,Pullback Buy:0,Pullback Sell:1,TP1 Hit Long:4,TP2 Hit Long:3,TP3 Hit Long:2,TP1 Hit Short:3,TP2 Hit Short:2,TP3 Hit Short:2,SL Hit Long:1,SL Hit Short:4",
+   "labels": 2,
+   "plots": 7,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-volatility-trend",
+   "ok": true,
+   "ms": 117,
+   "patches": [],
+   "alerts": 5,
+   "entryish": 5,
+   "shapes": "Buy Signal:3,Sell Signal:2",
+   "labels": 0,
+   "plots": 4,
+   "warnings": 0
+  },
+  {
+   "id": "adaptive-pivot-structure",
+   "ok": true,
+   "ms": 285,
+   "patches": [
+    "label.all-size"
+   ],
+   "alerts": 37,
+   "entryish": 26,
+   "shapes": "",
+   "labels": 97,
+   "plots": 0,
+   "warnings": 0
+  },
+  {
+   "id": "phantom-trend-cloud",
+   "ok": true,
+   "ms": 181,
+   "patches": [
+    "label.all-size"
+   ],
+   "alerts": 174,
+   "entryish": 60,
+   "shapes": "Trend Up:0,Trend Dn:0",
+   "labels": 60,
+   "plots": 4,
+   "warnings": 0
+  }
+ ]
+}

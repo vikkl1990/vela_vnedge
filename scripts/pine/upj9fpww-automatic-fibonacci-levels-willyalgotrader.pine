@@ -1,0 +1,490 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// Automatic Fibonacci Levels [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 2.0.0
+
+indicator(
+    title            = "Automatic Fibonacci Levels [WillyAlgoTrader]",
+    shorttitle       = "Auto Fib [OTE+Target]",
+    overlay          = true,
+    max_lines_count  = 500,
+    max_labels_count = 500,
+    max_boxes_count  = 500)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_LEVELS = "📐 Fibonacci Levels"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_ZONES  = "🟧 Zones & TP"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+
+INDICATOR_VERSION = "v2.0.0"
+
+// ══════════════════════════════════════
+// INPUTS — Main Settings
+// ══════════════════════════════════════
+showAllInput = input.bool(true, "Show All Elements", group = GRP_MAIN,
+    tooltip = "Master toggle — hides all Fibonacci lines, zones, and labels when disabled")
+showDiagonalLineInput = input.bool(false, "Show Diagonal Swing Line", group = GRP_MAIN,
+    tooltip = "Draw a line connecting the swing low to swing high (or vice versa)")
+lineWidthInput = input.int(1, "Line Width", minval = 1, maxval = 5, group = GRP_MAIN,
+    tooltip = "Width of Fibonacci level lines.\n• 1 = subtle\n• 2-3 = standard\n• 4-5 = bold")
+lineStyleInput = input.string("Dashed", "Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_MAIN,
+    tooltip = "Style of Fibonacci level lines")
+labelOffsetInput = input.int(17, "Label Offset (bars)", minval = 5, maxval = 50, group = GRP_MAIN,
+    tooltip = "How many bars to the right of the last bar to place labels.\nHigher = further right")
+
+// ══════════════════════════════════════
+// INPUTS — Fibonacci Levels
+// ══════════════════════════════════════
+show0Input      = input.bool(true,  "0%",       inline = "lv1", group = GRP_LEVELS)
+show236Input    = input.bool(false, "23.6%",    inline = "lv1", group = GRP_LEVELS)
+show382Input    = input.bool(true,  "38.2%",    inline = "lv1", group = GRP_LEVELS)
+show500Input    = input.bool(false, "50%",      inline = "lv2", group = GRP_LEVELS)
+show618Input    = input.bool(true,  "61.8%",    inline = "lv2", group = GRP_LEVELS)
+show706Input    = input.bool(true,  "70.6%",    inline = "lv2", group = GRP_LEVELS)
+show786Input    = input.bool(true,  "78.6%",    inline = "lv3", group = GRP_LEVELS)
+show100Input    = input.bool(true,  "100%",     inline = "lv3", group = GRP_LEVELS)
+show18Input     = input.bool(false, "18%",      inline = "lv3", group = GRP_LEVELS)
+showNeg018Input = input.bool(false, "-18%",     inline = "lv4", group = GRP_LEVELS)
+showNeg272Input = input.bool(true,  "-27.2%",   inline = "lv4", group = GRP_LEVELS)
+showNeg05Input  = input.bool(true,  "-50%",     inline = "lv4", group = GRP_LEVELS)
+showNeg618Input = input.bool(true,  "-61.8%",   inline = "lv5", group = GRP_LEVELS)
+showNeg1Input   = input.bool(true,  "-100%",    inline = "lv5", group = GRP_LEVELS)
+show150Input    = input.bool(false, "150%",     inline = "lv5", group = GRP_LEVELS)
+show200Input    = input.bool(false, "200%",     inline = "lv6", group = GRP_LEVELS)
+
+// ══════════════════════════════════════
+// INPUTS — Zones & TP
+// ══════════════════════════════════════
+showFibBoxInput  = input.bool(true, "Show Entry Zone (61.8%–78.6%)", group = GRP_ZONES,
+    tooltip = "Highlight the optimal entry zone between 61.8% and 78.6% retracement")
+showNegBoxInput  = input.bool(true, "Show Target Zone (-50% to -61.8%)", group = GRP_ZONES,
+    tooltip = "Highlight the take-profit target zone between -50% and -61.8% extension")
+showTextInput    = input.bool(true, "Show Text in Zones", group = GRP_ZONES,
+    tooltip = "Display 'ENTRY ZONE' / 'TARGET ZONE' text inside the boxes")
+showTpLabelsInput = input.bool(true, "Show TP Labels", group = GRP_ZONES,
+    tooltip = "Display TP1–TP4 labels at key Fibonacci levels")
+tpLabelSizeInput = input.string("Small", "TP Label Size", options = ["Tiny", "Small", "Normal"], group = GRP_ZONES,
+    tooltip = "Size of TP labels on chart")
+showLevelLabelsInput = input.bool(false, "Show Level % Labels", group = GRP_ZONES,
+    tooltip = "Display percentage labels (0%, 38.2%, etc.) next to each Fibonacci line")
+
+// ══════════════════════════════════════
+// INPUTS — Visual
+// ══════════════════════════════════════
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL,
+    tooltip = "Chart color theme.\n• Auto: detects from chart background\n• Dark: optimized for dark backgrounds\n• Light: optimized for light/white backgrounds")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL,
+    tooltip = "Display 'WillyAlgoTrader - by Willy' watermark on chart")
+
+// ══════════════════════════════════════
+// INPUTS — Dashboard
+// ══════════════════════════════════════
+showDashInput = input.bool(true, "Show Dashboard", group = GRP_DASH,
+    tooltip = "Display info panel with trend direction, swing range, and current signal")
+dashPosInput = input.string("Top Right", "Dashboard Position",
+    options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DASH,
+    tooltip = "Position of the dashboard on chart")
+
+// ══════════════════════════════════════
+// INPUTS — Alerts
+// ══════════════════════════════════════
+enableAlertsInput = input.bool(true, "Enable Alerts", group = GRP_ALERT,
+    tooltip = "Enable alert conditions for Entry Zone and Target Zone touches")
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT,
+    tooltip = "Send alerts in JSON format for webhook integrations (e.g., 3Commas, Alertatron)")
+
+// ══════════════════════════════════════
+// INPUTS — Colors
+// ══════════════════════════════════════
+lineColorInput    = input.color(#FF6B00, "Fib Lines",    inline = "c1", group = GRP_COLORS,
+    tooltip = "Color for Fibonacci level lines and diagonal swing line")
+entryZoneColorInput = input.color(#FFD700, "Entry Zone",  inline = "c1", group = GRP_COLORS,
+    tooltip = "Background color for Entry Zone box (61.8%–78.6%)")
+targetZoneColorInput = input.color(#FFD700, "Target Zone", inline = "c2", group = GRP_COLORS,
+    tooltip = "Background color for Target Zone box (-50% to -61.8%)")
+
+// ══════════════════════════════════════
+// THEME DETECTION & PALETTE
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+// ── Texts ──────────────────────────────
+TEXT_COLOR   = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED   = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TEXT_BRIGHT  = isDark ? #FFFFFF : #000000
+
+// ── Dashboard / Tables ─────────────────
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+HEADER_BG    = color.new(#2962FF, 0)
+HEADER_TEXT  = #FFFFFF
+
+// ── Labels ─────────────────────────────
+LABEL_COLOR  = isDark ? #FFFFFF : #212121
+TP_BG_COLOR  = isDark ? color.new(#424242, 80) : color.new(#FFFFFF, 80)
+
+// ── Watermark ──────────────────────────
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+
+// ── Zone boxes (90% transparent) ───────
+ENTRY_ZONE_BG  = color.new(entryZoneColorInput, 90)
+TARGET_ZONE_BG = color.new(targetZoneColorInput, 90)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+getLineStyle(string s) =>
+    switch s
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        => line.style_dotted
+
+getTpSize(string s) =>
+    switch s
+        "Tiny"   => size.tiny
+        "Normal" => size.normal
+        => size.small
+
+// Fibonacci box drawing function
+fibBox(color fibColor, float fibLevel1, float fibLevel2, bool trendUp, int leftBar, int rightBar, float swHigh, float swLow, string boxText) =>
+    float rng = swHigh - swLow
+    float ratio1 = 1 - (fibLevel1 / 100)
+    float price1 = trendUp ? swLow + rng * ratio1 : swHigh - rng * ratio1
+    float ratio2 = 1 - (fibLevel2 / 100)
+    float price2 = trendUp ? swLow + rng * ratio2 : swHigh - rng * ratio2
+    var b = box.new(na, na, na, na, xloc = xloc.bar_index, border_style = line.style_dashed, extend = extend.right, border_color = color.new(color.gray, 70), text_color = color.new(color.gray, 70), text_halign = text.align_right)
+    box.set_lefttop(b, leftBar, price1)
+    box.set_rightbottom(b, rightBar, price2)
+    box.set_bgcolor(b, fibColor)
+    box.set_text(b, text = showTextInput ? boxText : "")
+
+// ══════════════════════════════════════
+// DASHBOARD POSITION
+// ══════════════════════════════════════
+dashPos = switch dashPosInput
+    "Top Left"     => position.top_left
+    "Top Right"    => position.top_right
+    "Bottom Left"  => position.bottom_left
+    "Bottom Right" => position.bottom_right
+    => position.top_right
+
+// ══════════════════════════════════════
+// CALCULATIONS — Swing Detection
+// ══════════════════════════════════════
+var float swingHigh = na
+var float swingLow  = na
+var int   swingHighBarIdx = na
+var int   swingLowBarIdx  = na
+
+leftTime  = chart.left_visible_bar_time
+rightTime = chart.right_visible_bar_time
+isVisible = time >= leftTime and time <= rightTime
+
+var int lastLeftTime  = na
+var int lastRightTime = na
+
+// Reset when visible range changes
+if barstate.isfirst or leftTime != lastLeftTime or rightTime != lastRightTime
+    swingHigh       := na
+    swingLow        := na
+    swingHighBarIdx := na
+    swingLowBarIdx  := na
+    lastLeftTime    := leftTime
+    lastRightTime   := rightTime
+
+// Update swing high/low within visible range
+if isVisible
+    if na(swingHigh) or high > swingHigh
+        swingHigh       := high
+        swingHighBarIdx := bar_index
+    if na(swingLow) or low < swingLow
+        swingLow       := low
+        swingLowBarIdx := bar_index
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC — Zone Touches
+// ══════════════════════════════════════
+// Detect when price enters Entry Zone or Target Zone for alerts
+var bool inEntryZone  = false
+var bool inTargetZone = false
+
+float swRange = nz(swingHigh - swingLow, 0.0)
+bool  trendUp = nz(swingLowBarIdx, 0) < nz(swingHighBarIdx, 0)
+bool  hasSwing = not na(swingHigh) and not na(swingLow) and swRange > 0
+
+// Entry zone: 61.8%–78.6% retracement
+float entryHi = hasSwing ? (trendUp ? swingHigh - swRange * 0.618 : swingLow + swRange * 0.618) : na
+float entryLo = hasSwing ? (trendUp ? swingHigh - swRange * 0.786 : swingLow + swRange * 0.786) : na
+float entryTop = not na(entryHi) and not na(entryLo) ? math.max(entryHi, entryLo) : na
+float entryBot = not na(entryHi) and not na(entryLo) ? math.min(entryHi, entryLo) : na
+
+bool priceInEntry = not na(entryTop) and not na(entryBot) and close <= entryTop and close >= entryBot
+bool entryZoneTouch = priceInEntry and not inEntryZone and barstate.isconfirmed and hasSwing
+
+// Target zone: -50% to -61.8% extension
+float targHi = hasSwing ? (trendUp ? swingHigh + swRange * 0.5 : swingLow - swRange * 0.5) : na
+float targLo = hasSwing ? (trendUp ? swingHigh + swRange * 0.618 : swingLow - swRange * 0.618) : na
+float targTop = not na(targHi) and not na(targLo) ? math.max(targHi, targLo) : na
+float targBot = not na(targHi) and not na(targLo) ? math.min(targHi, targLo) : na
+
+bool priceInTarget = not na(targTop) and not na(targBot) and close <= targTop and close >= targBot
+bool targetZoneTouch = priceInTarget and not inTargetZone and barstate.isconfirmed and hasSwing
+
+if barstate.isconfirmed
+    inEntryZone  := priceInEntry
+    inTargetZone := priceInTarget
+
+// Trend string for dashboard
+string trendStr  = not hasSwing ? "—" : (trendUp ? "Bullish" : "Bearish")
+color  trendClr  = not hasSwing ? TEXT_MUTED : (trendUp ? #00E676 : #FF5252)
+string signalStr = entryZoneTouch ? "Entry Zone" : (targetZoneTouch ? "Target Zone" : "—")
+color  signalClr = entryZoneTouch ? #FFD700 : (targetZoneTouch ? #00E676 : TEXT_MUTED)
+string rangeStr  = not hasSwing ? "—" : str.tostring(swRange, format.mintick)
+
+// ══════════════════════════════════════
+// DRAWING — Lines, Labels, Zones
+// ══════════════════════════════════════
+// Persistent arrays for cleanup
+var line[]  fibLines  = array.new_line()
+var label[] fibLabels = array.new_label()
+var label[] tpLabels  = array.new_label()
+var line    lineSwing = na
+
+if barstate.islast and hasSwing and showAllInput
+    // ── Cleanup ────────────────────────
+    if not na(lineSwing)
+        line.delete(lineSwing)
+    for l in fibLines
+        line.delete(l)
+    array.clear(fibLines)
+    for lbl in fibLabels
+        label.delete(lbl)
+    array.clear(fibLabels)
+    for lbl in tpLabels
+        label.delete(lbl)
+    array.clear(tpLabels)
+
+    // ── Derived values ─────────────────
+    float diff = swRange
+    int labelX = bar_index + labelOffsetInput
+    string ls  = getLineStyle(lineStyleInput)
+
+    // ── Build levels arrays ────────────
+    levels      = array.new_float()
+    percentages = array.new_string()
+
+    var float tp1Level = na
+    var float tp2Level = na
+    var float tp3Level = na
+    var float tp4Level = na
+
+    if trendUp
+        float lv0    = swingHigh
+        float lv236  = swingHigh - diff * 0.236
+        float lv382  = swingHigh - diff * 0.382
+        float lv500  = swingHigh - diff * 0.500
+        float lv618  = swingHigh - diff * 0.618
+        float lv706  = swingHigh - diff * 0.706
+        float lv786  = swingHigh - diff * 0.786
+        float lv100  = swingLow
+        float lvN1   = swingHigh + diff
+        float lvN05  = swingHigh + diff * 0.5
+        float lvN018 = swingHigh + diff * 0.18
+        float lvN272 = swingHigh + diff * 0.272
+        float lvN618 = swingHigh + diff * 0.618
+        float lv18   = swingHigh - diff * 1.18
+        float lv150  = swingHigh - diff * 1.5
+        float lv200  = swingHigh - diff * 2.0
+
+        tp1Level := lv382
+        tp2Level := lv0
+        tp3Level := lvN272
+        tp4Level := lvN618
+
+        if show0Input
+            array.push(levels, lv0),       array.push(percentages, "0%")
+        if show236Input
+            array.push(levels, lv236),     array.push(percentages, "23.6%")
+        if show382Input
+            array.push(levels, lv382),     array.push(percentages, "38.2%")
+        if show500Input
+            array.push(levels, lv500),     array.push(percentages, "50%")
+        if show618Input
+            array.push(levels, lv618),     array.push(percentages, "61.8%")
+        if show706Input
+            array.push(levels, lv706),     array.push(percentages, "70.6%")
+        if show786Input
+            array.push(levels, lv786),     array.push(percentages, "78.6%")
+        if show100Input
+            array.push(levels, lv100),     array.push(percentages, "100%")
+        if showNeg1Input
+            array.push(levels, lvN1),      array.push(percentages, "-100%")
+        if showNeg05Input
+            array.push(levels, lvN05),     array.push(percentages, "-50%")
+        if showNeg018Input
+            array.push(levels, lvN018),    array.push(percentages, "-18%")
+        if showNeg272Input
+            array.push(levels, lvN272),    array.push(percentages, "-27.2%")
+        if showNeg618Input
+            array.push(levels, lvN618),    array.push(percentages, "-61.8%")
+        if show18Input
+            array.push(levels, lv18),      array.push(percentages, "18%")
+        if show150Input
+            array.push(levels, lv150),     array.push(percentages, "150%")
+        if show200Input
+            array.push(levels, lv200),     array.push(percentages, "200%")
+
+        if showDiagonalLineInput
+            lineSwing := line.new(swingLowBarIdx, swingLow, swingHighBarIdx, swingHigh, color = lineColorInput, width = lineWidthInput, style = ls)
+    else
+        float lv0    = swingLow
+        float lv236  = swingLow + diff * 0.236
+        float lv382  = swingLow + diff * 0.382
+        float lv500  = swingLow + diff * 0.500
+        float lv618  = swingLow + diff * 0.618
+        float lv706  = swingLow + diff * 0.706
+        float lv786  = swingLow + diff * 0.786
+        float lv100  = swingHigh
+        float lvN1   = swingLow - diff
+        float lvN05  = swingLow - diff * 0.5
+        float lvN018 = swingLow - diff * 0.18
+        float lvN272 = swingLow - diff * 0.272
+        float lvN618 = swingLow - diff * 0.618
+        float lv18   = swingLow + diff * 1.18
+        float lv150  = swingLow + diff * 1.5
+        float lv200  = swingLow + diff * 2.0
+
+        tp1Level := lv382
+        tp2Level := lv0
+        tp3Level := lvN272
+        tp4Level := lvN618
+
+        if show0Input
+            array.push(levels, lv0),       array.push(percentages, "0%")
+        if show618Input
+            array.push(levels, lv618),     array.push(percentages, "61.8%")
+        if show500Input
+            array.push(levels, lv500),     array.push(percentages, "50%")
+        if show382Input
+            array.push(levels, lv382),     array.push(percentages, "38.2%")
+        if show236Input
+            array.push(levels, lv236),     array.push(percentages, "23.6%")
+        if show706Input
+            array.push(levels, lv706),     array.push(percentages, "70.6%")
+        if show786Input
+            array.push(levels, lv786),     array.push(percentages, "78.6%")
+        if show100Input
+            array.push(levels, lv100),     array.push(percentages, "100%")
+        if showNeg1Input
+            array.push(levels, lvN1),      array.push(percentages, "-100%")
+        if showNeg05Input
+            array.push(levels, lvN05),     array.push(percentages, "-50%")
+        if showNeg018Input
+            array.push(levels, lvN018),    array.push(percentages, "-18%")
+        if showNeg272Input
+            array.push(levels, lvN272),    array.push(percentages, "-27.2%")
+        if showNeg618Input
+            array.push(levels, lvN618),    array.push(percentages, "-61.8%")
+        if show18Input
+            array.push(levels, lv18),      array.push(percentages, "18%")
+        if show150Input
+            array.push(levels, lv150),     array.push(percentages, "150%")
+        if show200Input
+            array.push(levels, lv200),     array.push(percentages, "200%")
+
+        if showDiagonalLineInput
+            lineSwing := line.new(swingHighBarIdx, swingHigh, swingLowBarIdx, swingLow, color = lineColorInput, width = lineWidthInput, style = ls)
+
+    // ── Draw Fibonacci lines & labels ──
+    for i = 0 to array.size(levels) - 1
+        float lvl  = array.get(levels, i)
+        string pct = array.get(percentages, i)
+        fibLine = line.new(bar_index - 2, lvl, labelX, lvl, color = lineColorInput, width = lineWidthInput, style = ls)
+        array.push(fibLines, fibLine)
+        if showLevelLabelsInput
+            fibLbl = label.new(labelX, lvl, pct, textcolor = LABEL_COLOR, style = label.style_none, size = size.small)
+            array.push(fibLabels, fibLbl)
+
+    // ── TP labels ──────────────────────
+    tpSz = getTpSize(tpLabelSizeInput)
+    if showTpLabelsInput
+        if not na(tp1Level) and show382Input
+            array.push(tpLabels, label.new(labelX + 5, tp1Level, "TP1", textcolor = LABEL_COLOR, style = label.style_label_center, size = tpSz, color = TP_BG_COLOR))
+        if not na(tp2Level) and show0Input
+            array.push(tpLabels, label.new(labelX + 5, tp2Level, "TP2", textcolor = LABEL_COLOR, style = label.style_label_center, size = tpSz, color = TP_BG_COLOR))
+        if not na(tp3Level) and showNeg272Input
+            array.push(tpLabels, label.new(labelX + 5, tp3Level, "TP3", textcolor = LABEL_COLOR, style = label.style_label_center, size = tpSz, color = TP_BG_COLOR))
+        if not na(tp4Level) and showNeg618Input
+            array.push(tpLabels, label.new(labelX + 5, tp4Level, "TP4", textcolor = LABEL_COLOR, style = label.style_label_center, size = tpSz, color = TP_BG_COLOR))
+
+    // ── Fibonacci zones ────────────────
+    if showFibBoxInput
+        fibBox(ENTRY_ZONE_BG, 61.8, 78.6, trendUp, bar_index - 2, labelX, swingHigh, swingLow, "ENTRY ZONE")
+    if showNegBoxInput
+        fibBox(TARGET_ZONE_BG, -50, -61.8, trendUp, bar_index - 2, labelX, swingHigh, swingLow, "TARGET ZONE")
+
+// ══════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════
+if showDashInput and barstate.islast
+    var dashTable = table.new(dashPos, 2, 6, TABLE_BG, TABLE_BORDER, 1, TABLE_BORDER, 1)
+
+    table.cell(dashTable, 0, 0, "WillyAlgoTrader", text_color = HEADER_TEXT, bgcolor = HEADER_BG, text_size = size.small, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, 0, 1, 0)
+
+    table.cell(dashTable, 0, 1, "Trend",       text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 1, trendStr,       text_color = trendClr,  text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 2, "Signal",      text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 2, signalStr,      text_color = signalClr, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 3, "Range",       text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 3, rangeStr,       text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 4, "TF",          text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 4, timeframe.period, text_color = TEXT_COLOR, text_size = size.small, bgcolor = TABLE_BG)
+
+    table.cell(dashTable, 0, 5, "Version",     text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+    table.cell(dashTable, 1, 5, INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = size.small, bgcolor = TABLE_BG)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = color.new(color.black, 100), border_color = color.new(color.black, 100), border_width = 0, frame_color = color.new(color.black, 100), frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = color.new(color.black, 100))
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string ticker   = syminfo.tickerid
+string priceStr = str.tostring(close, format.mintick)
+string tfStr    = timeframe.period
+
+string entryJsonMsg = '{"action":"entry_zone","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+string entryTextMsg = "🟡 ENTRY ZONE | " + ticker + " | TF: " + tfStr + " | Price: " + priceStr
+string entryAlertMsg = webhookInput ? entryJsonMsg : entryTextMsg
+
+string targetJsonMsg = '{"action":"target_zone","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tfStr + '"}'
+string targetTextMsg = "🟢 TARGET ZONE | " + ticker + " | TF: " + tfStr + " | Price: " + priceStr
+string targetAlertMsg = webhookInput ? targetJsonMsg : targetTextMsg
+
+if enableAlertsInput and entryZoneTouch
+    alert(entryAlertMsg, alert.freq_once_per_bar_close)
+
+if enableAlertsInput and targetZoneTouch
+    alert(targetAlertMsg, alert.freq_once_per_bar_close)

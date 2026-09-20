@@ -1,0 +1,1140 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// SWING VOLUME PROFILE PRO [WillyAlgoTrader]
+// ══════════════════════════════════════════════════════════
+// Author:  Willy | WillyAlgoTrader
+// Version: 1.3.0
+
+indicator(
+    title              = "Swing Volume Profile Pro [WillyAlgoTrader]",
+    shorttitle         = "SwingVPro",
+    overlay            = true,
+    max_labels_count   = 500,
+    max_lines_count    = 500,
+    max_boxes_count    = 500,
+    max_bars_back      = 5000,
+    max_polylines_count = 100,
+    calc_bars_count    = 2000)
+
+// ══════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════
+GRP_MAIN   = "⚙️ Main Settings"
+GRP_VISUAL = "🎨 Visual Settings"
+GRP_LEVELS = "📌 Naked Levels & Composite"
+GRP_DASH   = "📊 Dashboard"
+GRP_ALERT  = "🔔 Alerts"
+GRP_COLORS = "🎨 Colors"
+GRP_ADV    = "🔧 Advanced"
+
+INDICATOR_VERSION = "v1.3.0"
+TRANSPARENT       = color.new(color.black, 100)
+VA_PERCENT        = 0.70
+DELTA_NOTE        = "Candle-based delta: volume of bull candles (close ≥ open) minus bear candles.\nApproximation — NOT true bid/ask (tick) delta.\nOn forex/CFD symbols TradingView supplies tick volume (price updates), not traded volume."
+
+// ══════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════
+presetInput   = input.string("Custom", "Preset", options = ["Custom", "Scalping", "Intraday", "Swing"], group = GRP_MAIN, tooltip = "One-click configuration:\n• Scalping: length 10, 14 bins\n• Intraday: length 21, 20 bins\n• Swing: length 50, 30 bins\n• Custom: use the manual values below")
+swingLenInput = input.int(21, "Swing Detection Length", minval = 5, maxval = 200, group = GRP_MAIN, tooltip = "Used only when Preset = Custom.\nLookback period for pivot high/low detection.\n• Higher = larger swings, fewer reversals\n• Lower = smaller swings, more frequent\n\nNote: pivots confirm with a delay of this many bars — signals and profiles are lag-confirmed by design (no repaint).")
+binCountInput = input.int(20, "Profile Bins", minval = 8, maxval = 50, step = 2, group = GRP_MAIN, tooltip = "Used only when Preset = Custom.\nNumber of price levels in volume profile.\n• Higher = finer resolution\n• Lower = smoother profile")
+
+showProfileInput = input.bool(true, "Show Volume Profile", group = GRP_VISUAL, tooltip = "Display the volume distribution histogram on each swing leg.\n\nNote: on forex/CFD symbols TradingView supplies tick volume (number of price updates) — a widely used activity proxy, but not real traded volume. On symbols with no volume data at all, profile elements are hidden and only structure (zigzag, labels) is drawn.")
+showHeatmapInput = input.bool(false, "Show Heatmap", group = GRP_VISUAL, tooltip = "Fill swing range with volume heatmap colors instead of histogram bars")
+showDeltaInput   = input.bool(true, "Show Delta Profile", group = GRP_VISUAL, tooltip = "Color profile bars by candle-direction imbalance (green = bull-candle volume dominant, red = bear-candle volume dominant).\n\n⚠ Approximation: volume is classified by candle close vs open, not true bid/ask (tick) delta.")
+showZigzagInput  = input.bool(true, "Show ZigZag", group = GRP_VISUAL, tooltip = "Draw connecting lines between swing highs and lows")
+showPocInput     = input.bool(true, "Show POC Line", group = GRP_VISUAL, tooltip = "Point of Control — price level with highest volume in each swing")
+showPocFillInput = input.bool(true, "Show POC Zone Fill", group = GRP_VISUAL, tooltip = "Fill the POC price bin with a transparent background color (also applies to naked POC levels)")
+showVaInput      = input.bool(true, "Show Value Area", group = GRP_VISUAL, tooltip = "Value Area High/Low — range containing 70% of swing volume around POC")
+showVwapInput    = input.bool(false, "Show Swing VWAP", group = GRP_VISUAL, tooltip = "Volume-Weighted Average Price calculated per swing leg")
+showHvnLvnInput  = input.bool(true, "Show HVN / LVN", group = GRP_VISUAL, tooltip = "High Volume Nodes (local volume peaks — act as support/resistance) and Low Volume Nodes (valleys — price tends to cross them fast).\nHVN = thin solid line, LVN = thin dotted line.\nThresholds are configurable in Advanced.")
+showLabelsInput  = input.bool(true, "Show Swing Labels", group = GRP_VISUAL, tooltip = "Display volume summary labels at swing pivots and ✕ marks where naked levels get tested")
+showSignalsInput = input.bool(false, "Show Reversal Signals", group = GRP_VISUAL, tooltip = "Display confirmed swing reversal markers.\n\nNote: markers appear with a delay of Swing Detection Length bars (pivot confirmation) — they are structure markers, not entry signals.")
+
+labelSizeInput = input.string("Small", "Label Size", options = ["Small", "Normal", "Large"], group = GRP_VISUAL, tooltip = "Size of swing labels and signal markers")
+themeInput = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_VISUAL, tooltip = "Chart color theme.\n• Auto: detects from chart background")
+zigzagStyleInput = input.string("Dotted", "ZigZag Style", options = ["Dotted", "Dashed", "Solid"], group = GRP_VISUAL, tooltip = "Line style for zigzag connector between swings")
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_VISUAL, tooltip = "Display 'WillyAlgoTrader' watermark on chart")
+
+showNakedPocInput = input.bool(true, "Naked POC Levels", group = GRP_LEVELS, tooltip = "Each completed profile's POC extends right until price trades into its bin.\nUntested (naked) POCs act as magnets / reaction levels.\nTested levels fade or disappear depending on the option below.")
+showNakedVaInput  = input.bool(false, "Naked VA Levels", group = GRP_LEVELS, tooltip = "Also track VAH and VAL of each completed profile as naked levels.\n⚠ Triples the number of tracked levels — consider lowering Max Stored Profiles.")
+nakedTestedInput  = input.string("Fade", "Tested Levels", options = ["Fade", "Remove"], group = GRP_LEVELS, tooltip = "What happens when price tests a naked level:\n• Fade: level stops extending and turns faint (keeps history visible)\n• Remove: level is deleted from the chart")
+showCompositeInput = input.bool(true, "Composite Profile", group = GRP_LEVELS, tooltip = "Merged volume distribution of the last N completed swing legs (N = Max Stored Profiles), drawn to the right of the current bar.\nShows where volume is concentrated across the whole recent structure, with its own C-POC.")
+
+showDashInput    = input.bool(true, "Show Dashboard", group = GRP_DASH, tooltip = "Display the sectioned analytics dashboard")
+dashPosInput     = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Middle Right"], group = GRP_DASH, tooltip = "Position of the analytics dashboard on chart")
+dashFontSizeInput = input.string("Small", "Dashboard Font Size", options = ["Small", "Normal", "Large", "Huge"], group = GRP_DASH, tooltip = "Font size for the dashboard table. Section dividers and the\nversion footer render one step smaller to preserve hierarchy")
+showMarketSecInput  = input.bool(true, "  ├ Market section",  group = GRP_DASH, tooltip = "Trend / Leg Age / Value Migration / Vol vs Avg / TF")
+showProfileSecInput = input.bool(true, "  ├ Profile section", group = GRP_DASH, tooltip = "POC / Value Area / VWAP / Volume / Delta of the current leg")
+showLevelsSecInput  = input.bool(true, "  └ Levels section",  group = GRP_DASH, tooltip = "Active naked POC count and composite POC")
+
+bullColorInput = input.color(#00E676, "Bull", inline = "colors", group = GRP_COLORS, tooltip = "Color for bullish swings")
+bearColorInput = input.color(#FF5252, "Bear", inline = "colors", group = GRP_COLORS, tooltip = "Color for bearish swings")
+pocColorInput  = input.color(#1A237E, "POC",  inline = "colors2", group = GRP_COLORS, tooltip = "Point of Control / HVN / composite POC color")
+vaColorInput   = input.color(#42A5F5, "VA",   inline = "colors2", group = GRP_COLORS, tooltip = "Value Area lines color")
+vwapColorInput = input.color(#AB47BC, "VWAP", inline = "colors2", group = GRP_COLORS, tooltip = "Swing VWAP line color")
+
+maxProfilesInput = input.int(10, "Max Stored Profiles", minval = 2, maxval = 30, group = GRP_ADV, tooltip = "How many completed legs are kept in memory.\nGoverns: naked level count, composite profile depth, volume-vs-average window.\nOldest data is dropped when the limit is exceeded.")
+hvnThreshInput   = input.float(0.60, "HVN Threshold", minval = 0.30, maxval = 0.95, step = 0.05, group = GRP_ADV, tooltip = "Local volume peak must reach this fraction of the POC bin's volume to be marked as HVN")
+lvnThreshInput   = input.float(0.25, "LVN Threshold", minval = 0.05, maxval = 0.50, step = 0.05, group = GRP_ADV, tooltip = "Local volume valley must be below this fraction of the POC bin's volume to be marked as LVN")
+compWidthInput   = input.int(20, "Composite Width (bars)", minval = 5, maxval = 50, group = GRP_ADV, tooltip = "Horizontal size of the composite profile drawn right of the last bar")
+pocWidthInput  = input.int(2, "POC Width", minval = 1, maxval = 4, group = GRP_ADV, tooltip = "Line thickness for Point of Control")
+vaWidthInput   = input.int(1, "VA Width", minval = 1, maxval = 3, group = GRP_ADV, tooltip = "Line thickness for Value Area boundaries")
+
+alertLevelsInput = input.bool(true, "Enable Level Alerts", group = GRP_ALERT, tooltip = "Fire alerts when price tests a naked POC or closes outside the last completed profile's Value Area.\nCreate an alert on this indicator with 'Any alert() function call' to receive them.")
+webhookInput = input.bool(false, "Webhook JSON Format", group = GRP_ALERT, tooltip = "Send alerts in JSON format for webhook integrations (3Commas, Alertatron, etc.)")
+
+// ══════════════════════════════════════
+// EFFECTIVE SETTINGS (presets)
+// ══════════════════════════════════════
+int effSwingLen = switch presetInput
+    "Scalping" => 10
+    "Intraday" => 21
+    "Swing"    => 50
+    => swingLenInput
+
+int effBins = switch presetInput
+    "Scalping" => 14
+    "Intraday" => 20
+    "Swing"    => 30
+    => binCountInput
+
+bool nakedRemoveTested = nakedTestedInput == "Remove"
+
+// ══════════════════════════════════════
+// THEME DETECTION & COLORS
+// ══════════════════════════════════════
+isDark = switch themeInput
+    "Dark"  => true
+    "Light" => false
+    => color.r(chart.bg_color) < 128
+
+TEXT_COLOR    = isDark ? #E0E0E0 : #1A1A1A
+TEXT_MUTED    = isDark ? color.new(#9E9E9E, 0) : color.new(#757575, 0)
+TABLE_BG     = isDark ? color.new(#131722, 5) : color.new(#FFFFFF, 5)
+TABLE_BORDER = isDark ? color.new(#2A2E39, 0) : color.new(#D0D0D0, 0)
+TABLE_ROW_ALT = isDark ? color.new(#1C2030, 0) : color.new(#F0F4F8, 0)
+WM_COLOR     = isDark ? color.new(#FFFFFF, 80) : color.new(#000000, 80)
+COMP_COLOR   = isDark ? #78909C : #90A4AE
+
+// Adaptive signal text colors — for text on chart/table background
+// (bright bull/bear inputs stay as label/profile fills; standard §2.1)
+BULL_TEXT    = isDark ? #00E676 : #00A152
+BEAR_TEXT    = isDark ? #FF5252 : #D32F2F
+NEUTRAL_TEXT = isDark ? #FFEB3B : #F57F17
+// POC accent for table text (default input #1A237E is unreadable on dark)
+POC_TEXT     = isDark ? #7986CB : #1A237E
+
+// Dashboard header — dark, trend-colored (standard §24.3: no acid backgrounds)
+HEADER_BG_BULL = color.new(#0F6E56, 0)
+HEADER_BG_BEAR = color.new(#A32D2D, 0)
+HEADER_TEXT    = #FFFFFF
+POC_FILL     = color.new(pocColorInput, 88)
+
+// ══════════════════════════════════════
+// FUNCTIONS
+// ══════════════════════════════════════
+
+// Safe division (na + zero protection)
+safeDiv(float num, float den, float fallback = 0.0) =>
+    den != 0 and not na(num) and not na(den) ? num / den : fallback
+
+// ZigZag line style resolver
+getZzStyle(string s) =>
+    switch s
+        "Dashed" => line.style_dashed
+        "Solid"  => line.style_solid
+        => line.style_dotted
+
+// Dashboard position resolver
+getDashPos(string s) =>
+    switch s
+        "Top Left"     => position.top_left
+        "Bottom Left"  => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Right" => position.middle_right
+        => position.top_right
+
+// Dashboard font resolvers — sub is one step smaller (dividers, footer)
+getDashFont(string s) =>
+    switch s
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+getDashFontSub(string s) =>
+    switch s
+        "Normal" => size.small
+        "Large"  => size.normal
+        "Huge"   => size.large
+        => size.tiny
+
+// Label size resolver
+getLabelSize(string s) =>
+    switch s
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+// Distribute candle volume across bins proportionally to candle range overlap.
+// Buy/sell split is candle-based (close >= open) — an approximation, not tick delta.
+distributeVolume(float cOpen, float cClose, float cHigh, float cLow, float cVol, float bottom, float step, int bins, array<float> volArr, array<float> buyArr, array<float> sellArr) =>
+    float candleTop = math.max(cHigh, cLow)
+    float candleBot = math.min(cHigh, cLow)
+    float candleRange = candleTop - candleBot
+    bool isBullCandle = cClose >= cOpen
+    if candleRange > 0 and cVol > 0
+        for k = 0 to bins - 1
+            float binLow  = bottom + k * step
+            float binHigh = binLow + step
+            float overlap = math.max(0.0, math.min(candleTop, binHigh) - math.max(candleBot, binLow))
+            if overlap > 0
+                float portion = overlap / candleRange
+                float allocVol = cVol * portion
+                volArr.set(k, volArr.get(k) + allocVol)
+                if isBullCandle
+                    buyArr.set(k, buyArr.get(k) + allocVol)
+                else
+                    sellArr.set(k, sellArr.get(k) + allocVol)
+    true
+
+// Calculate Value Area: expand from POC bin until VA_PERCENT of total volume captured
+calcValueArea(array<float> volArr, float totalVol, int pocBin, float bottom, float step, int bins) =>
+    float target = totalVol * VA_PERCENT
+    float accumulated = volArr.get(pocBin)
+    int upperBin = pocBin
+    int lowerBin = pocBin
+    int safety = 0
+    while accumulated < target and safety < bins
+        safety += 1
+        float upVol   = upperBin + 1 < bins ? volArr.get(upperBin + 1) : 0.0
+        float downVol = lowerBin - 1 >= 0   ? volArr.get(lowerBin - 1) : 0.0
+        if upVol >= downVol and upperBin + 1 < bins
+            upperBin += 1
+            accumulated += upVol
+        else if lowerBin - 1 >= 0
+            lowerBin -= 1
+            accumulated += downVol
+        else if upperBin + 1 < bins
+            upperBin += 1
+            accumulated += upVol
+        else
+            break
+    float vaHigh = bottom + (upperBin + 1) * step
+    float vaLow  = bottom + lowerBin * step
+    [vaHigh, vaLow]
+
+// ══════════════════════════════════════
+// NAKED LEVEL TYPE & HELPERS
+// ══════════════════════════════════════
+type NLevel
+    string kind      // "POC", "VAH", "VAL"
+    float  price
+    float  top       // test zone upper bound (POC bin top; == price for VA)
+    float  bot       // test zone lower bound
+    int    startBar
+    int    bid       // build sequence id (for leg-extension rebuilds)
+    bool   active
+    line   ln
+    box    fill      // POC zone fill (na for VA levels)
+
+// Create a naked level with its drawings
+newNakedLevel(string kind, float price, float topP, float botP, int startBar, int bid) =>
+    bool isPoc = kind == "POC"
+    line ln = line.new(startBar, price, bar_index, price, color = isPoc ? color.new(pocColorInput, 35) : color.new(vaColorInput, 45), width = isPoc ? pocWidthInput : vaWidthInput, style = isPoc ? line.style_dotted : line.style_dashed)
+    box fl = isPoc and showPocFillInput ? box.new(startBar, topP, bar_index, botP, TRANSPARENT, 0, bgcolor = POC_FILL) : box(na)
+    NLevel.new(kind, price, topP, botP, startBar, bid, true, ln, fl)
+
+// Mark a level as tested: stop extending, fade colors, trim at touch bar
+fadeLevel(NLevel lvl, int touchBar) =>
+    lvl.active := false
+    line.set_x2(lvl.ln, touchBar)
+    line.set_color(lvl.ln, lvl.kind == "POC" ? color.new(pocColorInput, 82) : color.new(vaColorInput, 86))
+    if not na(lvl.fill)
+        box.set_right(lvl.fill, touchBar)
+        box.set_bgcolor(lvl.fill, color.new(pocColorInput, 95))
+    true
+
+// Delete a level's drawings
+deleteLevel(NLevel lvl) =>
+    line.delete(lvl.ln)
+    if not na(lvl.fill)
+        box.delete(lvl.fill)
+    true
+
+// ══════════════════════════════════════
+// DERIVED CONSTANTS
+// ══════════════════════════════════════
+LABEL_SIZE       = getLabelSize(labelSizeInput)
+DASH_FONT        = getDashFont(dashFontSizeInput)
+DASH_FONT_SUB    = getDashFontSub(dashFontSizeInput)
+
+// ══════════════════════════════════════
+// PERSISTENT STATE
+// ══════════════════════════════════════
+var float swingHighPrice  = na
+var int   swingHighIdx    = na
+var float swingLowPrice   = na
+var int   swingLowIdx     = na
+var bool  dirIsDown       = false
+var int   lastPivotType   = 0        // 0 = none yet, 1 = high, -1 = low (strict alternation)
+
+// Dashboard state (RT-updated)
+var float lastPocPrice    = na
+var float lastVaHigh      = na
+var float lastVaLow       = na
+var float lastSwingVwap   = na
+var float lastTotalVol    = na
+var float lastBuyVol      = na
+var float lastSellVol     = na
+var float lastDelta       = na
+var float lastVolVsAvg    = na
+
+// Completed-profile state (set only by historical builder — used for
+// value migration and VA breakout alerts; NOT overwritten by RT leg)
+var float cmpPoc     = na
+var float prevCmpPoc = na
+var float cmpVaHigh  = na
+var float cmpVaLow   = na
+
+// Drawing containers — realtime (forming leg)
+var polyline profilePoly  = na
+var label    rtLabel       = label(na)
+var line     rtZigzag      = line(na)
+var line     rtPocLine     = line(na)
+var line     rtPocTop      = line(na)
+var line     rtPocBot      = line(na)
+var box      rtPocFill     = box(na)
+var line     rtVaHighLine  = line(na)
+var line     rtVaLowLine   = line(na)
+var line     rtVwapLine    = line(na)
+var array<box>  rtBoxes    = array.new<box>()
+var array<line> rtLines    = array.new<line>()   // RT HVN/LVN lines
+
+// Drawing containers — last completed leg (tracked for extension rebuilds;
+// committed = cleared without deletion on new-leg confirmation)
+var array<box>   histBoxes  = array.new<box>()
+var array<line>  histLines  = array.new<line>()
+var array<label> histLabels = array.new<label>()
+var polyline     histPoly   = na
+
+// Naked levels
+var array<NLevel> nLevels = array.new<NLevel>()
+var int buildSeq = 0
+
+// Composite profile storage (per completed leg: nonzero bins as price+vol pairs)
+var array<float> compPrices   = array.new<float>()
+var array<float> compVols     = array.new<float>()
+var array<int>   compLegSizes = array.new<int>()
+var array<box>   compBoxes    = array.new<box>()
+var line  compPocLine = line(na)
+var label compLbl     = label(na)
+
+// Leg volume statistics
+var array<float> legVols = array.new<float>()
+
+// Last-build bookkeeping (for correct leg-extension rebuilds)
+var bool lastBuildStoredLeg = false
+
+// ══════════════════════════════════════
+// CALCULATIONS — SWING DETECTION
+// (strict H→L→H pivot alternation)
+// ══════════════════════════════════════
+int WARMUP_BARS = math.max(effSwingLen * 2, 50)
+bool isWarmedUp = bar_index >= WARMUP_BARS
+
+float pivotHi = ta.pivothigh(high, effSwingLen, effSwingLen)
+float pivotLo = ta.pivotlow(low, effSwingLen, effSwingLen)
+int   pivotBarIdx = bar_index - effSwingLen
+
+bool legCompleted = false   // opposite pivot confirmed → previous leg is final
+bool legExtended  = false   // same-type, more extreme pivot → current leg endpoint moved
+
+if not na(pivotHi) and na(pivotLo)
+    if lastPivotType == 1
+        if pivotHi > swingHighPrice
+            swingHighPrice := pivotHi
+            swingHighIdx   := pivotBarIdx
+            legExtended    := true
+    else
+        legCompleted   := lastPivotType == -1 and not na(swingLowPrice)
+        swingHighPrice := pivotHi
+        swingHighIdx   := pivotBarIdx
+        lastPivotType  := 1
+        dirIsDown      := true
+
+if not na(pivotLo) and na(pivotHi)
+    if lastPivotType == -1
+        if pivotLo < swingLowPrice
+            swingLowPrice := pivotLo
+            swingLowIdx   := pivotBarIdx
+            legExtended   := true
+    else
+        legCompleted  := lastPivotType == 1 and not na(swingHighPrice)
+        swingLowPrice := pivotLo
+        swingLowIdx   := pivotBarIdx
+        lastPivotType := -1
+        dirIsDown     := false
+
+// Outside bar: both pivots confirm on the same bar — resolve direction by
+// the pivot bar's own close relative to its midpoint (close in the lower
+// half → sellers won the bar → direction down)
+if not na(pivotHi) and not na(pivotLo)
+    legCompleted   := lastPivotType != 0
+    swingHighPrice := pivotHi
+    swingHighIdx   := pivotBarIdx
+    swingLowPrice  := pivotLo
+    swingLowIdx    := pivotBarIdx
+    dirIsDown      := close[effSwingLen] < math.avg(pivotHi, pivotLo)
+    lastPivotType  := dirIsDown ? 1 : -1
+
+// ATR for minimum swing size filter
+float atrVal = nz(ta.atr(200), syminfo.mintick * 100)
+
+// ══════════════════════════════════════
+// SIGNAL LOGIC
+// ══════════════════════════════════════
+bool swingBearish = legCompleted and dirIsDown and barstate.isconfirmed and isWarmedUp
+bool swingBullish = legCompleted and not dirIsDown and barstate.isconfirmed and isWarmedUp
+
+bool rebuildProfile = (legCompleted or legExtended) and barstate.isconfirmed and isWarmedUp
+
+// ══════════════════════════════════════
+// NAKED LEVEL MAINTENANCE
+// (runs BEFORE the builder: extends active levels, tests on confirmed bars)
+// ══════════════════════════════════════
+float evPocTest = na   // price of first naked POC tested this bar (for alerts)
+
+if nLevels.size() > 0
+    // Extend active levels — a straight horizontal line only needs its
+    // final x2, so we touch drawings on the last bar only (tested levels
+    // get their x2 fixed at the touch bar inside fadeLevel)
+    if barstate.islast
+        for lvl in nLevels
+            if lvl.active
+                line.set_x2(lvl.ln, bar_index)
+                if not na(lvl.fill)
+                    box.set_right(lvl.fill, bar_index)
+
+    // Test on confirmed bars only (no intrabar state flicker)
+    if barstate.isconfirmed
+        for idx = nLevels.size() - 1 to 0
+            NLevel lvl = nLevels.get(idx)
+            if lvl.active and high >= lvl.bot and low <= lvl.top
+                if lvl.kind == "POC" and na(evPocTest)
+                    evPocTest := lvl.price
+                if showLabelsInput
+                    label.new(bar_index, lvl.price, "✕", style = label.style_none, textcolor = TEXT_MUTED, size = size.tiny, tooltip = "Naked " + lvl.kind + " tested @ " + str.tostring(lvl.price, format.mintick))
+                if nakedRemoveTested
+                    deleteLevel(lvl)
+                    nLevels.remove(idx)
+                else
+                    fadeLevel(lvl, bar_index)
+
+// ══════════════════════════════════════
+// HISTORICAL SWING LEG PROFILE BUILDER
+// ══════════════════════════════════════
+if rebuildProfile and not na(swingHighPrice) and not na(swingLowPrice) and not na(swingHighIdx) and not na(swingLowIdx)
+
+    // Are we replacing the last recorded leg (extension of an already-built leg)?
+    bool replacingLast = legExtended and lastBuildStoredLeg
+
+    // ── Commit or roll back drawings of the previous build ──
+    if legExtended
+        for b in histBoxes
+            b.delete()
+        histBoxes.clear()
+        for l in histLines
+            l.delete()
+        histLines.clear()
+        for lb in histLabels
+            lb.delete()
+        histLabels.clear()
+        histPoly.delete()
+        histPoly := na
+    else
+        // New leg confirmed — previous leg's profile becomes permanent
+        histBoxes.clear()
+        histLines.clear()
+        histLabels.clear()
+        histPoly := na
+
+    // ── Roll back or advance stored data ──
+    if replacingLast
+        // Remove naked levels created by the stale build
+        if nLevels.size() > 0
+            for idx = nLevels.size() - 1 to 0
+                NLevel lvl = nLevels.get(idx)
+                if lvl.bid == buildSeq
+                    deleteLevel(lvl)
+                    nLevels.remove(idx)
+        // Remove the stale leg from composite storage
+        int nPop = compLegSizes.pop()
+        if nPop > 0
+            for popIdx = 1 to nPop
+                compPrices.pop()
+                compVols.pop()
+        // Remove the stale leg volume
+        legVols.pop()
+    else
+        buildSeq += 1
+
+    lastBuildStoredLeg := false
+
+    // Clean realtime drawings
+    profilePoly.delete()
+    label.delete(rtLabel)
+    line.delete(rtZigzag)
+    line.delete(rtPocLine)
+    line.delete(rtPocTop)
+    line.delete(rtPocBot)
+    box.delete(rtPocFill)
+    line.delete(rtVaHighLine)
+    line.delete(rtVaLowLine)
+    line.delete(rtVwapLine)
+    for b in rtBoxes
+        b.delete()
+    rtBoxes.clear()
+    for l in rtLines
+        l.delete()
+    rtLines.clear()
+
+    color swingColor = dirIsDown ? bearColorInput : bullColorInput
+
+    float swingBot   = math.min(swingHighPrice, swingLowPrice)
+    float swingTop   = math.max(swingHighPrice, swingLowPrice)
+    float swingRange = swingTop - swingBot
+
+    // Skip tiny swings (noise filter)
+    if swingRange > atrVal * 0.3
+
+        int bins   = effBins
+        float step = swingRange / bins
+        int lastIdx  = math.max(swingHighIdx, swingLowIdx)
+        int prevIdx  = math.min(swingHighIdx, swingLowIdx)
+        int barSpan  = math.max(lastIdx - prevIdx, 1)
+        int offset   = bar_index - lastIdx
+
+        array<float> volBins  = array.new<float>(bins, 0.0)
+        array<float> buyBins  = array.new<float>(bins, 0.0)
+        array<float> sellBins = array.new<float>(bins, 0.0)
+
+        float sumPV = 0.0
+        float sumV  = 0.0
+
+        // Distribute volume across bins (TPO-like)
+        for i = offset to barSpan + offset
+            float cVol = nz(volume[i], 0.0)
+            float cC   = nz(close[i], 0.0)
+            float cH   = na(high[i]) ? cC : high[i]
+            float cL   = na(low[i]) ? cC : low[i]
+            float cO   = na(open[i]) ? cC : open[i]
+            distributeVolume(cO, cC, cH, cL, cVol, swingBot, step, bins, volBins, buyBins, sellBins)
+            float typPrice = (cH + cL + cC) / 3.0
+            sumPV += typPrice * cVol
+            sumV  += cVol
+
+        float totalVol = volBins.sum()
+        float maxVol   = volBins.max()
+
+        // Find POC bin — on ties, prefer the bin closest to the profile
+        // center (Market Profile convention)
+        int pocBin = 0
+        if maxVol > 0
+            int centerBin = bins / 2
+            int bestDist  = bins + 1
+            for k = 0 to bins - 1
+                if volBins.get(k) == maxVol
+                    int d = math.abs(k - centerBin)
+                    if d < bestDist
+                        bestDist := d
+                        pocBin   := k
+
+        float pocPrice  = swingBot + pocBin * step + step / 2.0
+        float pocBinLow = swingBot + pocBin * step
+        float pocBinHi  = pocBinLow + step
+
+        // Value Area
+        float vaH = swingTop
+        float vaL = swingBot
+        if totalVol > 0
+            [calcVaH, calcVaL] = calcValueArea(volBins, totalVol, pocBin, swingBot, step, bins)
+            vaH := calcVaH
+            vaL := calcVaL
+
+        float swingVwap = safeDiv(sumPV, sumV, pocPrice)
+
+        // ── Statistics: value migration + volume vs average ──
+        // (POC/VA are meaningless without volume data — store na then)
+        if not replacingLast
+            prevCmpPoc := cmpPoc
+        cmpPoc    := maxVol > 0 ? pocPrice : na
+        cmpVaHigh := totalVol > 0 ? vaH : na
+        cmpVaLow  := totalVol > 0 ? vaL : na
+
+        float avgPrevVol = legVols.size() > 0 ? legVols.avg() : na
+        lastVolVsAvg := not na(avgPrevVol) and avgPrevVol > 0 ? totalVol / avgPrevVol * 100.0 : na
+        legVols.push(totalVol)
+        while legVols.size() > maxProfilesInput
+            legVols.shift()
+
+        // ── Composite storage (nonzero bins only) ──
+        int storedBins = 0
+        for k = 0 to bins - 1
+            float bv = volBins.get(k)
+            if bv > 0
+                compPrices.push(swingBot + k * step + step / 2.0)
+                compVols.push(bv)
+                storedBins += 1
+        compLegSizes.push(storedBins)
+        while compLegSizes.size() > maxProfilesInput
+            int n0 = compLegSizes.shift()
+            if n0 > 0
+                for shiftIdx = 1 to n0
+                    compPrices.shift()
+                    compVols.shift()
+
+        lastBuildStoredLeg := true
+
+        // Store for dashboard (na when there is no volume data)
+        lastPocPrice  := maxVol > 0 ? pocPrice : na
+        lastVaHigh    := totalVol > 0 ? vaH : na
+        lastVaLow     := totalVol > 0 ? vaL : na
+        lastSwingVwap := totalVol > 0 ? swingVwap : na
+        lastTotalVol  := totalVol
+        lastBuyVol    := buyBins.sum()
+        lastSellVol   := sellBins.sum()
+        lastDelta     := safeDiv(lastBuyVol - lastSellVol, totalVol, 0.0) * 100.0
+
+        // Draw ZigZag
+        if showZigzagInput
+            histLines.push(line.new(swingHighIdx, swingHighPrice, swingLowIdx, swingLowPrice, color = swingColor, style = getZzStyle(zigzagStyleInput), width = 1))
+
+        // Draw profile boxes & polyline
+        array<chart.point> polyPts = array.new<chart.point>()
+        int halfSpan = math.max(int(barSpan / 2), 1)
+
+        for k = 0 to bins - 1
+            float binL = swingBot + k * step
+            float binH = binL + step
+            float volRatio = safeDiv(volBins.get(k), maxVol, 0.0)
+            int profWidth  = math.max(int(volRatio * halfSpan), 0)
+            bool isPocBin  = k == pocBin and maxVol > 0
+
+            float buyV  = buyBins.get(k)
+            float sellV = sellBins.get(k)
+            color barColor = showDeltaInput ? (buyV >= sellV ? bullColorInput : bearColorInput) : swingColor
+
+            // POC line — short segment inside profile (exact POC bin only)
+            if isPocBin and showPocInput
+                histLines.push(line.new(showProfileInput ? prevIdx + profWidth : prevIdx, math.avg(binL, binH), lastIdx, math.avg(binL, binH), color = pocColorInput, width = pocWidthInput))
+
+            // Profile / heatmap box (skipped entirely when there is no volume data)
+            if (showProfileInput or showHeatmapInput) and maxVol > 0
+                color boxBg = color.from_gradient(volRatio, 0.0, 1.0, color.new(barColor, 92), color.new(isPocBin and showPocInput ? pocColorInput : barColor, 50))
+                string boxTxt = not showHeatmapInput and isPocBin ? str.tostring(maxVol, format.volume) : ""
+                histBoxes.push(box.new(showProfileInput ? prevIdx + profWidth : prevIdx, binH, showHeatmapInput ? lastIdx : prevIdx, binL, TRANSPARENT, 0, bgcolor = boxBg, text = boxTxt, text_color = TEXT_COLOR, text_size = size.tiny))
+
+            // Polyline points
+            if k == 0
+                polyPts.push(chart.point.from_index(prevIdx, binL))
+            polyPts.push(chart.point.from_index(prevIdx + profWidth, binL))
+            polyPts.push(chart.point.from_index(prevIdx + profWidth, binH))
+            if k == bins - 1
+                polyPts.push(chart.point.from_index(prevIdx, binH))
+
+        // ── HVN / LVN detection (interior bins only) ──
+        if showHvnLvnInput and maxVol > 0 and bins >= 3
+            for k = 1 to bins - 2
+                float v  = volBins.get(k)
+                float r  = v / maxVol
+                float vP = volBins.get(k - 1)
+                float vN = volBins.get(k + 1)
+                float y  = swingBot + k * step + step / 2.0
+                if k != pocBin and v >= vP and v >= vN and (v > vP or v > vN) and r >= hvnThreshInput
+                    histLines.push(line.new(prevIdx, y, lastIdx, y, color = color.new(pocColorInput, 55), width = 1))
+                if v <= vP and v <= vN and (v < vP or v < vN) and r <= lvnThreshInput
+                    histLines.push(line.new(prevIdx, y, lastIdx, y, color = color.new(TEXT_MUTED, 50), style = line.style_dotted, width = 1))
+
+        // ── Naked levels (with retro test over the confirmation window) ──
+        int retroSpan = bar_index - lastIdx - 1
+
+        if showNakedPocInput and maxVol > 0
+            int touchBar = -1
+            for j = retroSpan to 0
+                if high[j] >= pocBinLow and low[j] <= pocBinHi
+                    touchBar := bar_index - j
+                    break
+            if not (nakedRemoveTested and touchBar >= 0)
+                NLevel lvlP = newNakedLevel("POC", pocPrice, pocBinHi, pocBinLow, lastIdx, buildSeq)
+                nLevels.push(lvlP)
+                if touchBar >= 0
+                    fadeLevel(lvlP, touchBar)
+
+        if showNakedVaInput and totalVol > 0
+            // VAH
+            int touchH = -1
+            for j = retroSpan to 0
+                if high[j] >= vaH and low[j] <= vaH
+                    touchH := bar_index - j
+                    break
+            if not (nakedRemoveTested and touchH >= 0)
+                NLevel lvlH = newNakedLevel("VAH", vaH, vaH, vaH, lastIdx, buildSeq)
+                nLevels.push(lvlH)
+                if touchH >= 0
+                    fadeLevel(lvlH, touchH)
+            // VAL
+            int touchL = -1
+            for j = retroSpan to 0
+                if high[j] >= vaL and low[j] <= vaL
+                    touchL := bar_index - j
+                    break
+            if not (nakedRemoveTested and touchL >= 0)
+                NLevel lvlL = newNakedLevel("VAL", vaL, vaL, vaL, lastIdx, buildSeq)
+                nLevels.push(lvlL)
+                if touchL >= 0
+                    fadeLevel(lvlL, touchL)
+
+        // Cap total naked levels
+        int maxNaked = maxProfilesInput * (showNakedVaInput ? 3 : 1)
+        while nLevels.size() > maxNaked
+            NLevel oldLvl = nLevels.shift()
+            deleteLevel(oldLvl)
+
+        // Profile outline (hidden when there is no volume data)
+        if showProfileInput and maxVol > 0
+            histPoly := polyline.new(polyPts, false, true, line_color = showHeatmapInput ? color.new(swingColor, 50) : swingColor)
+
+        // VA lines
+        if showVaInput and totalVol > 0
+            histLines.push(line.new(prevIdx, vaH, lastIdx, vaH, color = vaColorInput, style = line.style_dashed, width = vaWidthInput))
+            histLines.push(line.new(prevIdx, vaL, lastIdx, vaL, color = vaColorInput, style = line.style_dashed, width = vaWidthInput))
+
+        // VWAP line
+        if showVwapInput and totalVol > 0
+            histLines.push(line.new(prevIdx, swingVwap, lastIdx, swingVwap, color = vwapColorInput, style = line.style_solid, width = 2))
+
+        // Summary label at swing pivot
+        if showLabelsInput
+            float buySum  = buyBins.sum()
+            float sellSum = sellBins.sum()
+            string deltaLblStr = str.tostring(safeDiv(buySum - sellSum, totalVol, 0.0) * 100.0, "#.0") + "%"
+            string volAvgStr = na(lastVolVsAvg) ? "—" : str.tostring(lastVolVsAvg, "#") + "% of avg"
+            string tipText = "Total Vol: " + str.tostring(totalVol, format.volume) + " (" + volAvgStr + ")" + "\nBuy Vol (bull candles): " + str.tostring(buySum, format.volume) + "\nSell Vol (bear candles): " + str.tostring(sellSum, format.volume) + "\nDelta (candle-based): " + deltaLblStr + "\nPOC: " + str.tostring(pocPrice, format.mintick) + "\nVA: " + str.tostring(vaL, format.mintick) + " — " + str.tostring(vaH, format.mintick) + "\nVWAP: " + str.tostring(swingVwap, format.mintick)
+            string lblText = dirIsDown ? "▼" : "▲"
+            histLabels.push(label.new(prevIdx, dirIsDown ? swingTop : swingBot, lblText, style = dirIsDown ? label.style_label_down : label.style_label_up, color = TRANSPARENT, textcolor = swingColor, size = LABEL_SIZE, tooltip = tipText))
+
+// ══════════════════════════════════════
+// VALUE AREA BREAKOUT DETECTION
+// (vs last COMPLETED profile; skipped on rebuild bars)
+// ══════════════════════════════════════
+bool evVaBreakUp   = alertLevelsInput and barstate.isconfirmed and isWarmedUp and not rebuildProfile and not na(cmpVaHigh) and close > cmpVaHigh and close[1] <= cmpVaHigh
+bool evVaBreakDown = alertLevelsInput and barstate.isconfirmed and isWarmedUp and not rebuildProfile and not na(cmpVaLow) and close < cmpVaLow and close[1] >= cmpVaLow
+
+// ══════════════════════════════════════
+// REAL-TIME SWING LEG (current forming)
+// ══════════════════════════════════════
+if barstate.islast and isWarmedUp and not na(swingHighPrice) and not na(swingLowPrice) and not na(swingHighIdx) and not na(swingLowIdx)
+
+    // Delete all RT drawings before redrawing
+    profilePoly.delete()
+    label.delete(rtLabel)
+    line.delete(rtZigzag)
+    line.delete(rtPocLine)
+    line.delete(rtPocTop)
+    line.delete(rtPocBot)
+    box.delete(rtPocFill)
+    line.delete(rtVaHighLine)
+    line.delete(rtVaLowLine)
+    line.delete(rtVwapLine)
+    for b in rtBoxes
+        b.delete()
+    rtBoxes.clear()
+    for l in rtLines
+        l.delete()
+    rtLines.clear()
+
+    color rtColor = isDark ? color.new(#CCCCCC, 0) : color.new(#555555, 0)
+
+    float rtBot   = math.min(swingHighPrice, swingLowPrice)
+    float rtTop   = math.max(swingHighPrice, swingLowPrice)
+    float rtRange = rtTop - rtBot
+
+    if rtRange > atrVal * 0.2
+        int bins   = effBins
+        float step = rtRange / bins
+        int lastIdx  = math.max(swingHighIdx, swingLowIdx)
+        int prevIdx  = math.min(swingHighIdx, swingLowIdx)
+        int barSpan  = math.max(lastIdx - prevIdx, 1)
+        int offset   = bar_index - lastIdx
+
+        // ZigZag preview — tracked handle, delete-before-create pattern
+        if showZigzagInput
+            rtZigzag := line.new(swingHighIdx, swingHighPrice, swingLowIdx, swingLowPrice, color = rtColor, style = line.style_dashed, width = 1)
+
+        array<float> volBins  = array.new<float>(bins, 0.0)
+        array<float> buyBins  = array.new<float>(bins, 0.0)
+        array<float> sellBins = array.new<float>(bins, 0.0)
+
+        float sumPV = 0.0
+        float sumV  = 0.0
+
+        for i = offset to barSpan + offset
+            float cVol = nz(volume[i], 0.0)
+            float cC   = nz(close[i], 0.0)
+            float cH   = na(high[i]) ? cC : high[i]
+            float cL   = na(low[i]) ? cC : low[i]
+            float cO   = na(open[i]) ? cC : open[i]
+            distributeVolume(cO, cC, cH, cL, cVol, rtBot, step, bins, volBins, buyBins, sellBins)
+            float typPrice = (cH + cL + cC) / 3.0
+            sumPV += typPrice * cVol
+            sumV  += cVol
+
+        float totalVol = volBins.sum()
+        float maxVol   = volBins.max()
+
+        int pocBin = 0
+        if maxVol > 0
+            int centerBin = bins / 2
+            int bestDist  = bins + 1
+            for k = 0 to bins - 1
+                if volBins.get(k) == maxVol
+                    int d = math.abs(k - centerBin)
+                    if d < bestDist
+                        bestDist := d
+                        pocBin   := k
+
+        float pocPrice = rtBot + pocBin * step + step / 2.0
+
+        float vaH = rtTop
+        float vaL = rtBot
+        if totalVol > 0
+            [calcVaH, calcVaL] = calcValueArea(volBins, totalVol, pocBin, rtBot, step, bins)
+            vaH := calcVaH
+            vaL := calcVaL
+
+        float rtVwap = safeDiv(sumPV, sumV, pocPrice)
+
+        // Update dashboard state (na when there is no volume data)
+        lastPocPrice  := maxVol > 0 ? pocPrice : na
+        lastVaHigh    := totalVol > 0 ? vaH : na
+        lastVaLow     := totalVol > 0 ? vaL : na
+        lastSwingVwap := totalVol > 0 ? rtVwap : na
+        lastTotalVol  := totalVol
+        lastBuyVol    := buyBins.sum()
+        lastSellVol   := sellBins.sum()
+        lastDelta     := safeDiv(lastBuyVol - lastSellVol, totalVol, 0.0) * 100.0
+        float rtAvgVol = legVols.size() > 0 ? legVols.avg() : na
+        lastVolVsAvg  := not na(rtAvgVol) and rtAvgVol > 0 ? totalVol / rtAvgVol * 100.0 : na
+
+        array<chart.point> polyPts = array.new<chart.point>()
+        int halfSpan = math.max(int(barSpan / 2), 1)
+
+        for k = 0 to bins - 1
+            float binL = rtBot + k * step
+            float binH = binL + step
+            float volRatio = safeDiv(volBins.get(k), maxVol, 0.0)
+            int profWidth  = math.max(int(volRatio * halfSpan), 0)
+            bool isPocBin  = k == pocBin and maxVol > 0
+
+            float buyV  = buyBins.get(k)
+            float sellV = sellBins.get(k)
+            color barColor = showDeltaInput ? (buyV >= sellV ? bullColorInput : bearColorInput) : rtColor
+
+            // POC — exact POC bin only (unique, already cleaned above)
+            if isPocBin and showPocInput
+                rtPocLine := line.new(showProfileInput ? prevIdx + profWidth : prevIdx, math.avg(binL, binH), lastIdx, math.avg(binL, binH), color = pocColorInput, width = pocWidthInput)
+                rtPocTop  := line.new(showProfileInput ? prevIdx + profWidth : prevIdx, binH, lastIdx, binH, color = color.new(pocColorInput, 60), width = 1, style = line.style_dotted)
+                rtPocBot  := line.new(showProfileInput ? prevIdx + profWidth : prevIdx, binL, lastIdx, binL, color = color.new(pocColorInput, 60), width = 1, style = line.style_dotted)
+                if showPocFillInput
+                    rtPocFill := box.new(showProfileInput ? prevIdx + profWidth : prevIdx, binH, lastIdx, binL, TRANSPARENT, 0, bgcolor = POC_FILL)
+
+            // Box (skipped entirely when there is no volume data)
+            if (showProfileInput or showHeatmapInput) and maxVol > 0
+                color boxBg = color.from_gradient(volRatio, 0.0, 1.0, color.new(barColor, 92), color.new(isPocBin and showPocInput ? pocColorInput : barColor, 50))
+                string boxTxt = not showHeatmapInput and isPocBin ? str.tostring(maxVol, format.volume) : ""
+                rtBoxes.push(box.new(showProfileInput ? prevIdx + profWidth : prevIdx, binH, showHeatmapInput ? lastIdx : prevIdx, binL, TRANSPARENT, 0, bgcolor = boxBg, text = boxTxt, text_color = TEXT_COLOR, text_size = size.tiny))
+
+            if k == 0
+                polyPts.push(chart.point.from_index(prevIdx, binL))
+            polyPts.push(chart.point.from_index(prevIdx + profWidth, binL))
+            polyPts.push(chart.point.from_index(prevIdx + profWidth, binH))
+            if k == bins - 1
+                polyPts.push(chart.point.from_index(prevIdx, binH))
+
+        // RT HVN / LVN
+        if showHvnLvnInput and maxVol > 0 and bins >= 3
+            for k = 1 to bins - 2
+                float v  = volBins.get(k)
+                float r  = v / maxVol
+                float vP = volBins.get(k - 1)
+                float vN = volBins.get(k + 1)
+                float y  = rtBot + k * step + step / 2.0
+                if k != pocBin and v >= vP and v >= vN and (v > vP or v > vN) and r >= hvnThreshInput
+                    rtLines.push(line.new(prevIdx, y, lastIdx, y, color = color.new(pocColorInput, 55), width = 1))
+                if v <= vP and v <= vN and (v < vP or v < vN) and r <= lvnThreshInput
+                    rtLines.push(line.new(prevIdx, y, lastIdx, y, color = color.new(TEXT_MUTED, 50), style = line.style_dotted, width = 1))
+
+        if showProfileInput and maxVol > 0
+            profilePoly := polyline.new(polyPts, false, true, line_color = showHeatmapInput ? color.new(rtColor, 50) : rtColor)
+
+        // VA lines
+        if showVaInput and totalVol > 0
+            rtVaHighLine := line.new(prevIdx, vaH, lastIdx, vaH, color = vaColorInput, style = line.style_dashed, width = vaWidthInput)
+            rtVaLowLine  := line.new(prevIdx, vaL, lastIdx, vaL, color = vaColorInput, style = line.style_dashed, width = vaWidthInput)
+
+        // VWAP line
+        if showVwapInput and totalVol > 0
+            rtVwapLine := line.new(prevIdx, rtVwap, lastIdx, rtVwap, color = vwapColorInput, style = line.style_solid, width = 2)
+
+        // Data label
+        string rtTip = "T - Total Volume\nB - Buy Volume (bull candles)\nS - Sell Volume (bear candles)\nD - Delta % (candle-based, not bid/ask)\nA - Volume vs avg of stored legs"
+        string rtVolAvgStr = na(lastVolVsAvg) ? "—" : str.tostring(lastVolVsAvg, "#") + "%"
+        string rtDataText = "T: " + str.tostring(totalVol, format.volume) + "\nB: " + str.tostring(buyBins.sum(), format.volume) + "\nS: " + str.tostring(sellBins.sum(), format.volume) + "\nD: " + str.tostring(safeDiv(buyBins.sum() - sellBins.sum(), totalVol, 0.0) * 100.0, "#.0") + "%" + "\nA: " + rtVolAvgStr
+
+        if showLabelsInput
+            rtLabel := label.new(prevIdx, dirIsDown ? rtTop : rtBot, rtDataText, style = dirIsDown ? label.style_label_down : label.style_label_up, color = TRANSPARENT, textcolor = rtColor, size = LABEL_SIZE, tooltip = rtTip, textalign = text.align_left)
+
+// ══════════════════════════════════════
+// COMPOSITE PROFILE (last N completed legs, right of last bar)
+// Composite data changes only on rebuilds and its anchor only on new
+// bars — redraw once per bar / on rebuild, not on every realtime tick
+// ══════════════════════════════════════
+var int compLastBar = -1
+var float lastCompPoc = na
+
+if barstate.islast and (compLastBar != bar_index or rebuildProfile)
+    compLastBar := bar_index
+    lastCompPoc := na
+    for b in compBoxes
+        b.delete()
+    compBoxes.clear()
+    line.delete(compPocLine)
+    label.delete(compLbl)
+
+    if showCompositeInput and compLegSizes.size() > 0 and compPrices.size() > 0
+        float cMin = compPrices.min()
+        float cMax = compPrices.max()
+        if cMax > cMin
+            int cBins = math.min(effBins + 10, 40)
+            float cStep = (cMax - cMin) / cBins
+            array<float> cVols = array.new<float>(cBins, 0.0)
+            for i = 0 to compPrices.size() - 1
+                int b = int(math.min(math.floor((compPrices.get(i) - cMin) / cStep), cBins - 1))
+                cVols.set(b, cVols.get(b) + compVols.get(i))
+            float cMaxV = cVols.max()
+            int cPocBin = 0
+            if cMaxV > 0
+                for k = 0 to cBins - 1
+                    if cVols.get(k) == cMaxV
+                        cPocBin := k
+                        break
+            int left0 = bar_index + 2
+            for k = 0 to cBins - 1
+                float r = safeDiv(cVols.get(k), cMaxV, 0.0)
+                int w = math.max(int(r * compWidthInput), 0)
+                if w > 0
+                    float bl = cMin + k * cStep
+                    color cc = k == cPocBin ? color.new(pocColorInput, 45) : color.new(COMP_COLOR, 65)
+                    compBoxes.push(box.new(left0, bl + cStep, left0 + w, bl, TRANSPARENT, 0, bgcolor = cc))
+            float cPocPrice = cMin + cPocBin * cStep + cStep / 2.0
+            lastCompPoc := cPocPrice
+            compPocLine := line.new(left0, cPocPrice, left0 + compWidthInput, cPocPrice, color = color.new(pocColorInput, 30), width = pocWidthInput)
+            compLbl := label.new(left0 + compWidthInput, cPocPrice, "C-POC " + str.tostring(cPocPrice, format.mintick), style = label.style_label_left, color = TRANSPARENT, textcolor = pocColorInput, size = size.tiny, tooltip = "Composite POC of the last " + str.tostring(compLegSizes.size()) + " completed swing legs")
+
+// ══════════════════════════════════════
+// REVERSAL SIGNAL MARKERS
+// ══════════════════════════════════════
+plotshape(showSignalsInput and swingBullish ? low : na, "Swing Bullish", style = shape.labelup, location = location.belowbar, color = bullColorInput, textcolor = color.white, text = "▲", size = size.small)
+
+plotshape(showSignalsInput and swingBearish ? high : na, "Swing Bearish", style = shape.labeldown, location = location.abovebar, color = bearColorInput, textcolor = color.white, text = "▼", size = size.small)
+
+// ══════════════════════════════════════
+// DASHBOARD 2.0 — sectioned (standard §24)
+// Dynamic height, r-counter + zebra rows, trend-colored header,
+// section dividers one font step smaller, version footer
+// ══════════════════════════════════════
+var table dashTable = na
+
+if showDashInput and barstate.islast
+    // Dynamic height: divider + data rows per enabled section
+    int marketRows  = showMarketSecInput  ? 6 : 0   // divider + Trend, Leg Age, Value Mig., Vol vs Avg, TF
+    int profileRows = showProfileSecInput ? 6 : 0   // divider + POC, VA, VWAP, Volume, Delta
+    int levelsRows  = showLevelsSecInput  ? 3 : 0   // divider + Naked POC, C-POC
+    int totalRows   = 2 + marketRows + profileRows + levelsRows   // + header + footer
+
+    // Variable height → recreate each update (deliberate pattern, not a leak:
+    // old table is deleted explicitly and this runs on the last bar only)
+    if not na(dashTable)
+        table.delete(dashTable)
+    dashTable := table.new(getDashPos(dashPosInput), 2, totalRows, bgcolor = TABLE_BG, border_color = TABLE_BORDER, border_width = 1, frame_color = TABLE_BORDER, frame_width = 1)
+
+    int  r   = 0
+    bool zeb = false
+    color rb = TABLE_BG
+
+    // ── Header — trend-colored ──
+    string trendWord = dirIsDown ? "Bearish" : "Bullish"
+    color  headerBg  = dirIsDown ? HEADER_BG_BEAR : HEADER_BG_BULL
+    table.cell(dashTable, 0, r, "◆ SwingVPro · " + trendWord, text_color = HEADER_TEXT, bgcolor = headerBg, text_size = DASH_FONT, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+    r += 1
+
+    // ── Market section ──
+    if showMarketSecInput
+        table.cell(dashTable, 0, r, "— Market —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = DASH_FONT_SUB, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        zeb := false
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Trend", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Direction of the current swing leg (set by the last confirmed pivot)")
+        table.cell(dashTable, 1, r, trendWord + (dirIsDown ? " ▼" : " ▲"), text_color = dirIsDown ? BEAR_TEXT : BULL_TEXT, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        int legAge = math.max(bar_index - math.max(nz(swingHighIdx, bar_index), nz(swingLowIdx, bar_index)), 0)
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Leg Age", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Bars elapsed since the most recent confirmed pivot — current leg length so far")
+        table.cell(dashTable, 1, r, str.tostring(legAge) + " bars", text_color = TEXT_COLOR, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string migStr = na(prevCmpPoc) or na(cmpPoc) ? "—" : cmpPoc > prevCmpPoc ? "▲ Higher" : cmpPoc < prevCmpPoc ? "▼ Lower" : "→ Flat"
+        color migColor = na(prevCmpPoc) or na(cmpPoc) ? TEXT_MUTED : cmpPoc > prevCmpPoc ? BULL_TEXT : cmpPoc < prevCmpPoc ? BEAR_TEXT : NEUTRAL_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Value Mig.", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "POC of the last completed leg vs the one before it.\nMigrating value = trending market, flat value = balance.")
+        table.cell(dashTable, 1, r, migStr, text_color = migColor, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string volAvgStr = na(lastVolVsAvg) ? "—" : str.tostring(lastVolVsAvg, "#") + "%"
+        color volAvgColor = na(lastVolVsAvg) ? TEXT_MUTED : lastVolVsAvg >= 100 ? BULL_TEXT : TEXT_MUTED
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Vol vs Avg", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Current leg volume vs the average of the last " + str.tostring(maxProfilesInput) + " completed legs")
+        table.cell(dashTable, 1, r, volAvgStr, text_color = volAvgColor, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "TF", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb)
+        table.cell(dashTable, 1, r, timeframe.period, text_color = TEXT_COLOR, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+
+    // ── Profile section ──
+    if showProfileSecInput
+        table.cell(dashTable, 0, r, "— Profile —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = DASH_FONT_SUB, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        zeb := false
+
+        string pocStr = na(lastPocPrice) ? "—" : str.tostring(lastPocPrice, format.mintick)
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "POC", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Point of Control — highest-volume price of the current leg")
+        table.cell(dashTable, 1, r, pocStr, text_color = POC_TEXT, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string vaStr = na(lastVaHigh) ? "—" : str.tostring(lastVaLow, format.mintick) + " — " + str.tostring(lastVaHigh, format.mintick)
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "VA 70%", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Value Area — price range holding 70% of the leg volume around POC")
+        table.cell(dashTable, 1, r, vaStr, text_color = vaColorInput, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string vwapStr = na(lastSwingVwap) ? "—" : str.tostring(lastSwingVwap, format.mintick)
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "VWAP", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb)
+        table.cell(dashTable, 1, r, vwapStr, text_color = vwapColorInput, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string volStr = na(lastTotalVol) ? "—" : str.tostring(lastTotalVol, format.volume)
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Volume", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb)
+        table.cell(dashTable, 1, r, volStr, text_color = TEXT_COLOR, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string deltaStr = na(lastDelta) ? "—" : str.tostring(lastDelta, "#.0") + "%"
+        color deltaColor = na(lastDelta) ? TEXT_MUTED : lastDelta >= 0 ? BULL_TEXT : BEAR_TEXT
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Delta*", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = DELTA_NOTE)
+        table.cell(dashTable, 1, r, deltaStr, text_color = deltaColor, text_size = DASH_FONT, bgcolor = rb, tooltip = DELTA_NOTE)
+        r += 1
+
+    // ── Levels section ──
+    if showLevelsSecInput
+        table.cell(dashTable, 0, r, "— Levels —", text_color = TEXT_MUTED, bgcolor = TABLE_ROW_ALT, text_size = DASH_FONT_SUB, text_halign = text.align_center)
+        table.merge_cells(dashTable, 0, r, 1, r)
+        r += 1
+        zeb := false
+
+        int nakedPocCount = 0
+        for lvl in nLevels
+            if lvl.active and lvl.kind == "POC"
+                nakedPocCount += 1
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "Naked POC", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Active (untested) naked POC levels on the chart")
+        table.cell(dashTable, 1, r, str.tostring(nakedPocCount), text_color = POC_TEXT, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+        zeb := not zeb
+
+        string cPocStr = na(lastCompPoc) ? "—" : str.tostring(lastCompPoc, format.mintick)
+        rb := zeb ? TABLE_ROW_ALT : TABLE_BG
+        table.cell(dashTable, 0, r, "C-POC", text_color = TEXT_MUTED, text_size = DASH_FONT, bgcolor = rb, tooltip = "Composite POC — highest-volume price across the last " + str.tostring(compLegSizes.size()) + " completed legs")
+        table.cell(dashTable, 1, r, cPocStr, text_color = POC_TEXT, text_size = DASH_FONT, bgcolor = rb)
+        r += 1
+
+    // ── Footer ──
+    table.cell(dashTable, 0, r, "SwingVPro · " + INDICATOR_VERSION, text_color = TEXT_MUTED, text_size = DASH_FONT_SUB, text_halign = text.align_center)
+    table.merge_cells(dashTable, 0, r, 1, r)
+
+// ══════════════════════════════════════
+// WATERMARK — WillyAlgoTrader
+// ══════════════════════════════════════
+if barstate.islast and showWatermarkInput
+    var wmTable = table.new(position = position.bottom_center, columns = 1, rows = 1, bgcolor = TRANSPARENT, border_color = TRANSPARENT, border_width = 0, frame_color = TRANSPARENT, frame_width = 0)
+    table.cell(wmTable, 0, 0, "WillyAlgoTrader", text_color = WM_COLOR, text_size = size.normal, text_halign = text.align_center, bgcolor = TRANSPARENT)
+
+// ══════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════
+string ticker = syminfo.tickerid
+string tf = timeframe.period
+string priceStr = str.tostring(close, format.mintick)
+string pocAlertStr = na(lastPocPrice) ? "0" : str.tostring(lastPocPrice, format.mintick)
+string deltaAlertStr = na(lastDelta) ? "0" : str.tostring(lastDelta, "#.0")
+
+// Swing reversal alerts
+string buyJsonMsg = '{"action":"buy","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '","poc":' + pocAlertStr + ',"delta":' + deltaAlertStr + '}'
+string buyTextMsg = "🟢 SWING BULLISH | " + ticker + " | TF: " + tf + " | Price: " + priceStr + " | POC: " + pocAlertStr + " | Delta: " + deltaAlertStr + "%"
+
+string sellJsonMsg = '{"action":"sell","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '","poc":' + pocAlertStr + ',"delta":' + deltaAlertStr + '}'
+string sellTextMsg = "🔴 SWING BEARISH | " + ticker + " | TF: " + tf + " | Price: " + priceStr + " | POC: " + pocAlertStr + " | Delta: " + deltaAlertStr + "%"
+
+if swingBullish
+    alert(webhookInput ? buyJsonMsg : buyTextMsg, alert.freq_once_per_bar_close)
+
+if swingBearish
+    alert(webhookInput ? sellJsonMsg : sellTextMsg, alert.freq_once_per_bar_close)
+
+// Level alerts
+if alertLevelsInput and not na(evPocTest)
+    string lvlStr = str.tostring(evPocTest, format.mintick)
+    string pocTestJson = '{"action":"poc_test","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '","level":' + lvlStr + '}'
+    string pocTestText = "📌 NAKED POC TEST | " + ticker + " | TF: " + tf + " | Level: " + lvlStr + " | Price: " + priceStr
+    alert(webhookInput ? pocTestJson : pocTestText, alert.freq_once_per_bar_close)
+
+if evVaBreakUp
+    string vahStr = str.tostring(cmpVaHigh, format.mintick)
+    string vaUpJson = '{"action":"va_break_up","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '","vah":' + vahStr + '}'
+    string vaUpText = "⬆ VA BREAKOUT UP | " + ticker + " | TF: " + tf + " | Closed above VAH " + vahStr + " @ " + priceStr
+    alert(webhookInput ? vaUpJson : vaUpText, alert.freq_once_per_bar_close)
+
+if evVaBreakDown
+    string valStr = str.tostring(cmpVaLow, format.mintick)
+    string vaDnJson = '{"action":"va_break_down","ticker":"' + ticker + '","price":' + priceStr + ',"tf":"' + tf + '","val":' + valStr + '}'
+    string vaDnText = "⬇ VA BREAKOUT DOWN | " + ticker + " | TF: " + tf + " | Closed below VAL " + valStr + " @ " + priceStr
+    alert(webhookInput ? vaDnJson : vaDnText, alert.freq_once_per_bar_close)
