@@ -100,6 +100,7 @@ export function pineTfToDelta(tf: string): string | null {
     const n = Number(m[1]);
     if (m[2] === 'H') return pineTfToDelta(String(n * 60));
     if (m[2] === 'D' && n === 1) return '1d';
+    if (m[2] === 'M') return `${n}M`;
   }
   return null;
 }

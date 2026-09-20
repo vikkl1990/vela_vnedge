@@ -92,6 +92,7 @@ export function PnlByScannerChart({ data, height = 220 }: { data: PnlBar[]; heig
           height={60}
         />
         <YAxis
+          domain={[(min: number) => Math.min(0, min), (max: number) => Math.max(0, max)]}
           tickFormatter={(v: number) => fmtPnl(v, 0)}
           stroke="var(--muted)"
           fontSize={10}

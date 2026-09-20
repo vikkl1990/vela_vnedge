@@ -29,6 +29,8 @@ export function velaToDeltaTf(tf: string): string {
   if (VELA_TO_DELTA[t]) return VELA_TO_DELTA[t]
   if (VELA_TO_DELTA[tf]) return VELA_TO_DELTA[tf]
   if (t === '1D' || t === 'D') return '1d'
+  if (t === '1W' || t === 'W') return '1w'
+  if (t === '1M' || t === 'M') return '1M'
   const n = Number(tf)
   if (Number.isFinite(n)) {
     if (n % 1440 === 0) return `${n / 1440}d`

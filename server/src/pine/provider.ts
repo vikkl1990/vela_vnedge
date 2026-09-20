@@ -54,7 +54,9 @@ export class DeltaPineProvider {
       const kl = toKlines(this.opts.bars, TF_SECONDS[this.opts.tf]);
       return limit ? kl.slice(-limit) : kl;
     }
-    const secs = TF_SECONDS[deltaTf] ?? (deltaTf === '1w' ? 604800 : deltaTf === '1M' ? 2592000 : undefined);
+    const monthsM = deltaTf.match(/^(\d+)M$/);
+    const months = monthsM ? Number(monthsM[1]) : 0;
+    const secs = TF_SECONDS[deltaTf] ?? (deltaTf === '1w' ? 604800 : months ? 2592000 * months : undefined);
     if (!secs) return [];
     const key = `${deltaTf}:${lastMs}`;
     if (this.cache.has(key)) return this.cache.get(key)!;
@@ -62,10 +64,10 @@ export class DeltaPineProvider {
     const span = this.opts.bars.length * TF_SECONDS[this.opts.tf];
     let raw: ProviderBar[] = [];
     try {
-      if (deltaTf === '1M') {
+      if (months) {
         // Delta serves no monthly candles: aggregate daily bars into calendar months (UTC).
         const days = await this.opts.fetchOther(this.opts.symbol, '1d', Math.min(4000, Math.max(400, Math.ceil(span / 86400) + 400)), lastMs + TF_SECONDS[this.opts.tf] * 1000);
-        raw = aggregateMonthly(days);
+        raw = aggregateMonthly(days, months);
       } else {
         const want = Math.min(4000, Math.max(300, Math.ceil(span / secs) + 300));
         raw = await this.opts.fetchOther(this.opts.symbol, deltaTf, want, lastMs + TF_SECONDS[this.opts.tf] * 1000);
@@ -75,7 +77,7 @@ export class DeltaPineProvider {
     }
     // Only bars that opened at or before the last primary bar (no look-ahead beyond the current HTF bar).
     const bars = raw.filter(b => b.time <= lastMs);
-    const kl = deltaTf === '1M' ? toMonthlyKlines(bars) : toKlines(bars, secs);
+    const kl = months ? toMonthlyKlines(bars, months) : toKlines(bars, secs);
     this.cache.set(key, kl);
     return limit ? kl.slice(-limit) : kl;
   }
@@ -98,21 +100,24 @@ export class DeltaPineProvider {
   }
 }
 
-export function aggregateMonthly(days: ProviderBar[]): ProviderBar[] {
+/** Aggregate daily bars into calendar buckets of `months` months (1 = monthly, 3 = quarterly, 12 = yearly), UTC. */
+export function aggregateMonthly(days: ProviderBar[], months = 1): ProviderBar[] {
   const out: ProviderBar[] = [];
   let cur: ProviderBar | null = null; let curKey = '';
   for (const d of days) {
-    const dt = new Date(d.time); const key = `${dt.getUTCFullYear()}-${dt.getUTCMonth()}`;
-    if (!cur || key !== curKey) { cur = { time: Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1), open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume }; curKey = key; out.push(cur); continue; }
+    const dt = new Date(d.time);
+    const bucket = Math.floor(dt.getUTCMonth() / months) * months;
+    const key = `${dt.getUTCFullYear()}-${bucket}`;
+    if (!cur || key !== curKey) { cur = { time: Date.UTC(dt.getUTCFullYear(), bucket, 1), open: d.open, high: d.high, low: d.low, close: d.close, volume: d.volume }; curKey = key; out.push(cur); continue; }
     cur.high = Math.max(cur.high, d.high); cur.low = Math.min(cur.low, d.low); cur.close = d.close; cur.volume += d.volume;
   }
   return out;
 }
 
-function toMonthlyKlines(bars: ProviderBar[]): Kline[] {
+function toMonthlyKlines(bars: ProviderBar[], months = 1): Kline[] {
   return bars.map(b => {
     const dt = new Date(b.time);
-    const closeTime = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 1);
+    const closeTime = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + months, 1);
     return { openTime: b.time, closeTime, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume, quoteAssetVolume: 0, numberOfTrades: 0, takerBuyBaseAssetVolume: 0, takerBuyQuoteAssetVolume: 0, ignore: 0 };
   });
 }

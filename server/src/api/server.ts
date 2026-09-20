@@ -6,6 +6,7 @@ import type { App } from '../app.ts';
 import { DASHBOARD_DIST, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
 import { logger } from '../log.ts';
 import { positionView } from '../paper/engine.ts';
+import { aggregateMonthly } from '../pine/provider.ts';
 
 const log = logger.scoped('api');
 
@@ -146,10 +147,22 @@ export class ApiServer {
     this.add('GET', '/api/candles', async (_r, _s, _p, url) => {
       const symbol = url.searchParams.get('symbol') ?? a.config.get().symbols[0];
       const tf = url.searchParams.get('tf') ?? '15m';
-      if (!(tf in TF_SECONDS)) throw new HttpError(400, `unsupported tf ${tf}; use ${SUPPORTED_TIMEFRAMES.join(',')}`);
       const limit = Math.min(Number(url.searchParams.get('limit') ?? 1000), 4000);
       const from = url.searchParams.get('from') ? Number(url.searchParams.get('from')) : undefined;
       const to = url.searchParams.get('to') ? Number(url.searchParams.get('to')) : undefined;
+      const monthsM = tf.match(/^(\d+)M$/);
+      if (tf === '1w' || monthsM) {
+        // weekly straight from Delta; N-month buckets aggregated from daily (Delta has no monthly resolution)
+        const months = monthsM ? Number(monthsM[1]) : 0;
+        const endSec = to ? Math.floor(to / 1000) : Math.floor(Date.now() / 1000);
+        const src = tf === '1w' ? '1w' : '1d';
+        const secs = tf === '1w' ? 604800 : 86400;
+        const want = tf === '1w' ? limit : Math.min(4000, limit * 31 * months);
+        const list = await a.rest.candles(symbol, src, from ? Math.floor(from / 1000) : endSec - secs * (want + 2), endSec, want + 5);
+        const bars = list.map(c => ({ time: c.time * 1000, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }));
+        return (tf === '1w' ? bars : aggregateMonthly(bars, months)).slice(-limit);
+      }
+      if (!(tf in TF_SECONDS)) throw new HttpError(400, `unsupported tf ${tf}; use ${SUPPORTED_TIMEFRAMES.join(',')},1w,1M,3M,12M`);
       if (a.candles.has(symbol, tf) && !from) return a.candles.get(symbol, tf, { limit, from, to });
       // not tracked: fetch on demand from REST (not subscribed)
       const secs = TF_SECONDS[tf];
