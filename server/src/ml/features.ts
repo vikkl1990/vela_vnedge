@@ -7,7 +7,7 @@ import type { ScanEvent } from '../scanners/extractor.ts';
 
 export const FEATURE_NAMES = [
   'side_long', 'score', 'has_score', 'hour', 'dow', 'atr_pct', 'sl_atr', 'tp1_rr', 'ret5', 'ret20',
-  'trend50', 'trend200', 'vol_ratio', 'range_pos', 'lvl_script', 'src_alert', 'src_shape', 'src_derived', 'src_cond', 'leverage',
+  'trend50', 'trend200', 'vol_ratio', 'range_pos', 'lvl_script', 'src_alert', 'src_shape', 'src_derived', 'src_cond',
 ] as const;
 export type FeatureName = (typeof FEATURE_NAMES)[number];
 export type Features = Record<FeatureName, number>;
@@ -17,7 +17,7 @@ export const FEATURE_LABELS: Record<FeatureName, string> = {
   side_long: 'direction (long=1)', score: 'script score', has_score: 'score published', hour: 'hour (UTC)', dow: 'weekday (0=Sun)',
   atr_pct: 'ATR % of price', sl_atr: 'stop distance (ATR)', tp1_rr: 'TP1 reward:risk', ret5: '5-bar return %', ret20: '20-bar return %',
   trend50: 'price vs EMA50 (ATR)', trend200: 'price vs EMA200 (ATR)', vol_ratio: 'volume / 20-bar avg', range_pos: 'position in 20-bar range',
-  lvl_script: 'levels from script', src_alert: 'signal via alert()', src_shape: 'signal via plotshape', src_derived: 'signal via rule', src_cond: 'signal via alertcondition', leverage: 'leverage',
+  lvl_script: 'levels from script', src_alert: 'signal via alert()', src_shape: 'signal via plotshape', src_derived: 'signal via rule', src_cond: 'signal via alertcondition',
 };
 
 function ema(bars: Bar[], i: number, len: number): number | undefined {
@@ -32,7 +32,7 @@ export interface FeatureInputs {
   bars: Bar[];           // ascending closed bars
   i: number;             // index of the entry bar
   ev: Pick<ScanEvent, 'side' | 'score' | 'source'>;
-  entry: number; sl: number; tp1?: number; atr: number; levelsSource: string; leverage: number;
+  entry: number; sl: number; tp1?: number; atr: number; levelsSource: string;
 }
 
 export function computeFeatures(inp: FeatureInputs): Features {
@@ -67,7 +67,6 @@ export function computeFeatures(inp: FeatureInputs): Features {
     src_shape: inp.ev.source === 'shape' ? 1 : 0,
     src_derived: inp.ev.source === 'derived' ? 1 : 0,
     src_cond: inp.ev.source === 'alertcondition' ? 1 : 0,
-    leverage: inp.leverage,
   };
 }
 

@@ -8,6 +8,7 @@ import { atrSeries } from '../data/indicators.ts';
 import type { ScanEvent } from '../scanners/extractor.ts';
 import { applyBar, applyScriptExit, computeStats, fillExit, openPosition, resolveLevels, sizeContracts, type Position } from './logic.ts';
 import { tradeOf } from './engine.ts';
+import { SIMULATION_VERSION } from './version.ts';
 import { computeFeatures } from '../ml/features.ts';
 
 export interface BacktestInput {
@@ -18,6 +19,7 @@ export interface BacktestInput {
 }
 
 export interface BacktestResult {
+  version: number;
   at: number; bars: number; from: number; to: number; signals: number; entries: number;
   stats: ReturnType<typeof computeStats> & { pnlPct: number; open: number };
   trades: ReturnType<typeof tradeOf>[];
@@ -74,7 +76,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       if ('error' in lv) { rejected[lv.error] = (rejected[lv.error] ?? 0) + 1; continue; }
       const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, cfg }, 0, ev.score);
       if (sz.qty < 1) { rejected[sz.reason ?? 'size'] = (rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
-      const features = computeFeatures({ bars, i, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[i], levelsSource: lv.source, leverage: sz.leverage });
+      const features = computeFeatures({ bars, i, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[i], levelsSource: lv.source });
       open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, leverage: sz.leverage, features });
       entries++;
     }
@@ -84,7 +86,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   stats.open = open ? 1 : 0;
   if (stats.profitFactor === Infinity) stats.profitFactor = 999;
   return {
-    at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
+    version: SIMULATION_VERSION, at: Date.now(), bars: bars.length, from: bars[0]?.time ?? 0, to: bars.at(-1)?.time ?? 0, signals: inp.events.length, entries,
     stats, trades: closed.map(tradeOf).reverse(), equity: curve, rejected,
   };
 }

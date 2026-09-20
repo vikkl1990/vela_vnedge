@@ -35,8 +35,14 @@ test('label rules: backtest anchor shift and live new-label gating', () => {
   assert.equal(sr[0].side, 'short'); assert.deepEqual(sr[0].tp, [95.5]);
 });
 
-test('fib entry zone takes direction from TP labels', () => {
+test('live fib entry zone takes direction from current TP labels', () => {
   const t = bars[6].time;
-  const ev = applyRules({ scannerId: 'automatic-fibonacci-levels', alerts: [A('🟡 ENTRY ZONE | DELTA:BTCUSD | TF: 15 | Price: 106', t)], shapes: [], labels: [{ time: 0, y: 110, text: 'TP1', style: '' }, { time: 0, y: 115, text: 'TP2', style: '' }, { time: 0, y: 120, text: 'TP3', style: '' }, { time: 0, y: 125, text: 'TP4', style: '' }], bars, mode: 'backtest' });
+  const ev = applyRules({ scannerId: 'automatic-fibonacci-levels', alerts: [A('🟡 ENTRY ZONE | DELTA:BTCUSD | TF: 15 | Price: 106', t)], shapes: [], labels: [{ time: 0, y: 110, text: 'TP1', style: '' }, { time: 0, y: 115, text: 'TP2', style: '' }, { time: 0, y: 120, text: 'TP3', style: '' }, { time: 0, y: 125, text: 'TP4', style: '' }], bars, mode: 'live' });
   assert.equal(ev[0].side, 'long'); assert.deepEqual(ev[0].tp, [110, 115, 120]);
+});
+
+
+test('historical fib entries cannot use final or future TP labels', () => {
+  const ev = applyRules({ scannerId: 'automatic-fibonacci-levels', alerts: [A('ENTRY ZONE | Price: 106', bars[6].time)], shapes: [], labels: [{ time: bars[19].time, y: 110, text: 'TP1' }, { time: bars[19].time, y: 120, text: 'TP2' }], bars, mode: 'backtest' });
+  assert.deepEqual(ev, []);
 });

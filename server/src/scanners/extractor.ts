@@ -123,7 +123,10 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
     // "REVERSAL → LONG" means the previous (short) trade was closed
     const revSide: Side | undefined = exitType === 'flip' && side ? (side === 'long' ? 'short' : 'long') : side;
     const tpIdx = tpHit ? Number(tpHit[1]) - 1 : -1;
-    const exitPrice = price ?? (tpIdx >= 0 ? tp[tpIdx] : undefined) ?? cleanTp[0] ?? (exitType === 'sl' || exitType === 'be' ? sl : undefined);
+    // Entry is context in exit messages, never an execution price. Prefer the hit level.
+    const quotedExit = num(new RegExp(String.raw`(?:Price|Level|@)\s*:?\s*\$?\s*${NUM}`, 'i'), msg) ?? num(new RegExp(String.raw`\|\s*\$${NUM}`), msg);
+    const hitLevel = exitType === 'sl' || exitType === 'be' ? sl : tpIdx >= 0 ? tp[tpIdx] : exitType === 'tp1' ? tpSingle : undefined;
+    const exitPrice = hitLevel ?? quotedExit;
     return { ...base, kind: 'exit', exitType, side: revSide, price: exitPrice, sl, tp: cleanTp, score };
   }
 

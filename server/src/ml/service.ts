@@ -2,6 +2,7 @@
  * Trade-learning service: stores samples (backtest + live), trains per-scanner and global
  * models, scores new entries, and produces improvement insights.
  */
+import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { Db } from '../db.ts';
 import { logger } from '../log.ts';
 import { computeFeatures, type Features, type FeatureInputs } from './features.ts';
@@ -13,7 +14,7 @@ const MIN_SCANNER_SAMPLES = 40;
 export interface ScannerInsight {
   scannerId: string; scannerName: string; samples: number; liveSamples: number;
   baseline: { n: number; winRate: number; avgR: number };
-  model: { n: number; holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number } | null;
+  model: { holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number } | null;
   importance: LogRegModel['importance'];
   rules: Rule[];
 }
@@ -39,6 +40,15 @@ export class MlService {
       features TEXT NOT NULL, win INTEGER NOT NULL, r REAL NOT NULL, pnl REAL NOT NULL, exit_reason TEXT NOT NULL, bt INTEGER NOT NULL DEFAULT 1,
       UNIQUE(scanner_id, symbol, tf, at, bt)
     ); CREATE INDEX IF NOT EXISTS idx_ml_scanner ON ml_samples(scanner_id);`);
+    if (db.kvGet<number>('ml.simulationVersion') !== SIMULATION_VERSION) {
+      // Old backtests contain obsolete fill results; preserve recorded live history.
+      db.transaction(() => {
+        db.run('DELETE FROM ml_samples WHERE bt=1');
+        db.run("DELETE FROM kv WHERE k='ml.model'");
+        db.kvSet('ml.simulationVersion', SIMULATION_VERSION);
+      });
+      this.scheduleTrain();
+    }
     const saved = db.kvGet<{ global: LogRegModel | null; models: Record<string, LogRegModel>; snapshot: MlSnapshot }>('ml.model');
     if (saved) { this.globalModel = saved.global; for (const [k, v] of Object.entries(saved.models ?? {})) this.models.set(k, v); this.snapshot = saved.snapshot; log.info(`loaded ML models: global ${saved.global ? 'yes' : 'no'}, ${this.models.size} scanner models`); }
   }
