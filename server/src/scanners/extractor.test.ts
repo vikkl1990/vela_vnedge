@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAlert, extractEvents, shapeSide, describeEvent } from './extractor.ts';
+import { parseAlert, extractEvents, shapeSide, describeEvent, directionalTitle } from './extractor.ts';
 
 const A = (message: string, time = 1_000) => ({ barIndex: 10, time, type: 'alert' as const, message });
 
@@ -55,7 +55,7 @@ test('parses SATS machine format', () => {
 });
 
 test('shape fallback and dedupe against alerts', () => {
-  assert.equal(shapeSide('Buy Signal'), 'long'); assert.equal(shapeSide('Short'), 'short'); assert.equal(shapeSide('Bull Cross'), 'long'); assert.equal(shapeSide('Trend Up'), undefined);
+  assert.equal(shapeSide('Buy Signal'), 'long'); assert.equal(shapeSide('Short'), 'short'); assert.equal(shapeSide('Bull Cross'), 'long'); assert.equal(shapeSide('Trend Up'), 'long');
   const evs = extractEvents([A('🟢 BUY | DELTA:BTCUSD | TF: 15 | Price: 100 | Score: 50', 5000)], [{ title: 'Buy Signal', times: [5000, 6000] }, { title: 'Sell Signal', times: [7000] }]);
   assert.equal(evs.length, 3);
   assert.equal(evs[0].source, 'alert'); assert.equal(evs[1].source, 'shape'); assert.equal(evs[2].side, 'short');
@@ -87,4 +87,16 @@ test('describeEvent produces readable summaries', () => {
   assert.equal(describeEvent(i), 'POC CROSS UP · price 80432.5');
   const sh = extractEvents([], [{ title: 'Bull Cross', times: [1] }])[0];
   assert.equal(describeEvent(sh), 'LONG entry · (Bull Cross marker drawn by the script; stop/targets from ATR)');
+});
+
+test('alertcondition titles and directional shapes become entries (LuxAlgo style)', () => {
+  assert.equal(directionalTitle('Bullish Internal OB Breakout'), 'long');
+  assert.equal(directionalTitle('Downward Breakout'), 'short');
+  assert.equal(directionalTitle('Equal Highs'), undefined);
+  assert.equal(directionalTitle('Bullish Divergence'), undefined);
+  assert.equal(shapeSide('Upper Break'), 'long'); assert.equal(shapeSide('Lower Break'), 'short'); assert.equal(shapeSide('plot'), undefined);
+  const ac = (title: string, time: number) => ({ barIndex: 1, time, type: 'alertcondition' as const, title, message: title });
+  const evs = extractEvents([ac('Internal Bullish CHoCH', 10), ac('Equal Lows', 10), ac('Internal Bearish BOS', 20), A('🟢 LONG | DELTA:BTCUSD | TF: 15 | Price: 100 | SL: 90', 30), ac('Bullish OB', 30)], []);
+  assert.deepEqual(evs.map(e => [e.source, e.side, e.barTime]), [['alertcondition', 'long', 10], ['alertcondition', 'short', 20], ['alert', 'long', 30]]);
+  assert.match(describeEvent(evs[0]), /script condition/);
 });

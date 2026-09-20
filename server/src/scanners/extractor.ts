@@ -26,7 +26,7 @@ export interface ScanEvent {
   score?: number;
   label: string;
   message: string;
-  source: 'alert' | 'shape' | 'derived';
+  source: 'alert' | 'shape' | 'derived' | 'alertcondition';
   barTime: number;
   barIndex: number;
 }
@@ -148,6 +148,20 @@ export function shapeSide(title: string): Side | undefined {
   const t = title.trim();
   if (/^(buy|long|bull(ish)?( abcd| sweep)?|swing bullish|bull cross)( signal)?$/i.test(t)) return 'long';
   if (/^(sell|short|bear(ish)?( abcd| sweep)?|swing bearish|bear cross)( signal)?$/i.test(t)) return 'short';
+  return directionalTitle(t);
+}
+
+/**
+ * Direction of a free-form title such as "Bullish Internal OB Breakout", "Upward Breakout",
+ * "Upper Break", "Lower Break", "Bearish CHoCH". Undefined when ambiguous or neutral.
+ */
+export function directionalTitle(title: string): Side | undefined {
+  const t = title.trim();
+  if (!t || /\b(exit|close|stop|target|tp\d?|take profit|equal|divergence|alert|any)\b/i.test(t)) return undefined;
+  const up = /\b(bull(ish)?|upward|upper|up|long|buy|higher|rising|crossover|cross up|breakout up|break up|support)\b/i.test(t);
+  const dn = /\b(bear(ish)?|downward|lower|down|short|sell|falling|crossunder|cross down|breakout down|break down|resistance)\b/i.test(t);
+  if (up && !dn) return 'long';
+  if (dn && !up) return 'short';
   return undefined;
 }
 
@@ -162,15 +176,29 @@ export interface ExtractOptions {
 export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts: ExtractOptions = {}): ScanEvent[] {
   const events: ScanEvent[] = [];
   const seenEntry = new Set<string>();
+  const alertBars = new Set<number>();
   for (const a of alerts) {
     if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
-    if (a.type === 'alertcondition') continue; // alertcondition() carries no prices; the paired alert() does
+    if (a.type === 'alertcondition') continue; // handled below, at lower priority than alert()
+    if (a.type === 'alert') alertBars.add(a.time);
     const ev = parseAlert(a);
     if (!ev) continue;
     const key = `${ev.kind}:${ev.side ?? ''}:${ev.barTime}:${ev.exitType ?? ''}`;
     if (ev.kind !== 'info' && seenEntry.has(key)) continue;
     seenEntry.add(key);
     events.push(ev);
+  }
+  // alertcondition() titles (LuxAlgo style: "Bullish Internal OB Breakout", "Upward Breakout") — only when no alert() fired that bar
+  for (const a of alerts) {
+    if (a.type !== 'alertcondition' || alertBars.has(a.time)) continue;
+    if (opts.sinceBarTime !== undefined && a.time < opts.sinceBarTime) continue;
+    const title = (a.title ?? a.message ?? '').trim();
+    const side = directionalTitle(title);
+    if (!side) continue;
+    const key = `entry:${side}:${a.time}:`;
+    if (seenEntry.has(key)) continue;
+    seenEntry.add(key);
+    events.push({ kind: 'entry', side, tp: [], label: title.slice(0, 60), message: `alertcondition "${title}"${a.message && a.message !== title ? `: ${a.message}` : ''}`.slice(0, 500), source: 'alertcondition', barTime: a.time, barIndex: a.barIndex });
   }
   for (const d of opts.derived ?? []) {
     if (opts.sinceBarTime !== undefined && d.barTime < opts.sinceBarTime) continue;
@@ -207,6 +235,7 @@ export function describeEvent(ev: ScanEvent): string {
     if (ev.tp.length) parts.push(`targets ${ev.tp.map(fmtN).join(' / ')}`);
     if (ev.score !== undefined) parts.push(`score ${fmtN(ev.score)}`);
     if (ev.source === 'shape') parts.push(`(${ev.label} marker drawn by the script; stop/targets from ATR)`);
+    else if (ev.source === 'alertcondition') parts.push(`(script condition "${ev.label}"; stop/targets from ATR)`);
     else if (ev.source === 'derived') parts.push(`(derived from ${ev.label}${ev.sl === undefined ? '; stop from ATR' : ''})`);
     else if (ev.sl === undefined) parts.push('(no stop published; ATR fallback)');
     return parts.join(' · ');

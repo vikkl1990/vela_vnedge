@@ -26,6 +26,7 @@ export function Scanners() {
   const [filter, setFilter] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
   const [showHidden, setShowHidden] = useState(false)
+  const [author, setAuthor] = useState<string>('All')
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
   // (the full market list is hundreds of symbols — edit the global list on Settings).
@@ -37,10 +38,11 @@ export function Scanners() {
   }, [config.data, markets.data, scanners.data])
 
   const rows = useMemo(() => {
-    const list = (scanners.data ?? []).filter((s) => showHidden || !s.hidden)
+    const list = (scanners.data ?? []).filter((s) => (showHidden || !s.hidden) && (author === 'All' || (s.author ?? 'WillyAlgoTrader') === author))
     const f = filter.trim().toLowerCase()
     return list.filter((s) => (cat === 'All' || categorize(s.name) === cat) && (!f || s.name.toLowerCase().includes(f) || s.id.includes(f)))
-  }, [scanners.data, cat, filter, showHidden])
+  }, [scanners.data, cat, filter, showHidden, author])
+  const authors = useMemo(() => ['All', ...Array.from(new Set((scanners.data ?? []).map((s) => s.author ?? 'WillyAlgoTrader')))], [scanners.data])
   const hiddenCount = (scanners.data ?? []).filter((s) => s.hidden).length
 
   const counts = useMemo(() => {
@@ -217,6 +219,11 @@ export function Scanners() {
             </button>
           ))}
         </div>
+        <select className="input" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" style={{ width: 'auto' }}>
+          {authors.map((a) => (
+            <option key={a} value={a}>{a === 'All' ? 'All authors' : a}</option>
+          ))}
+        </select>
         <input className="input" placeholder="Filter scanners…" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter scanners" />
         <Segmented
           ariaLabel="View"

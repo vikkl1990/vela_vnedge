@@ -8,6 +8,7 @@ export type ScannerStatus = 'ok' | 'incompatible' | 'unavailable';
 export interface ScannerMeta {
   id: string;
   name: string;
+  author: string;
   file: string;
   url: string;
   pub: string | null;
@@ -67,7 +68,7 @@ export class ScannerRegistry {
       }
       if (!source.trim() || source.trim().length < 100) { status = 'unavailable'; reason = reason ?? 'source not published'; }
       this.map.set(m.id, {
-        id: m.id, name: m.name, file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
+        id: m.id, name: m.name, author: m.author ?? 'WillyAlgoTrader', file: m.file, url: m.url, pub: m.pub ?? null, access: m.access ?? null,
         pineVersion: m.pineVersion ?? null, lines: m.lines ?? null, updated: m.updated ?? null,
         status, reason, overlay: m.overlay ?? true, category: categorize(m.name),
         source, patched, patches: applied,

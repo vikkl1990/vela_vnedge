@@ -1,0 +1,241 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Crypto PCA [LuxAlgo]", "LuxAlgo - Crypto PCA", overlay = false, calc_bars_count = 5000)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+color BULL_COLOR = #089981
+color BEAR_COLOR = #f23645
+
+// Symbols
+string s01 = "BINANCE:BTCUSDT",  s02 = "BINANCE:ETHUSDT",  s03 = "BINANCE:BNBUSDT",  s04 = "BINANCE:XRPUSDT"
+string s05 = "BINANCE:SOLUSDT",  s06 = "BINANCE:TRXUSDT",  s07 = "BINANCE:DOGEUSDT", s08 = "BINANCE:ADAUSDT"
+string s09 = "BINANCE:BCHUSDT",  s10 = "BINANCE:WBTCUSDT", s11 = "BINANCE:XLMUSDT",  s12 = "BINANCE:LTCUSDT"
+string s13 = "BINANCE:HBARUSDT", s14 = "BINANCE:LINKUSDT", s15 = "BINANCE:AVAXUSDT", s16 = "BINANCE:PEPEUSDT"
+string s17 = "BINANCE:DOTUSDT",  s18 = "BINANCE:UNIUSDT",  s19 = "BINANCE:NEARUSDT", s20 = "BINANCE:ICPUSDT"
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+string G_MAIN = "Main Settings"
+string G_VIS  = "Visual Settings"
+
+int nInput        = input.int(50, "Lookback Period (N)", minval = 10, maxval = 500, group = G_MAIN, tooltip = "Number of bars for rolling calculation or retrospective window.")
+int smoothInput   = input.int(9, "Z-Score Smoothing", minval = 1, maxval = 50, group = G_MAIN, tooltip = "Smoothes the standardized Z-scores using an SMA to filter out high-frequency noise.")
+bool isSnapshot   = input.bool(false, "Enable Snapshot Mode", group = G_MAIN, tooltip = "If enabled, only the most recent N bars are shown. If disabled, a continuous rolling PCA is plotted.")
+
+color assetColorInput = input.color(color.new(#808080, 85), "Standardized Assets Color", group = G_VIS)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Methods & Functions
+//---------------------------------------------------------------------------------------------------------------------{
+method z(float src, int len) =>
+    float avg = ta.sma(src, len)
+    float dev = ta.stdev(src, len)
+    (src - avg) / math.max(dev, 1e-10)
+
+updateBuffer(array<float> buffer, float val, int n) =>
+    buffer.push(val)
+    if buffer.size() > n
+        buffer.remove(0)
+
+standardizeInMatrix(matrix<float> m, int row, array<float> buffer) =>
+    int n = buffer.size()
+    if n > 0
+        float sumX = 0.0
+        for i = 0 to n - 1
+            float val = buffer.get(i)
+            m.set(row, i, val)
+            sumX += val
+        float mean = sumX / n
+        float sumSqX = 0.0
+        for i = 0 to n - 1
+            sumSqX += math.pow(m.get(row, i) - mean, 2)
+        float stdev = math.sqrt(sumSqX / n)
+        for i = 0 to n - 1
+            m.set(row, i, (m.get(row, i) - mean) / math.max(stdev, 1e-10))
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+// Fetch closes
+float c01 = request.security(s01, timeframe.period, close), c02 = request.security(s02, timeframe.period, close)
+float c03 = request.security(s03, timeframe.period, close), c04 = request.security(s04, timeframe.period, close)
+float c05 = request.security(s05, timeframe.period, close), c06 = request.security(s06, timeframe.period, close)
+float c07 = request.security(s07, timeframe.period, close), c08 = request.security(s08, timeframe.period, close)
+float c09 = request.security(s09, timeframe.period, close), c10 = request.security(s10, timeframe.period, close)
+float c11 = request.security(s11, timeframe.period, close), c12 = request.security(s12, timeframe.period, close)
+float c13 = request.security(s13, timeframe.period, close), c14 = request.security(s14, timeframe.period, close)
+float c15 = request.security(s15, timeframe.period, close), c16 = request.security(s16, timeframe.period, close)
+float c17 = request.security(s17, timeframe.period, close), c18 = request.security(s18, timeframe.period, close)
+float c19 = request.security(s19, timeframe.period, close), c20 = request.security(s20, timeframe.period, close)
+
+// Rolling Standardized Values
+float r01 = ta.sma(c01.z(nInput), smoothInput), r02 = ta.sma(c02.z(nInput), smoothInput)
+float r03 = ta.sma(c03.z(nInput), smoothInput), r04 = ta.sma(c04.z(nInput), smoothInput)
+float r05 = ta.sma(c05.z(nInput), smoothInput), r06 = ta.sma(c06.z(nInput), smoothInput)
+float r07 = ta.sma(c07.z(nInput), smoothInput), r08 = ta.sma(c08.z(nInput), smoothInput)
+float r09 = ta.sma(c09.z(nInput), smoothInput), r10 = ta.sma(c10.z(nInput), smoothInput)
+float r11 = ta.sma(c11.z(nInput), smoothInput), r12 = ta.sma(c12.z(nInput), smoothInput)
+float r13 = ta.sma(c13.z(nInput), smoothInput), r14 = ta.sma(c14.z(nInput), smoothInput)
+float r15 = ta.sma(c15.z(nInput), smoothInput), r16 = ta.sma(c16.z(nInput), smoothInput)
+float r17 = ta.sma(c17.z(nInput), smoothInput), r18 = ta.sma(c18.z(nInput), smoothInput)
+float r19 = ta.sma(c19.z(nInput), smoothInput), r20 = ta.sma(c20.z(nInput), smoothInput)
+
+// Rolling PCA Approximation (Correlation to Basket)
+float basket = (r01 + r02 + r03 + r04 + r05 + r06 + r07 + r08 + r09 + r10 + 
+                r11 + r12 + r13 + r14 + r15 + r16 + r17 + r18 + r19 + r20) / 20
+
+float w01 = ta.correlation(r01, basket, nInput), w02 = ta.correlation(r02, basket, nInput)
+float w03 = ta.correlation(r03, basket, nInput), w04 = ta.correlation(r04, basket, nInput)
+float w05 = ta.correlation(r05, basket, nInput), w06 = ta.correlation(r06, basket, nInput)
+float w07 = ta.correlation(r07, basket, nInput), w08 = ta.correlation(r08, basket, nInput)
+float w09 = ta.correlation(r09, basket, nInput), w10 = ta.correlation(r10, basket, nInput)
+float w11 = ta.correlation(r11, basket, nInput), w12 = ta.correlation(r12, basket, nInput)
+float w13 = ta.correlation(r13, basket, nInput), w14 = ta.correlation(r14, basket, nInput)
+float w15 = ta.correlation(r15, basket, nInput), w16 = ta.correlation(r16, basket, nInput)
+float w17 = ta.correlation(r17, basket, nInput), w18 = ta.correlation(r18, basket, nInput)
+float w19 = ta.correlation(r19, basket, nInput), w20 = ta.correlation(r20, basket, nInput)
+
+float sumW = math.abs(nz(w01)) + math.abs(nz(w02)) + math.abs(nz(w03)) + math.abs(nz(w04)) + math.abs(nz(w05)) + 
+             math.abs(nz(w06)) + math.abs(nz(w07)) + math.abs(nz(w08)) + math.abs(nz(w09)) + math.abs(nz(w10)) + 
+             math.abs(nz(w11)) + math.abs(nz(w12)) + math.abs(nz(w13)) + math.abs(nz(w14)) + math.abs(nz(w15)) + 
+             math.abs(nz(w16)) + math.abs(nz(w17)) + math.abs(nz(w18)) + math.abs(nz(w19)) + math.abs(nz(w20))
+
+float pc1Rolling = (r01 * nz(w01) + r02 * nz(w02) + r03 * nz(w03) + r04 * nz(w04) + r05 * nz(w05) + 
+                    r06 * nz(w06) + r07 * nz(w07) + r08 * nz(w08) + r09 * nz(w09) + r10 * nz(w10) + 
+                    r11 * nz(w11) + r12 * nz(w12) + r13 * nz(w13) + r14 * nz(w14) + r15 * nz(w15) + 
+                    r16 * nz(w16) + r17 * nz(w17) + r18 * nz(w18) + r19 * nz(w19) + r20 * nz(w20)) / math.max(sumW, 1e-10)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Snapshot Logic
+//---------------------------------------------------------------------------------------------------------------------{
+var a01 = array.new_float(0), var a02 = array.new_float(0), var a03 = array.new_float(0), var a04 = array.new_float(0)
+var a05 = array.new_float(0), var a06 = array.new_float(0), var a07 = array.new_float(0), var a08 = array.new_float(0)
+var a09 = array.new_float(0), var a10 = array.new_float(0), var a11 = array.new_float(0), var a12 = array.new_float(0)
+var a13 = array.new_float(0), var a14 = array.new_float(0), var a15 = array.new_float(0), var a16 = array.new_float(0)
+var a17 = array.new_float(0), var a18 = array.new_float(0), var a19 = array.new_float(0), var a20 = array.new_float(0)
+
+if ta.change(nInput) != 0
+    array.clear(a01), array.clear(a02), array.clear(a03), array.clear(a04), array.clear(a05)
+    array.clear(a06), array.clear(a07), array.clear(a08), array.clear(a09), array.clear(a10)
+    array.clear(a11), array.clear(a12), array.clear(a13), array.clear(a14), array.clear(a15)
+    array.clear(a16), array.clear(a17), array.clear(a18), array.clear(a19), array.clear(a20)
+
+updateBuffer(a01, c01, nInput), updateBuffer(a02, c02, nInput), updateBuffer(a03, c03, nInput), updateBuffer(a04, c04, nInput)
+updateBuffer(a05, c05, nInput), updateBuffer(a06, c06, nInput), updateBuffer(a07, c07, nInput), updateBuffer(a08, c08, nInput)
+updateBuffer(a09, c09, nInput), updateBuffer(a10, c10, nInput), updateBuffer(a11, c11, nInput), updateBuffer(a12, c12, nInput)
+updateBuffer(a13, c13, nInput), updateBuffer(a14, c14, nInput), updateBuffer(a15, c15, nInput), updateBuffer(a16, c16, nInput)
+updateBuffer(a17, c17, nInput), updateBuffer(a18, c18, nInput), updateBuffer(a19, c19, nInput), updateBuffer(a20, c20, nInput)
+
+var array<polyline> assetPolylines = array.new<polyline>(20)
+var polyline pc1Polyline           = na
+var array<line> snapshotHlines     = array.new_line(3)
+
+if barstate.islast and isSnapshot and a20.size() >= nInput
+    matrix<float> dataMat = matrix.new<float>(20, nInput, 0.0)
+    standardizeInMatrix(dataMat, 0, a01), standardizeInMatrix(dataMat, 1, a02)
+    standardizeInMatrix(dataMat, 2, a03), standardizeInMatrix(dataMat, 3, a04)
+    standardizeInMatrix(dataMat, 4, a05), standardizeInMatrix(dataMat, 5, a06)
+    standardizeInMatrix(dataMat, 6, a07), standardizeInMatrix(dataMat, 7, a08)
+    standardizeInMatrix(dataMat, 8, a09), standardizeInMatrix(dataMat, 9, a10)
+    standardizeInMatrix(dataMat, 10, a11), standardizeInMatrix(dataMat, 11, a12)
+    standardizeInMatrix(dataMat, 12, a13), standardizeInMatrix(dataMat, 13, a14)
+    standardizeInMatrix(dataMat, 14, a15), standardizeInMatrix(dataMat, 15, a16)
+    standardizeInMatrix(dataMat, 16, a17), standardizeInMatrix(dataMat, 17, a18)
+    standardizeInMatrix(dataMat, 18, a19), standardizeInMatrix(dataMat, 19, a20)
+
+    matrix<float> corrMat = matrix.mult(dataMat, matrix.transpose(dataMat))
+    for r = 0 to 19
+        for c = 0 to 19
+            corrMat.set(r, c, corrMat.get(r, c) / nInput)
+
+    array<float> eigenVec = array.new_float(20, 1.0)
+    for k = 1 to 10
+        array<float> nxt = matrix.mult(corrMat, eigenVec)
+        float mag = 0.0
+        for v in nxt
+            mag += v * v
+        mag := math.sqrt(mag)
+        for i = 0 to 19
+            eigenVec.set(i, nxt.get(i) / math.max(mag, 1e-10))
+
+    array<float> pc1Snapshot = array.new_float(nInput, 0.0)
+    float pc1Sum = 0.0
+    for t = 0 to nInput - 1
+        float v = 0.0
+        for i = 0 to 19
+            v += eigenVec.get(i) * dataMat.get(i, t)
+        pc1Snapshot.set(t, v), pc1Sum += v
+    
+    float pc1Mean = pc1Sum / nInput, float pc1SumSq = 0.0
+    for t = 0 to nInput - 1
+        pc1SumSq += math.pow(pc1Snapshot.get(t) - pc1Mean, 2)
+    float pc1Stdev = math.sqrt(pc1SumSq / nInput)
+    for t = 0 to nInput - 1
+        pc1Snapshot.set(t, (pc1Snapshot.get(t) - pc1Mean) / math.max(pc1Stdev, 1e-10))
+
+    for pl in assetPolylines
+        polyline.delete(pl)
+    polyline.delete(pc1Polyline)
+    for l in snapshotHlines
+        line.delete(l)
+
+    for i = 0 to 19
+        array<chart.point> pts = array.new<chart.point>()
+        for t = 0 to nInput - 1
+            pts.push(chart.point.new(na, bar_index - (nInput - 1 - t), dataMat.get(i, t)))
+        assetPolylines.set(i, polyline.new(pts, line_color = assetColorInput))
+
+    array<chart.point> pPts = array.new<chart.point>()
+    for t = 0 to nInput - 1
+        pPts.push(chart.point.new(na, bar_index - (nInput - 1 - t), pc1Snapshot.get(t)))
+    
+    color pc1SnapshotColor = pc1Snapshot.get(nInput - 1) > 0 ? BULL_COLOR : BEAR_COLOR
+    pc1Polyline := polyline.new(pPts, line_color = pc1SnapshotColor, line_width = 2)
+
+    snapshotHlines.set(0, line.new(bar_index - nInput + 1, 0, bar_index, 0, color = color.gray, style = line.style_dotted))
+    snapshotHlines.set(1, line.new(bar_index - nInput + 1, 2, bar_index, 2, color = BEAR_COLOR, style = line.style_dashed))
+    snapshotHlines.set(2, line.new(bar_index - nInput + 1, -2, bar_index, -2, color = BULL_COLOR, style = line.style_dashed))
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visuals
+//---------------------------------------------------------------------------------------------------------------------{
+displayAssets  = isSnapshot ? display.none : display.all - display.status_line
+displaySignals = isSnapshot ? display.none : display.all
+
+pc1Color       = pc1Rolling > 0 ? BULL_COLOR : BEAR_COLOR
+
+plot(r01, "BTC Z", assetColorInput, display = displayAssets), plot(r02, "ETH Z", assetColorInput, display = displayAssets)
+plot(r03, "BNB Z", assetColorInput, display = displayAssets), plot(r04, "XRP Z", assetColorInput, display = displayAssets)
+plot(r05, "SOL Z", assetColorInput, display = displayAssets), plot(r06, "TRX Z", assetColorInput, display = displayAssets)
+plot(r07, "DOGE Z", assetColorInput, display = displayAssets), plot(r08, "ADA Z", assetColorInput, display = displayAssets)
+plot(r09, "BCH Z", assetColorInput, display = displayAssets), plot(r10, "WBTC Z", assetColorInput, display = displayAssets)
+plot(r11, "XLM Z", assetColorInput, display = displayAssets), plot(r12, "LTC Z", assetColorInput, display = displayAssets)
+plot(r13, "HBAR Z", assetColorInput, display = displayAssets), plot(r14, "LINK Z", assetColorInput, display = displayAssets)
+plot(r15, "AVAX Z", assetColorInput, display = displayAssets), plot(r16, "PEPE Z", assetColorInput, display = displayAssets)
+plot(r17, "DOT Z", assetColorInput, display = displayAssets), plot(r18, "UNI Z", assetColorInput, display = displayAssets)
+plot(r19, "NEAR Z", assetColorInput, display = displayAssets), plot(r20, "ICP Z", assetColorInput, display = displayAssets)
+
+
+p_pc1  = plot(pc1Rolling, "PC1 Rolling", pc1Color, display = displaySignals)
+
+p_zero = plot(0, "Zero Plot", display = display.none)
+
+// Vertical Gradient Fill Logic
+topColor    = pc1Rolling > 0 ? color.new(BULL_COLOR, 50) : color.new(BEAR_COLOR, 100)
+bottomColor = pc1Rolling > 0 ? color.new(BULL_COLOR, 100) : color.new(BEAR_COLOR, 50)
+topVal      = pc1Rolling > 0 ? pc1Rolling : 0
+bottomVal   = pc1Rolling > 0 ? 0 : pc1Rolling
+
+fill(p_pc1, p_zero, top_color = topColor, bottom_color = bottomColor, top_value = topVal, bottom_value = bottomVal, title = "PC1 Fill", display = displaySignals)
+
+
+hline(0, "Zero Line", color.gray, hline.style_dotted, display = displaySignals)
+hline(2, "+2 StdDev", BEAR_COLOR, hline.style_dashed, display = displaySignals)
+hline(-2, "-2 StdDev", BULL_COLOR, hline.style_dashed, display = displaySignals)
+
+//---------------------------------------------------------------------------------------------------------------------}

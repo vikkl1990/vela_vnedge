@@ -23,6 +23,7 @@ object merges and persists it; returns the full config. Changing `symbols`/`time
 re-subscribes the feed and re-warms scanners.
 ```json
 { "symbols": ["BTCUSD", "ETHUSD"],
+  "universe": { "mode": "list", "top": 20, "exclude": [] },   // list | top | all; GET adds "resolvedSymbols"
   "timeframes": ["15m"],
   "historyBars": 1000,
   "paper": { "initialEquity": 100000, "riskPerTradePct": 1, "maxLeverage": 10,

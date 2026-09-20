@@ -1,0 +1,226 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Rolling KPSS Statistic [LuxAlgo]", "LuxAlgo - Rolling KPSS Statistic", overlay = false)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+// Critical Values for KPSS (Asymptotic)
+// Level Stationary
+LEVEL_10 = 0.347
+LEVEL_05 = 0.463
+LEVEL_01 = 0.739
+
+// Trend Stationary
+TREND_10 = 0.119
+TREND_05 = 0.146
+TREND_01 = 0.216
+
+// Colors
+BULL_COLOR = #089981
+BEAR_COLOR = #f23645
+MAIN_COLOR = #2962ff
+
+// Themes
+VIRIDIS = array.from(#440154, #482878, #3e4989, #31688e, #26828e, #1f9e89, #35b779, #6ece58, #b5de2b, #fde725)
+
+// Dashboard Constants
+DATA                    = #DBDBDB
+HEADERS                 = #808080
+BACKGROUND              = #161616
+BORDERS                 = #2E2E2E
+
+TOP_RIGHT               = 'Top Right'
+BOTTOM_RIGHT            = 'BOTTOM Right'
+BOTTOM_LEFT             = 'Bottom Left'
+
+TINY                    = 'Tiny'
+SMALL                   = 'Small'
+NORMAL                  = 'Normal'
+LARGE                   = 'Large'
+HUGE                    = 'Huge'
+
+DASHBOARD_GROUP         = 'Dashboard'
+
+// Tooltips
+lenTooltip              = "The number of bars used for the rolling window calculation."
+testTypeTooltip         = "'Level' (Default): Tests for stationarity around a constant mean, identifying ranging/mean-reverting behavior.\n\n'Trend': Tests for stationarity around a linear trend, identifying consistent trending behavior."
+bwTooltip               = "The lag truncation parameter for the Bartlett kernel. Usually a small integer like 3 or 4."
+dashboardTooltip        = 'Enable or disable the dashboard.'
+dashboardPositionTooltip= 'Select the dashboard location.'
+dashboardSizeTooltip    = 'Select the dashboard size.'
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+lengthInput     = input.int(50, "Window Length", minval = 10, maxval = 500, tooltip = lenTooltip)
+sourceInput     = input.source(close, "Source")
+testTypeInput   = input.string("Level", "Test Type", options = ["Level", "Trend"], tooltip = testTypeTooltip)
+bandwidthInput  = input.int(4, "Newey-West Bandwidth", minval = 0, tooltip = bwTooltip)
+
+// Visuals
+showLevelsInput = input.bool(true, "Show Critical Levels")
+
+// Dashboard
+dashboardInput          = input.bool(true, 'Dashboard', group = DASHBOARD_GROUP, tooltip = dashboardTooltip)
+dashboardPositionInput  = input.string(TOP_RIGHT, 'Position', group = DASHBOARD_GROUP, tooltip = dashboardPositionTooltip, options = [TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT])
+dashboardSizeInput      = input.string(SMALL, 'Size', group = DASHBOARD_GROUP, tooltip = dashboardSizeTooltip, options = [TINY, SMALL, NORMAL, LARGE, HUGE])
+
+//---------------------------------------------------------------------------------------------------------------------}
+// User Defined Functions
+//---------------------------------------------------------------------------------------------------------------------{
+// Function to calculate KPSS
+calcKpss(float[] src, int n, string testType, int l) =>
+    float kpss = na
+    if src.size() >= n
+        // 1. Regression and Residuals
+        float[] e = array.new_float(n)
+        if testType == "Level"
+            float sumSrc = 0.0
+            for i = 0 to n - 1
+                sumSrc += src.get(i)
+            float mean = sumSrc / n
+            for i = 0 to n - 1
+                e.set(i, src.get(i) - mean)
+        else
+            // Linear Regression: y = a + b*x
+            float sumX  = 0.0
+            float sumY  = 0.0
+            float sumXX = 0.0
+            float sumXY = 0.0
+            for i = 0 to n - 1
+                float x = i + 1
+                float y = src.get(n - 1 - i) // Reverse to match index 1 to N
+                sumX  += x
+                sumY  += y
+                sumXX += x * x
+                sumXY += x * y
+            
+            float slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX)
+            float intercept = (sumY - slope * sumX) / n
+            
+            for i = 0 to n - 1
+                float x = i + 1
+                float y = src.get(n - 1 - i)
+                e.set(i, y - (intercept + slope * x))
+
+        // 2. Partial Sums
+        float[] s = array.new_float(n)
+        float currentSum = 0.0
+        float sumS2 = 0.0
+        for i = 0 to n - 1
+            currentSum += e.get(i)
+            s.set(i, currentSum)
+            sumS2 += math.pow(currentSum, 2)
+
+        // 3. Long-run Variance (Newey-West / Bartlett Kernel)
+        // Gamma 0 (Variance)
+        float gamma0 = 0.0
+        for i = 0 to n - 1
+            gamma0 += math.pow(e.get(i), 2)
+        gamma0 /= n
+        
+        float s2_l = gamma0
+        if l > 0
+            for j = 1 to l
+                float gamma_j = 0.0
+                for i = j to n - 1
+                    gamma_j += e.get(i) * e.get(i - j)
+                gamma_j /= n
+                float weight = 1.0 - (float(j) / (l + 1.0))
+                s2_l += 2.0 * weight * gamma_j
+        
+        // 4. KPSS Statistic
+        kpss := sumS2 / (math.pow(n, 2) * s2_l)
+    
+    kpss
+
+// Function to get color from a palette array
+get_palette_color(float value, float min_val, float max_val, color[] palette) =>
+    int size = palette.size()
+    float normalized = (value - min_val) / (max_val - min_val)
+    float pos = math.max(0.0, math.min(0.999, normalized)) * (size - 1)
+    int index = int(math.floor(pos))
+    float weight = pos - index
+    color.from_gradient(weight, 0, 1, palette.get(index), palette.get(index + 1))
+
+// Dashboard helper functions
+var parsedDashboardPosition = switch dashboardPositionInput
+    TOP_RIGHT       => position.top_right
+    BOTTOM_RIGHT    => position.bottom_right
+    BOTTOM_LEFT     => position.bottom_left
+
+var parsedDashboardSize     = switch dashboardSizeInput
+    TINY            => size.tiny
+    SMALL           => size.small
+    NORMAL          => size.normal
+    LARGE           => size.large
+    HUGE            => size.huge
+
+cell(table t_able, int column, int row, string data, color = #FFFFFF, align = text.align_right, color background = na, float height = 0) => 
+    t_able.cell(column, row, data, text_color = color, text_size = parsedDashboardSize, text_halign = align, bgcolor = background, height = height)
+
+divider(table t_able, int row, int lastColumn) =>    
+    string rowDivider = '━━━━━━━━━━━━━━'
+    t_able.merge_cells(0, row, lastColumn, row)
+    cell(t_able, 0, row, rowDivider, align = text.align_center, height = 0.5, color = BORDERS)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+// Maintain window of data
+var float[] dataWindow = array.new_float(0)
+array.push(dataWindow, sourceInput)
+if array.size(dataWindow) > lengthInput
+    array.shift(dataWindow)
+
+// Execution
+kpssValue = calcKpss(dataWindow, lengthInput, testTypeInput, bandwidthInput)
+
+// Determine critical levels based on test type
+level10 = testTypeInput == "Level" ? LEVEL_10 : TREND_10
+level05 = testTypeInput == "Level" ? LEVEL_05 : TREND_05
+level01 = testTypeInput == "Level" ? LEVEL_01 : TREND_01
+
+// Market State Logic
+bool isStationary = kpssValue < level05
+string marketState = isStationary ? (testTypeInput == "Trend" ? "Trending" : "Ranging") : "Non-Stationary"
+
+// Gradient Coloring
+// Map 0.0 to 1% critical value for full range of Viridis
+color dynamicColor = get_palette_color(kpssValue, 0.0, level01 * 1.2, VIRIDIS)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visuals
+//---------------------------------------------------------------------------------------------------------------------{
+// Plots
+plot(kpssValue, "KPSS Statistic", color = dynamicColor, linewidth = 2)
+
+// Horizontal Levels
+p10 = plot(showLevelsInput ? level10 : na, "10% Critical Value", color = color.new(chart.fg_color, 70), linestyle = plot.linestyle_dashed)
+p05 = plot(showLevelsInput ? level05 : na, "5% Critical Value",  color = color.new(chart.fg_color, 40), linestyle = plot.linestyle_dashed)
+p01 = plot(showLevelsInput ? level01 : na, "1% Critical Value",  color = color.new(chart.fg_color, 10), linestyle = plot.linestyle_dashed)
+
+// Fills for significance
+fill(p05, plot(math.max(kpssValue, level05), color = na), color = kpssValue > level05 ? color.new(dynamicColor, 85) : na, title = "Significance Fill")
+
+// Dashboard Implementation
+var table t_able = table.new(parsedDashboardPosition, 2, 5, bgcolor = BACKGROUND, border_width = 0, frame_color = BORDERS, frame_width = 1, force_overlay = true)
+
+if dashboardInput and barstate.islast
+    cell(t_able, 0, 0, "Market Status", color = DATA, align = text.align_center)
+    t_able.merge_cells(0, 0, 1, 0)
+    
+    divider(t_able, 1, 1)
+    
+    cell(t_able, 0, 2, "State", color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 2, marketState, color = dynamicColor)
+    
+    divider(t_able, 3, 1)
+    
+    cell(t_able, 0, 4, "KPSS Stat", color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 4, str.format("{0,number,#.###}", kpssValue), color = DATA)
+
+//---------------------------------------------------------------------------------------------------------------------}

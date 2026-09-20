@@ -39,11 +39,12 @@ export class ScannerEngine extends EventEmitter {
   private backtests = new Map<string, BacktestResult>();
   private warmed = new Set<string>();
   private seenLabels = new Map<string, Set<string>>();
+  private symbolsRef: () => string[];
 
-  constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest }) {
+  constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest; symbolsRef?: () => string[] }) {
     super();
-    Object.assign(this, deps);
     this.registry = deps.registry; this.cfgRef = deps.cfgRef; this.candles = deps.candles; this.pool = deps.pool; this.paper = deps.paper; this.db = deps.db; this.rest = deps.rest;
+    this.symbolsRef = deps.symbolsRef ?? (() => this.cfgRef().symbols);
     for (const r of this.db.all<any>('SELECT * FROM scanner_runs')) this.lastRun.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, { at: r.at, ms: r.ms, symbol: r.symbol, tf: r.tf, error: r.error, barTime: r.bar_time });
     for (const r of this.db.all<any>('SELECT * FROM backtests')) { try { this.backtests.set(`${r.scanner_id}:${r.symbol}:${r.tf}`, JSON.parse(r.result)); } catch { /* ignore */ } }
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: Bar }) => this.onBarClosed(e.symbol, e.tf, e.bar));
@@ -61,7 +62,7 @@ export class ScannerEngine extends EventEmitter {
     const cfg = this.cfgRef();
     return cfg.scanners[id] ?? { enabled: true, symbols: null, timeframes: null, exitMode: 'both' };
   }
-  symbolsFor(id: string): string[] { return this.scannerConfig(id).symbols ?? this.cfgRef().symbols; }
+  symbolsFor(id: string): string[] { return this.scannerConfig(id).symbols ?? this.symbolsRef(); }
   timeframesFor(id: string): string[] { return this.scannerConfig(id).timeframes ?? this.cfgRef().timeframes; }
   isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden; }
 
@@ -113,7 +114,7 @@ export class ScannerEngine extends EventEmitter {
     const cfg = this.cfgRef();
     const required = this.requiredSeries();
     await Promise.all(required.map(r => this.candles.track(r.symbol, r.tf, cfg.historyBars)));
-    for (const s of cfg.symbols) await this.candles.track(s, '1m', 300); // fill engine price feed
+    for (const s of new Set([...this.symbolsRef(), ...required.map(r => r.symbol)])) await this.candles.track(s, '1m', 300); // fill engine price feed
     const jobs: Promise<void>[] = [];
     for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) jobs.push(this.warm(s, symbol, tf));
     log.info(`warming ${jobs.length} scanner runs`);
@@ -125,12 +126,12 @@ export class ScannerEngine extends EventEmitter {
   async refresh(): Promise<void> {
     const cfg = this.cfgRef();
     for (const r of this.requiredSeries()) if (!this.candles.has(r.symbol, r.tf)) await this.candles.track(r.symbol, r.tf, cfg.historyBars);
-    for (const s of cfg.symbols) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
+    for (const s of new Set([...this.symbolsRef(), ...this.requiredSeries().map(r => r.symbol)])) if (!this.candles.has(s, '1m')) await this.candles.track(s, '1m', 300);
     const jobs: Promise<void>[] = [];
     for (const s of this.registry.all()) if (this.isActive(s)) for (const symbol of this.symbolsFor(s.id)) for (const tf of this.timeframesFor(s.id)) {
       if (!this.warmed.has(`${s.id}:${symbol}:${tf}`)) jobs.push(this.warm(s, symbol, tf));
     }
-    await Promise.allSettled(jobs);
+    if (jobs.length) { log.info(`warming ${jobs.length} scanner runs in the background`); void Promise.allSettled(jobs).then(() => log.info('warm-up complete')); }
   }
 
   /** Full-history run: backtest for stats + overlay; live signals only for the last closed bar. */

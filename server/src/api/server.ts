@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { URL } from 'node:url';
 import type { App } from '../app.ts';
-import { DASHBOARD_DIST, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
+import { DASHBOARD_DIST, DATA_DIR, SUPPORTED_TIMEFRAMES, TF_SECONDS } from '../config.ts';
 import { logger } from '../log.ts';
 import { positionView } from '../paper/engine.ts';
 import { aggregateMonthly } from '../pine/provider.ts';
@@ -52,6 +52,7 @@ export class ApiServer {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     if (url.pathname === '/api/events') return this.handleSse(req, res);
     if (!url.pathname.startsWith('/api/')) return this.serveStatic(url.pathname, res);
@@ -132,12 +133,12 @@ export class ApiServer {
   private defineRoutes() {
     const a = this.app;
     this.add('GET', '/api/health', () => a.health());
-    this.add('GET', '/api/config', () => a.config.get());
+    this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
     this.add('PUT', '/api/config', async (_r, _s, _p, _u, body) => {
       let next;
       try { next = a.config.update(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
       await a.onConfigChanged();
-      return next;
+      return { ...next, resolvedSymbols: a.resolvedSymbols };
     });
 
     this.add('GET', '/api/markets', async () => a.markets());
@@ -221,6 +222,15 @@ export class ApiServer {
       const r = await a.scanners.runBacktestNow(id, symbol, tf);
       if (!r) throw new HttpError(400, 'scanner not runnable');
       return r;
+    });
+    // dev helper: the browser (any origin) can drop a script list here for the importer CLI
+    this.add('POST', '/api/dev/script-list', (_r, _s, _p, _u, body) => {
+      const author = String(body?.author ?? '').replace(/[^\w-]/g, '');
+      if (!author || !Array.isArray(body?.list)) throw new HttpError(400, 'author and list required');
+      const dir = path.join(DATA_DIR, 'imports'); fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `${author}.json`);
+      fs.writeFileSync(file, JSON.stringify(body.list, null, 1));
+      return { file, n: body.list.length };
     });
     this.add('GET', '/api/logs', (_r, _s, _p, url) => logger.tail(Number(url.searchParams.get('limit') ?? 200), (url.searchParams.get('level') as any) ?? undefined));
   }

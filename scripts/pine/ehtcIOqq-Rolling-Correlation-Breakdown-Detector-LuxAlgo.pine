@@ -1,0 +1,156 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Rolling Correlation & Breakdown Detector [LuxAlgo]", "LuxAlgo - Correlation Breakdown Detector", overlay = false)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+BULL_COLOR              = #089981
+BEAR_COLOR              = #f23645
+WARN_COLOR              = #ff9800
+NEUTRAL_COLOR           = #787b86
+
+DATA                    = #DBDBDB
+HEADERS                 = #808080
+BACKGROUND              = #161616
+BORDERS                 = #2E2E2E
+
+TOP_RIGHT               = 'Top Right'
+BOTTOM_RIGHT            = 'Bottom Right'
+BOTTOM_LEFT             = 'Bottom Left'
+
+TINY                    = 'Tiny'
+SMALL                   = 'Small'
+NORMAL                  = 'Normal'
+LARGE                   = 'Large'
+HUGE                    = 'Huge'
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+GENERAL_GROUP           = 'General Settings'
+THRESHOLD_GROUP         = 'Breakdown Detection Thresholds'
+DASHBOARD_GROUP         = 'Dashboard'
+
+// Asset Selection
+assetBInput             = input.symbol( 'BINANCE:ETHUSDT', 'Asset B',           group = GENERAL_GROUP, tooltip = 'Select the second asset to calculate correlation against the current chart symbol.')
+corrLengthInput         = input.int(    50,               'Correlation Length', group = GENERAL_GROUP, minval = 2, tooltip = 'The rolling window used for Pearson correlation calculation.')
+stabilityLengthInput    = input.int(    20,               'Stability Window',   group = GENERAL_GROUP, minval = 2, tooltip = 'The window used to measure the volatility (stability) of the correlation.')
+
+// Thresholds
+highThresholdInput      = input.float(  0.75,             'Healthy Threshold',  group = THRESHOLD_GROUP, minval = -1.0, maxval = 1.0, step = 0.05, tooltip = 'Correlation above this level is considered potentially healthy.')
+lowThresholdInput       = input.float(  0.40,             'Breakdown Threshold',group = THRESHOLD_GROUP, minval = -1.0, maxval = 1.0, step = 0.05, tooltip = 'Correlation below this level triggers a breakdown state.')
+stabilityThresholdInput = input.float(  0.05,             'Stability Threshold',group = THRESHOLD_GROUP, minval = 0.0, step = 0.01, tooltip = 'Maximum allowed standard deviation of correlation for a "Healthy" state.')
+
+// Dashboard
+dashboardInput          = input.bool(   true,             'Dashboard',          group = DASHBOARD_GROUP)
+dashboardPositionInput  = input.string( TOP_RIGHT,        'Position',           group = DASHBOARD_GROUP, options = [TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT])
+dashboardSizeInput      = input.string( SMALL,            'Size',               group = DASHBOARD_GROUP, options = [TINY, SMALL, NORMAL, LARGE, HUGE])
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+// Get Asset B price
+assetBPrice = request.security(assetBInput, timeframe.period, close)
+
+// Correlation calculation
+rollingCorr = ta.correlation(close, assetBPrice, corrLengthInput)
+
+// Stability calculation (Stdev of correlation)
+corrStability = ta.stdev(rollingCorr, stabilityLengthInput)
+
+// Rate of Change (Noise)
+corrROC = ta.roc(rollingCorr, 5)
+
+// State Logic
+// 2 = Healthy, 1 = Warning, 0 = Breakdown
+int state = 0
+
+isBreakdown = rollingCorr < lowThresholdInput or corrStability > (stabilityThresholdInput * 3)
+isHealthy   = rollingCorr > highThresholdInput and corrStability < stabilityThresholdInput and not isBreakdown
+
+if isHealthy
+    state := 2
+else if not isBreakdown
+    state := 1
+else
+    state := 0
+
+// Determine state color
+stateColor = state == 2 ? BULL_COLOR : state == 1 ? WARN_COLOR : BEAR_COLOR
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visuals
+//---------------------------------------------------------------------------------------------------------------------{
+// Plots
+plotCorr = plot(rollingCorr, "Rolling Correlation", color = stateColor, linewidth = 2)
+plotZero = plot(0,           "Zero Line",           color = NEUTRAL_COLOR, style = plot.style_circles, display = display.none)
+plotTop  = plot(1,           "Top Boundary",        color = na)
+plotBot  = plot(-1,          "Bottom Boundary",     color = na)
+
+// Horizontal levels
+hline(1,  "Upper Limit", color = NEUTRAL_COLOR, linestyle = hline.style_dashed)
+hline(0,  "Mid Line",    color = NEUTRAL_COLOR, linestyle = hline.style_dotted)
+hline(-1, "Lower Limit", color = NEUTRAL_COLOR, linestyle = hline.style_dashed)
+
+// Fills - Vertical gradient effect from center to value
+fill(plotCorr, plotZero, 
+     top_value    = math.max(rollingCorr, 0), 
+     bottom_value = math.min(rollingCorr, 0), 
+     top_color    = rollingCorr > 0 ? color.new(stateColor, 50) : color.new(stateColor, 100), 
+     bottom_color = rollingCorr < 0 ? color.new(stateColor, 50) : color.new(stateColor, 100))
+
+// Background highlighting for severe breakdowns
+bgcolor(state == 0 ? color.new(BEAR_COLOR, 90) : na)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Dashboard
+//---------------------------------------------------------------------------------------------------------------------{
+var parsedDashboardPosition = switch dashboardPositionInput
+    TOP_RIGHT       => position.top_right
+    BOTTOM_RIGHT    => position.bottom_right
+    BOTTOM_LEFT     => position.bottom_left
+
+var parsedDashboardSize     = switch dashboardSizeInput
+    TINY            => size.tiny
+    SMALL           => size.small
+    NORMAL          => size.normal
+    LARGE           => size.large
+    HUGE            => size.huge
+
+cell(table t_able, int column, int row, string data, color = #FFFFFF, align = text.align_right, color background = na, float height = 0) => 
+    t_able.cell(column, row, data, text_color = color, text_size = parsedDashboardSize, text_halign = align, bgcolor = background, height = height)
+
+divider(table t_able, int row, int lastColumn) =>    
+    string rowDivider = '━━━━━━━━━━━━━━━━━━━━━━'
+    t_able.merge_cells(0, row, lastColumn, row)
+    cell(t_able, 0, row, rowDivider, align = text.align_center, height = 0.5, color = BORDERS)
+
+var table t_able = table.new(parsedDashboardPosition, 2, 8, bgcolor = BACKGROUND, border_width = 0, frame_color = BORDERS, frame_width = 1)
+
+if dashboardInput and barstate.islast
+    t_able.merge_cells(0, 0, 1, 0)
+    cell(t_able, 0, 0, 'Relationship Status', color = DATA, align = text.align_center)
+
+    divider(t_able, 1, 1)
+
+    cell(t_able, 0, 2, 'State',         color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 2, state == 2 ? 'HEALTHY' : state == 1 ? 'WARNING' : 'BREAKDOWN', color = stateColor)
+
+    cell(t_able, 0, 3, 'Correlation',   color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 3, str.tostring(rollingCorr, "#.##"), color = DATA)
+
+    cell(t_able, 0, 4, 'Stability',     color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 4, str.tostring(corrStability, "#.###"), color = corrStability < stabilityThresholdInput ? BULL_COLOR : BEAR_COLOR)
+
+    divider(t_able, 5, 1)
+
+    cell(t_able, 0, 6, 'Asset A',       color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 6, syminfo.ticker,  color = DATA)
+
+    cell(t_able, 0, 7, 'Asset B',       color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 7, assetBInput,     color = DATA)
+
+//---------------------------------------------------------------------------------------------------------------------}

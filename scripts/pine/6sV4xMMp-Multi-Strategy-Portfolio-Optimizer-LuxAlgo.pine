@@ -1,0 +1,700 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Multi-Strategy Portfolio Optimizer [LuxAlgo]", "LuxAlgo - Multi-Strategy Portfolio Optimizer", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants & Types
+//---------------------------------------------------------------------------------------------------------------------{
+DATA                    = #DBDBDB
+HEADERS                 = #808080
+BACKGROUND              = #161616
+BORDERS                 = #2E2E2E
+
+TOP_RIGHT               = 'Top Right'
+BOTTOM_RIGHT            = 'Bottom Right'
+BOTTOM_LEFT             = 'Bottom Left'
+
+TINY                    = 'Tiny'
+SMALL                   = 'Small'
+NORMAL                  = 'Normal'
+LARGE                   = 'Large'
+HUGE                    = 'Huge'
+
+DASHBOARD_GROUP         = 'Dashboard'
+STRAT_GROUP             = 'Strategies'
+RISK_GROUP              = 'Risk Management'
+
+type Trade
+    int entry_bar = na
+    float entry_price = na
+    float sl_price = na
+    float tp_price = na
+    int exit_bar = na
+    float exit_price = na
+    int dir = 0
+
+type FinalStrat
+    string name
+    string short_name
+    string best_setting
+    float best_cum
+    float[] best_arr
+    color col
+    Trade open_trade
+    array<Trade> past_trades
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+use_st                  = input.bool(   true,           'Supertrend (Trend)',             group = STRAT_GROUP)
+use_macd                = input.bool(   false,          'MACD (Trend/Momentum)',          group = STRAT_GROUP)
+use_donch               = input.bool(   true,           'Donchian (Breakout)',            group = STRAT_GROUP)
+use_rsit                = input.bool(   false,          'RSI (Trend)',                    group = STRAT_GROUP)
+use_bb                  = input.bool(   true,           'Bollinger Bands (Reversion)',    group = STRAT_GROUP)
+use_rsir                = input.bool(   false,          'RSI (Reversion)',                group = STRAT_GROUP)
+use_stoch               = input.bool(   true,           'Stochastic (Reversion)',         group = STRAT_GROUP)
+use_cci                 = input.bool(   true,           'CCI (Momentum)',                 group = STRAT_GROUP)
+use_ema                 = input.bool(   false,          'EMA Crossover (Trend)',          group = STRAT_GROUP)
+
+use_sltp                = input.bool(   true,           'Enable Stop Loss & Take Profit', group = RISK_GROUP)
+atr_len_input           = input.int(    14,             'ATR Length',                     group = RISK_GROUP)
+sl_mult_input           = input.float(  2.0,            'Stop Loss (ATR Mult)',           group = RISK_GROUP, step = 0.1)
+tp_mult_input           = input.float(  4.0,            'Take Profit (ATR Mult)',         group = RISK_GROUP, step = 0.1)
+showTradesInput         = input.bool(   false,          'Show Past & Open Trades',        group = RISK_GROUP)
+
+dashboardInput          = input.bool(   true,           'Main Dashboard',                 group = DASHBOARD_GROUP)
+dashboardPositionInput  = input.string( TOP_RIGHT,      'Position',                       group = DASHBOARD_GROUP, options = [TOP_RIGHT,BOTTOM_RIGHT,BOTTOM_LEFT])
+curvesInput             = input.bool(   true,           'Show Equity Curves (Polylines)', group = DASHBOARD_GROUP)
+curvesLengthInput       = input.int(    100,            'Curves Length (Bars)',           group = DASHBOARD_GROUP, minval = 10, maxval = 500)
+curvesVerticalInput     = input.string( "Middle",       'Curves Vertical Position',       group = DASHBOARD_GROUP, options = ["Top", "Middle", "Bottom"])
+curvesHeightInput       = input.int(    50,             'Curves Box Height (%)',          group = DASHBOARD_GROUP, minval = 10, maxval = 100, step = 5)
+corrInput               = input.bool(   true,           'Correlation Heatmap',            group = DASHBOARD_GROUP)
+corrPositionInput       = input.string( BOTTOM_RIGHT,   'Heatmap Position',               group = DASHBOARD_GROUP, options = [TOP_RIGHT,BOTTOM_RIGHT,BOTTOM_LEFT])
+dashboardSizeInput      = input.string( TINY,           'Size',                           group = DASHBOARD_GROUP, options = [TINY,SMALL,NORMAL,LARGE,HUGE])
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Variables
+//---------------------------------------------------------------------------------------------------------------------{
+var parsedDashboardPosition = switch dashboardPositionInput
+    TOP_RIGHT       => position.top_right
+    BOTTOM_RIGHT    => position.bottom_right
+    BOTTOM_LEFT     => position.bottom_left
+
+var parsedCorrPosition = switch corrPositionInput
+    TOP_RIGHT       => position.top_right
+    BOTTOM_RIGHT    => position.bottom_right
+    BOTTOM_LEFT     => position.bottom_left
+
+var parsedDashboardSize     = switch dashboardSizeInput
+    TINY            => size.tiny
+    SMALL           => size.small
+    NORMAL          => size.normal
+    LARGE           => size.large
+    HUGE            => size.huge
+
+var int last_time = 0
+is_new_bar = time != last_time
+if is_new_bar
+    last_time := time
+
+var arr_st1 = array.new_float(), var arr_st2 = array.new_float(), var arr_st3 = array.new_float()
+var arr_macd1 = array.new_float(), var arr_macd2 = array.new_float(), var arr_macd3 = array.new_float()
+var arr_d1 = array.new_float(), var arr_d2 = array.new_float(), var arr_d3 = array.new_float()
+var arr_rsit1 = array.new_float(), var arr_rsit2 = array.new_float(), var arr_rsit3 = array.new_float()
+var arr_bb1 = array.new_float(), var arr_bb2 = array.new_float(), var arr_bb3 = array.new_float()
+var arr_rsir1 = array.new_float(), var arr_rsir2 = array.new_float(), var arr_rsir3 = array.new_float()
+var arr_stoch1 = array.new_float(), var arr_stoch2 = array.new_float(), var arr_stoch3 = array.new_float()
+var arr_cci1 = array.new_float(), var arr_cci2 = array.new_float(), var arr_cci3 = array.new_float()
+var arr_ema1 = array.new_float(), var arr_ema2 = array.new_float(), var arr_ema3 = array.new_float()
+
+var tr_st1 = Trade.new(), var tr_st2 = Trade.new(), var tr_st3 = Trade.new()
+var tr_macd1 = Trade.new(), var tr_macd2 = Trade.new(), var tr_macd3 = Trade.new()
+var tr_d1 = Trade.new(), var tr_d2 = Trade.new(), var tr_d3 = Trade.new()
+var tr_rsit1 = Trade.new(), var tr_rsit2 = Trade.new(), var tr_rsit3 = Trade.new()
+var tr_bb1 = Trade.new(), var tr_bb2 = Trade.new(), var tr_bb3 = Trade.new()
+var tr_rsir1 = Trade.new(), var tr_rsir2 = Trade.new(), var tr_rsir3 = Trade.new()
+var tr_stoch1 = Trade.new(), var tr_stoch2 = Trade.new(), var tr_stoch3 = Trade.new()
+var tr_cci1 = Trade.new(), var tr_cci2 = Trade.new(), var tr_cci3 = Trade.new()
+var tr_ema1 = Trade.new(), var tr_ema2 = Trade.new(), var tr_ema3 = Trade.new()
+
+var pt_st1 = array.new<Trade>(), var pt_st2 = array.new<Trade>(), var pt_st3 = array.new<Trade>()
+var pt_macd1 = array.new<Trade>(), var pt_macd2 = array.new<Trade>(), var pt_macd3 = array.new<Trade>()
+var pt_d1 = array.new<Trade>(), var pt_d2 = array.new<Trade>(), var pt_d3 = array.new<Trade>()
+var pt_rsit1 = array.new<Trade>(), var pt_rsit2 = array.new<Trade>(), var pt_rsit3 = array.new<Trade>()
+var pt_bb1 = array.new<Trade>(), var pt_bb2 = array.new<Trade>(), var pt_bb3 = array.new<Trade>()
+var pt_rsir1 = array.new<Trade>(), var pt_rsir2 = array.new<Trade>(), var pt_rsir3 = array.new<Trade>()
+var pt_stoch1 = array.new<Trade>(), var pt_stoch2 = array.new<Trade>(), var pt_stoch3 = array.new<Trade>()
+var pt_cci1 = array.new<Trade>(), var pt_cci2 = array.new<Trade>(), var pt_cci3 = array.new<Trade>()
+var pt_ema1 = array.new<Trade>(), var pt_ema2 = array.new<Trade>(), var pt_ema3 = array.new<Trade>()
+
+// Drawing objects
+var box bg_box = na
+var line zero_line = na
+var polylines = array.new<polyline>()
+var labels = array.new<label>()
+var trade_boxes = array.new<box>()
+var trade_lines = array.new<line>()
+var final_strats = array.new<FinalStrat>()
+
+var table t_main = table.new(parsedDashboardPosition, 3, 20, bgcolor = BACKGROUND, border_width = 0, frame_color = BORDERS, frame_width = 1, force_overlay = true)
+var table t_corr = table.new(parsedCorrPosition, 10, 11, bgcolor = BACKGROUND, border_width = 1, border_color = BACKGROUND, frame_color = BORDERS, frame_width = 1, force_overlay = true)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Helper Functions
+//---------------------------------------------------------------------------------------------------------------------{
+cell(table t_able, int column, int row, string data, color text_col = #FFFFFF, string align = text.align_right, color background = na, float height = 0) => 
+    t_able.cell(column, row, data, text_color = text_col, text_size = parsedDashboardSize, text_halign = align, bgcolor = background, height = height)
+
+divider(table t_able, int row, int lastColumn) =>    
+    string rowDivider = '━━━━━━━━━━━━━━━━━━━━━━'
+    t_able.merge_cells(0, row, lastColumn, row)
+    cell(t_able, 0, row, rowDivider, align = text.align_center, height = 0.5, text_col = BORDERS)
+
+format_ret(float val) =>
+    string str = str.tostring(val, "#.##") + "%"
+    val > 0 ? "+" + str : str
+
+col_ret(float val) => 
+    val > 0 ? #089981 : val < 0 ? #f23645 : DATA
+
+safe_push(float[] arr, float val) =>
+    if is_new_bar or array.size(arr) == 0
+        array.push(arr, val)
+    else
+        array.set(arr, array.size(arr) - 1, val)
+    if array.size(arr) > 505
+        array.shift(arr)
+
+array_correlation(float[] arr1, float[] arr2, int len) =>
+    int sz = array.size(arr1)
+    if sz < len
+        0.0
+    else
+        float sum_x = 0.0, float sum_y = 0.0, float sum_xy = 0.0, float sum_x2 = 0.0, float sum_y2 = 0.0
+        for i = sz - len to sz - 1
+            float x = array.get(arr1, i) - (i > 0 ? array.get(arr1, i-1) : 0)
+            float y = array.get(arr2, i) - (i > 0 ? array.get(arr2, i-1) : 0)
+            sum_x += x, sum_y += y, sum_xy += x * y, sum_x2 += x * x, sum_y2 += y * y
+        float num = len * sum_xy - sum_x * sum_y
+        float den = math.sqrt((len * sum_x2 - sum_x * sum_x) * (len * sum_y2 - sum_y * sum_y))
+        den == 0 ? 0.0 : num / den
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Strategy Variations Evaluator
+//---------------------------------------------------------------------------------------------------------------------{
+bar_ret = (close - nz(close[1], close)) / nz(close[1], close)
+atr_val = ta.atr(atr_len_input)
+
+f_sim(series int signal, Trade open_trade, array<Trade> past_trades) =>
+    var int current_pos = 0
+    var float entry_price = na
+    var float sl_price = na
+    var float tp_price = na
+    var int last_signal = na
+    var int entry_bar = na
+    
+    float ret_to_add = current_pos * bar_ret
+    
+    if na(last_signal) or signal != last_signal
+        if current_pos != 0
+            float exit_price = close
+            ret_to_add := current_pos == 1 ? (exit_price - nz(close[1], exit_price)) / nz(close[1], exit_price) : (nz(close[1], exit_price) - exit_price) / nz(close[1], exit_price)
+            array.push(past_trades, Trade.new(entry_bar, entry_price, sl_price, tp_price, bar_index, exit_price, current_pos))
+            if array.size(past_trades) > 21
+                array.shift(past_trades)
+            
+        current_pos := signal
+        entry_price := close
+        entry_bar := bar_index
+        sl_price := signal == 1 ? close - atr_val * sl_mult_input : close + atr_val * sl_mult_input
+        tp_price := signal == 1 ? close + atr_val * tp_mult_input : close - atr_val * tp_mult_input
+        last_signal := signal
+    else if current_pos != 0 and use_sltp
+        bool hit_sl = current_pos == 1 ? low <= sl_price : high >= sl_price
+        bool hit_tp = current_pos == 1 ? high >= tp_price : low <= tp_price
+        
+        if hit_sl or hit_tp
+            float exit_price = hit_tp ? tp_price : sl_price
+            ret_to_add := current_pos == 1 ? (exit_price - nz(close[1], exit_price)) / nz(close[1], exit_price) : (nz(close[1], exit_price) - exit_price) / nz(close[1], exit_price)
+            array.push(past_trades, Trade.new(entry_bar, entry_price, sl_price, tp_price, bar_index, exit_price, current_pos))
+            if array.size(past_trades) > 21
+                array.shift(past_trades)
+            current_pos := 0
+            entry_price := na
+            sl_price := na
+            tp_price := na
+            entry_bar := na
+            
+    open_trade.entry_bar := entry_bar
+    open_trade.entry_price := entry_price
+    open_trade.sl_price := sl_price
+    open_trade.tp_price := tp_price
+    open_trade.dir := current_pos
+            
+    ta.cum(ret_to_add) * 100
+
+// 1. Supertrend (Trend)
+[_, d_st1] = ta.supertrend(3, 10)
+[_, d_st2] = ta.supertrend(5, 20)
+[_, d_st3] = ta.supertrend(2, 14)
+cum_st1 = f_sim(d_st1 < 0 ? 1 : -1, tr_st1, pt_st1), safe_push(arr_st1, cum_st1)
+cum_st2 = f_sim(d_st2 < 0 ? 1 : -1, tr_st2, pt_st2), safe_push(arr_st2, cum_st2)
+cum_st3 = f_sim(d_st3 < 0 ? 1 : -1, tr_st3, pt_st3), safe_push(arr_st3, cum_st3)
+
+// 2. MACD (Momentum)
+[m1, s1, _] = ta.macd(close, 12, 26, 9)
+[m2, s2, _] = ta.macd(close, 5, 34, 5)
+[m3, s3, _] = ta.macd(close, 24, 52, 9)
+cum_macd1 = f_sim(m1 > s1 ? 1 : -1, tr_macd1, pt_macd1), safe_push(arr_macd1, cum_macd1)
+cum_macd2 = f_sim(m2 > s2 ? 1 : -1, tr_macd2, pt_macd2), safe_push(arr_macd2, cum_macd2)
+cum_macd3 = f_sim(m3 > s3 ? 1 : -1, tr_macd3, pt_macd3), safe_push(arr_macd3, cum_macd3)
+
+// 3. Donchian (Breakout)
+dh1 = ta.highest(high, 20), dl1 = ta.lowest(low, 20)
+dh2 = ta.highest(high, 50), dl2 = ta.lowest(low, 50)
+dh3 = ta.highest(high, 100), dl3 = ta.lowest(low, 100)
+var int pos_d1 = 0, pos_d1 := close > dh1[1] ? 1 : close < dl1[1] ? -1 : pos_d1[1]
+var int pos_d2 = 0, pos_d2 := close > dh2[1] ? 1 : close < dl2[1] ? -1 : pos_d2[1]
+var int pos_d3 = 0, pos_d3 := close > dh3[1] ? 1 : close < dl3[1] ? -1 : pos_d3[1]
+cum_d1 = f_sim(pos_d1, tr_d1, pt_d1), safe_push(arr_d1, cum_d1)
+cum_d2 = f_sim(pos_d2, tr_d2, pt_d2), safe_push(arr_d2, cum_d2)
+cum_d3 = f_sim(pos_d3, tr_d3, pt_d3), safe_push(arr_d3, cum_d3)
+
+// 4. RSI Trend
+rsi_t1 = ta.rsi(close, 14)
+rsi_t2 = ta.rsi(close, 21)
+rsi_t3 = ta.rsi(close, 7)
+cum_rsit1 = f_sim(rsi_t1 > 50 ? 1 : -1, tr_rsit1, pt_rsit1), safe_push(arr_rsit1, cum_rsit1)
+cum_rsit2 = f_sim(rsi_t2 > 50 ? 1 : -1, tr_rsit2, pt_rsit2), safe_push(arr_rsit2, cum_rsit2)
+cum_rsit3 = f_sim(rsi_t3 > 50 ? 1 : -1, tr_rsit3, pt_rsit3), safe_push(arr_rsit3, cum_rsit3)
+
+// 5. BB Reversion
+[_, bbu1, bbl1] = ta.bb(close, 20, 2)
+[_, bbu2, bbl2] = ta.bb(close, 50, 2.5)
+[_, bbu3, bbl3] = ta.bb(close, 14, 2)
+var int pos_bb1 = 0, pos_bb1 := close < bbl1 ? 1 : close > bbu1 ? -1 : pos_bb1[1]
+var int pos_bb2 = 0, pos_bb2 := close < bbl2 ? 1 : close > bbu2 ? -1 : pos_bb2[1]
+var int pos_bb3 = 0, pos_bb3 := close < bbl3 ? 1 : close > bbu3 ? -1 : pos_bb3[1]
+cum_bb1 = f_sim(pos_bb1, tr_bb1, pt_bb1), safe_push(arr_bb1, cum_bb1)
+cum_bb2 = f_sim(pos_bb2, tr_bb2, pt_bb2), safe_push(arr_bb2, cum_bb2)
+cum_bb3 = f_sim(pos_bb3, tr_bb3, pt_bb3), safe_push(arr_bb3, cum_bb3)
+
+// 6. RSI Reversion
+rsi_r1 = ta.rsi(close, 14)
+rsi_r2 = ta.rsi(close, 7)
+rsi_r3 = ta.rsi(close, 4)
+var int pos_rsir1 = 0, pos_rsir1 := rsi_r1 < 30 ? 1 : rsi_r1 > 70 ? -1 : pos_rsir1[1]
+var int pos_rsir2 = 0, pos_rsir2 := rsi_r2 < 30 ? 1 : rsi_r2 > 70 ? -1 : pos_rsir2[1]
+var int pos_rsir3 = 0, pos_rsir3 := rsi_r3 < 30 ? 1 : rsi_r3 > 70 ? -1 : pos_rsir3[1]
+cum_rsir1 = f_sim(pos_rsir1, tr_rsir1, pt_rsir1), safe_push(arr_rsir1, cum_rsir1)
+cum_rsir2 = f_sim(pos_rsir2, tr_rsir2, pt_rsir2), safe_push(arr_rsir2, cum_rsir2)
+cum_rsir3 = f_sim(pos_rsir3, tr_rsir3, pt_rsir3), safe_push(arr_rsir3, cum_rsir3)
+
+// 7. Stochastic Reversion
+k1 = ta.stoch(close, high, low, 14)
+k2 = ta.stoch(close, high, low, 21)
+k3 = ta.stoch(close, high, low, 7)
+var int pos_stoch1 = 0, pos_stoch1 := k1 < 20 ? 1 : k1 > 80 ? -1 : pos_stoch1[1]
+var int pos_stoch2 = 0, pos_stoch2 := k2 < 20 ? 1 : k2 > 80 ? -1 : pos_stoch2[1]
+var int pos_stoch3 = 0, pos_stoch3 := k3 < 20 ? 1 : k3 > 80 ? -1 : pos_stoch3[1]
+cum_stoch1 = f_sim(pos_stoch1, tr_stoch1, pt_stoch1), safe_push(arr_stoch1, cum_stoch1)
+cum_stoch2 = f_sim(pos_stoch2, tr_stoch2, pt_stoch2), safe_push(arr_stoch2, cum_stoch2)
+cum_stoch3 = f_sim(pos_stoch3, tr_stoch3, pt_stoch3), safe_push(arr_stoch3, cum_stoch3)
+
+// 8. CCI Momentum
+cci1 = ta.cci(close, 20)
+cci2 = ta.cci(close, 50)
+cci3 = ta.cci(close, 14)
+var int pos_cci1 = 0, pos_cci1 := cci1 > 100 ? 1 : cci1 < -100 ? -1 : pos_cci1[1]
+var int pos_cci2 = 0, pos_cci2 := cci2 > 100 ? 1 : cci2 < -100 ? -1 : pos_cci2[1]
+var int pos_cci3 = 0, pos_cci3 := cci3 > 100 ? 1 : cci3 < -100 ? -1 : pos_cci3[1]
+cum_cci1 = f_sim(pos_cci1, tr_cci1, pt_cci1), safe_push(arr_cci1, cum_cci1)
+cum_cci2 = f_sim(pos_cci2, tr_cci2, pt_cci2), safe_push(arr_cci2, cum_cci2)
+cum_cci3 = f_sim(pos_cci3, tr_cci3, pt_cci3), safe_push(arr_cci3, cum_cci3)
+
+// 9. EMA Crossover
+ema1_f = ta.ema(close, 9), ema1_s = ta.ema(close, 21)
+ema2_f = ta.ema(close, 20), ema2_s = ta.ema(close, 50)
+ema3_f = ta.ema(close, 50), ema3_s = ta.ema(close, 200)
+cum_ema1 = f_sim(ema1_f > ema1_s ? 1 : -1, tr_ema1, pt_ema1), safe_push(arr_ema1, cum_ema1)
+cum_ema2 = f_sim(ema2_f > ema2_s ? 1 : -1, tr_ema2, pt_ema2), safe_push(arr_ema2, cum_ema2)
+cum_ema3 = f_sim(ema3_f > ema3_s ? 1 : -1, tr_ema3, pt_ema3), safe_push(arr_ema3, cum_ema3)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Dashboard Engine
+//---------------------------------------------------------------------------------------------------------------------{
+float global_price_max = ta.highest(high, curvesLengthInput)
+float global_price_min = ta.lowest(low, curvesLengthInput)
+
+if barstate.islast
+    array.clear(final_strats)
+    
+    if use_st
+        float best_cum = math.max(cum_st1, cum_st2, cum_st3)
+        string best_name = best_cum == cum_st1 ? "ST (10,3)" : best_cum == cum_st2 ? "ST (20,5)" : "ST (14,2)"
+        float[] best_arr = best_cum == cum_st1 ? arr_st1 : best_cum == cum_st2 ? arr_st2 : arr_st3
+        Trade best_tr = best_cum == cum_st1 ? tr_st1 : best_cum == cum_st2 ? tr_st2 : tr_st3
+        Trade[] best_pt = best_cum == cum_st1 ? pt_st1 : best_cum == cum_st2 ? pt_st2 : pt_st3
+        array.push(final_strats, FinalStrat.new("Supertrend", "ST", best_name, best_cum, best_arr, #00E5FF, best_tr, best_pt))
+
+    if use_macd
+        float best_cum = math.max(cum_macd1, cum_macd2, cum_macd3)
+        string best_name = best_cum == cum_macd1 ? "MACD (12,26)" : best_cum == cum_macd2 ? "MACD (5,34)" : "MACD (24,52)"
+        float[] best_arr = best_cum == cum_macd1 ? arr_macd1 : best_cum == cum_macd2 ? arr_macd2 : arr_macd3
+        Trade best_tr = best_cum == cum_macd1 ? tr_macd1 : best_cum == cum_macd2 ? tr_macd2 : tr_macd3
+        Trade[] best_pt = best_cum == cum_macd1 ? pt_macd1 : best_cum == cum_macd2 ? pt_macd2 : pt_macd3
+        array.push(final_strats, FinalStrat.new("MACD", "MACD", best_name, best_cum, best_arr, #FFAB00, best_tr, best_pt))
+
+    if use_donch
+        float best_cum = math.max(cum_d1, cum_d2, cum_d3)
+        string best_name = best_cum == cum_d1 ? "Donchian (20)" : best_cum == cum_d2 ? "Donchian (50)" : "Donchian (100)"
+        float[] best_arr = best_cum == cum_d1 ? arr_d1 : best_cum == cum_d2 ? arr_d2 : arr_d3
+        Trade best_tr = best_cum == cum_d1 ? tr_d1 : best_cum == cum_d2 ? tr_d2 : tr_d3
+        Trade[] best_pt = best_cum == cum_d1 ? pt_d1 : best_cum == cum_d2 ? pt_d2 : pt_d3
+        array.push(final_strats, FinalStrat.new("Donchian", "DON", best_name, best_cum, best_arr, #00E676, best_tr, best_pt))
+
+    if use_rsit
+        float best_cum = math.max(cum_rsit1, cum_rsit2, cum_rsit3)
+        string best_name = best_cum == cum_rsit1 ? "RSI Tr (14)" : best_cum == cum_rsit2 ? "RSI Tr (21)" : "RSI Tr (7)"
+        float[] best_arr = best_cum == cum_rsit1 ? arr_rsit1 : best_cum == cum_rsit2 ? arr_rsit2 : arr_rsit3
+        Trade best_tr = best_cum == cum_rsit1 ? tr_rsit1 : best_cum == cum_rsit2 ? tr_rsit2 : tr_rsit3
+        Trade[] best_pt = best_cum == cum_rsit1 ? pt_rsit1 : best_cum == cum_rsit2 ? pt_rsit2 : pt_rsit3
+        array.push(final_strats, FinalStrat.new("RSI Trend", "RSI-T", best_name, best_cum, best_arr, #FF5252, best_tr, best_pt))
+
+    if use_bb
+        float best_cum = math.max(cum_bb1, cum_bb2, cum_bb3)
+        string best_name = best_cum == cum_bb1 ? "BB (20,2)" : best_cum == cum_bb2 ? "BB (50,2.5)" : "BB (14,2)"
+        float[] best_arr = best_cum == cum_bb1 ? arr_bb1 : best_cum == cum_bb2 ? arr_bb2 : arr_bb3
+        Trade best_tr = best_cum == cum_bb1 ? tr_bb1 : best_cum == cum_bb2 ? tr_bb2 : tr_bb3
+        Trade[] best_pt = best_cum == cum_bb1 ? pt_bb1 : best_cum == cum_bb2 ? pt_bb2 : pt_bb3
+        array.push(final_strats, FinalStrat.new("BB Rev", "BB", best_name, best_cum, best_arr, #E040FB, best_tr, best_pt))
+
+    if use_rsir
+        float best_cum = math.max(cum_rsir1, cum_rsir2, cum_rsir3)
+        string best_name = best_cum == cum_rsir1 ? "RSI Rev (14)" : best_cum == cum_rsir2 ? "RSI Rev (7)" : "RSI Rev (4)"
+        float[] best_arr = best_cum == cum_rsir1 ? arr_rsir1 : best_cum == cum_rsir2 ? arr_rsir2 : arr_rsir3
+        Trade best_tr = best_cum == cum_rsir1 ? tr_rsir1 : best_cum == cum_rsir2 ? tr_rsir2 : tr_rsir3
+        Trade[] best_pt = best_cum == cum_rsir1 ? pt_rsir1 : best_cum == cum_rsir2 ? pt_rsir2 : pt_rsir3
+        array.push(final_strats, FinalStrat.new("RSI Rev", "RSI-R", best_name, best_cum, best_arr, #FF4081, best_tr, best_pt))
+
+    if use_stoch
+        float best_cum = math.max(cum_stoch1, cum_stoch2, cum_stoch3)
+        string best_name = best_cum == cum_stoch1 ? "Stoch (14,3)" : best_cum == cum_stoch2 ? "Stoch (21,5)" : "Stoch (7,3)"
+        float[] best_arr = best_cum == cum_stoch1 ? arr_stoch1 : best_cum == cum_stoch2 ? arr_stoch2 : arr_stoch3
+        Trade best_tr = best_cum == cum_stoch1 ? tr_stoch1 : best_cum == cum_stoch2 ? tr_stoch2 : tr_stoch3
+        Trade[] best_pt = best_cum == cum_stoch1 ? pt_stoch1 : best_cum == cum_stoch2 ? pt_stoch2 : pt_stoch3
+        array.push(final_strats, FinalStrat.new("Stochastic", "STOCH", best_name, best_cum, best_arr, #7C4DFF, best_tr, best_pt))
+
+    if use_cci
+        float best_cum = math.max(cum_cci1, cum_cci2, cum_cci3)
+        string best_name = best_cum == cum_cci1 ? "CCI (20)" : best_cum == cum_cci2 ? "CCI (50)" : "CCI (14)"
+        float[] best_arr = best_cum == cum_cci1 ? arr_cci1 : best_cum == cum_cci2 ? arr_cci2 : arr_cci3
+        Trade best_tr = best_cum == cum_cci1 ? tr_cci1 : best_cum == cum_cci2 ? tr_cci2 : tr_cci3
+        Trade[] best_pt = best_cum == cum_cci1 ? pt_cci1 : best_cum == cum_cci2 ? pt_cci2 : pt_cci3
+        array.push(final_strats, FinalStrat.new("CCI Break", "CCI", best_name, best_cum, best_arr, #FFFF00, best_tr, best_pt))
+
+    if use_ema
+        float best_cum = math.max(cum_ema1, cum_ema2, cum_ema3)
+        string best_name = best_cum == cum_ema1 ? "EMA (9,21)" : best_cum == cum_ema2 ? "EMA (20,50)" : "EMA (50,200)"
+        float[] best_arr = best_cum == cum_ema1 ? arr_ema1 : best_cum == cum_ema2 ? arr_ema2 : arr_ema3
+        Trade best_tr = best_cum == cum_ema1 ? tr_ema1 : best_cum == cum_ema2 ? tr_ema2 : tr_ema3
+        Trade[] best_pt = best_cum == cum_ema1 ? pt_ema1 : best_cum == cum_ema2 ? pt_ema2 : pt_ema3
+        array.push(final_strats, FinalStrat.new("EMA Cross", "EMA", best_name, best_cum, best_arr, #FF6E40, best_tr, best_pt))
+
+    int num_active = array.size(final_strats)
+    
+    // Create portfolio cumulative array
+    var best_port_arr = array.new_float()
+    array.clear(best_port_arr) 
+    
+    int sz = array.size(arr_st1)
+    float best_port_cum = 0.0
+    
+    if num_active > 0
+        for i = 0 to sz - 1
+            float sum_v = 0.0
+            for j = 0 to num_active - 1
+                FinalStrat fs = array.get(final_strats, j)
+                sum_v += array.get(fs.best_arr, i)
+            array.push(best_port_arr, sum_v / num_active)
+            
+        best_port_cum := array.get(best_port_arr, array.size(best_port_arr) - 1)
+    
+    // Evaluate Diversification Over Last 100 Bars
+    var matrix<float> corr_mat = matrix.new<float>(10, 10, 1.0)
+    float sum_corr = 0.0
+    int corr_count = 0
+    if num_active > 1
+        for i = 0 to num_active - 1
+            for j = 0 to num_active - 1
+                if i == j
+                    matrix.set(corr_mat, i, j, 1.0)
+                else if j > i
+                    float c = array_correlation(array.get(final_strats, i).best_arr, array.get(final_strats, j).best_arr, 100)
+                    matrix.set(corr_mat, i, j, c)
+                    matrix.set(corr_mat, j, i, c)
+                    sum_corr += c
+                    corr_count += 1
+                
+    float avg_corr = corr_count > 0 ? sum_corr / corr_count : 0.0
+    
+    string div_class = "N/A"
+    color div_color = HEADERS
+    if num_active > 1
+        if avg_corr > 0.7
+            div_class := "Very Poor"
+            div_color := #f23645
+        else if avg_corr > 0.4
+            div_class := "Poor"
+            div_color := #ff9800
+        else if avg_corr > 0.1
+            div_class := "Moderate"
+            div_color := #ffeb3b
+        else if avg_corr > -0.2
+            div_class := "Good"
+            div_color := #4caf50
+        else
+            div_class := "Excellent"
+            div_color := #089981
+
+    // Draw Main Optimizer Table
+    if dashboardInput
+        t_main.clear(0, 0, 2, 19)
+        t_main.merge_cells(0, 0, 2, 0)
+        cell(t_main, 0, 0, 'Portfolio Optimizer', text_col = DATA, align = text.align_center)
+        divider(t_main, 1, 2)
+        cell(t_main, 0, 2, 'Setup Type', text_col = HEADERS, align = text.align_left)
+        cell(t_main, 1, 2, 'Best Setting', text_col = HEADERS, align = text.align_center)
+        cell(t_main, 2, 2, 'Return', text_col = HEADERS, align = text.align_right)
+        divider(t_main, 3, 2)
+        
+        int row = 4
+        if num_active > 0
+            for i = 0 to num_active - 1
+                FinalStrat fs = array.get(final_strats, i)
+                cell(t_main, 0, row, fs.name, text_col = DATA, align = text.align_left)
+                cell(t_main, 1, row, fs.best_setting, text_col = DATA, align = text.align_center)
+                cell(t_main, 2, row, format_ret(fs.best_cum), text_col = col_ret(fs.best_cum))
+                row += 1
+                
+        divider(t_main, row, 2)
+        row += 1
+        
+        cell(t_main, 0, row, 'Portfolio (Equal Wgt)', text_col = DATA, align = text.align_left)
+        cell(t_main, 1, row, 'Div: ' + div_class, text_col = div_color, align = text.align_center)
+        cell(t_main, 2, row, format_ret(best_port_cum), text_col = col_ret(best_port_cum))
+    else
+        t_main.clear(0, 0, 2, 19)
+
+    // Draw Correlation Heatmap
+    if corrInput and num_active > 1
+        t_corr.clear(0, 0, 9, 10)
+        t_corr.merge_cells(0, 0, num_active, 0)
+        t_corr.cell(0, 0, "Diversification Heatmap", text_color = DATA, text_size = parsedDashboardSize, bgcolor = BACKGROUND)
+        t_corr.cell(0, 1, "Corr", text_color = DATA, text_size = parsedDashboardSize, bgcolor = BACKGROUND)
+        
+        for i = 0 to num_active - 1
+            FinalStrat fs_i = array.get(final_strats, i)
+            t_corr.cell(i + 1, 1, fs_i.short_name, text_color = DATA, text_size = parsedDashboardSize, bgcolor = BACKGROUND)
+            t_corr.cell(0, i + 2, fs_i.short_name, text_color = DATA, text_size = parsedDashboardSize, bgcolor = BACKGROUND)
+            
+            for j = 0 to num_active - 1
+                float c_val = matrix.get(corr_mat, i, j)
+                color c_bg = c_val >= 0 ? color.from_gradient(c_val, 0.0, 1.0, #fff59d, #b71c1c) : color.from_gradient(c_val, -1.0, 0.0, #1b5e20, #fff59d)
+                color t_col = math.abs(c_val) > 0.4 ? #ffffff : #000000
+                t_corr.cell(j + 1, i + 2, str.tostring(c_val, "#.##"), text_color = t_col, text_size = parsedDashboardSize, bgcolor = c_bg)
+    else
+        t_corr.clear(0, 0, 9, 10)
+
+    // Draw Floating Polylines & Legend
+    if curvesInput and num_active > 0
+        int draw_len = curvesLengthInput
+        int count = math.min(sz, draw_len)
+        
+        if count > 1
+            float min_eq = 0.0
+            float max_eq = 0.0
+            
+            for i = 0 to count - 1
+                int arr_idx = sz - count + i
+                
+                float base_port = array.get(best_port_arr, sz - count)
+                float v_port = array.get(best_port_arr, arr_idx) - base_port
+                min_eq := math.min(min_eq, v_port)
+                max_eq := math.max(max_eq, v_port)
+                
+                for j = 0 to num_active - 1
+                    FinalStrat fs = array.get(final_strats, j)
+                    float base_val = array.get(fs.best_arr, sz - count)
+                    float v_val = array.get(fs.best_arr, arr_idx) - base_val
+                    min_eq := math.min(min_eq, v_val)
+                    max_eq := math.max(max_eq, v_val)
+                
+            float eq_range = max_eq - min_eq
+            eq_range := eq_range == 0 ? 1 : eq_range
+            
+            float price_max = global_price_max
+            float price_min = global_price_min
+            float price_range = price_max - price_min
+            price_range := price_range == 0 ? 1 : price_range
+            
+            float height_y = price_range * (curvesHeightInput / 100.0)
+            float center_y = (price_max + price_min) / 2
+            if curvesVerticalInput == "Top"
+                center_y := price_max - height_y / 2
+            else if curvesVerticalInput == "Bottom"
+                center_y := price_min + height_y / 2
+                
+            float box_top = center_y + height_y / 2
+            float box_bottom = center_y - height_y / 2
+            float box_range = box_top - box_bottom
+            
+            float line_top = box_top - box_range * 0.05
+            float line_bottom = box_bottom + box_range * 0.05
+            float line_range = line_top - line_bottom
+            
+            int start_bar = bar_index + 10
+            int end_bar = start_bar + count - 1
+            
+            if not na(bg_box)
+                box.delete(bg_box)
+            bg_box := box.new(start_bar, box_top, end_bar, box_bottom, bgcolor = color.new(#000000, 80), border_color = BORDERS)
+                
+            // Add note label at the bottom of the box
+            var label note_lbl = na
+            if not na(note_lbl)
+                label.delete(note_lbl)
+            note_lbl := label.new(start_bar + math.round(count / 2), box_bottom, "Showing Recent " + str.tostring(count) + " Bars Only", color = #00000000, textcolor = #FFFFFF, style = label.style_label_up, size = size.normal)
+                
+            float zero_y = line_bottom + (0 - min_eq) / eq_range * line_range
+            if na(zero_line)
+                zero_line := line.new(start_bar, zero_y, end_bar, zero_y, color = BORDERS, style = line.style_dashed)
+            else
+                line.set_xy1(zero_line, start_bar, zero_y)
+                line.set_xy2(zero_line, end_bar, zero_y)
+                
+            if array.size(polylines) > 0
+                for pl in polylines
+                    polyline.delete(pl)
+                array.clear(polylines)
+                
+            if array.size(labels) > 0
+                for lbl in labels
+                    label.delete(lbl)
+                array.clear(labels)
+                
+            float legend_step = box_range / (num_active + 2)
+            
+            for i = 0 to num_active - 1
+                FinalStrat fs = array.get(final_strats, i)
+                float base_val = array.get(fs.best_arr, sz - count)
+                chart.point[] points = array.new<chart.point>()
+                
+                for j = 0 to count - 1
+                    int arr_idx = sz - count + j
+                    int b_idx = start_bar + j
+                    float val = array.get(fs.best_arr, arr_idx) - base_val
+                    float norm = (val - min_eq) / eq_range
+                    float py = line_bottom + norm * line_range
+                    array.push(points, chart.point.from_index(b_idx, py))
+                    
+                array.push(polylines, polyline.new(points, line_color = color.new(fs.col, 60), line_width = 2))
+                array.push(labels, label.new(end_bar, box_top - legend_step * (i + 1), "■ " + fs.name, color = #00000000, textcolor = color.new(fs.col, 0), style = label.style_label_left, size = size.normal))
+                
+            float base_port = array.get(best_port_arr, sz - count)
+            chart.point[] port_points = array.new<chart.point>()
+            for j = 0 to count - 1
+                int arr_idx = sz - count + j
+                int b_idx = start_bar + j
+                float val = array.get(best_port_arr, arr_idx) - base_port
+                float norm = (val - min_eq) / eq_range
+                float py = line_bottom + norm * line_range
+                array.push(port_points, chart.point.from_index(b_idx, py))
+                
+            array.push(polylines, polyline.new(port_points, line_color = color.new(#FFFFFF, 0), line_width = 3))
+            array.push(labels, label.new(end_bar, box_top - legend_step * (num_active + 1), "■ Portfolio", color = #00000000, textcolor = color.new(#FFFFFF, 0), style = label.style_label_left, size = size.normal))
+    else
+        if not na(bg_box)
+            box.delete(bg_box)
+            bg_box := na
+        if not na(zero_line)
+            line.delete(zero_line)
+            zero_line := na
+        var label note_lbl = na
+        if not na(note_lbl)
+            label.delete(note_lbl)
+        if array.size(polylines) > 0
+            for pl in polylines
+                polyline.delete(pl)
+            array.clear(polylines)
+        if array.size(labels) > 0
+            for lbl in labels
+                label.delete(lbl)
+            array.clear(labels)
+            
+    // Draw Past & Open Trades Visually on Chart
+    if showTradesInput
+        if array.size(trade_boxes) > 0
+            for b in trade_boxes
+                box.delete(b)
+            array.clear(trade_boxes)
+        if array.size(trade_lines) > 0
+            for l in trade_lines
+                line.delete(l)
+            array.clear(trade_lines)
+            
+        for fs in final_strats
+            // Draw past trades
+            Trade[] pt = fs.past_trades
+            int pt_sz = array.size(pt)
+            int max_past = math.min(pt_sz, 20)
+            if max_past > 0
+                for i = pt_sz - max_past to pt_sz - 1
+                    Trade past_tr = array.get(pt, i)
+                    if use_sltp and not na(past_tr.sl_price) and not na(past_tr.tp_price)
+                        color c_tp = color.new(#089981, 92)
+                        color c_sl = color.new(#f23645, 92)
+                        color b_col = color.new(fs.col, 60)
+                        
+                        box b1 = box.new(past_tr.entry_bar, past_tr.tp_price, past_tr.exit_bar, past_tr.entry_price, bgcolor=c_tp, border_color=b_col, border_style=line.style_dotted)
+                        box b2 = box.new(past_tr.entry_bar, past_tr.entry_price, past_tr.exit_bar, past_tr.sl_price, bgcolor=c_sl, border_color=b_col, border_style=line.style_dotted)
+                        line l1 = line.new(past_tr.entry_bar, past_tr.entry_price, past_tr.exit_bar, past_tr.entry_price, color=color.new(fs.col, 50), style=line.style_solid, width=1)
+                        
+                        array.push(trade_boxes, b1)
+                        array.push(trade_boxes, b2)
+                        array.push(trade_lines, l1)
+                    else
+                        line l1 = line.new(past_tr.entry_bar, past_tr.entry_price, past_tr.exit_bar, past_tr.entry_price, color=color.new(fs.col, 50), style=line.style_dashed, width=1)
+                        array.push(trade_lines, l1)
+                        
+            // Draw open trade
+            Trade tr = fs.open_trade
+            if tr.dir != 0 and not na(tr.entry_bar)
+                if use_sltp
+                    color c_tp = color.new(#089981, 85)
+                    color c_sl = color.new(#f23645, 85)
+                    color b_col = color.new(fs.col, 30)
+                    
+                    box b1 = box.new(tr.entry_bar, tr.tp_price, bar_index, tr.entry_price, bgcolor=c_tp, border_color=b_col, border_style=line.style_dotted)
+                    box b2 = box.new(tr.entry_bar, tr.entry_price, bar_index, tr.sl_price, bgcolor=c_sl, border_color=b_col, border_style=line.style_dotted)
+                    line l1 = line.new(tr.entry_bar, tr.entry_price, bar_index, tr.entry_price, color=fs.col, style=line.style_solid, width=2)
+                    
+                    array.push(trade_boxes, b1)
+                    array.push(trade_boxes, b2)
+                    array.push(trade_lines, l1)
+                else
+                    line l1 = line.new(tr.entry_bar, tr.entry_price, bar_index, tr.entry_price, color=fs.col, style=line.style_dashed, width=2)
+                    array.push(trade_lines, l1)
+    else
+        if array.size(trade_boxes) > 0
+            for b in trade_boxes
+                box.delete(b)
+            array.clear(trade_boxes)
+        if array.size(trade_lines) > 0
+            for l in trade_lines
+                line.delete(l)
+            array.clear(trade_lines)
+
+//---------------------------------------------------------------------------------------------------------------------}

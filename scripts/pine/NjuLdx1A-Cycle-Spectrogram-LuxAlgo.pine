@@ -1,0 +1,213 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Cycle Spectrogram [LuxAlgo]", "LuxAlgo - Cycle Spectrogram", overlay = false, precision = 2, max_bars_back = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+// Themes
+VIRIDIS = array.from(#440154, #482878, #3e4989, #31688e, #26828e, #1f9e89, #35b779, #6ece58, #b5de2b, #fde725)
+INFERNO = array.from(#000004, #1b0c41, #4a0c6b, #781c6d, #a52c60, #cf4446, #ed6925, #fb9b06, #f7d13d, #fcffa4)
+MAGMA   = array.from(#000004, #180f3d, #440f76, #721f81, #9e2f7f, #cd4071, #f1605d, #fd9668, #feca8d, #fcfdbf)
+PLASMA  = array.from(#0d0887, #46039f, #7201a8, #9c179e, #bd3786, #d8576b, #ed7953, #fb9f3a, #fdca26, #f0f921)
+CIVIDIS = array.from(#00224e, #123570, #3b496c, #575d6d, #707173, #8a8678, #a59c74, #c3b369, #e1cc55, #fee838)
+TURBO   = array.from(#30123b, #4661d6, #37a8fa, #1ae4b6, #71fe5f, #c8ef34, #faba39, #f56918, #ca2a04, #7a0403)
+
+// Dashboard Styles
+DATA                    = #DBDBDB
+HEADERS                 = #808080
+BACKGROUND              = #161616
+BORDERS                 = #2E2E2E
+
+TOP_RIGHT               = 'Top Right'
+BOTTOM_RIGHT            = 'Bottom Right'
+BOTTOM_LEFT             = 'Bottom Left'
+
+TINY                    = 'Tiny'
+SMALL                   = 'Small'
+NORMAL                  = 'Normal'
+LARGE                   = 'Large'
+HUGE                    = 'Huge'
+
+ROWS = 30
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+// Heatmap Settings
+string themeInput    = input.string("Turbo", "Theme", options = ["Viridis", "Inferno", "Magma", "Plasma", "Cividis", "Turbo"], group = "Aesthetics")
+float minPeriodInput = input.float(8.0, "Minimum Period", minval = 2.0, group = "Settings", tooltip = "The shortest cycle length to analyze.")
+float maxPeriodInput = input.float(80.0, "Maximum Period", minval = 10.0, group = "Settings", tooltip = "The longest cycle length to analyze.")
+float bandwidthInput = input.float(0.25, "Bandwidth", minval = 0.01, maxval = 0.5, group = "Settings", tooltip = "Controls the 'focus' of each frequency band.")
+float smoothInput    = input.float(5.0, "Power Smoothing", minval = 1.0, group = "Settings", tooltip = "Smooths the amplitude to reduce visual noise.")
+
+// Dashboard Settings
+DASHBOARD_GROUP         = 'Dashboard'
+dashboardInput          = input.bool(true, 'Dashboard', group = DASHBOARD_GROUP)
+dashboardPositionInput  = input.string(TOP_RIGHT, 'Position', group = DASHBOARD_GROUP, options = [TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT])
+dashboardSizeInput      = input.string(SMALL, 'Size', group = DASHBOARD_GROUP, options = [TINY, SMALL, NORMAL, LARGE, HUGE])
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Variables & Functions
+//---------------------------------------------------------------------------------------------------------------------{
+// Dashboard Logic
+var parsedDashboardPosition = switch dashboardPositionInput
+    TOP_RIGHT       => position.top_right
+    BOTTOM_RIGHT    => position.bottom_right
+    BOTTOM_LEFT     => position.bottom_left
+
+var parsedDashboardSize     = switch dashboardSizeInput
+    TINY            => size.tiny
+    SMALL           => size.small
+    NORMAL          => size.normal
+    LARGE           => size.large
+    HUGE            => size.huge
+
+cell(table t_able, int column, int row, string data, color = #FFFFFF, align = text.align_right, color background = na, float height = 0) => 
+    t_able.cell(column, row, data, text_color = color, text_size = parsedDashboardSize, text_halign = align, bgcolor = background, height = height)
+
+divider(table t_able, int row, int lastColumn) =>    
+    string rowDivider = '━━━━━━━━━━━━━━'
+    t_able.merge_cells(0, row, lastColumn, row)
+    cell(t_able, 0, row, rowDivider, align = text.align_center, height = 0.5, color = BORDERS)
+
+// Color Interpolation
+getThemeColor(float val, array<color> palette) =>
+    float nVal = math.max(0.0, math.min(1.0, val))
+    float segment = nVal * 9.0
+    int idx = int(math.floor(segment))
+    float fract = segment - idx
+    color c1 = palette.get(math.min(idx, 9))
+    color c2 = palette.get(math.min(idx + 1, 9))
+    color.from_gradient(fract, 0, 1, c1, c2)
+
+var array<color> activePalette = switch themeInput
+    "Viridis" => VIRIDIS
+    "Inferno" => INFERNO
+    "Magma"   => MAGMA
+    "Plasma"  => PLASMA
+    "Cividis" => CIVIDIS
+    "Turbo"   => TURBO
+    => TURBO
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Calculation Logic
+//---------------------------------------------------------------------------------------------------------------------{
+var float[] bp1 = array.new<float>(ROWS, 0.0)
+var float[] bp2 = array.new<float>(ROWS, 0.0)
+var float[] pwr = array.new<float>(ROWS, 0.0)
+
+float maxPower = 0.0
+int   dpIdx    = 0
+float pi       = math.pi
+float src      = hl2
+
+getPeriod(int i) =>
+    minPeriodInput * math.pow(maxPeriodInput / minPeriodInput, float(i) / (ROWS - 1))
+
+for i = 0 to ROWS - 1
+    float period = getPeriod(i)
+    float beta   = math.cos(2.0 * pi / period)
+    float gamma  = 1.0 / math.cos(4.0 * pi * bandwidthInput / period)
+    float alpha  = gamma - math.sqrt(gamma * gamma - 1.0)
+    
+    float prevBP1 = nz(array.get(bp1, i))
+    float prevBP2 = nz(array.get(bp2, i))
+    float diff    = nz(src - src[2])
+    float bp      = 0.5 * (1.0 - alpha) * diff + beta * (1.0 + alpha) * prevBP1 - alpha * prevBP2
+    
+    float instantaneousPower = bp * bp
+    float smoothedPower = nz(array.get(pwr, i)) + (instantaneousPower - nz(array.get(pwr, i))) / smoothInput
+    
+    array.set(bp2, i, prevBP1)
+    array.set(bp1, i, bp)
+    array.set(pwr, i, smoothedPower)
+    
+    if smoothedPower > maxPower
+        maxPower := smoothedPower
+        dpIdx    := i
+
+// DP Metrics
+float currentDP = getPeriod(dpIdx)
+float avgDP     = ta.sma(currentDP, 20)
+
+// Normalize Colors
+var color[] rowColors = array.new<color>(ROWS)
+for i = 0 to ROWS - 1
+    float normalizedPwr = maxPower > 0 ? array.get(pwr, i) / maxPower : 0.0
+    array.set(rowColors, i, getThemeColor(normalizedPwr, activePalette))
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visualization
+//---------------------------------------------------------------------------------------------------------------------{
+// Heatmap
+plot(30, "Row 30", array.get(rowColors, 29), style = plot.style_columns, histbase = 29, display = display.all - display.status_line)
+plot(29, "Row 29", array.get(rowColors, 28), style = plot.style_columns, histbase = 28, display = display.all - display.status_line)
+plot(28, "Row 28", array.get(rowColors, 27), style = plot.style_columns, histbase = 27, display = display.all - display.status_line)
+plot(27, "Row 27", array.get(rowColors, 26), style = plot.style_columns, histbase = 26, display = display.all - display.status_line)
+plot(26, "Row 26", array.get(rowColors, 25), style = plot.style_columns, histbase = 25, display = display.all - display.status_line)
+plot(25, "Row 25", array.get(rowColors, 24), style = plot.style_columns, histbase = 24, display = display.all - display.status_line)
+plot(24, "Row 24", array.get(rowColors, 23), style = plot.style_columns, histbase = 23, display = display.all - display.status_line)
+plot(23, "Row 23", array.get(rowColors, 22), style = plot.style_columns, histbase = 22, display = display.all - display.status_line)
+plot(22, "Row 22", array.get(rowColors, 21), style = plot.style_columns, histbase = 21, display = display.all - display.status_line)
+plot(21, "Row 21", array.get(rowColors, 20), style = plot.style_columns, histbase = 20, display = display.all - display.status_line)
+plot(20, "Row 20", array.get(rowColors, 19), style = plot.style_columns, histbase = 19, display = display.all - display.status_line)
+plot(19, "Row 19", array.get(rowColors, 18), style = plot.style_columns, histbase = 18, display = display.all - display.status_line)
+plot(18, "Row 18", array.get(rowColors, 17), style = plot.style_columns, histbase = 17, display = display.all - display.status_line)
+plot(17, "Row 17", array.get(rowColors, 16), style = plot.style_columns, histbase = 16, display = display.all - display.status_line)
+plot(16, "Row 16", array.get(rowColors, 15), style = plot.style_columns, histbase = 15, display = display.all - display.status_line)
+plot(15, "Row 15", array.get(rowColors, 14), style = plot.style_columns, histbase = 14, display = display.all - display.status_line)
+plot(14, "Row 14", array.get(rowColors, 13), style = plot.style_columns, histbase = 13, display = display.all - display.status_line)
+plot(13, "Row 13", array.get(rowColors, 12), style = plot.style_columns, histbase = 12, display = display.all - display.status_line)
+plot(12, "Row 12", array.get(rowColors, 11), style = plot.style_columns, histbase = 11, display = display.all - display.status_line)
+plot(11, "Row 11", array.get(rowColors, 10), style = plot.style_columns, histbase = 10, display = display.all - display.status_line)
+plot(10, "Row 10", array.get(rowColors, 9),  style = plot.style_columns, histbase = 9,  display = display.all - display.status_line)
+plot(9, "Row 9",  array.get(rowColors, 8),  style = plot.style_columns, histbase = 8,  display = display.all - display.status_line)
+plot(8, "Row 8",  array.get(rowColors, 7),  style = plot.style_columns, histbase = 7,  display = display.all - display.status_line)
+plot(7, "Row 7",  array.get(rowColors, 6),  style = plot.style_columns, histbase = 6,  display = display.all - display.status_line)
+plot(6, "Row 6",  array.get(rowColors, 5),  style = plot.style_columns, histbase = 5,  display = display.all - display.status_line)
+plot(5, "Row 5",  array.get(rowColors, 4),  style = plot.style_columns, histbase = 4,  display = display.all - display.status_line)
+plot(4, "Row 4",  array.get(rowColors, 3),  style = plot.style_columns, histbase = 3,  display = display.all - display.status_line)
+plot(3, "Row 3",  array.get(rowColors, 2),  style = plot.style_columns, histbase = 2,  display = display.all - display.status_line)
+plot(2, "Row 2",  array.get(rowColors, 1),  style = plot.style_columns, histbase = 1,  display = display.all - display.status_line)
+plot(1, "Row 1",  array.get(rowColors, 0),  style = plot.style_columns, histbase = 0,  display = display.all - display.status_line)
+
+// Dominant Period Visuals
+plot(dpIdx + 0.5, "Dominant Period Marker", color.red, 1, style = plot.style_cross, display = display.pane)
+plot(currentDP,   "Dominant Period",        color.red, 1, display = display.status_line)
+
+// Labels
+var label labelMin = label.new(bar_index, 1, str.tostring(minPeriodInput, "Min: #"), xloc = xloc.bar_index, yloc = yloc.price, color = #00000000, textcolor = chart.fg_color, style = label.style_label_left, size = size.small)
+var label labelMax = label.new(bar_index, 30, str.tostring(maxPeriodInput, "Max: #"), xloc = xloc.bar_index, yloc = yloc.price, color = #00000000, textcolor = chart.fg_color, style = label.style_label_left, size = size.small)
+
+if barstate.islast
+    label.set_xy(labelMin, bar_index + 2, 1)
+    label.set_xy(labelMax, bar_index + 2, 30)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Dashboard
+//---------------------------------------------------------------------------------------------------------------------{
+var table t_able = table.new(parsedDashboardPosition, 2, 7, bgcolor = BACKGROUND, border_width = 0, frame_color = BORDERS, frame_width = 1, force_overlay = false)
+
+if dashboardInput and barstate.islast
+    t_able.merge_cells(0, 0, 1, 0)
+    cell(t_able, 0, 0, "Frequency Analysis", color = DATA, align = text.align_center)
+    
+    divider(t_able, 1, 1)
+    
+    cell(t_able, 0, 2, "Current DP",  color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 2, str.tostring(currentDP, "#.##") + " Bars", color = DATA)
+    
+    divider(t_able, 3, 1)
+    
+    cell(t_able, 0, 4, "Average DP",  color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 4, str.tostring(avgDP, "#.##") + " Bars", color = DATA)
+    
+    divider(t_able, 5, 1)
+    
+    cell(t_able, 0, 6, "Lowest Period", color = HEADERS, align = text.align_left)
+    cell(t_able, 1, 6, str.tostring(minPeriodInput, "#") + " Bars", color = DATA)
+
+//---------------------------------------------------------------------------------------------------------------------}

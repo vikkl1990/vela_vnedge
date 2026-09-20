@@ -24,15 +24,23 @@ console.log(`${symbol} ${tf}: ${bars.length} closed bars, tick ${tick}`);
 
 const pool = new PinePool(4, 120_000);
 const rows: any[] = [];
-await Promise.all(manifest.filter(m => m.status !== 'unavailable' && (!only || m.id.includes(only))).map(async (m) => {
+const reportFile = path.join(SCRIPTS_DIR, 'compat-report.json');
+const merge = process.argv[6] === '--merge'; // keep rows of scripts not run this time
+const previous: Record<string, any> = {};
+if (merge && fs.existsSync(reportFile)) for (const r of JSON.parse(fs.readFileSync(reportFile, 'utf8')).rows ?? []) previous[r.id] = r;
+const save = () => { const byId: Record<string, any> = { ...previous }; for (const r of rows) byId[r.id] = r; fs.writeFileSync(reportFile, JSON.stringify({ at: new Date().toISOString(), symbol, tf, bars: bars.length, rows: Object.values(byId) }, null, 1)); };
+const withDeadline = <T,>(p: Promise<T>, ms: number, onTimeout: () => T): Promise<T> => new Promise((resolve) => { const t = setTimeout(() => resolve(onTimeout()), ms); p.then(v => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(onTimeout()); }); });
+await Promise.all(manifest.filter(m => m.status !== 'unavailable' && (!only || only === '-' || only.split(',').some((o: string) => m.id === o || m.id.includes(o)))).map(async (m) => {
   const raw = fs.readFileSync(path.join(PINE_DIR, m.file), 'utf8');
   const { source, applied } = applyPatches(raw, m.file);
-  const r = await pool.run({ scannerId: m.id, source, symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 });
+  const r = await withDeadline(pool.run({ scannerId: m.id, source, symbol, tf, tickSize: tick, bars, tailBars: 'all', plotTail: 50 }), 150_000, () => ({ ok: false, error: 'hung: no result within 150s (script likely loops forever under PineTS)', ms: 150_000, alerts: [], shapes: [], labels: [], plots: [], warnings: 0 } as any));
   const entryish = r.alerts.filter(a => a.type === 'alert' && /🟢|🔴|LONG|SHORT|BUY|SELL/i.test(a.message)).length;
   rows.push({ id: m.id, ok: r.ok, ms: r.ms, error: r.error, patches: applied, alerts: r.alerts.length, entryish, shapes: r.shapes.map(s => `${s.title}:${s.times.length}`).join(','), labels: r.labels.length, plots: r.plots.length, warnings: r.warnings });
+  if (rows.length % 10 === 0) save();
   console.log((r.ok ? 'OK  ' : 'FAIL') + ' ' + m.id.padEnd(36) + ` ${String(r.ms).padStart(5)}ms ` + (r.ok ? `alerts=${r.alerts.length} entryish=${entryish} shapes=[${r.shapes.map(s => `${s.title}:${s.times.length}`).join(',')}] labels=${r.labels.length} plots=${r.plots.length}` + (applied.length ? ` patches=${applied.join('+')}` : '') : `ERR ${r.error}`));
 }));
-await pool.stop();
+save();
 const ok = rows.filter(r => r.ok).length;
 console.log(`\n${ok}/${rows.length} scripts run.`);
-fs.writeFileSync(path.join(SCRIPTS_DIR, 'compat-report.json'), JSON.stringify({ at: new Date().toISOString(), symbol, tf, bars: bars.length, rows }, null, 1));
+await pool.stop();
+process.exit(0);

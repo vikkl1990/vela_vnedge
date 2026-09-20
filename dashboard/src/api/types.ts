@@ -51,6 +51,8 @@ export interface ScannerConfig {
 
 export interface Config {
   symbols: string[]
+  universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
+  resolvedSymbols?: string[]
   timeframes: string[]
   historyBars: number
   paper: PaperConfig
@@ -125,6 +127,7 @@ export interface LastRun {
 export interface Scanner {
   id: string
   name: string
+  author?: string
   file: string
   url: string
   status: ScannerStatus

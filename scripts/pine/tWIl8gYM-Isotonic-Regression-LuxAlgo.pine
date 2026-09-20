@@ -1,0 +1,184 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Isotonic Regression [LuxAlgo]", "LuxAlgo - Isotonic Regression", overlay = true, max_polylines_count = 100, max_lines_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+color BULL_COLOR = #089981
+color BEAR_COLOR = #f23645
+
+SOLID            = "Solid"
+DASHED           = "Dashed"
+DOTTED           = "Dotted"
+
+STYLE_GROUP      = "Style"
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+lengthInput     = input.int(200, "Lookback Length", minval = 2, maxval = 5000)
+sourceInput     = input.source(close, "Source")
+directionInput  = input.string("Auto", "Direction", options = ["Auto", "Non-Decreasing", "Non-Increasing"])
+thresholdInput  = input.int(10, "Flat Period Threshold", minval = 1, tooltip = "Minimum duration of a flat period to highlight as a dashed level.")
+
+fitBullColorInput = input.color(BULL_COLOR, "Fit Bullish", group = STYLE_GROUP, inline = "Fit Colors")
+fitBearColorInput = input.color(BEAR_COLOR, "Fit Bearish", group = STYLE_GROUP, inline = "Fit Colors")
+fitStyleInput     = input.string(SOLID, "Fit Style", options = [SOLID, DASHED, DOTTED], group = STYLE_GROUP, inline = "Fit Style")
+fitWidthInput     = input.int(2, "Width", minval = 1, maxval = 5, group = STYLE_GROUP, inline = "Fit Style")
+
+extBullColorInput = input.color(BULL_COLOR, "Ext Bullish", group = STYLE_GROUP, inline = "Ext Colors")
+extBearColorInput = input.color(BEAR_COLOR, "Ext Bearish", group = STYLE_GROUP, inline = "Ext Colors")
+extStyleInput     = input.string(DASHED, "Ext Style", options = [SOLID, DASHED, DOTTED], group = STYLE_GROUP, inline = "Ext Style")
+extWidthInput     = input.int(1, "Width", minval = 1, maxval = 5, group = STYLE_GROUP, inline = "Ext Style")
+//---------------------------------------------------------------------------------------------------------------------}
+// Functions
+//---------------------------------------------------------------------------------------------------------------------{
+// @function Returns the line style constant based on a string input
+// @param style The string style name
+// @returns The line style constant
+getStyle(style) =>
+    switch style
+        SOLID  => line.style_solid
+        DASHED => line.style_dashed
+        DOTTED => line.style_dotted
+        => line.style_solid
+
+// @function Computes isotonic (monotonic) regression on an array of values using Pool Adjacent Violators Algorithm (PAVA)
+// @param values Array of float values to fit
+// @param increasing If true, fits non-decreasing; if false, fits non-increasing
+// @returns Array of fitted values
+isotonicRegression(array<float> values, bool increasing) =>
+    int n = array.size(values)
+    
+    // Copy values to work with
+    array<float> fitted = array.copy(values)
+    
+    // For non-increasing, we negate, apply non-decreasing, then negate back
+    if not increasing
+        for i = 0 to n - 1
+            array.set(fitted, i, -array.get(fitted, i))
+    
+    // Pool Adjacent Violators Algorithm (PAVA)
+    // We use block representation: each block has a value and weight
+    array<float> blockValues  = array.new_float()
+    array<int>   blockWeights = array.new_int()
+    array<int>   blockStarts  = array.new_int()
+    
+    for i = 0 to n - 1
+        // Add new block with single element
+        array.push(blockValues, array.get(fitted, i))
+        array.push(blockWeights, 1)
+        array.push(blockStarts, i)
+        
+        // Merge blocks while violation exists (current block < previous block)
+        while array.size(blockValues) > 1
+            int lastIdx = array.size(blockValues) - 1
+            float lastVal = array.get(blockValues, lastIdx)
+            float prevVal = array.get(blockValues, lastIdx - 1)
+            
+            if lastVal >= prevVal
+                break
+            
+            // Merge: weighted average
+            int lastWeight = array.get(blockWeights, lastIdx)
+            int prevWeight = array.get(blockWeights, lastIdx - 1)
+            float mergedVal = (prevVal * prevWeight + lastVal * lastWeight) / (prevWeight + lastWeight)
+            int mergedWeight = prevWeight + lastWeight
+            
+            // Remove last two, add merged
+            array.pop(blockValues)
+            array.pop(blockWeights)
+            array.pop(blockStarts)
+            
+            array.set(blockValues, lastIdx - 1, mergedVal)
+            array.set(blockWeights, lastIdx - 1, mergedWeight)
+    
+    // Reconstruct fitted values from blocks
+    array<float> result = array.new_float(n)
+    int numBlocks = array.size(blockValues)
+    
+    for b = 0 to numBlocks - 1
+        int startIdx = array.get(blockStarts, b)
+        int endIdx = b < numBlocks - 1 ? array.get(blockStarts, b + 1) - 1 : n - 1
+        float val = array.get(blockValues, b)
+        
+        for i = startIdx to endIdx
+            array.set(result, i, val)
+    
+    // Negate back for non-increasing
+    if not increasing
+        for i = 0 to n - 1
+            array.set(result, i, -array.get(result, i))
+    
+    [result, blockValues, blockStarts]
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Main Logic
+//---------------------------------------------------------------------------------------------------------------------{
+if barstate.islast
+    // Collect recent prices
+    array<float> prices = array.new_float(lengthInput)
+    for i = 0 to lengthInput - 1
+        array.set(prices, i, sourceInput[lengthInput - 1 - i])
+    
+    // Determine direction
+    bool useIncreasing = true
+    if directionInput == "Auto"
+        // Auto-detect: use linear regression slope
+        float firstPrice = array.get(prices, 0)
+        float lastPrice  = array.get(prices, lengthInput - 1)
+        useIncreasing := lastPrice >= firstPrice
+    else
+        useIncreasing := directionInput == "Non-Decreasing"
+    
+    // Compute isotonic regression
+    [fitted, blockValues, blockStarts] = isotonicRegression(prices, useIncreasing)
+    
+    // Trend color based on the slope of the regression
+    float firstVal = array.get(fitted, 0)
+    float lastVal  = array.get(fitted, lengthInput - 1)
+    bool isBullish = lastVal >= firstVal
+    
+    color fitColor = isBullish ? fitBullColorInput : fitBearColorInput
+    color extColor = isBullish ? extBullColorInput : extBearColorInput
+
+    // Build chart points for polyline
+    array<chart.point> points = array.new<chart.point>()
+    for i = 0 to lengthInput - 1
+        int idx = bar_index - lengthInput + 1 + i
+        float val = array.get(fitted, i)
+        array.push(points, chart.point.from_index(idx, val))
+    
+    // Draw the isotonic regression line
+    polyline.new(points, curved = false, line_color = fitColor, line_style = getStyle(fitStyleInput), line_width = fitWidthInput)
+    
+    // Highlight flat periods (blocks) with duration > threshold
+    int numBlocks = array.size(blockValues)
+    for b = 0 to numBlocks - 1
+        int startIdxWithinArray = array.get(blockStarts, b)
+        int endIdxWithinArray = b < numBlocks - 1 ? array.get(blockStarts, b + 1) - 1 : lengthInput - 1
+        int duration = endIdxWithinArray - startIdxWithinArray + 1
+        
+        if duration >= thresholdInput
+            float levelValue = array.get(blockValues, b)
+            // If direction was non-increasing, blockValues were stored negated internally and returned as-is? 
+            // Actually, my modified isotonicRegression returns result negated back, but let's check blockValues.
+            // In the function: if not increasing, we negate 'fitted' (input copy). 
+            // The algorithm runs on negated values. blockValues stores these values.
+            // To get correct level:
+            float correctedLevel = useIncreasing ? levelValue : -levelValue
+            
+            int x1 = bar_index - lengthInput + 1 + startIdxWithinArray
+            line.new(
+              x1     = x1, 
+              y1     = correctedLevel, 
+              x2     = bar_index, 
+              y2     = correctedLevel, 
+              color  = extColor, 
+              style  = getStyle(extStyleInput), 
+              width  = extWidthInput
+              )
+
+//---------------------------------------------------------------------------------------------------------------------}

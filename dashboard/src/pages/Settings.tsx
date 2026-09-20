@@ -7,6 +7,7 @@ import { useToast } from '../lib/toast'
 
 type Form = {
   symbols: string[]
+  universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
   timeframes: string[]
   historyBars: number
   paper: PaperConfig
@@ -15,6 +16,7 @@ type Form = {
 function toForm(c: Config): Form {
   return {
     symbols: [...(c.symbols ?? [])],
+    universe: c.universe ? { ...c.universe, exclude: [...(c.universe.exclude ?? [])] } : { mode: 'list' as const, top: 20, exclude: [] },
     timeframes: [...(c.timeframes ?? [])],
     historyBars: c.historyBars,
     paper: {
@@ -111,7 +113,7 @@ export function Settings() {
   const save = () => {
     if (Object.keys(errors).length) return toast.error('Fix validation errors first')
     update.mutate(
-      { symbols: form.symbols, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
+      { symbols: form.symbols, universe: form.universe, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
       {
         onSuccess: () => {
           setDraft(null)
@@ -140,8 +142,25 @@ export function Settings() {
       <div className="grid-2">
         <Panel title="Market data">
           <div className="form">
+            <label className="field">
+              <span className="field-label">Symbol universe</span>
+              <select className="input" value={form.universe?.mode ?? 'list'} onChange={(e) => edit((f) => ({ ...f, universe: { mode: e.target.value as 'list' | 'top' | 'all', top: f.universe?.top ?? 20, exclude: f.universe?.exclude ?? [] } }))}>
+                <option value="list">Fixed list (below)</option>
+                <option value="top">Top N Delta perpetuals by 24h volume</option>
+                <option value="all">All live Delta perpetuals (heavy)</option>
+              </select>
+              {config.data.resolvedSymbols && (
+                <span className="muted small">currently scanning {config.data.resolvedSymbols.length} symbols: {config.data.resolvedSymbols.slice(0, 12).join(', ')}{config.data.resolvedSymbols.length > 12 ? '…' : ''}</span>
+              )}
+            </label>
+            {(form.universe?.mode ?? 'list') === 'top' && (
+              <label className="field">
+                <span className="field-label">Top N</span>
+                <input className="input mono" type="number" min={1} max={300} step={1} value={form.universe?.top ?? 20} onChange={(e) => edit((f) => ({ ...f, universe: { mode: 'top', top: Number(e.target.value), exclude: f.universe?.exclude ?? [] } }))} />
+              </label>
+            )}
             <div className={`field ${errors.symbols ? 'field-error' : ''}`}>
-              <span className="field-label">Symbols</span>
+              <span className="field-label">{(form.universe?.mode ?? 'list') === 'list' ? 'Symbols' : 'Symbols (used when universe = fixed list)'}</span>
               <SymbolPicker options={symbolOptions} value={form.symbols} onChange={(v) => edit((f) => ({ ...f, symbols: v }))} />
               {errors.symbols && <span className="field-err">{errors.symbols}</span>}
               {markets.isError && <span className="muted small">markets endpoint unavailable — showing configured symbols only</span>}

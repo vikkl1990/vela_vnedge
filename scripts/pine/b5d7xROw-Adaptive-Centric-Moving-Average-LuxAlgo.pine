@@ -1,0 +1,67 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Adaptive Centric Moving Average [LuxAlgo]", "LuxAlgo - Adaptive Centric Moving Average", true)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+priceGroup          = 'Price Settings'
+srcInput            = input.source(close, 'Source', group = priceGroup)
+lengthInput         = input.int(10, 'Length', minval = 1, group = priceGroup)
+
+amaGroup            = 'Adaptive Settings'
+attenuationInput    = input.float(1, 'Attenuation Factor', minval = 0.1, step = 0.1, group = amaGroup, tooltip = 'Controls the intensity of the price input and the base smoothing speed.')
+powerInput          = input.float(2, 'Power Factor', minval = 0.1, step = 0.1, group = amaGroup, tooltip = 'Exponents the smoothing factor. Higher values make the MA flatter when price is near the range midpoint.')
+
+colorGroup          = 'Colors'
+amaColorInput       = input.color(#5b9cf6, 'AMA Color', group = colorGroup)
+bullColorInput      = input.color(#089981, 'Bullish Fill', group = colorGroup)
+bearColorInput      = input.color(#f23645, 'Bearish Fill', group = colorGroup)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+// Pre-Smoothing sources using Length
+src   = ta.sma(srcInput, lengthInput)
+sHigh = ta.sma(high, lengthInput)
+sLow  = ta.sma(low, lengthInput)
+
+// Range boundaries
+h = ta.highest(sHigh, lengthInput)
+l = ta.lowest(sLow, lengthInput)
+
+// Normalization logic (Relative position 0-100)
+stoch = ta.stoch(src, h, l, lengthInput)
+
+// Adaptive Logic
+// alphaBase = (abs(stoch - 50) / 100) / attenuation
+// alpha     = pow(alphaBase, power)
+float alphaBase = (math.abs(stoch - 50) / 100) / attenuationInput
+float alpha     = math.pow(alphaBase, powerInput)
+
+float mid    = (h + l) / 2
+float srcAma = mid + (src - mid) / attenuationInput
+
+var float amaValue = src
+amaValue := nz(amaValue[1]) + alpha * (srcAma - nz(amaValue[1]))
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visuals
+//---------------------------------------------------------------------------------------------------------------------{
+// AMA Plot
+amaPlotId = plot(amaValue, 'Adaptive Centric Moving Average', amaColorInput, 2)
+
+// Price Plot (for fills)
+pricePlotId = plot(src, 'Source Price', display = display.none)
+
+// Fill - Gradient from AMA to Price
+fill(amaPlotId, pricePlotId, 
+     top_value    = math.max(src, amaValue), 
+     bottom_value = math.min(src, amaValue),
+     top_color    = src > amaValue ? color.new(bullColorInput, 50) : color.new(chart.bg_color, 100),
+     bottom_color = src > amaValue ? color.new(chart.bg_color, 100) : color.new(bearColorInput, 50),
+     title        = 'Price-AMA Gradient')
+
+//---------------------------------------------------------------------------------------------------------------------}

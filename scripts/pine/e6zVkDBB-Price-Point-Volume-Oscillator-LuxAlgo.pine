@@ -1,0 +1,138 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+
+//@version=6
+indicator("Price-Point Volume Oscillator [LuxAlgo]", "LuxAlgo - Price-Point Volume", overlay = false, format = format.volume)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants
+//---------------------------------------------------------------------------------------------------------------------{
+color BULL_COLOR = #089981
+color BEAR_COLOR = #f23645
+color DATA       = #DBDBDB
+color HEADERS    = #808080
+color BACKGROUND = #161616
+color BORDERS    = #2E2E2E
+
+string TOP_RIGHT    = 'Top Right'
+string BOTTOM_RIGHT = 'Bottom Right'
+string BOTTOM_LEFT  = 'Bottom Left'
+
+string TINY   = 'Tiny'
+string SMALL  = 'Small'
+string NORMAL = 'Normal'
+string LARGE  = 'Large'
+string HUGE   = 'Huge'
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+int lengthInput    = input.int(100, "Lookback Window", minval = 1, group = "Settings", tooltip = "Number of historical bars to analyze for volume distribution at the current price.")
+bool showDashInput = input.bool(true, "Show Dashboard", group = "Visuals")
+string dashPosInput = input.string(TOP_RIGHT, "Position", options = [TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT], group = "Visuals")
+string dashSizeInput = input.string(SMALL, "Size", options = [TINY, SMALL, NORMAL, LARGE, HUGE], group = "Visuals")
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Functions
+//---------------------------------------------------------------------------------------------------------------------{
+// Function to format volume into human-readable strings (K, M, B suffixes)
+formatVolume(float value) =>
+    float absVal = math.abs(value)
+    string sign  = value < 0 ? "-" : ""
+    string res   = ""
+    if absVal >= 1e9
+        res := str.format("{0,number,#.#}B", absVal / 1e9)
+    else if absVal >= 1e6
+        res := str.format("{0,number,#.#}M", absVal / 1e6)
+    else if absVal >= 1e3
+        res := str.format("{0,number,#.#}K", absVal / 1e3)
+    else
+        res := str.format("{0,number,#.##}", absVal)
+    sign + res
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+float buyVolAtPrice  = 0.0
+float sellVolAtPrice = 0.0
+float totalVolAtPrice = 0.0
+
+// Mathematically rigorous loop to estimate volume distribution at the current price level
+for i = 0 to lengthInput - 1
+    float h = high[i]
+    float l = low[i]
+    float v = nz(volume[i])
+    float c = close[i]
+    
+    // Check if the current close price was within the range of the historical bar
+    if close >= l and close <= h
+        float barRange = h - l
+        // Determine the buying pressure ratio based on where the bar closed within its range
+        // If barRange is 0, we assume a 50/50 split
+        float ratio = barRange != 0 ? (c - l) / barRange : 0.5
+        
+        buyVolAtPrice  += v * ratio
+        sellVolAtPrice += v * (1.0 - ratio)
+
+totalVolAtPrice := buyVolAtPrice + sellVolAtPrice
+float delta      = buyVolAtPrice - sellVolAtPrice
+float deltaPct   = totalVolAtPrice != 0 ? (delta / totalVolAtPrice) * 100 : 0
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Visuals
+//---------------------------------------------------------------------------------------------------------------------{
+// Background Areas (Transparent)
+plot(buyVolAtPrice, "Buy Volume at Price", color.new(BULL_COLOR, 85), 1, plot.style_area)
+plot(-sellVolAtPrice, "Sell Volume at Price", color.new(BEAR_COLOR, 85), 1, plot.style_area)
+
+// Zero line
+hline(0, "Zero Line", color.new(chart.fg_color, 70), hline.style_dashed)
+
+// Foreground Delta Histogram
+plot(delta, "Volume Delta Histogram", delta >= 0 ? BULL_COLOR : BEAR_COLOR, 1, plot.style_histogram)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Dashboard
+//---------------------------------------------------------------------------------------------------------------------{
+var parsedPos  = switch dashPosInput
+    TOP_RIGHT    => position.top_right
+    BOTTOM_RIGHT => position.bottom_right
+    BOTTOM_LEFT  => position.bottom_left
+
+var parsedSize = switch dashSizeInput
+    TINY   => size.tiny
+    SMALL  => size.small
+    NORMAL => size.normal
+    LARGE  => size.large
+    HUGE   => size.huge
+
+cell(table t, int c, int r, string txt, color clr = #FFFFFF, string aln = text.align_right) => 
+    t.cell(c, r, txt, text_color = clr, text_size = parsedSize, text_halign = aln, bgcolor = na)
+
+divider(table t, int r, int lastCol) =>    
+    t.merge_cells(0, r, lastCol, r)
+    t.cell(0, r, '━━━━━━━━━━━━━━', text_color = BORDERS, text_size = parsedSize, text_halign = text.align_center, height = 0.5)
+
+if showDashInput and barstate.islast
+    var table dash = table.new(parsedPos, 2, 7, bgcolor = BACKGROUND, frame_color = BORDERS, frame_width = 1)
+    
+    table.merge_cells(dash, 0, 0, 1, 0)
+    cell(dash, 0, 0, "Volume @ Price", DATA, text.align_center)
+    
+    divider(dash, 1, 1)
+    
+    cell(dash, 0, 2, "Est. Buy", HEADERS, text.align_left)
+    cell(dash, 1, 2, formatVolume(buyVolAtPrice), BULL_COLOR)
+    
+    cell(dash, 0, 3, "Est. Sell", HEADERS, text.align_left)
+    cell(dash, 1, 3, formatVolume(sellVolAtPrice), BEAR_COLOR)
+    
+    divider(dash, 4, 1)
+    
+    cell(dash, 0, 5, "Delta", HEADERS, text.align_left)
+    cell(dash, 1, 5, formatVolume(delta), delta >= 0 ? BULL_COLOR : BEAR_COLOR)
+    
+    cell(dash, 0, 6, "Delta %", HEADERS, text.align_left)
+    cell(dash, 1, 6, str.format("{0,number,#.##}%", deltaPct), delta >= 0 ? BULL_COLOR : BEAR_COLOR)
+
+//---------------------------------------------------------------------------------------------------------------------}

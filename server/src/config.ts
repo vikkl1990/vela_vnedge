@@ -47,8 +47,17 @@ export interface ExecutionConfig {
   mode: 'paper' | 'testnet';
 }
 
+export interface SymbolUniverse {
+  /** `list`: use `symbols` as given. `top`: the `top` most-traded Delta perpetuals by 24h turnover. `all`: every live Delta perpetual. */
+  mode: 'list' | 'top' | 'all';
+  top: number;
+  /** Symbols never scanned (illiquid or unwanted), applied in top/all modes. */
+  exclude: string[];
+}
+
 export interface AppConfig {
   symbols: string[];
+  universe: SymbolUniverse;
   timeframes: string[];
   historyBars: number;
   paper: PaperConfig;
@@ -58,6 +67,7 @@ export interface AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   symbols: ['BTCUSD', 'ETHUSD'],
+  universe: { mode: 'list', top: 20, exclude: [] },
   timeframes: ['15m'],
   historyBars: 1000,
   paper: {
@@ -131,7 +141,9 @@ function deepMerge<T>(base: T, patch: Partial<T> | undefined): T {
 
 export function validateConfig(c: AppConfig): string[] {
   const errs: string[] = [];
-  if (!Array.isArray(c.symbols) || c.symbols.length === 0) errs.push('symbols must be a non-empty array');
+  if (!Array.isArray(c.symbols) || (c.symbols.length === 0 && c.universe?.mode === 'list')) errs.push('symbols must be a non-empty array');
+  if (!['list', 'top', 'all'].includes(c.universe?.mode)) errs.push('universe.mode must be list|top|all');
+  if (!(c.universe.top >= 1 && c.universe.top <= 300)) errs.push('universe.top must be 1..300');
   if (!Array.isArray(c.timeframes) || c.timeframes.length === 0) errs.push('timeframes must be a non-empty array');
   for (const tf of c.timeframes || []) if (!(tf in TF_SECONDS)) errs.push(`unsupported timeframe ${tf}`);
   if (!(c.historyBars >= 200 && c.historyBars <= 4000)) errs.push('historyBars must be 200..4000');

@@ -40,14 +40,20 @@ Other commands:
 
 ## What you get
 
-* **42 scanners** from <https://in.tradingview.com/u/WillyAlgoTrader/#published-scripts>.
-  40 are open-source and all 40 execute under PineTS (some need small
-  compatibility patches, listed per scanner in the UI). 2 are not runnable because their
-  source is not published on TradingView: *Trader Assistant Pro* (invite-only) and
-  *Adaptive Trend Pro* (protected).
+* **451 scanners**: 42 from <https://in.tradingview.com/u/WillyAlgoTrader/#published-scripts>
+  (40 open-source, all 40 execute under PineTS with small compatibility patches listed per
+  scanner in the UI) and 409 from <https://in.tradingview.com/u/LuxAlgo/#published-scripts>
+  (395 open-source; the share that PineTS can execute is recorded in
+  `scripts/compat-report.json` and shown as the scanner status). Import more authors with
+  `node server/src/cli/import-scripts.ts <author> <list.json>` (the list comes from
+  `https://in.tradingview.com/api/v1/scripts/?by=<user>&per_page=100&page=N`).
+* **Symbol universe**: a fixed list, the top-N Delta perpetuals by 24h turnover, or all live
+  perpetuals (Settings → Symbol universe). Every enabled scanner runs on every symbol on each
+  bar close, so mind the product: 300 scanners × 20 symbols is ~6000 script runs per 15m bar.
 * Each scanner runs on every **closed bar** for each configured symbol × timeframe
   (default `BTCUSD`, `ETHUSD` on `15m`), in isolated worker threads.
-* Signals come from the scripts' own `alert()` messages (`🟢 LONG … SL: … TP1: … TP2: … TP3: …`,
+* Signals come from the scripts' own `alert()` messages, directional `alertcondition()`
+  titles ("Bullish Internal OB Breakout", "Upward Breakout") and directional plotshapes, (`🟢 LONG … SL: … TP1: … TP2: … TP3: …`,
   `🛑 SL HIT`, `🎯 TP1 HIT`, `🔄 REVERSAL`, SATS `buy LONG @ …`, …) with `plotshape`
   and ATR-based fallbacks for scripts that don't publish levels.
 * Scripts that only publish market structure (pivot CHoCH, squeeze fires, the volume-profile
