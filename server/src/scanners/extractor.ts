@@ -26,7 +26,7 @@ export interface ScanEvent {
   score?: number;
   label: string;
   message: string;
-  source: 'alert' | 'shape';
+  source: 'alert' | 'shape' | 'derived';
   barTime: number;
   barIndex: number;
 }
@@ -42,7 +42,7 @@ function num(re: RegExp, s: string): number | undefined {
 
 const LONG_WORDS = /\b(LONG|BUY|BULL(?:ISH)?(?:\s+(?:BREAKOUT|ABCD|SWEEP|ENTRY))?|BREAK\s*UP|SWEEP\s*BUY|RETEST\s*LONG|SWING\s*BULLISH)\b/i;
 const SHORT_WORDS = /\b(SHORT|SELL|BEAR(?:ISH)?(?:\s+(?:BREAKOUT|ABCD|SWEEP|ENTRY))?|BREAK\s*DOWN|SWEEP\s*SELL|RETEST\s*SHORT|SWING\s*BEARISH)\b/i;
-const EXIT_RE = /\b(TP\s?\d?[ _]?HIT|SL[ _]?HIT|BE[ _]?STOP(?:-OUT)?|BE[ _]?EXIT|BREAK-?EVEN|REVERSAL|FLIP[ _]?EXIT|TRADE[ _]?CLOSED|SL[ _]HIT|TP\d[ _]HIT|TRADE CLOSED|STOP(?:PED)? OUT|CLOSED)\b/i;
+const EXIT_RE = /\b(TP\s?\d?[ _]?HIT|SL[ _]?HIT|BE[ _]?STOP(?:-OUT)?|BE[ _]?EXIT|BREAK-?EVEN|REVERSAL|FLIP[ _]?EXIT|TRADE[ _]?CLOSED|SL[ _]HIT|TP\d[ _]HIT|TRADE CLOSED|STOP(?:PED)? OUT|STOP HIT|TARGET REACHED|CLOSED)\b/i;
 const INFO_ONLY = /\b(PATTERN DETECTED|ENTRY ZONE|SQUEEZE STARTED|RANGE LOCKED|VOLUME INFLOW|VOLUME OUTFLOW|FATIGUE|DIVERGENCE|ZERO (?:BULL|BEAR) CROSS|NAKED POC|VA BREAKOUT|80% RULE|CYCLE TURN|CHoCH|BOS\b|FVG|OTE Zone|Retest \||hypothesis|dismissed|EXIT OVERBOUGHT|EXIT OVERSOLD|Bull Cross|Bear Cross)\b/i;
 
 /** Leading direction cue: 🟢 = long, 🔴 = short. */
@@ -98,10 +98,10 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
   }
 
   const price = num(new RegExp(String.raw`(?:Price|Entry|Level|@)\s*:?\s*\$?\s*${NUM}`, 'i'), msg) ?? num(new RegExp(String.raw`\|\s*\$${NUM}`), msg);
-  const sl = num(new RegExp(String.raw`\bSL\s*:?\s*\$?\s*${NUM}`, 'i'), msg);
+  const sl = num(new RegExp(String.raw`\b(?:SL|Stop)\s*:?\s*\$?\s*${NUM}`, 'i'), msg);
   const tp: number[] = [];
   for (let i = 1; i <= 4; i++) { const v = num(new RegExp(String.raw`\bTP${i}\s*:?\s*\$?\s*${NUM}`, 'i'), msg); if (v !== undefined) tp[i - 1] = v; }
-  const tpSingle = num(new RegExp(String.raw`\bTP\s*:\s*\$?\s*${NUM}`, 'i'), msg);
+  const tpSingle = num(new RegExp(String.raw`\b(?:TP|Target)\s*:\s*\$?\s*${NUM}`, 'i'), msg);
   if (tp.length === 0 && tpSingle !== undefined) tp.push(tpSingle);
   const score = num(new RegExp(String.raw`\b(?:Score|Conf|Strength|ML|Quality)\s*:?\s*${NUM}`, 'i'), msg);
   const cleanTp = tp.filter((v): v is number => typeof v === 'number');
@@ -111,7 +111,8 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
     let exitType: ExitType = 'close';
     const tpHit = upper.match(/TP\s?(\d)[ _]?HIT/);
     if (tpHit) exitType = (`tp${tpHit[1]}` as ExitType);
-    else if (/SL[ _]?HIT|STOP(?:PED)? OUT/.test(upper) && !/\bBE\b/.test(upper)) exitType = 'sl';
+    else if (/SL[ _]?HIT|STOP(?:PED)? OUT|STOP HIT/.test(upper) && !/\bBE\b/.test(upper)) exitType = 'sl';
+    else if (/TARGET REACHED/.test(upper)) exitType = 'tp1';
     else if (/BE[ _]?STOP|BE[ _]?EXIT/.test(upper)) exitType = 'be';
     else if (/REVERSAL|FLIP/.test(upper)) exitType = 'flip';
     else if (/BREAK-?EVEN/.test(upper)) {
@@ -134,6 +135,8 @@ export function parseAlert(a: WorkerAlert): ScanEvent | null {
   if (wordLong && !wordShort) side = 'long';
   else if (wordShort && !wordLong) side = 'short';
   else if (eSide && /\bENTRY\b/i.test(head)) side = eSide; // e.g. "🟢 OTE Entry"
+  else if (eSide === 'long' && /▲/.test(head)) side = 'long';    // e.g. "🟢 DIST ▲ UP (manip LOW)" — arrow-marked calls only
+  else if (eSide === 'short' && /▼/.test(head)) side = 'short';
   if (side && !INFO_ONLY.test(head)) {
     return { ...base, kind: 'entry', side, price, sl, tp: cleanTp, score };
   }
@@ -151,6 +154,8 @@ export function shapeSide(title: string): Side | undefined {
 export interface ExtractOptions {
   /** Only events on/after this bar time are returned (live: last closed bar). */
   sinceBarTime?: number;
+  /** Extra events produced by per-scanner rules (see rules.ts); merged with alert/shape events. */
+  derived?: ScanEvent[];
 }
 
 /** Merge alert-derived and shape-derived events per bar; alerts win over shapes on the same bar/side. */
@@ -166,6 +171,13 @@ export function extractEvents(alerts: WorkerAlert[], shapes: WorkerShape[], opts
     if (ev.kind !== 'info' && seenEntry.has(key)) continue;
     seenEntry.add(key);
     events.push(ev);
+  }
+  for (const d of opts.derived ?? []) {
+    if (opts.sinceBarTime !== undefined && d.barTime < opts.sinceBarTime) continue;
+    const key = `${d.kind}:${d.side ?? ''}:${d.barTime}:`;
+    if (seenEntry.has(key)) continue;
+    seenEntry.add(key);
+    events.push(d);
   }
   for (const s of shapes) {
     const side = shapeSide(s.title);
@@ -195,6 +207,7 @@ export function describeEvent(ev: ScanEvent): string {
     if (ev.tp.length) parts.push(`targets ${ev.tp.map(fmtN).join(' / ')}`);
     if (ev.score !== undefined) parts.push(`score ${fmtN(ev.score)}`);
     if (ev.source === 'shape') parts.push(`(${ev.label} marker drawn by the script; stop/targets from ATR)`);
+    else if (ev.source === 'derived') parts.push(`(derived from ${ev.label}${ev.sl === undefined ? '; stop from ATR' : ''})`);
     else if (ev.sl === undefined) parts.push('(no stop published; ATR fallback)');
     return parts.join(' · ');
   }

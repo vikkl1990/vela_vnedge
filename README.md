@@ -50,6 +50,11 @@ Other commands:
 * Signals come from the scripts' own `alert()` messages (`🟢 LONG … SL: … TP1: … TP2: … TP3: …`,
   `🛑 SL HIT`, `🎯 TP1 HIT`, `🔄 REVERSAL`, SATS `buy LONG @ …`, …) with `plotshape`
   and ATR-based fallbacks for scripts that don't publish levels.
+* Scripts that only publish market structure (pivot CHoCH, squeeze fires, the volume-profile
+  80% rule, fib entry zones, S/R breakout labels, VWAP HL/LH structure, Elliott projections,
+  AMD distribution calls) are turned into entries by per-scanner **derivation rules**
+  (`server/src/scanners/rules.ts`); such signals are tagged *derived* and use the script's
+  levels where published, otherwise ATR stops/targets.
 * The **paper engine** sizes by risk % of equity, fills SL/TP legs on 1-minute candles,
   moves SL to break-even after TP1, charges Delta taker fees + slippage, and keeps a full
   audit trail (signals → positions → fills → trades → equity curve).

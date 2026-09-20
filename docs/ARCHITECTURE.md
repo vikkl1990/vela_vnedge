@@ -49,6 +49,14 @@ Delta Exchange India ──REST (history, products, tickers)──┐
   emitted once, right after the bar that produced it closes (TradingView "once per bar close").
 * Alerts are parsed generically: a leading 🟢/🔴 plus LONG/BUY/SHORT/SELL words → entry; `SL:`,
   `TP1..3:` (or `TP:`) → levels; `TP1 HIT`, `SL HIT`, `BE STOP-OUT`, `REVERSAL`, SATS `flip_exit` → exits.
+* `scanners/rules.ts` derives entries for scripts that never phrase a trade call: AMD Po3
+  (`DIST ▲/▼` with Entry/Stop/Target), Adaptive Pivot Structure (CHoCH reversals), Adaptive
+  Squeeze Momentum (`SQUEEZE FIRED · Direction`), Daily Volume Profile (80% rule + target),
+  Automatic Fibonacci Levels (`ENTRY ZONE`, direction/targets from TP labels), Auto S/R
+  Channels (`Breakout ▲/▼` + 🎯 label), Structure-Anchored VWAP (HL/LH labels, confirmed
+  5 bars after the pivot in backtests, on first appearance live), Elliott Impulse (live only:
+  projection labels give stop and targets). Bitcoin Almanac (cycle timing) and Trade Strategy
+  Calculator (a sizing tool) have nothing tradeable and stay informational.
 * Scripts that only draw `plotshape(Buy/Sell)` fall back to shape hits; missing levels use
   ATR(14): SL = 1.5×ATR, TP = 1R/2R/3R (configurable).
 * One position per scanner×symbol×timeframe; an opposite signal reverses when `allowReversal`.

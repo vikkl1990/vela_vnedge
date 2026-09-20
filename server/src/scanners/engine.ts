@@ -15,6 +15,7 @@ import { runBacktest, type BacktestResult } from '../paper/backtest.ts';
 import type { PinePool } from '../pine/pool.ts';
 import type { WorkerResult } from '../pine/worker.ts';
 import { extractEvents, describeEvent, type ScanEvent } from './extractor.ts';
+import { applyRules, labelKey } from './rules.ts';
 import type { ScannerRegistry, LoadedScanner } from './registry.ts';
 
 const log = logger.scoped('scanner');
@@ -37,6 +38,7 @@ export class ScannerEngine extends EventEmitter {
   private inFlight = new Set<string>();
   private backtests = new Map<string, BacktestResult>();
   private warmed = new Set<string>();
+  private seenLabels = new Map<string, Set<string>>();
 
   constructor(deps: { registry: ScannerRegistry; cfgRef: () => AppConfig; candles: CandleStore; pool: PinePool; paper: PaperEngine; db: Db; rest: DeltaRest }) {
     super();
@@ -183,8 +185,13 @@ export class ScannerEngine extends EventEmitter {
       this.overlays.set(key, { at, plots: res.plots, shapes: res.shapes, labels: res.labels });
 
       const exitMode: ExitMode = this.scannerConfig(s.id).exitMode;
+      const prevLabels = this.seenLabels.get(key);
+      const currentLabels = new Set(res.labels.map(labelKey));
+      const newLabelKeys = prevLabels ? new Set([...currentLabels].filter(k => !prevLabels.has(k))) : new Set<string>();
+      this.seenLabels.set(key, currentLabels);
       if (mode.backtest) {
-        const events = extractEvents(res.alerts, res.shapes);
+        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, bars, mode: 'backtest' });
+        const events = extractEvents(res.alerts, res.shapes, { derived });
         const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: this.cfgRef().paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
         this.backtests.set(key, bt);
         this.db.run('INSERT INTO backtests(scanner_id, symbol, tf, at, bars, result) VALUES (?,?,?,?,?,?) ON CONFLICT(scanner_id, symbol, tf) DO UPDATE SET at=excluded.at, bars=excluded.bars, result=excluded.result', s.id, symbol, tf, bt.at, bt.bars, JSON.stringify(bt));
@@ -192,7 +199,8 @@ export class ScannerEngine extends EventEmitter {
       }
       if (mode.live) {
         const lastBar = bars.at(-1)!;
-        const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: lastBar.time });
+        const derived = applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, bars, mode: 'live', newLabelKeys });
+        const events = extractEvents(res.alerts, res.shapes, { sinceBarTime: lastBar.time, derived });
         for (const ev of events) this.handleLiveEvent(s, symbol, tf, ev, bars, market, exitMode, lastBar);
       }
       this.emit('scanner', { id: s.id, lastRun: info, stats: this.paper.scannerStats(s.id) });

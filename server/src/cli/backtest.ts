@@ -6,6 +6,7 @@ import { DeltaRest } from '../delta/rest.ts';
 import { PinePool } from '../pine/pool.ts';
 import { ScannerRegistry } from '../scanners/registry.ts';
 import { extractEvents } from '../scanners/extractor.ts';
+import { applyRules } from '../scanners/rules.ts';
 import { runBacktest } from '../paper/backtest.ts';
 import { ConfigStore, TF_SECONDS } from '../config.ts';
 
@@ -25,7 +26,7 @@ const pool = new PinePool(1, 180_000);
 const res = await pool.run({ scannerId: s.id, source: s.patched, symbol, tf, tickSize: market.tickSize, bars, tailBars: 'all', plotTail: 10 });
 await pool.stop();
 if (!res.ok) { console.error('script error:', res.error); process.exit(1); }
-const events = extractEvents(res.alerts, res.shapes);
+const events = extractEvents(res.alerts, res.shapes, { derived: applyRules({ scannerId: s.id, alerts: res.alerts, shapes: res.shapes, labels: res.labels, bars, mode: 'backtest' }) });
 const exitMode = cfg.scanners[id]?.exitMode ?? 'both';
 const bt = runBacktest({ scannerId: s.id, scannerName: s.name, symbol, tf, bars, events, cfg: cfg.paper, exitMode, contractValue: market.contractValue, tickSize: market.tickSize });
 console.log(`\n${s.name} — ${symbol} ${tf}, ${bars.length} bars (${new Date(bt.from).toISOString().slice(0, 10)} → ${new Date(bt.to).toISOString().slice(0, 10)}), script ${res.ms} ms`);
