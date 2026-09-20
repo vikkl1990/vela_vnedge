@@ -228,6 +228,7 @@ export interface Position {
   qty: number
   qtyOpen: number
   contractValue: number
+  marginLeverage?: number
   leverage?: number
   liqPrice?: number | null
   notional?: number

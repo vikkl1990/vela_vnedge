@@ -62,3 +62,22 @@ test('a new minute checks full extremes and stale candles do not alter a positio
   engine.onBar('BTCUSD', { time: 120_000, high: 101, low: 94, close: 99 }, 120_010);
   assert.equal(p.exitReason, 'sl');
 });
+
+test('isolated margin cannot be reused and is released pro-rata after TP, across restart', t => {
+  const { engine, db, cfg } = setup(t);
+  Object.assign(cfg.paper, { sizingMode: 'quality', minLeverage: 5, maxLeverage: 10 });
+  const open = (e: PaperEngine, id: string) => e.onEntry({ kind: 'entry', side: 'long', price: 100, sl: 95, tp: [105, 110, 115], label: 'entry', message: '', source: 'alert', barTime: 0, barIndex: 0 }, { scannerId: id, scannerName: id, symbol: 'BTCUSD', tf: '1m', market: { tickSize: 0.25, contractValue: 1 }, refPrice: 100, at: 60_010, signalId: null, exitMode: 'both' });
+  const p = open(engine, 's').position!;
+  assert.equal(p.marginLeverage, 5);
+  assert.equal(p.leverage, 5);
+  assert.equal(open(engine, 's2').action, 'rejected');
+  engine.setMark('BTCUSD', 104);
+  assert.equal(open(engine, 's2').action, 'rejected', 'unrealized gains cannot fund isolated margin');
+  const resumed = new PaperEngine(db, () => cfg);
+  assert.equal(resumed.openPositions()[0].marginLeverage, 5);
+  assert.equal(open(resumed, 's2').action, 'rejected');
+  resumed.onScriptExit('s', 'BTCUSD', '1m', 'tp1', 105, 60_020, 'both');
+  assert.equal(open(resumed, 's2').action, 'opened');
+  const reserved = resumed.openPositions().reduce((sum, p) => sum + p.qtyOpen * p.entryPrice * p.contractValue / p.marginLeverage!, 0);
+  assert.ok(reserved <= resumed.initialEquity + resumed.realizedPnl());
+});
