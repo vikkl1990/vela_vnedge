@@ -6,6 +6,7 @@ import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
 
 type Form = {
+  execution: { mode: string }
   symbols: string[]
   universe?: { mode: 'list' | 'top' | 'all'; top: number; exclude: string[] }
   ml?: { minProb: number; useAsScore: boolean }
@@ -17,6 +18,7 @@ type Form = {
 
 function toForm(c: Config): Form {
   return {
+    execution: { mode: c.execution?.mode ?? 'paper' },
     symbols: [...(c.symbols ?? [])],
     universe: c.universe ? { ...c.universe, exclude: [...(c.universe.exclude ?? [])] } : { mode: 'list' as const, top: 20, exclude: [] },
     ml: { minProb: c.ml?.minProb ?? 0, useAsScore: c.ml?.useAsScore ?? false },
@@ -130,7 +132,7 @@ export function Settings() {
   const save = () => {
     if (Object.keys(errors).length) return toast.error('Fix validation errors first')
     update.mutate(
-      { symbols: form.symbols, universe: form.universe, ml: form.ml, autoTune: form.autoTune, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
+      { execution: form.execution, symbols: form.symbols, universe: form.universe, ml: form.ml, autoTune: form.autoTune, timeframes: form.timeframes, historyBars: form.historyBars, paper: form.paper },
       {
         onSuccess: () => {
           setDraft(null)
@@ -191,7 +193,12 @@ export function Settings() {
             <NumField label="History bars" hint="warm-up depth per symbol/tf" step="1" value={form.historyBars} error={errors.historyBars} onChange={(v) => edit((f) => ({ ...f, historyBars: v }))} />
             <label className="field">
               <span className="field-label">Execution mode</span>
-              <input className="input mono" value={config.data.execution?.mode ?? 'paper'} readOnly disabled />
+              <select className="input" value={form.execution.mode} disabled={config.data.execution?.mode === 'testnet'} onChange={e => edit(f => ({ ...f, execution: { mode: e.target.value } }))}>
+                <option value="paper">Paper — candle-based simulation</option>
+                <option value="shadow">Shadow — live Delta bid/ask, no orders</option>
+                {config.data.execution?.mode === 'testnet' && <option value="testnet">Testnet (restart required to change)</option>}
+              </select>
+              <span className="muted small">Shadow uses public quotes. Fills, fees, P&amp;L and liquidation remain hypothetical. Close open positions before changing modes.</span>
             </label>
           </div>
         </Panel>

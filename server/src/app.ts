@@ -2,7 +2,7 @@ import { ConfigStore, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
-import { DeltaFeed } from './delta/ws.ts';
+import { DeltaFeed, type WsTicker } from './delta/ws.ts';
 import { logger } from './log.ts';
 import { PaperEngine } from './paper/engine.ts';
 import { PinePool } from './pine/pool.ts';
@@ -43,12 +43,16 @@ export class App {
     // 1m candles drive paper fills for every open position
     this.candles.on('bar', (e: { symbol: string; tf: string; bar: any }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar); });
     this.candles.on('closed', (e: { symbol: string; tf: string; bar: any }) => { if (e.tf === '1m') this.paper.onBar(e.symbol, e.bar); });
-    this.feed.on('ticker', (t: { symbol: string; price: number }) => this.paper.setMark(t.symbol, t.price));
+    this.feed.on('ticker', (t: WsTicker) => {
+      if (this.paper.isShadow) this.paper.onQuote({ symbol: t.symbol, bid: t.bid ?? NaN, ask: t.ask ?? NaN, markPrice: t.markPrice, timeMs: t.timeMs });
+      else this.paper.setMark(t.symbol, t.price);
+    });
     this.feed.on('status', async (s: { connected: boolean }) => {
+      if (!s.connected) this.paper.clearQuotes();
       if (s.connected) for (const t of this.candles.tracked()) { try { const n = await this.candles.resync(t.symbol, t.tf); if (n) log.info(`resynced ${t.symbol} ${t.tf}: ${n} bars`); } catch (e: any) { log.warn(`resync failed ${t.symbol} ${t.tf}: ${e?.message}`); } }
     });
     if (cfg().execution.mode === 'testnet' && process.env.DELTA_API_KEY && process.env.DELTA_API_SECRET) {
-      this.testnet = new TestnetExecutor(this.paper, this.rest);
+      this.testnet = new TestnetExecutor(this.paper, this.rest, () => this.config.get().execution.mode === 'testnet');
       log.warn('execution.mode=testnet: paper fills will be mirrored to the Delta India DEMO account');
     }
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
@@ -84,7 +88,7 @@ export class App {
     this.feed.start();
     // positions of removed scanners keep running to their levels (the engine manages exits regardless of scanner state)
     await this.resolveUniverse();
-    this.feed.subscribe('v2/ticker', this.resolvedSymbols);
+    this.feed.subscribe('v2/ticker', [...new Set([...this.resolvedSymbols, ...this.scanners.requiredSeries().map(r => r.symbol), ...this.paper.openPositions().map(p => p.symbol)])]);
     if (this.testnet) await this.testnet.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
@@ -94,7 +98,7 @@ export class App {
     const cfg = this.config.get();
     this.candles.setMaxBars(cfg.historyBars + 50);
     await this.resolveUniverse();
-    this.feed.subscribe('v2/ticker', this.resolvedSymbols);
+    this.feed.subscribe('v2/ticker', [...new Set([...this.resolvedSymbols, ...this.scanners.requiredSeries().map(r => r.symbol), ...this.paper.openPositions().map(p => p.symbol)])]);
     await this.scanners.refresh();
   }
 

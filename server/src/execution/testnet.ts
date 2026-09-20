@@ -13,12 +13,13 @@ import type { PaperEngine } from '../paper/engine.ts';
 const log = logger.scoped('testnet');
 
 export class TestnetExecutor {
+  private enabled: () => boolean;
   private paper: PaperEngine;
   private rest: DeltaRest;
   private products = new Map<string, number>();
 
-  constructor(paper: PaperEngine, prodRest: DeltaRest) {
-    this.paper = paper;
+  constructor(paper: PaperEngine, prodRest: DeltaRest, enabled: () => boolean = () => true) {
+    this.paper = paper; this.enabled = enabled;
     this.rest = new DeltaRest({ baseUrl: DELTA_INDIA_TESTNET, apiKey: process.env.DELTA_API_KEY, apiSecret: process.env.DELTA_API_SECRET });
     void prodRest;
   }
@@ -36,6 +37,7 @@ export class TestnetExecutor {
   }
 
   private async mirror(o: { symbol: string; side: 'buy' | 'sell'; qty: number; reason: string; positionId: number }) {
+    if (!this.enabled() || (o as any).executionMode === 'shadow') return;
     const product_id = this.products.get(o.symbol);
     if (!product_id) { log.warn(`no testnet product for ${o.symbol}`); return; }
     const reduce_only = o.reason !== 'entry';

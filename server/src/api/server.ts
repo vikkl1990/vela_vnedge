@@ -113,11 +113,12 @@ export class ApiServer {
     const tickThrottle = new Map<string, number>();
     a.candles.on('bar', (e: any) => {
       this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: false });
-      if (e.tf === '1m') {
+      if (e.tf === '1m' && !a.paper.isShadow) {
         const last = tickThrottle.get(e.symbol) ?? 0;
         if (Date.now() - last > 500) { tickThrottle.set(e.symbol, Date.now()); this.broadcast('tick', { symbol: e.symbol, price: e.bar.close, time: Date.now() }); }
       }
     });
+    a.paper.on('quote', (q: any) => this.broadcast('tick', { symbol: q.symbol, price: q.markPrice, bid: q.bid, ask: q.ask, time: q.timeMs }));
     a.candles.on('closed', (e: any) => this.broadcast('candle', { symbol: e.symbol, tf: e.tf, bar: e.bar, closed: true }));
     a.scanners.on('signal', (s: any) => this.broadcast('signal', s));
     a.scanners.on('scanner', (s: any) => this.broadcast('scanner', s));
@@ -137,6 +138,13 @@ export class ApiServer {
     this.add('GET', '/api/health', () => a.health());
     this.add('GET', '/api/config', () => ({ ...a.config.get(), resolvedSymbols: a.resolvedSymbols }));
     this.add('PUT', '/api/config', async (_r, _s, _p, _u, body) => {
+      const mode = body?.execution?.mode;
+      const current = a.config.get().execution.mode;
+      if (mode && mode !== current) {
+        if (a.paper.openPositions().length) throw new HttpError(409, 'Close open positions before changing execution mode');
+        if (mode === 'testnet' || current === 'testnet') throw new HttpError(409, 'Testnet mode changes require a server restart');
+        a.paper.clearQuotes();
+      }
       let next;
       try { next = a.config.update(body ?? {}); } catch (e: any) { throw new HttpError(400, String(e?.message ?? e)); }
       await a.onConfigChanged();
@@ -213,7 +221,7 @@ export class ApiServer {
       kind: url.searchParams.get('kind') ?? undefined, since: url.searchParams.get('since') ? Number(url.searchParams.get('since')) : undefined,
     }));
     this.add('GET', '/api/positions', () => a.paper.openPositions().map(p => positionView(p, a.paper.mark(p.symbol))));
-    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(404, 'no open position'); return positionView(pos); });
+    this.add('POST', '/api/positions/:id/close', (_r, _s, p) => { const pos = a.paper.closeManual(Number(p.id)); if (!pos) throw new HttpError(a.paper.position(Number(p.id))?.status === 'open' ? 409 : 404, 'No open position or fresh shadow quote unavailable'); return positionView(pos); });
     this.add('POST', '/api/paper/close-all', () => ({ closed: a.paper.closeAll() }));
     this.add('POST', '/api/paper/reset', () => { a.paper.reset(); return a.paper.stats(); });
     this.add('GET', '/api/trades', (_r, _s, _p, url) => a.paper.trades({ limit: Number(url.searchParams.get('limit') ?? 200), scanner: url.searchParams.get('scanner') ?? undefined, symbol: url.searchParams.get('symbol') ?? undefined }));

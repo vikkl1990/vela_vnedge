@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { exchangeTimeMs } from '../execution/shadow.ts';
 import { logger } from '../log.ts';
 
 const log = logger.scoped('delta.ws');
@@ -12,7 +13,7 @@ export interface WsCandle {
   open: number; high: number; low: number; close: number; volume: number;
   updatedMs: number;
 }
-export interface WsTicker { symbol: string; price: number; markPrice: number; timeMs: number }
+export interface WsTicker { symbol: string; price: number; markPrice: number; timeMs: number; bid?: number; ask?: number }
 
 /**
  * Delta Exchange public websocket feed with auto-reconnect and subscription replay.
@@ -144,7 +145,8 @@ export class DeltaFeed extends EventEmitter {
         symbol: msg.symbol,
         price: Number(msg.close ?? msg.mark_price),
         markPrice: Number(msg.mark_price ?? msg.close),
-        timeMs: Math.floor(Number(msg.timestamp ?? Date.now() * 1000) / 1000),
+        timeMs: exchangeTimeMs(msg.timestamp),
+        bid: Number(msg.quotes?.best_bid), ask: Number(msg.quotes?.best_ask),
       };
       if (Number.isFinite(t.price)) this.emit('ticker', t);
       return;
