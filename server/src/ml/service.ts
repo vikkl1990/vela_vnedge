@@ -5,23 +5,29 @@
 import { SIMULATION_VERSION } from '../paper/version.ts';
 import type { Db } from '../db.ts';
 import { logger } from '../log.ts';
-import { computeFeatures, type Features, type FeatureInputs } from './features.ts';
+import { computeFeatures, FEATURE_LABELS, FEATURE_NAMES, featureVector, type Features, type FeatureInputs } from './features.ts';
 import { deriveRules, predict, trainLogReg, type LogRegModel, type Rule, type Sample } from './model.ts';
 
 const log = logger.scoped('ml');
 const MIN_SCANNER_SAMPLES = 40;
+/** Live feature vectors kept for drift monitoring. */
+const DRIFT_WINDOW = 200;
+
+export interface DriftFeature { feature: string; label: string; trainMean: number; trainStd: number; liveMean: number; liveStd: number; /** (liveMean − trainMean) / trainStd */ shift: number; drifted: boolean }
+export interface DriftReport { at: number; n: number; window: number; threshold: number; drifted: number; features: DriftFeature[] }
 
 export interface ScannerInsight {
   scannerId: string; scannerName: string; samples: number; liveSamples: number;
   baseline: { n: number; winRate: number; avgR: number };
-  model: { holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number } | null;
+  model: LogRegModel['metrics'] | null;
+  calibration: LogRegModel['calibration'];
   importance: LogRegModel['importance'];
   rules: Rule[];
 }
 
 export interface MlSnapshot {
   trainedAt: number | null; samples: number; liveSamples: number; scannersWithModel: number;
-  global: { model: LogRegModel['metrics'] | null; importance: LogRegModel['importance']; rules: Rule[]; baseline: { n: number; winRate: number; avgR: number } } | null;
+  global: { model: LogRegModel['metrics'] | null; calibration: LogRegModel['calibration']; importance: LogRegModel['importance']; rules: Rule[]; baseline: { n: number; winRate: number; avgR: number } } | null;
   scanners: ScannerInsight[];
 }
 
@@ -32,6 +38,7 @@ export class MlService {
   private snapshot: MlSnapshot | null = null;
   private names: () => Record<string, string>;
   private trainTimer: ReturnType<typeof setTimeout> | null = null;
+  private liveFeatures: Array<{ at: number; f: Features }> = [];
 
   constructor(db: Db, names: () => Record<string, string>) {
     this.db = db; this.names = names;
@@ -51,6 +58,7 @@ export class MlService {
     }
     const saved = db.kvGet<{ global: LogRegModel | null; models: Record<string, LogRegModel>; snapshot: MlSnapshot }>('ml.model');
     if (saved) { this.globalModel = saved.global; for (const [k, v] of Object.entries(saved.models ?? {})) this.models.set(k, v); this.snapshot = saved.snapshot; log.info(`loaded ML models: global ${saved.global ? 'yes' : 'no'}, ${this.models.size} scanner models`); }
+    this.liveFeatures = db.kvGet<Array<{ at: number; f: Features }>>('ml.liveFeatures') ?? [];
   }
 
   features(inp: FeatureInputs): Features { return computeFeatures(inp); }
@@ -104,12 +112,12 @@ export class MlService {
       const m = list.length >= MIN_SCANNER_SAMPLES ? trainLogReg(list) : null;
       if (m) this.models.set(id, m);
       const { baseline, rules } = deriveRules(list);
-      scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
+      scanners.push({ scannerId: id, scannerName: names[id] ?? id, samples: list.length, liveSamples: list.filter(s => !s.bt).length, baseline, model: m?.metrics ?? null, calibration: m?.calibration ?? null, importance: m?.importance.slice(0, 8) ?? [], rules });
     }
     scanners.sort((a, b) => b.samples - a.samples);
     this.snapshot = {
       trainedAt: Date.now(), samples: all.length, liveSamples: all.filter(s => !s.bt).length, scannersWithModel: this.models.size,
-      global: this.globalModel ? { model: this.globalModel.metrics, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
+      global: this.globalModel ? { model: this.globalModel.metrics, calibration: this.globalModel.calibration, importance: this.globalModel.importance, rules: gRules.rules, baseline: gRules.baseline } : null,
       scanners,
     };
     this.db.kvSet('ml.model', { global: this.globalModel, models: Object.fromEntries(this.models), snapshot: this.snapshot });
@@ -117,14 +125,39 @@ export class MlService {
     return this.snapshot;
   }
 
-  /** P(win) for an entry; scanner model when available, else global; null when nothing is trained. */
-  score(scannerId: string, f: Features): { prob: number; model: 'scanner' | 'global' } | null {
-    const m = this.models.get(scannerId);
-    if (m) return { prob: predict(m, f), model: 'scanner' };
-    if (this.globalModel) return { prob: predict(this.globalModel, f), model: 'global' };
-    return null;
+  /**
+   * Calibrated P(win) for a live entry; scanner model when available, else global; null when
+   * nothing is trained. Every scored feature vector feeds the drift monitor.
+   */
+  score(scannerId: string, f: Features, opts: { record?: boolean } = {}): { prob: number; raw: number; model: 'scanner' | 'global'; calibrated: boolean } | null {
+    if (opts.record !== false) this.recordLive(f);
+    const m = this.models.get(scannerId) ?? this.globalModel;
+    if (!m) return null;
+    return { prob: predict(m, f, true), raw: predict(m, f, false), model: this.models.has(scannerId) ? 'scanner' : 'global', calibrated: Boolean(m.calibration) };
   }
 
-  insights(): MlSnapshot | null { return this.snapshot; }
+  private recordLive(f: Features) {
+    this.liveFeatures.push({ at: Date.now(), f });
+    if (this.liveFeatures.length > DRIFT_WINDOW) this.liveFeatures.splice(0, this.liveFeatures.length - DRIFT_WINDOW);
+    try { this.db.kvSet('ml.liveFeatures', this.liveFeatures); } catch (e: any) { log.warn(`persist live features failed: ${e?.message ?? e}`); }
+  }
+
+  /** Per-feature mean/std of the last live samples versus the global model's training distribution. */
+  drift(threshold = 0.5): DriftReport {
+    const live = this.liveFeatures.map(x => featureVector(x.f));
+    const n = live.length;
+    const m = this.globalModel;
+    const features: DriftFeature[] = FEATURE_NAMES.map((name, j) => {
+      let mean = 0, sd = 0;
+      if (n) { mean = live.reduce((a, r) => a + r[j], 0) / n; sd = Math.sqrt(live.reduce((a, r) => a + (r[j] - mean) ** 2, 0) / n); }
+      const tm = m?.mean[j] ?? 0, ts = m?.std[j] ?? 0;
+      const shift = m && ts > 0 && n ? (mean - tm) / ts : 0;
+      return { feature: name, label: FEATURE_LABELS[name], trainMean: tm, trainStd: ts, liveMean: mean, liveStd: sd, shift, drifted: Boolean(m) && n >= 30 && Math.abs(shift) > threshold };
+    });
+    return { at: Date.now(), n, window: DRIFT_WINDOW, threshold, drifted: features.filter(f => f.drifted).length, features };
+  }
+
+  /** Snapshot plus the live drift report (`drift`) — this is what `GET /api/ml` returns. */
+  insights(): (MlSnapshot & { drift: DriftReport }) | null { return this.snapshot ? { ...this.snapshot, drift: this.drift() } : null; }
   insightFor(scannerId: string): ScannerInsight | null { return this.snapshot?.scanners.find(s => s.scannerId === scannerId) ?? null; }
 }
