@@ -42,7 +42,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const rejected: Record<string, number> = {};
   let nextId = 1, entries = 0;
 
-  const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; if (equity < 0) equity = 0; curve.push({ at: p.exitAt!, equity }); open = null; };
+  const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; curve.push({ at: p.exitAt!, equity }); open = null; };
 
   let busted = false;
   for (let i = 0; i < bars.length && !busted; i++) {
@@ -57,7 +57,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
     const evs = byBar.get(bar.time);
     if (!evs) continue;
     for (const ev of evs) {
-      if (ev.kind === 'exit' && open) {
+      if (ev.kind === 'exit' && open && (!ev.side || ev.side === open.side)) {
         const fb = ev.price ?? bar.close;
         applyScriptExit(open, ev.exitType ?? 'close', ev.price, bar.time, cfg, inp.exitMode, fb);
         if (open.status === 'closed') finish(open);
@@ -77,7 +77,7 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, cfg }, 0, ev.score);
       if (sz.qty < 1) { rejected[sz.reason ?? 'size'] = (rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
       const features = computeFeatures({ bars, i, ev, entry: price, sl: lv.sl, tp1: lv.tp[0], atr: atr[i], levelsSource: lv.source });
-      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, leverage: sz.leverage, features });
+      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, leverage: sz.leverage, marginLeverage: sz.marginLeverage, features });
       entries++;
     }
   }
