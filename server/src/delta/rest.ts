@@ -163,6 +163,9 @@ export class DeltaRest {
     return this.request('POST', '/v2/orders', { auth: true, body: order, retries: 0 });
   }
   async cancelAll(product_id: number): Promise<any> { return this.request('DELETE', '/v2/orders/all', { auth: true, body: { product_id }, retries: 0 }); }
+  /** Open (resting / untriggered) orders, optionally for one product. */
+  async openOrders(product_id?: number): Promise<any> { return this.request('GET', '/v2/orders', { auth: true, query: { states: 'open,pending', product_ids: product_id, page_size: 200 } }); }
+  async cancelOrder(id: number | string, product_id: number): Promise<any> { return this.request('DELETE', '/v2/orders', { auth: true, body: { id, product_id }, retries: 0 }); }
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
