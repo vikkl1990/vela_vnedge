@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_CONFIG } from '../config.ts';
-import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs } from './logic.ts';
+import { applyBar, applyScriptExit, computeStats, openPosition, resolveLevels, sizeContracts, splitLegs, leverageForScore, liquidationPrice } from './logic.ts';
 
-const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0 };
+const cfg = { ...DEFAULT_CONFIG.paper, slippageBps: 0, feeRatePct: 0, makerFeeRatePct: 0, liquidation: false };
 
 test('resolveLevels uses script levels, else ATR fallback', () => {
   const r = resolveLevels({ side: 'long', price: 100, sl: 95, tp: [110, 120, 130] }, cfg, 0.5);
@@ -60,4 +60,17 @@ test('stats', () => {
   const s = computeStats([a, b], 1000);
   assert.equal(s.trades, 2); assert.equal(s.wins, 1); assert.equal(s.losses, 1);
   assert.ok(s.profitFactor! > 1);
+});
+
+test('quality sizing scales leverage with score and models liquidation', () => {
+  const q = { ...cfg, sizingMode: 'quality' as const, minLeverage: 5, maxLeverage: 50, liquidation: true, maintenanceMarginPct: 0.5 };
+  assert.equal(leverageForScore(undefined, q), 5); assert.equal(leverageForScore(50, q), 27.5); assert.equal(leverageForScore(100, q), 50);
+  const s = sizeContracts(100, 98, { equity: 1000, contractValue: 0.001, tickSize: 0.5, cfg: q }, 0, 100);
+  assert.equal(s.qty, 500_000); // 1000 × 50x = 50,000 notional / (100 × 0.001 per contract)
+  assert.ok(Math.abs(s.leverage - 50) < 1e-9);
+  const liq = liquidationPrice('long', 100, 50, q)!;
+  assert.ok(Math.abs(liq - 98.5) < 1e-9); // 1/50 = 2% minus 0.5% maintenance
+  const p = openPosition({ id: 1, scannerId: 's', scannerName: 's', symbol: 'BTCUSD', tf: '15m', side: 'long', qty: 500, contractValue: 0.001, entryPrice: 100, at: 0, sl: 97, tp: [105], riskAmount: 1.5, levelsSource: 'script', signalId: null, cfg: q, bt: true, leverage: 50 });
+  const f = applyBar(p, { time: 1, high: 100, low: 98, close: 99 }, q);
+  assert.equal(f[0].reason, 'liquidation'); assert.equal(p.status, 'closed');
 });

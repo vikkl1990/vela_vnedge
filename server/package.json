@@ -9,6 +9,7 @@
     "start": "node --no-warnings=ExperimentalWarning src/index.ts",
     "backtest": "node --no-warnings=ExperimentalWarning src/cli/backtest.ts",
     "compat": "node --no-warnings=ExperimentalWarning src/cli/compat.ts",
+    "verdict": "node --no-warnings=ExperimentalWarning src/cli/verdict.ts",
     "test": "node --no-warnings=ExperimentalWarning --test src/**/*.test.ts"
   },
   "dependencies": {

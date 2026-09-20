@@ -90,12 +90,12 @@ export class PaperEngine extends EventEmitter {
     const levels = resolveLevels({ side: ev.side!, price, sl: ev.sl, tp: ev.tp, atr: ctx.atr }, cfg, ctx.market.tickSize);
     if ('error' in levels) return { action: 'rejected', reason: levels.error, closed };
     const openNotional = [...this.open.values()].reduce((a, p) => a + notionalOf(p), 0);
-    const size = sizeContracts(price, levels.sl, { equity: this.equity(), contractValue: ctx.market.contractValue, tickSize: ctx.market.tickSize, cfg }, openNotional);
+    const size = sizeContracts(price, levels.sl, { equity: this.equity(), contractValue: ctx.market.contractValue, tickSize: ctx.market.tickSize, cfg }, openNotional, ev.score);
     if (size.qty < 1) return { action: 'rejected', reason: size.reason ?? 'size', closed };
     const id = this.nextId();
     const pos = openPosition({
       id, scannerId: ctx.scannerId, scannerName: ctx.scannerName, symbol: ctx.symbol, tf: ctx.tf, side: ev.side!, qty: size.qty, contractValue: ctx.market.contractValue,
-      entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, cfg, bt: false,
+      entryPrice: price, at: ctx.at, sl: levels.sl, tp: levels.tp, riskAmount: size.riskAmount, levelsSource: levels.source, signalId: ctx.signalId, cfg, bt: false, leverage: size.leverage,
     });
     this.open.set(id, pos);
     this.persist(pos);
@@ -103,7 +103,7 @@ export class PaperEngine extends EventEmitter {
     this.emit('position', { type: 'opened', position: pos });
     this.emit('order', orderOf(pos, pos.fills[0]));
     this.recordEquity(true);
-    log.info(`OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} sl ${pos.sl} tp ${pos.tp.join('/')} [${ctx.scannerId}]`);
+    log.info(`OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${ctx.scannerId}]`);
     return { action: closed ? 'reversed' : 'opened', position: pos, closed };
   }
 
@@ -213,7 +213,7 @@ export class PaperEngine extends EventEmitter {
       `UPDATE positions SET status=?, scanner_id=?, scanner_name=?, symbol=?, tf=?, side=?, qty=?, qty_open=?, contract_value=?, entry_price=?, entry_at=?, sl=?, sl_original=?, tp=?, tp_hit=?, break_even=?,
        realized_pnl=?, fees=?, risk_amount=?, levels_source=?, exit_at=?, exit_price=?, exit_reason=?, signal_id=?, fills=?, bt=? WHERE id=?`,
       p.status, p.scannerId, p.scannerName, p.symbol, p.tf, p.side, p.qty, p.qtyOpen, p.contractValue, p.entryPrice, p.entryAt, p.sl, p.slOriginal, JSON.stringify(p.tp), JSON.stringify(p.tpHit), p.breakEven ? 1 : 0,
-      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs }), p.bt ? 1 : 0, p.id,
+      p.realizedPnl, p.fees, p.riskAmount, p.levelsSource, p.exitAt, p.exitPrice, p.exitReason, p.signalId, JSON.stringify({ fills: p.fills, legs: p.legs, leverage: p.leverage, liqPrice: p.liqPrice }), p.bt ? 1 : 0, p.id,
     );
   }
 
@@ -266,7 +266,7 @@ export function rowToPosition(r: any): Position {
   return {
     id: r.id, status: r.status, scannerId: r.scanner_id, scannerName: r.scanner_name, symbol: r.symbol, tf: r.tf, side: r.side, qty: r.qty, qtyOpen: r.qty_open,
     contractValue: r.contract_value, entryPrice: r.entry_price, entryAt: r.entry_at, sl: r.sl, slOriginal: r.sl_original, tp: safe(r.tp, []), tpHit: safe(r.tp_hit, []),
-    legs: extra.legs ?? [], breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
+    legs: extra.legs ?? [], leverage: extra.leverage ?? 0, liqPrice: extra.liqPrice ?? null, breakEven: Boolean(r.break_even), realizedPnl: r.realized_pnl, fees: r.fees, riskAmount: r.risk_amount, levelsSource: r.levels_source ?? 'script',
     exitAt: r.exit_at, exitPrice: r.exit_price, exitReason: r.exit_reason, signalId: r.signal_id, fills: extra.fills ?? [], bt: Boolean(r.bt),
   };
 }
@@ -278,7 +278,7 @@ export function positionView(p: Position, mark?: number) {
     id: p.id, scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side, qty: p.qty, qtyOpen: p.qtyOpen, contractValue: p.contractValue,
     entryPrice: p.entryPrice, entryAt: p.entryAt, sl: p.sl, slOriginal: p.slOriginal, tp: p.tp, tpHit: p.tpHit, breakEven: p.breakEven, markPrice: m,
     unrealizedPnl: unrealized(p, m), realizedPnl: p.realizedPnl, fees: p.fees, riskAmount: p.riskAmount, rMultiple: p.riskAmount ? (p.realizedPnl - p.fees + unrealized(p, m)) / p.riskAmount : null,
-    levelsSource: p.levelsSource, signalId: p.signalId, status: p.status,
+    levelsSource: p.levelsSource, leverage: p.leverage, liqPrice: p.liqPrice, signalId: p.signalId, status: p.status,
   };
 }
 
@@ -287,7 +287,7 @@ export function tradeOf(p: Position) {
   return {
     id: p.id, positionId: p.id, scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side, qty: p.qty, entryPrice: p.entryPrice,
     exitPrice: p.exitPrice, entryAt: p.entryAt, exitAt: p.exitAt, pnl: net, pnlPct: p.entryPrice ? net / (p.entryPrice * p.qty * p.contractValue) * 100 : 0, fees: p.fees,
-    rMultiple: rMultiple(p), exitReason: p.exitReason, levelsSource: p.levelsSource, sl: p.slOriginal, tp: p.tp, tpHit: p.tpHit, fills: p.fills, signalId: p.signalId,
+    rMultiple: rMultiple(p), exitReason: p.exitReason, levelsSource: p.levelsSource, leverage: p.leverage, sl: p.slOriginal, tp: p.tp, tpHit: p.tpHit, fills: p.fills, signalId: p.signalId,
   };
 }
 

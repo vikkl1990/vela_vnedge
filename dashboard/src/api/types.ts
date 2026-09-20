@@ -28,6 +28,10 @@ export interface PaperConfig {
   initialEquity: number
   riskPerTradePct: number
   maxLeverage: number
+  sizingMode: 'risk' | 'quality'
+  minLeverage: number
+  liquidation: boolean
+  maintenanceMarginPct: number
   feeRatePct: number
   slippageBps: number
   tpSplit: [number, number, number]

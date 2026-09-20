@@ -10,7 +10,8 @@
     "build": "npm run build --workspace=dashboard",
     "start": "npm run start --workspace=server",
     "test": "npm test --workspace=server",
-    "backtest": "npm run backtest --workspace=server"
+    "backtest": "npm run backtest --workspace=server",
+    "verdict": "npm run verdict --workspace=server"
   },
   "engines": { "node": ">=22.18" }
 }

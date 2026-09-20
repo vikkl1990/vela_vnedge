@@ -26,6 +26,7 @@ re-subscribes the feed and re-warms scanners.
   "timeframes": ["15m"],
   "historyBars": 1000,
   "paper": { "initialEquity": 100000, "riskPerTradePct": 1, "maxLeverage": 10,
+             "sizingMode": "risk", "minLeverage": 5, "liquidation": true, "maintenanceMarginPct": 0.5,
              "feeRatePct": 0.05, "makerFeeRatePct": 0.02, "slippageBps": 2, "tpSplit": [0.4, 0.3, 0.3],
              "breakEvenAfterTp1": true, "allowReversal": true, "fallbackAtrSl": 1.5,
              "fallbackRR": [1, 2, 3], "maxOpenPositions": 20 },

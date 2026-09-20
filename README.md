@@ -55,6 +55,11 @@ Other commands:
   AMD distribution calls) are turned into entries by per-scanner **derivation rules**
   (`server/src/scanners/rules.ts`); such signals are tagged *derived* and use the script's
   levels where published, otherwise ATR stops/targets.
+* Two sizing modes: `risk` (each trade risks a % of equity at its stop) or `quality`
+  (notional = equity × leverage, with leverage scaled from `minLeverage` for unscored/weak
+  signals to `maxLeverage` for score 100). Exchange-style liquidation is modelled
+  (`liquidation`, `maintenanceMarginPct`). `npm run verdict` backtests the whole fleet under
+  any override, e.g. `npm run verdict -- BTCUSD,ETHUSD 15m 1500 '{"initialEquity":1000,"sizingMode":"quality","minLeverage":5,"maxLeverage":50}'`.
 * The **paper engine** sizes by risk % of equity, fills SL/TP legs on 1-minute candles,
   moves SL to break-even after TP1, charges Delta taker fees + slippage, and keeps a full
   audit trail (signals → positions → fills → trades → equity curve).
@@ -73,7 +78,8 @@ Everything is editable in the dashboard (**Settings**) or `data/config.json`:
   "timeframes": ["15m"],            // 1m 3m 5m 15m 30m 1h 2h 4h 6h 1d
   "historyBars": 1000,              // bars fed to each script (also the backtest window)
   "paper": {
-    "initialEquity": 100000, "riskPerTradePct": 1, "maxLeverage": 10,
+    "initialEquity": 100000, "riskPerTradePct": 1, "maxLeverage": 10, "sizingMode": "risk", "minLeverage": 5,
+    "liquidation": true, "maintenanceMarginPct": 0.5,
     "feeRatePct": 0.05, "makerFeeRatePct": 0.02, "slippageBps": 2, "tpSplit": [0.4, 0.3, 0.3],
     "breakEvenAfterTp1": true, "allowReversal": true,
     "fallbackAtrSl": 1.5, "fallbackRR": [1, 2, 3], "maxOpenPositions": 20

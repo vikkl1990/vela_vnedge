@@ -15,6 +15,12 @@ export interface PaperConfig {
   initialEquity: number;
   riskPerTradePct: number;
   maxLeverage: number;
+  /** `risk`: size so the stop loses riskPerTradePct of equity. `quality`: notional = equity × leverage, leverage scaled from minLeverage (no/low score) to maxLeverage (score 100). */
+  sizingMode: 'risk' | 'quality';
+  minLeverage: number;
+  /** Model exchange liquidation: position closes when the loss reaches its margin (notional / leverage) less maintenance. */
+  liquidation: boolean;
+  maintenanceMarginPct: number;
   feeRatePct: number;
   /** Fee for take-profit limit fills (maker). */
   makerFeeRatePct: number;
@@ -56,6 +62,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     initialEquity: 100_000,
     riskPerTradePct: 1,
     maxLeverage: 10,
+    sizingMode: 'risk',
+    minLeverage: 5,
+    liquidation: true,
+    maintenanceMarginPct: 0.5,
     feeRatePct: 0.05,
     makerFeeRatePct: 0.02,
     slippageBps: 2,
@@ -127,6 +137,9 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(p.initialEquity > 0)) errs.push('paper.initialEquity must be > 0');
   if (!(p.riskPerTradePct > 0 && p.riskPerTradePct <= 20)) errs.push('paper.riskPerTradePct must be 0..20');
   if (!(p.maxLeverage >= 1 && p.maxLeverage <= 200)) errs.push('paper.maxLeverage must be 1..200');
+  if (!['risk', 'quality'].includes(p.sizingMode)) errs.push('paper.sizingMode must be risk|quality');
+  if (!(p.minLeverage >= 1 && p.minLeverage <= p.maxLeverage)) errs.push('paper.minLeverage must be 1..maxLeverage');
+  if (!(p.maintenanceMarginPct >= 0 && p.maintenanceMarginPct < 5)) errs.push('paper.maintenanceMarginPct must be 0..5');
   if (!(p.feeRatePct >= 0 && p.feeRatePct < 1)) errs.push('paper.feeRatePct must be 0..1');
   if (!(p.makerFeeRatePct >= 0 && p.makerFeeRatePct < 1)) errs.push('paper.makerFeeRatePct must be 0..1');
   if (!(Array.isArray(p.tpSplit) && p.tpSplit.length === 3 && Math.abs(p.tpSplit.reduce((a, b) => a + b, 0) - 1) < 1e-6)) errs.push('paper.tpSplit must be 3 numbers summing to 1');

@@ -39,10 +39,12 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
   const rejected: Record<string, number> = {};
   let nextId = 1, entries = 0;
 
-  const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; curve.push({ at: p.exitAt!, equity }); open = null; };
+  const finish = (p: Position) => { closed.push(p); equity += p.realizedPnl - p.fees; if (equity < 0) equity = 0; curve.push({ at: p.exitAt!, equity }); open = null; };
 
-  for (let i = 0; i < bars.length; i++) {
+  let busted = false;
+  for (let i = 0; i < bars.length && !busted; i++) {
     const bar = bars[i];
+    if (equity <= Math.max(0, cfg.initialEquity * 0.02)) { busted = true; rejected['purse_wiped'] = (rejected['purse_wiped'] ?? 0) + 1; break; }
     // 1. level fills on this bar for a position opened on an earlier bar
     if (open && open.entryAt < bar.time) {
       applyBar(open, bar, cfg);
@@ -69,9 +71,9 @@ export function runBacktest(inp: BacktestInput): BacktestResult {
       const price = ev.price && ev.price > 0 ? ev.price : bar.close;
       const lv = resolveLevels({ side: ev.side, price, sl: ev.sl, tp: ev.tp, atr: atr[i] }, cfg, inp.tickSize);
       if ('error' in lv) { rejected[lv.error] = (rejected[lv.error] ?? 0) + 1; continue; }
-      const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, cfg });
+      const sz = sizeContracts(price, lv.sl, { equity, contractValue: inp.contractValue, tickSize: inp.tickSize, cfg }, 0, ev.score);
       if (sz.qty < 1) { rejected[sz.reason ?? 'size'] = (rejected[sz.reason ?? 'size'] ?? 0) + 1; continue; }
-      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true });
+      open = openPosition({ id: nextId++, scannerId: inp.scannerId, scannerName: inp.scannerName, symbol: inp.symbol, tf: inp.tf, side: ev.side, qty: sz.qty, contractValue: inp.contractValue, entryPrice: price, at: bar.time, sl: lv.sl, tp: lv.tp, riskAmount: sz.riskAmount, levelsSource: lv.source, signalId: null, cfg, bt: true, leverage: sz.leverage });
       entries++;
     }
   }

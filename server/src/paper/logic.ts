@@ -36,6 +36,10 @@ export interface Position {
   fees: number;
   riskAmount: number;
   levelsSource: 'script' | 'atr-fallback' | 'mixed';
+  /** Effective leverage (notional / equity at entry). */
+  leverage: number;
+  /** Modelled liquidation price (null when liquidation modelling is off). */
+  liqPrice: number | null;
   exitAt: number | null;
   exitPrice: number | null;
   exitReason: string | null;
@@ -92,17 +96,42 @@ export function resolveLevels(req: EntryRequest, cfg: PaperConfig, tick: number)
   return { sl: roundTick(sl!, tick), tp: tp.slice(0, 3).map(v => roundTick(v, tick)), source };
 }
 
-/** Position size in contracts from risk budget, capped by leverage. */
-export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNotional = 0): { qty: number; riskAmount: number; reason?: string } {
-  const riskAmount = s.equity * (s.cfg.riskPerTradePct / 100);
+/** Leverage for a signal quality score (0..100) in `quality` sizing mode: linear from minLeverage to maxLeverage. */
+export function leverageForScore(score: number | undefined, cfg: PaperConfig): number {
+  const q = score === undefined || !Number.isFinite(score) ? 0 : Math.max(0, Math.min(1, score / 100));
+  return Math.round((cfg.minLeverage + (cfg.maxLeverage - cfg.minLeverage) * q) * 10) / 10;
+}
+
+/**
+ * Position size in contracts.
+ *  - `risk` mode: the stop loses riskPerTradePct of equity, capped by maxLeverage.
+ *  - `quality` mode: notional = equity × leverage(score); the stop decides the R.
+ */
+export function sizeContracts(entry: number, sl: number, s: SizingInputs, openNotional = 0, score?: number): { qty: number; riskAmount: number; leverage: number; reason?: string } {
   const perContractRisk = Math.abs(entry - sl) * s.contractValue;
-  if (perContractRisk <= 0) return { qty: 0, riskAmount, reason: 'zero risk per contract' };
-  let qty = Math.floor(riskAmount / perContractRisk);
+  if (perContractRisk <= 0) return { qty: 0, riskAmount: 0, leverage: 0, reason: 'zero risk per contract' };
   const maxNotional = s.equity * s.cfg.maxLeverage - openNotional;
   const maxQty = Math.floor(maxNotional / (entry * s.contractValue));
+  if (s.cfg.sizingMode === 'quality') {
+    const lev = leverageForScore(score, s.cfg);
+    let qty = Math.floor((s.equity * lev) / (entry * s.contractValue));
+    if (qty > maxQty) qty = maxQty;
+    if (qty < 1) return { qty: 0, riskAmount: 0, leverage: lev, reason: maxQty < 1 ? 'leverage cap exhausted' : 'purse too small for one contract' };
+    return { qty, riskAmount: qty * perContractRisk, leverage: qty * entry * s.contractValue / Math.max(1e-9, s.equity) };
+  }
+  const riskAmount = s.equity * (s.cfg.riskPerTradePct / 100);
+  let qty = Math.floor(riskAmount / perContractRisk);
   if (qty > maxQty) qty = maxQty;
-  if (qty < 1) return { qty: 0, riskAmount, reason: qty <= 0 && maxQty < 1 ? 'leverage cap exhausted' : 'risk budget too small for one contract' };
-  return { qty, riskAmount: qty * perContractRisk };
+  if (qty < 1) return { qty: 0, riskAmount, leverage: 0, reason: qty <= 0 && maxQty < 1 ? 'leverage cap exhausted' : 'risk budget too small for one contract' };
+  return { qty, riskAmount: qty * perContractRisk, leverage: qty * entry * s.contractValue / Math.max(1e-9, s.equity) };
+}
+
+/** Exchange-style liquidation price for an isolated position at `leverage`. */
+export function liquidationPrice(side: Side, entry: number, leverage: number, cfg: PaperConfig): number | null {
+  if (!cfg.liquidation || !(leverage > 0)) return null;
+  const move = 1 / leverage - cfg.maintenanceMarginPct / 100;
+  if (move <= 0) return entry;
+  return side === 'long' ? entry * (1 - move) : entry * (1 + move);
 }
 
 /** Split `qty` into TP legs following `split` (remainder goes to the last leg; zero legs are skipped at fill time). */
@@ -141,6 +170,7 @@ export function unrealized(pos: Position, mark: number): number {
 export interface OpenParams {
   id: number; scannerId: string; scannerName: string; symbol: string; tf: string; side: Side; qty: number; contractValue: number;
   entryPrice: number; at: number; sl: number; tp: number[]; riskAmount: number; levelsSource: Position['levelsSource']; signalId: number | null; cfg: PaperConfig; bt: boolean;
+  leverage?: number;
 }
 
 export function openPosition(p: OpenParams): Position {
@@ -151,7 +181,7 @@ export function openPosition(p: OpenParams): Position {
     id: p.id, status: 'open', scannerId: p.scannerId, scannerName: p.scannerName, symbol: p.symbol, tf: p.tf, side: p.side,
     qty: p.qty, qtyOpen: p.qty, contractValue: p.contractValue, entryPrice: fillPrice, entryAt: p.at, sl: p.sl, slOriginal: p.sl,
     tp: p.tp.slice(0, legs.length), tpHit: legs.map(() => false), legs, breakEven: false, realizedPnl: 0, fees: fee, riskAmount: p.riskAmount,
-    levelsSource: p.levelsSource, exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
+    levelsSource: p.levelsSource, leverage: p.leverage ?? 0, liqPrice: liquidationPrice(p.side, fillPrice, p.leverage ?? 0, p.cfg), exitAt: null, exitPrice: null, exitReason: null, signalId: p.signalId,
     fills: [{ at: p.at, price: fillPrice, qty: p.qty, reason: 'entry', fee, pnl: 0 }], bt: p.bt,
   };
 }
@@ -161,6 +191,8 @@ export interface FillEvent { position: Position; fill: Fill; closed: boolean }
 /** Reduce/close a position at `price`. Mutates and returns the fill. */
 export function fillExit(pos: Position, price: number, qty: number, reason: string, at: number, cfg: PaperConfig, withSlippage: boolean): Fill {
   const q = Math.min(qty, pos.qtyOpen);
+  // an exchange would have liquidated before any exit could print beyond the liquidation price
+  if (pos.liqPrice !== null && (pos.side === 'long' ? price < pos.liqPrice : price > pos.liqPrice)) { price = pos.liqPrice; reason = 'liquidation'; }
   const px = withSlippage ? slip(price, pos.side === 'long' ? 'sell' : 'buy', cfg) : price;
   // take-profit legs rest as limit orders → maker fee; everything else crosses the spread → taker fee
   const fee = feeFor(px, q, pos.contractValue, cfg, !withSlippage);
@@ -186,6 +218,11 @@ export function applyBar(pos: Position, bar: { time: number; high: number; low: 
   const fills: Fill[] = [];
   const long = pos.side === 'long';
   const at = bar.time;
+  // 0. liquidation (worst case first)
+  if (pos.liqPrice !== null && (long ? bar.low <= pos.liqPrice : bar.high >= pos.liqPrice) && (pos.sl === null || (long ? pos.liqPrice >= pos.sl : pos.liqPrice <= pos.sl))) {
+    fills.push(fillExit(pos, pos.liqPrice, pos.qtyOpen, 'liquidation', at, cfg, true));
+    return fills;
+  }
   // 1. stop-loss
   if (pos.sl !== null && (long ? bar.low <= pos.sl : bar.high >= pos.sl)) {
     const reason = pos.breakEven ? 'be' : 'sl';

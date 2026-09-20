@@ -162,8 +162,17 @@ export function Settings() {
         <Panel title="Paper engine">
           <div className="form form-2">
             {numField('initialEquity', 'Initial equity', '100')}
-            {numField('riskPerTradePct', 'Risk per trade %', '0.1')}
-            {numField('maxLeverage', 'Max leverage', '1')}
+            <label className="field">
+              <span className="field-label">Sizing mode</span>
+              <select className="input" value={form.paper.sizingMode ?? 'risk'} onChange={(e) => setPaper('sizingMode', e.target.value as PaperConfig['sizingMode'])}>
+                <option value="risk">Risk % of equity per trade</option>
+                <option value="quality">Quality leverage (min→max by signal score)</option>
+              </select>
+            </label>
+            {numField('riskPerTradePct', 'Risk per trade %', '0.1', 'risk mode only')}
+            {numField('minLeverage', 'Min leverage', '1', 'quality mode: unscored / score 0')}
+            {numField('maxLeverage', 'Max leverage', '1', 'quality mode: score 100 · also the notional cap')}
+            {numField('maintenanceMarginPct', 'Maintenance margin %', '0.1', 'for liquidation modelling')}
             {numField('feeRatePct', 'Fee rate %', '0.01')}
             {numField('slippageBps', 'Slippage (bps)', '1')}
             {numField('maxOpenPositions', 'Max open positions', '1')}
@@ -214,6 +223,9 @@ export function Settings() {
             </label>
             <label className="check">
               <input type="checkbox" checked={form.paper.allowReversal} onChange={(e) => setPaper('allowReversal', e.target.checked)} /> Allow reversal (opposite signal closes & flips)
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.paper.liquidation ?? true} onChange={(e) => setPaper('liquidation', e.target.checked)} /> Model exchange liquidation (loss reaching margin closes the position)
             </label>
           </div>
         </Panel>
