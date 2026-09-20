@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { ApiError } from '../api/client'
 import type { ScannerStatus, Side } from '../api/types'
-import { clamp, fmtPnl, isNum, pnlClass, scoreGrade } from '../lib/format'
+import { clamp, fmtDateTime, fmtFullDateTime, fmtPnl, fmtTime, fmtUtc, gradeTone, isNum, pnlClass, scoreGrade, timeAgo } from '../lib/format'
+import { useNow } from '../lib/useNow'
+import { CardsSkeleton, ChartSkeleton, KpiSkeleton, SkeletonLines, TableSkeleton } from './Skeleton'
 
 // ---------- Pills / dots ----------
 
@@ -62,14 +64,49 @@ export function ExitReasonPill({ reason }: { reason: string | null | undefined }
 export function ScoreBadge({ score }: { score: number | null | undefined }) {
   const grade = scoreGrade(score)
   const pct = isNum(score) ? clamp(score, 0, 100) : 0
-  const tone = grade === 'A+' || grade === 'A' ? 'ok' : grade === 'B' ? 'accent' : grade === 'C' ? 'warn' : 'muted'
+  const tone = gradeTone(grade)
   return (
-    <span className={`score score-${tone}`} title={isNum(score) ? `score ${score.toFixed(1)}` : 'no score'}>
+    <span className={`score score-${tone}`} title={isNum(score) ? `score ${score.toFixed(1)} · grade ${grade}` : 'no score'}>
       <span className="score-bar">
         <span className="score-fill" style={{ width: `${pct}%` }} />
       </span>
       <span className="score-grade">{grade}</span>
     </span>
+  )
+}
+
+/** Grade letter only (A+/A/B/C) for compact spots. */
+export function Grade({ score }: { score: number | null | undefined }) {
+  const grade = scoreGrade(score)
+  return (
+    <span className={`grade grade-${gradeTone(grade)} mono`} title={isNum(score) ? `score ${score.toFixed(1)}` : 'no score'}>
+      {grade}
+    </span>
+  )
+}
+
+/**
+ * Timestamp in the user's local zone with a UTC tooltip.
+ * mode: time (HH:MM:SS) · datetime (DD Mon HH:MM) · full · ago (relative, ticking)
+ */
+export function Time({ t, mode = 'time', className = '' }: { t: number | null | undefined; mode?: 'time' | 'datetime' | 'full' | 'ago'; className?: string }) {
+  if (!isNum(t) || t <= 0) return <span className="muted">–</span>
+  if (mode === 'ago') return <TimeAgo t={t} className={className} />
+  const text = mode === 'datetime' ? fmtDateTime(t) : mode === 'full' ? fmtFullDateTime(t) : fmtTime(t)
+  return (
+    <time dateTime={new Date(t).toISOString()} title={fmtUtc(t)} className={`mono ${className}`.trim()}>
+      {text}
+    </time>
+  )
+}
+
+/** Relative time ("3m ago") that ticks; tooltip shows local + UTC. */
+export function TimeAgo({ t, className = '' }: { t: number; className?: string }) {
+  const now = useNow(5000)
+  return (
+    <time dateTime={new Date(t).toISOString()} title={`${fmtFullDateTime(t)} local · ${fmtUtc(t)}`} className={className}>
+      {timeAgo(t, now)}
+    </time>
   )
 }
 
@@ -108,18 +145,33 @@ export function KpiTile({
 
 // ---------- States ----------
 
-export function Loading({ label = 'Loading…' }: { label?: string }) {
-  return (
-    <div className="state">
-      <span className="spinner" /> {label}
-    </div>
-  )
+export type SkeletonKind = 'lines' | 'table' | 'kpi' | 'chart' | 'cards'
+
+/** Loading placeholder — always a skeleton, never a spinner. */
+export function Loading({ kind = 'lines', rows, cols, height, label }: { kind?: SkeletonKind; rows?: number; cols?: number; height?: number; label?: string }) {
+  void label
+  switch (kind) {
+    case 'table':
+      return <TableSkeleton rows={rows ?? 6} cols={cols ?? 6} />
+    case 'kpi':
+      return <KpiSkeleton count={rows ?? 8} />
+    case 'chart':
+      return <ChartSkeleton height={height ?? 220} />
+    case 'cards':
+      return <CardsSkeleton count={rows ?? 4} />
+    default:
+      return <SkeletonLines lines={rows ?? 3} />
+  }
 }
 
-export function Empty({ label = 'Nothing here yet.', children }: { label?: string; children?: ReactNode }) {
+/** Empty state: one short line plus an optional one-line hint. */
+export function Empty({ label = 'Nothing here yet.', hint, children }: { label?: string; hint?: string; children?: ReactNode }) {
   return (
-    <div className="state muted">
-      {label}
+    <div className="state muted empty">
+      <div>
+        <div>{label}</div>
+        {hint && <div className="empty-hint">{hint}</div>}
+      </div>
       {children}
     </div>
   )
@@ -148,6 +200,11 @@ export function QueryState<T>({
   error,
   data,
   empty,
+  hint,
+  skeleton = 'lines',
+  skeletonRows,
+  skeletonCols,
+  skeletonHeight,
   onRetry,
   children,
 }: {
@@ -156,13 +213,18 @@ export function QueryState<T>({
   error?: ApiError | Error | null
   data: T | undefined
   empty?: string
+  hint?: string
+  skeleton?: SkeletonKind
+  skeletonRows?: number
+  skeletonCols?: number
+  skeletonHeight?: number
   onRetry?: () => void
   children: (data: T) => ReactNode
 }) {
-  if (isLoading && data === undefined) return <Loading />
+  if (isLoading && data === undefined) return <Loading kind={skeleton} rows={skeletonRows} cols={skeletonCols} height={skeletonHeight} />
   if (isError && data === undefined) return <ErrorState error={error} onRetry={onRetry} />
-  if (data === undefined) return <Empty label={empty} />
-  if (Array.isArray(data) && data.length === 0) return <Empty label={empty} />
+  if (data === undefined) return <Empty label={empty} hint={hint} />
+  if (Array.isArray(data) && data.length === 0) return <Empty label={empty} hint={hint} />
   return <>{children(data)}</>
 }
 
@@ -294,13 +356,13 @@ export function Segmented<T extends string>({
   onChange,
   ariaLabel,
 }: {
-  options: readonly { value: T; label: ReactNode }[] | readonly T[]
+  options: readonly { value: T; label: ReactNode; ariaLabel?: string }[] | readonly T[]
   value: T
   onChange: (v: T) => void
   ariaLabel?: string
 }) {
-  const opts = (options as readonly (T | { value: T; label: ReactNode })[]).map((o) =>
-    typeof o === 'string' ? { value: o, label: o } : o,
+  const opts = (options as readonly (T | { value: T; label: ReactNode; ariaLabel?: string })[]).map((o) =>
+    typeof o === 'string' ? { value: o, label: o, ariaLabel: undefined } : o,
   )
   return (
     <div className="segmented" role="tablist" aria-label={ariaLabel}>
@@ -310,6 +372,8 @@ export function Segmented<T extends string>({
           role="tab"
           type="button"
           aria-selected={o.value === value}
+          aria-label={o.ariaLabel}
+          title={o.ariaLabel}
           className={`seg ${o.value === value ? 'seg-on' : ''}`}
           onClick={() => onChange(o.value)}
         >

@@ -98,9 +98,22 @@ export function Settings() {
     return Array.from(set)
   }, [config.data, markets.data])
 
-  if (config.isLoading && !config.data) return <Loading label="Loading config…" />
+  if (config.isLoading && !config.data)
+    return (
+      <div className="page">
+        <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Bound to GET/PUT /api/config." />
+        <div className="grid-2">
+          <Panel title="Market data">
+            <Loading rows={6} />
+          </Panel>
+          <Panel title="Paper engine">
+            <Loading rows={8} />
+          </Panel>
+        </div>
+      </div>
+    )
   if (config.isError && !config.data) return <ErrorState error={config.error} onRetry={() => config.refetch()} />
-  if (!form || !config.data) return <Loading />
+  if (!form || !config.data) return <Loading rows={6} />
 
   const edit = (fn: (f: Form) => Form) => setDraft(fn(draft ?? form))
   const setPaper = <K extends keyof PaperConfig>(k: K, v: PaperConfig[K]) => edit((f) => ({ ...f, paper: { ...f.paper, [k]: v } }))
@@ -134,6 +147,7 @@ export function Settings() {
         <PageTitle pre="Tune the" accent="engine," post="not the noise." sub="Bound to GET/PUT /api/config. Changing symbols or timeframes re-subscribes the feed and re-warms scanners." />
         <div className="page-actions">
           <Pill tone="muted">execution: {config.data.execution?.mode ?? 'paper'}</Pill>
+          {dirty && <Pill tone="warn">unsaved changes</Pill>}
           <button className="btn" onClick={() => setDraft(null)} disabled={!dirty || update.isPending}>
             Revert
           </button>

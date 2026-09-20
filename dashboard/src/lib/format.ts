@@ -138,6 +138,33 @@ const dtfFull = new Intl.DateTimeFormat('en-GB', {
   hour12: false,
 })
 
+const dtfUtc = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'UTC',
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+})
+
+/** Full timestamp in UTC for tooltips: "20 Sep 2026, 16:45:12 UTC". */
+export function fmtUtc(t: number | null | undefined): string {
+  if (!isNum(t) || t <= 0) return '–'
+  return `${dtfUtc.format(new Date(t))} UTC`
+}
+
+/** Local zone abbreviation, e.g. "IST" or "GMT+5:30". */
+export const LOCAL_TZ: string = (() => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(new Date())
+    return parts.find((p) => p.type === 'timeZoneName')?.value ?? 'local'
+  } catch {
+    return 'local'
+  }
+})()
+
 export function fmtTime(t: number | null | undefined): string {
   if (!isNum(t) || t <= 0) return '–'
   return dtf.format(new Date(t))
@@ -151,6 +178,7 @@ export function fmtFullDateTime(t: number | null | undefined): string {
   return dtfFull.format(new Date(t))
 }
 
+/** Humanized duration: 42s · 3m 12s · 2h 05m · 1d 3h. */
 export function fmtDuration(ms: number | null | undefined): string {
   if (!isNum(ms) || ms < 0) return '–'
   const s = Math.floor(ms / 1000)
@@ -158,8 +186,8 @@ export function fmtDuration(ms: number | null | undefined): string {
   const h = Math.floor(m / 60)
   const d = Math.floor(h / 24)
   if (d > 0) return `${d}d ${h % 24}h`
-  if (h > 0) return `${h}h ${m % 60}m`
-  if (m > 0) return `${m}m`
+  if (h > 0) return `${h}h ${String(m % 60).padStart(2, '0')}m`
+  if (m > 0) return `${m}m ${String(s % 60).padStart(2, '0')}s`
   return `${s}s`
 }
 
@@ -175,6 +203,14 @@ export function scoreGrade(score: number | null | undefined): string {
   if (score >= 70) return 'A'
   if (score >= 55) return 'B'
   return 'C'
+}
+
+/** Tone for a grade letter (for CSS classes). */
+export function gradeTone(grade: string): 'ok' | 'accent' | 'warn' | 'muted' {
+  if (grade === 'A+' || grade === 'A') return 'ok'
+  if (grade === 'B') return 'accent'
+  if (grade === 'C') return 'warn'
+  return 'muted'
 }
 
 export function truncate(s: string | null | undefined, n = 80): string {

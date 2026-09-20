@@ -7,7 +7,7 @@ import { AlertsFeed } from '../components/AlertsFeed'
 import { ChipSelect, Panel, Pill, QueryState } from '../components/ui'
 import { fmtPct, fmtPrice, pnlClass } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
-import { useSSE } from '../sse/SSEProvider'
+import { useLivePrice } from '../sse/prices'
 
 const LS_KEY = 'vnedge.chart'
 
@@ -15,7 +15,6 @@ export function ChartPage() {
   const markets = useMarkets()
   const config = useConfig()
   const scanners = useScanners()
-  const { lastPrice } = useSSE()
 
   const [symbolSel, setSymbol] = useState<string>(() => {
     try {
@@ -74,7 +73,7 @@ export function ChartPage() {
 
   const signals = useSignals({ symbol: symbol || undefined, limit: 30 })
   const market = markets.data?.find((m) => m.symbol === symbol)
-  const live = lastPrice[symbol]?.price ?? market?.markPrice
+  const live = useLivePrice(symbol, market?.markPrice)
 
   return (
     <div className="page page-chart">
@@ -103,7 +102,7 @@ export function ChartPage() {
         {market && (
           <span className="row gap">
             <span className="mono strong">{fmtPrice(live, market.tickSize)}</span>
-            <span className={`mono ${pnlClass(market.change24hPct)}`}>{fmtPct(market.change24hPct, 2, true)}</span>
+            <span className={`mono ${pnlClass(market.change24hPct)}`}>{fmtPct(market.change24hPct, 1, true)}</span>
             <span className="muted small">{market.description}</span>
           </span>
         )}
@@ -132,6 +131,7 @@ export function ChartPage() {
               tf={tf}
               height="100%"
               scripts={scripts}
+              tickSize={market?.tickSize}
               onScriptError={(id, err) => setScriptErrors((e) => ({ ...e, [id]: err.message }))}
               onScriptReady={(id) =>
                 setScriptErrors((e) => {
@@ -147,7 +147,7 @@ export function ChartPage() {
           )}
         </div>
         <Panel title={`Latest signals · ${symbol || '–'}`} className="chart-side" pad={false}>
-          <QueryState {...signals} data={signals.data} empty="No signals for this symbol." onRetry={() => signals.refetch()}>
+          <QueryState {...signals} data={signals.data} empty="No signals for this symbol." hint="Pick another symbol or enable a scanner on it." skeleton="cards" skeletonRows={4} onRetry={() => signals.refetch()}>
             {(d) => <AlertsFeed signals={d} limit={30} title="VNEdge Bot" />}
           </QueryState>
         </Panel>

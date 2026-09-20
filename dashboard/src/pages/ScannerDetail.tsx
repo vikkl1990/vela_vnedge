@@ -6,12 +6,11 @@ import { VelaChart, type ChartScript } from '../chart/VelaChart'
 import { EquityChart } from '../components/charts'
 import { DataTable, type Column } from '../components/DataTable'
 import { IconExternal, IconPlay } from '../components/Icons'
-import { Collapsible, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill } from '../components/ui'
+import { Collapsible, Empty, ErrorState, ExitReasonPill, KpiTile, Loading, Panel, Pill, Pnl, QueryState, ScannerStatusPill, Segmented, SidePill, Time } from '../components/ui'
 import { SignalsTable } from './Signals'
-import { fmtDateTime, fmtInt, fmtMs, fmtNum, fmtPct, fmtPrice, fmtR, timeAgo } from '../lib/format'
+import { fmtInt, fmtMs, fmtNum, fmtPct, fmtPrice, fmtR } from '../lib/format'
 import { DELTA_TIMEFRAMES } from '../lib/timeframes'
 import { useToast } from '../lib/toast'
-import { useNow } from '../lib/useNow'
 
 export function ScannerDetail() {
   const { id = '' } = useParams()
@@ -20,21 +19,20 @@ export function ScannerDetail() {
   const markets = useMarkets()
   const s = scanners.data?.find((x) => x.id === id)
   const toast = useToast()
-  const now = useNow(10_000)
 
   const symbols = useMemo(() => {
-    const own = s?.symbols?.length ? s.symbols : config.data?.symbols ?? []
+    const own = s?.symbols?.length ? s.symbols : (config.data?.symbols ?? [])
     return own.length ? own : (markets.data ?? []).map((m) => m.symbol).slice(0, 5)
   }, [s, config.data, markets.data])
   const tfs = useMemo(() => (s?.timeframes?.length ? s.timeframes : config.data?.timeframes?.length ? config.data.timeframes : ['15m']), [s, config.data])
 
   const [symbolSel, setSymbol] = useState('')
   const [tfSel, setTf] = useState('')
-  const symbol = symbolSel && symbols.includes(symbolSel) ? symbolSel : symbols[0] ?? ''
-  const tf = tfSel && tfs.includes(tfSel) ? tfSel : tfs[0] ?? ''
+  const symbol = symbolSel && symbols.includes(symbolSel) ? symbolSel : (symbols[0] ?? '')
+  const tf = tfSel && tfs.includes(tfSel) ? tfSel : (tfs[0] ?? '')
 
   const [showScript, setShowScript] = useState(false)
-  const source = useScannerSource(showScript || undefined ? id : undefined)
+  const source = useScannerSource(showScript ? id : undefined)
   const scripts = useMemo<ChartScript[]>(() => {
     if (!showScript || !s || !source.data?.patched) return []
     return [{ id: s.id, title: s.name, source: source.data.patched, overlay: s.overlay }]
@@ -48,7 +46,14 @@ export function ScannerDetail() {
   const runBt = useRunBacktest()
   const tick = markets.data?.find((m) => m.symbol === symbol)?.tickSize
 
-  if (scanners.isLoading && !scanners.data) return <Loading label="Loading scanner…" />
+  if (scanners.isLoading && !scanners.data)
+    return (
+      <div className="page">
+        <Loading rows={3} />
+        <Loading kind="kpi" rows={8} />
+        <Loading kind="chart" height={520} />
+      </div>
+    )
   if (scanners.isError && !scanners.data) return <ErrorState error={scanners.error} onRetry={() => scanners.refetch()} />
   if (!s)
     return (
@@ -68,15 +73,15 @@ export function ScannerDetail() {
     <div className="page">
       <div className="page-head">
         <div>
-          <div className="crumbs small muted">
+          <nav className="crumbs small muted" aria-label="Breadcrumb">
             <Link to="/scanners" className="link">
               scanners
             </Link>{' '}
             / <span className="mono">{s.id}</span>
-          </div>
+          </nav>
           <h1 className="h1">
             {s.name}{' '}
-            <a href={s.url} target="_blank" rel="noreferrer" className="link muted" title="Open on TradingView">
+            <a href={s.url} target="_blank" rel="noreferrer" className="link muted" title="Open on TradingView" aria-label="Open on TradingView">
               <IconExternal size={14} />
             </a>
           </h1>
@@ -91,7 +96,7 @@ export function ScannerDetail() {
           {s.reason && <div className="small loss mt">{s.reason}</div>}
           {s.lastRun && (
             <div className="small muted mt">
-              last run {timeAgo(s.lastRun.at, now)} on {s.lastRun.symbol} {s.lastRun.tf} in {fmtMs(s.lastRun.ms)}
+              last run <Time t={s.lastRun.at} mode="ago" /> on {s.lastRun.symbol} {s.lastRun.tf} in {fmtMs(s.lastRun.ms)}
               {s.lastRun.error && <span className="loss"> · {s.lastRun.error}</span>}
             </div>
           )}
@@ -107,7 +112,7 @@ export function ScannerDetail() {
             }
             disabled={s.status !== 'ok' || run.isPending}
           >
-            <IconPlay /> Run now
+            <IconPlay /> {run.isPending ? 'Queuing…' : 'Run now'}
           </button>
         </div>
       </div>
@@ -117,10 +122,10 @@ export function ScannerDetail() {
         <KpiTile label="Trades" value={fmtInt(st?.trades)} sub={<span className="muted">{st?.open ?? 0} open</span>} />
         <KpiTile label="Win rate" value={fmtPct(st?.winRatePct)} sub={<span className="muted">{st?.wins ?? 0}W / {st?.losses ?? 0}L</span>} />
         <KpiTile label="Profit factor" value={fmtNum(st?.profitFactor)} tone={(st?.profitFactor ?? 0) >= 1 ? 'gain' : 'loss'} />
-        <KpiTile label="PnL" value={<Pnl value={st?.pnl} />} sub={<span className="muted">{fmtPct(st?.pnlPct, 2, true)}</span>} />
+        <KpiTile label="PnL" value={<Pnl value={st?.pnl} />} sub={<span className="muted">{fmtPct(st?.pnlPct, 1, true)}</span>} />
         <KpiTile label="Avg R" value={fmtR(st?.avgR)} tone={(st?.avgR ?? 0) >= 0 ? 'gain' : 'loss'} />
         <KpiTile label="Max DD" value={`−${fmtPct(Math.abs(st?.maxDrawdownPct ?? 0))}`} tone="loss" />
-        <KpiTile label="Backtest" value={bt ? fmtNum(bt.profitFactor) : '–'} sub={bt ? <span className="muted">{bt.trades} trades · {fmtPct(bt.winRatePct, 0)} · <Pnl value={bt.pnl} /></span> : <span className="muted">no warm backtest</span>} hint="Backtest profit factor" />
+        <KpiTile label="Backtest PF" value={bt ? fmtNum(bt.profitFactor) : '–'} sub={bt ? <span className="muted">{bt.trades} trades · {fmtPct(bt.winRatePct)} · <Pnl value={bt.pnl} /></span> : <span className="muted">no warm backtest</span>} hint="Backtest profit factor" />
       </div>
 
       <Panel
@@ -138,12 +143,12 @@ export function ScannerDetail() {
         }
         pad={false}
       >
-        {symbol && tf ? <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} /> : <Loading />}
+        {symbol && tf ? <VelaChart symbol={symbol} tf={tf} height={520} scripts={scripts} tickSize={tick} /> : <Loading kind="chart" height={520} />}
       </Panel>
 
       <div className="grid-2-1">
         <Panel title="Equity curve (this scanner)">
-          <QueryState {...equity} data={equity.data} empty="No equity points for this scanner." onRetry={() => equity.refetch()}>
+          <QueryState {...equity} data={equity.data} empty="No equity points for this scanner." hint="The curve starts with its first closed trade." skeleton="chart" skeletonHeight={200} onRetry={() => equity.refetch()}>
             {(d) => <EquityChart data={d} height={200} />}
           </QueryState>
         </Panel>
@@ -167,36 +172,54 @@ export function ScannerDetail() {
             </button>
           }
         >
-          {backtest.isLoading && !btRes && <Loading label="Loading last backtest…" />}
-          {!btRes && !backtest.isLoading && <div className="muted small">No backtest for {symbol} {tf} yet. Run one.</div>}
+          {backtest.isLoading && !btRes && <Loading rows={4} />}
+          {!btRes && !backtest.isLoading && <Empty label={`No backtest for ${symbol} ${tf} yet.`} hint="Run one with the button above." />}
           {btRes && (
             <div className="bt">
               <div className="bt-stats">
-                <span className="stat-chip"><span className="stat-k">BARS</span><span className="mono">{fmtInt(btRes.bars)}</span></span>
-                <span className="stat-chip"><span className="stat-k">TRADES</span><span className="mono">{fmtInt(btRes.trades?.length ?? (btRes.stats?.trades as number))}</span></span>
-                <span className="stat-chip"><span className="stat-k">WIN</span><span className="mono">{fmtPct(btRes.stats?.winRatePct as number, 0)}</span></span>
-                <span className="stat-chip"><span className="stat-k">PF</span><span className="mono">{fmtNum(btRes.stats?.profitFactor as number)}</span></span>
-                <span className="stat-chip"><span className="stat-k">PNL</span><Pnl value={btRes.stats?.pnl as number} /></span>
-                <span className="stat-chip"><span className="stat-k">MAX DD</span><span className="mono">{fmtPct(btRes.stats?.maxDrawdownPct as number)}</span></span>
-                <span className="muted small">at {fmtDateTime(btRes.at)}</span>
+                <span className="stat-chip">
+                  <span className="stat-k">BARS</span>
+                  <span className="mono">{fmtInt(btRes.bars)}</span>
+                </span>
+                <span className="stat-chip">
+                  <span className="stat-k">TRADES</span>
+                  <span className="mono">{fmtInt(btRes.trades?.length ?? (btRes.stats?.trades as number))}</span>
+                </span>
+                <span className="stat-chip">
+                  <span className="stat-k">WIN</span>
+                  <span className="mono">{fmtPct(btRes.stats?.winRatePct as number)}</span>
+                </span>
+                <span className="stat-chip">
+                  <span className="stat-k">PF</span>
+                  <span className="mono">{fmtNum(btRes.stats?.profitFactor as number)}</span>
+                </span>
+                <span className="stat-chip">
+                  <span className="stat-k">PNL</span>
+                  <Pnl value={btRes.stats?.pnl as number} />
+                </span>
+                <span className="stat-chip">
+                  <span className="stat-k">MAX DD</span>
+                  <span className="mono">{fmtPct(btRes.stats?.maxDrawdownPct as number)}</span>
+                </span>
+                <span className="muted small">
+                  at <Time t={btRes.at} mode="datetime" />
+                </span>
               </div>
-              {btRes.equity?.length > 1 && (
-                <EquityChart data={btRes.equity.map((e) => ({ at: e.at, equity: e.equity, realized: 0, unrealized: 0 }))} height={140} />
-              )}
-              <TradesMini trades={btRes.trades ?? []} tick={tick} />
+              {btRes.equity?.length > 1 && <EquityChart data={btRes.equity.map((e) => ({ at: e.at, equity: e.equity, realized: 0, unrealized: 0 }))} height={140} />}
+              <TradesMini trades={btRes.trades ?? []} tick={tick} maxHeight={300} />
             </div>
           )}
         </Panel>
       </div>
 
       <Panel title="Signals" right={<span className="muted small">{signals.data?.length ?? 0} latest</span>} pad={false}>
-        <QueryState {...signals} data={signals.data} empty="No signals from this scanner." onRetry={() => signals.refetch()}>
+        <QueryState {...signals} data={signals.data} empty="No signals from this scanner." hint="Signals appear after the next closed bar once it is enabled." skeleton="table" skeletonRows={5} skeletonCols={9} onRetry={() => signals.refetch()}>
           {(d) => <SignalsTable signals={d} hideScanner maxHeight={360} />}
         </QueryState>
       </Panel>
 
       <Panel title="Closed trades" pad={false}>
-        <QueryState {...trades} data={trades.data} empty="No closed trades from this scanner." onRetry={() => trades.refetch()}>
+        <QueryState {...trades} data={trades.data} empty="No closed trades from this scanner." hint="Trades land here once a TP, SL or script exit fires." skeleton="table" skeletonRows={5} skeletonCols={8} onRetry={() => trades.refetch()}>
           {(d) => <TradesMini trades={d} tick={tick} maxHeight={360} />}
         </QueryState>
       </Panel>
@@ -209,23 +232,35 @@ export function ScannerDetail() {
 }
 
 function TradesMini({ trades, tick, maxHeight }: { trades: Trade[]; tick?: number; maxHeight?: number }) {
-  const cols: Column<Trade>[] = [
-    { key: 'exitAt', header: 'Closed', value: (t) => t.exitAt, render: (t) => <span className="small muted">{fmtDateTime(t.exitAt)}</span> },
-    { key: 'sym', header: 'Symbol', value: (t) => t.symbol, render: (t) => <span><b>{t.symbol}</b> <span className="muted small mono">{t.tf}</span></span> },
-    { key: 'side', header: 'Side', value: (t) => t.side, render: (t) => <SidePill side={t.side} /> },
-    { key: 'entry', header: 'Entry', align: 'right', value: (t) => t.entryPrice, render: (t) => <span className="mono">{fmtPrice(t.entryPrice, tick)}</span> },
-    { key: 'exit', header: 'Exit', align: 'right', value: (t) => t.exitPrice, render: (t) => <span className="mono">{fmtPrice(t.exitPrice, tick)}</span> },
-    { key: 'pnl', header: 'PnL', align: 'right', value: (t) => t.pnl, render: (t) => <Pnl value={t.pnl} /> },
-    { key: 'r', header: 'R', align: 'right', value: (t) => t.rMultiple, render: (t) => <span className={`mono ${t.rMultiple >= 0 ? 'gain' : 'loss'}`}>{fmtR(t.rMultiple)}</span> },
-    { key: 'reason', header: 'Exit reason', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
-  ]
-  return <DataTable columns={cols} rows={trades} rowKey={(t) => t.id ?? `${t.positionId}-${t.exitAt}`} defaultSort={{ key: 'exitAt', dir: 'desc' }} emptyLabel="No trades" maxHeight={maxHeight} />
+  const cols = useMemo<Column<Trade>[]>(
+    () => [
+      { key: 'exitAt', header: 'Closed', value: (t) => t.exitAt, render: (t) => <Time t={t.exitAt} mode="datetime" className="small muted" /> },
+      {
+        key: 'sym',
+        header: 'Symbol',
+        value: (t) => t.symbol,
+        render: (t) => (
+          <span>
+            <b>{t.symbol}</b> <span className="muted small mono">{t.tf}</span>
+          </span>
+        ),
+      },
+      { key: 'side', header: 'Side', value: (t) => t.side, render: (t) => <SidePill side={t.side} /> },
+      { key: 'entry', header: 'Entry', numeric: true, value: (t) => t.entryPrice, render: (t) => fmtPrice(t.entryPrice, tick) },
+      { key: 'exit', header: 'Exit', numeric: true, value: (t) => t.exitPrice, render: (t) => fmtPrice(t.exitPrice, tick) },
+      { key: 'pnl', header: 'PnL', numeric: true, value: (t) => t.pnl, render: (t) => <Pnl value={t.pnl} /> },
+      { key: 'r', header: 'R', numeric: true, value: (t) => t.rMultiple, render: (t) => <span className={t.rMultiple >= 0 ? 'gain' : 'loss'}>{fmtR(t.rMultiple)}</span> },
+      { key: 'reason', header: 'Exit reason', value: (t) => t.exitReason, render: (t) => <ExitReasonPill reason={t.exitReason} /> },
+    ],
+    [tick],
+  )
+  return <DataTable columns={cols} rows={trades} rowKey={(t) => t.id ?? `${t.positionId}-${t.exitAt}`} defaultSort={{ key: 'exitAt', dir: 'desc' }} emptyLabel="No trades" maxHeight={maxHeight} caption="Trades" />
 }
 
 function SourceViewer({ id }: { id: string }) {
   const src = useScannerSource(id)
   const [tab, setTab] = useState<'patched' | 'original'>('patched')
-  if (src.isLoading) return <Loading label="Loading source…" />
+  if (src.isLoading) return <Loading rows={8} />
   if (src.isError || !src.data) return <ErrorState error={src.error} onRetry={() => src.refetch()} />
   const d = src.data
   return (

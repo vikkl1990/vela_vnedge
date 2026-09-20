@@ -15,11 +15,13 @@ export function FallbackChart({
   tf,
   height = 520,
   reason,
+  tickSize,
 }: {
   symbol: string
   tf: string
   height?: number | string
   reason?: string | null
+  tickSize?: number
 }) {
   const { data, isLoading, isError, error } = useCandles(symbol, tf, 300)
   // Live bars received over SSE for the current symbol/tf, merged on top of the query data.
@@ -104,7 +106,7 @@ export function FallbackChart({
         ctx.moveTo(0, yy)
         ctx.lineTo(plotW, yy)
         ctx.stroke()
-        ctx.fillText(fmtPrice(p), plotW + 6, yy + 4)
+        ctx.fillText(fmtPrice(p, tickSize), plotW + 6, yy + 4)
       }
       // candles
       const up = 'hsl(136 39% 45%)'
@@ -149,7 +151,7 @@ export function FallbackChart({
     const ro = new ResizeObserver(draw)
     ro.observe(wrap)
     return () => ro.disconnect()
-  }, [bars, hover, theme])
+  }, [bars, hover, theme, tickSize])
 
   const onMove = (e: React.MouseEvent) => {
     const wrap = wrapRef.current
@@ -171,7 +173,7 @@ export function FallbackChart({
         </span>
         {hover && (
           <span className="mono small">
-            O {fmtPrice(hover.open)} H {fmtPrice(hover.high)} L {fmtPrice(hover.low)} C {fmtPrice(hover.close)}
+            O {fmtPrice(hover.open, tickSize)} H {fmtPrice(hover.high, tickSize)} L {fmtPrice(hover.low, tickSize)} C {fmtPrice(hover.close, tickSize)}
           </span>
         )}
       </div>

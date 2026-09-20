@@ -1,83 +1,107 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMarkets, useScanners, useSignals } from '../api/queries'
 import type { Signal, SignalKind, Side } from '../api/types'
 import { DataTable, type Column } from '../components/DataTable'
-import { ActionPill, ErrorState, Loading, PageTitle, Panel, ScoreBadge, SidePill, StatusDot } from '../components/ui'
-import { fmtDateTime, fmtPrice, fmtTime, truncate } from '../lib/format'
+import { ActionPill, ErrorState, Loading, PageTitle, Panel, ScoreBadge, SidePill, StatusDot, Time } from '../components/ui'
+import { fmtPrice, truncate } from '../lib/format'
 import { useNow } from '../lib/useNow'
 import { useSSEEvent } from '../sse/SSEProvider'
 
 const FLASH_MS = 3000
+/** Two-line rows (symbol + tf·kind) — fixed so windowing can position them. */
+const SIGNAL_ROW_H = 40
+const IDLE_MS = 3_600_000
 
-/** Signals table with the "scan results" style; new rows flash briefly. */
+/** Signals table with the "scan results" style; new rows flash briefly. Windows rows when > 300. */
 export function SignalsTable({ signals, hideScanner = false, maxHeight }: { signals: Signal[]; hideScanner?: boolean; maxHeight?: number | string }) {
   const { data: markets } = useMarkets()
   const [flash, setFlash] = useState<Map<number, number>>(new Map())
-  const now = useNow(1000)
-  useSSEEvent('signal', (s) => setFlash((m) => new Map(m).set(s.id, Date.now())))
-  const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
+  // tick every second only while something is flashing
+  const now = useNow(flash.size ? 1000 : IDLE_MS)
+  useSSEEvent('signal', (s) =>
+    setFlash((m) => {
+      const n = new Map(m)
+      const t = Date.now()
+      n.set(s.id, t)
+      for (const [k, at] of n) if (t - at > FLASH_MS) n.delete(k)
+      return n
+    }),
+  )
 
-  const cols: Column<Signal>[] = [
-    { key: 'at', header: 'Time', value: (s) => s.at, render: (s) => <span className="mono small" title={fmtDateTime(s.at)}>{fmtTime(s.at)}</span>, width: 80 },
-    ...(hideScanner
-      ? []
-      : ([
-          {
-            key: 'scanner',
-            header: 'Scanner',
-            value: (s) => s.scannerName,
-            render: (s) => (
-              <Link to={`/scanners/${s.scannerId}`} className="link strong">
-                {s.scannerName}
-              </Link>
-            ),
-          },
-        ] as Column<Signal>[])),
-    {
-      key: 'symbol',
-      header: 'Symbol',
-      value: (s) => s.symbol,
-      render: (s) => (
-        <span className="cell-sym">
-          <StatusDot tone={s.side === 'long' ? 'ok' : s.side === 'short' ? 'danger' : 'neutral'} />
-          <span>
-            <b>{s.symbol}</b>
-            <div className="muted small mono">{s.tf} · {s.kind}</div>
+  const cols = useMemo<Column<Signal>[]>(() => {
+    const tick = (sym: string) => markets?.find((m) => m.symbol === sym)?.tickSize
+    return [
+      { key: 'at', header: 'Time', value: (s) => s.at, render: (s) => <Time t={s.at} className="small" />, width: 84 },
+      ...(hideScanner
+        ? []
+        : ([
+            {
+              key: 'scanner',
+              header: 'Scanner',
+              value: (s) => s.scannerName,
+              render: (s) => (
+                <Link to={`/scanners/${s.scannerId}`} className="link strong">
+                  {s.scannerName}
+                </Link>
+              ),
+            },
+          ] as Column<Signal>[])),
+      {
+        key: 'symbol',
+        header: 'Symbol',
+        value: (s) => s.symbol,
+        render: (s) => (
+          <span className="cell-sym">
+            <StatusDot tone={s.side === 'long' ? 'ok' : s.side === 'short' ? 'danger' : 'neutral'} />
+            <span>
+              <b>{s.symbol}</b>
+              <div className="muted small mono">
+                {s.tf} · {s.kind}
+              </div>
+            </span>
           </span>
-        </span>
-      ),
+        ),
+      },
+      { key: 'kind', header: 'Kind', value: (s) => s.kind, render: (s) => <span className={`kind kind-${s.kind}`}>{s.kind}</span> },
+      { key: 'side', header: 'Side', value: (s) => s.side, render: (s) => <SidePill side={s.side} /> },
+      { key: 'price', header: 'Price', numeric: true, value: (s) => s.price, render: (s) => <span className="mono">{fmtPrice(s.price, tick(s.symbol))}</span> },
+      { key: 'sl', header: 'SL', numeric: true, value: (s) => s.sl, render: (s) => <span className="mono loss">{fmtPrice(s.sl, tick(s.symbol))}</span> },
+      {
+        key: 'tp',
+        header: 'TP1 / 2 / 3',
+        numeric: true,
+        sortable: false,
+        render: (s) => (
+          <span className="mono small tp-list gain">
+            {[0, 1, 2].map((i) => (
+              <span key={i}>{fmtPrice(s.tp?.[i], tick(s.symbol))}</span>
+            ))}
+          </span>
+        ),
+      },
+      { key: 'score', header: 'Score', numeric: true, value: (s) => s.score, render: (s) => <ScoreBadge score={s.score} />, title: 'Signal quality: A+ ≥ 85, A ≥ 70, B ≥ 55, else C' },
+      { key: 'action', header: 'Action', value: (s) => s.action, render: (s) => <ActionPill action={s.action} /> },
+      {
+        key: 'msg',
+        header: 'Message',
+        value: (s) => s.summary || s.message,
+        render: (s) => (
+          <span className="msg" title={s.message}>
+            {truncate(s.summary || s.message, 90)}
+          </span>
+        ),
+      },
+    ]
+  }, [markets, hideScanner])
+
+  const rowClass = useCallback(
+    (s: Signal) => {
+      const t = flash.get(s.id)
+      return t && now - t < FLASH_MS ? 'row-new' : undefined
     },
-    { key: 'kind', header: 'Kind', value: (s) => s.kind, render: (s) => <span className={`kind kind-${s.kind}`}>{s.kind}</span> },
-    { key: 'side', header: 'Side', value: (s) => s.side, render: (s) => <SidePill side={s.side} /> },
-    { key: 'price', header: 'Price', align: 'right', value: (s) => s.price, render: (s) => <span className="mono">{fmtPrice(s.price, tick(s.symbol))}</span> },
-    { key: 'sl', header: 'SL', align: 'right', value: (s) => s.sl, render: (s) => <span className="mono loss">{fmtPrice(s.sl, tick(s.symbol))}</span> },
-    {
-      key: 'tp',
-      header: 'TP1 / 2 / 3',
-      align: 'right',
-      sortable: false,
-      render: (s) => (
-        <span className="mono small tp-list gain">
-          {[0, 1, 2].map((i) => (
-            <span key={i}>{fmtPrice(s.tp?.[i], tick(s.symbol))}</span>
-          ))}
-        </span>
-      ),
-    },
-    { key: 'score', header: 'Score', align: 'right', value: (s) => s.score, render: (s) => <ScoreBadge score={s.score} /> },
-    { key: 'action', header: 'Action', value: (s) => s.action, render: (s) => <ActionPill action={s.action} /> },
-    {
-      key: 'msg',
-      header: 'Message',
-      value: (s) => s.summary || s.message,
-      render: (s) => (
-        <span className="msg" title={s.message}>
-          {truncate(s.summary || s.message, 90)}
-        </span>
-      ),
-    },
-  ]
+    [flash, now],
+  )
 
   return (
     <DataTable
@@ -85,12 +109,16 @@ export function SignalsTable({ signals, hideScanner = false, maxHeight }: { sign
       rows={signals}
       rowKey={(s) => s.id}
       defaultSort={{ key: 'at', dir: 'desc' }}
-      emptyLabel="No signals"
+      emptyLabel={
+        <span>
+          No signals
+          <span className="empty-hint">Enable a scanner and wait for the next closed bar.</span>
+        </span>
+      }
       maxHeight={maxHeight}
-      rowClass={(s) => {
-        const t = flash.get(s.id)
-        return t && now - t < FLASH_MS ? 'row-new' : undefined
-      }}
+      rowHeight={SIGNAL_ROW_H}
+      rowClass={rowClass}
+      caption="Signals"
     />
   )
 }
@@ -102,7 +130,7 @@ export function Signals() {
   const [symbol, setSymbol] = useState('')
   const [kind, setKind] = useState<'' | SignalKind>('')
   const [side, setSide] = useState<'' | Side>('')
-  const q = useMemo(() => ({ limit: 300, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined }), [scanner, symbol, kind])
+  const q = useMemo(() => ({ limit: 500, scanner: scanner || undefined, symbol: symbol || undefined, kind: kind || undefined }), [scanner, symbol, kind])
   const signals = useSignals(q)
 
   const rows = useMemo(() => (signals.data ?? []).filter((s) => !side || s.side === side), [signals.data, side])
@@ -154,9 +182,9 @@ export function Signals() {
         }
         pad={false}
       >
-        {signals.isLoading && !signals.data && <Loading label="Loading signals…" />}
+        {signals.isLoading && !signals.data && <Loading kind="table" rows={10} cols={9} />}
         {signals.isError && !signals.data && <ErrorState error={signals.error} onRetry={() => signals.refetch()} />}
-        {signals.data && <SignalsTable signals={rows} />}
+        {signals.data && <SignalsTable signals={rows} maxHeight="calc(100vh - 300px)" />}
       </Panel>
     </div>
   )

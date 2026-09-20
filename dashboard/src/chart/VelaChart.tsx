@@ -24,6 +24,8 @@ interface Props {
   /** Called when a script fails to compile/run (also toasts). */
   onScriptError?: (id: string, err: Error) => void
   onScriptReady?: (id: string) => void
+  /** Market tick size — used by the fallback chart's price axis. */
+  tickSize?: number
 }
 
 type VelaModule = typeof import('@luxalgo/vela')
@@ -47,7 +49,7 @@ function loadLibs() {
  * Vela chart wrapper. Every call into Vela is guarded; on an unrecoverable
  * failure the component swaps to `FallbackChart` so the page never breaks.
  */
-export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptError, onScriptReady }: Props) {
+export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptError, onScriptReady, tickSize }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<VelaType | null>(null)
   const handlesRef = useRef(new Map<string, { handle: IndicatorHandle; source: string; offs: (() => void)[] }>())
@@ -249,14 +251,14 @@ export function VelaChart({ symbol, tf, height = 520, scripts = [], onScriptErro
     }
   }, [scripts, ready])
 
-  if (failed) return <FallbackChart symbol={symbol} tf={tf} height={height} reason={failed} />
+  if (failed) return <FallbackChart symbol={symbol} tf={tf} height={height} reason={failed} tickSize={tickSize} />
 
   return (
     <div className="vela-wrap" style={{ height }}>
       <div ref={containerRef} className="vela-container" />
       {loading && (
-        <div className="vela-loading">
-          <span className="spinner" /> loading {symbol} · {tf}
+        <div className="vela-loading" role="status">
+          <span className="pulse-dot" aria-hidden /> loading {symbol} · {tf}
         </div>
       )}
     </div>

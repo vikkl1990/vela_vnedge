@@ -41,11 +41,18 @@ export function useBackendOnline(): { online: boolean; error: ApiError | null; c
   return { online: !h.isError && !!h.data, error: h.error ?? null, checked: h.isFetched }
 }
 
-export const useConfig = () => useQuery({ queryKey: qk.config, queryFn: api.config, retry: 1 })
+/*
+ * staleTime policy: SSE keeps these caches fresh (setQueryData / debounced
+ * invalidation), so remounting a page must not trigger a refetch storm.
+ * Anything not pushed over SSE (markets, config) refreshes on a slow interval.
+ */
+const LIVE_STALE = 30_000
+
+export const useConfig = () => useQuery({ queryKey: qk.config, queryFn: api.config, staleTime: 60_000, retry: 1 })
 export const useMarkets = () =>
-  useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 60_000, retry: 1 })
+  useQuery({ queryKey: qk.markets, queryFn: api.markets, staleTime: 5 * 60_000, refetchInterval: 5 * 60_000, retry: 1 })
 export const useScanners = (opts?: Opts<Awaited<ReturnType<typeof api.scanners>>>) =>
-  useQuery({ queryKey: qk.scanners, queryFn: api.scanners, retry: 1, ...opts })
+  useQuery({ queryKey: qk.scanners, queryFn: api.scanners, staleTime: LIVE_STALE, retry: 1, ...opts })
 export const useScannerSource = (id: string | undefined) =>
   useQuery({
     queryKey: qk.scannerSource(id ?? ''),
@@ -62,15 +69,16 @@ export const useScannerOverlay = (id: string | undefined, symbol: string, tf: st
     retry: 0,
   })
 export const useSignals = (q: SignalQuery = {}) =>
-  useQuery({ queryKey: qk.signals(q), queryFn: () => api.signals(q), retry: 1 })
-export const usePositions = () => useQuery({ queryKey: qk.positions, queryFn: api.positions, retry: 1 })
+  useQuery({ queryKey: qk.signals(q), queryFn: () => api.signals(q), staleTime: LIVE_STALE, retry: 1 })
+export const usePositions = () =>
+  useQuery({ queryKey: qk.positions, queryFn: api.positions, staleTime: LIVE_STALE, refetchInterval: 60_000, retry: 1 })
 export const useTrades = (q: TradeQuery = {}) =>
-  useQuery({ queryKey: qk.trades(q), queryFn: () => api.trades(q), retry: 1 })
+  useQuery({ queryKey: qk.trades(q), queryFn: () => api.trades(q), staleTime: LIVE_STALE, retry: 1 })
 export const useOrders = (limit = 200) =>
-  useQuery({ queryKey: qk.orders, queryFn: () => api.orders(limit), retry: 1 })
-export const useStats = () => useQuery({ queryKey: qk.stats, queryFn: api.stats, retry: 1 })
+  useQuery({ queryKey: qk.orders, queryFn: () => api.orders(limit), staleTime: LIVE_STALE, retry: 1 })
+export const useStats = () => useQuery({ queryKey: qk.stats, queryFn: api.stats, staleTime: LIVE_STALE, refetchInterval: 60_000, retry: 1 })
 export const useEquity = (scanner?: string) =>
-  useQuery({ queryKey: qk.equity(scanner), queryFn: () => api.equity(scanner), retry: 1 })
+  useQuery({ queryKey: qk.equity(scanner), queryFn: () => api.equity(scanner), staleTime: LIVE_STALE, retry: 1 })
 export const useBacktest = (scanner: string | undefined, symbol: string, tf: string) =>
   useQuery({
     queryKey: qk.backtest(scanner ?? '', symbol, tf),
@@ -79,7 +87,7 @@ export const useBacktest = (scanner: string | undefined, symbol: string, tf: str
     retry: 0,
   })
 export const useLogs = (level?: LogLevel, limit = 300) =>
-  useQuery({ queryKey: qk.logs(level), queryFn: () => api.logs(limit, level), retry: 1 })
+  useQuery({ queryKey: qk.logs(level), queryFn: () => api.logs(limit, level), staleTime: LIVE_STALE, retry: 1 })
 export const useCandles = (symbol: string, tf: string, limit = 500) =>
   useQuery({
     queryKey: qk.candles(symbol, tf),
@@ -132,6 +140,19 @@ export function useClosePosition() {
   })
 }
 
+export function useCloseAll() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.closeAll(),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.positions })
+      void qc.invalidateQueries({ queryKey: ['trades'] })
+      void qc.invalidateQueries({ queryKey: qk.orders })
+      void qc.invalidateQueries({ queryKey: qk.stats })
+    },
+  })
+}
+
 export function useResetPaper() {
   const qc = useQueryClient()
   return useMutation({
@@ -149,6 +170,8 @@ export function useRunBacktest() {
   })
 }
 
-export const useMl = () => useQuery({ queryKey: qk.ml, queryFn: api.ml, retry: 1, refetchInterval: 60_000 })
-export const useMlScanner = (id: string) => useQuery({ queryKey: qk.mlScanner(id), queryFn: () => api.mlScanner(id), enabled: !!id, retry: 1 })
-export const useAnalytics = () => useQuery({ queryKey: qk.analytics, queryFn: api.analytics, retry: 1, refetchInterval: 30_000 })
+export const useMl = () => useQuery({ queryKey: qk.ml, queryFn: api.ml, staleTime: 60_000, retry: 1, refetchInterval: 60_000 })
+export const useMlScanner = (id: string) =>
+  useQuery({ queryKey: qk.mlScanner(id), queryFn: () => api.mlScanner(id), enabled: !!id, staleTime: 60_000, retry: 1 })
+export const useAnalytics = () =>
+  useQuery({ queryKey: qk.analytics, queryFn: api.analytics, staleTime: LIVE_STALE, retry: 1, refetchInterval: 60_000 })
