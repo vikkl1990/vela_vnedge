@@ -49,7 +49,7 @@ export function ChartPage() {
     }
   }, [symbol, tf])
 
-  const enabledScanners = useMemo(() => (scanners.data ?? []).filter((s) => s.enabled && s.status === 'ok'), [scanners.data])
+  const enabledScanners = useMemo(() => (scanners.data ?? []).filter((s) => s.enabled && s.status === 'ok' && !s.hidden), [scanners.data])
   const scannerNames = useMemo(() => enabledScanners.map((s) => s.name), [enabledScanners])
   const selectedIds = useMemo(() => enabledScanners.filter((s) => selected.includes(s.name)).map((s) => s.id), [enabledScanners, selected])
 

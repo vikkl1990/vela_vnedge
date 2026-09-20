@@ -59,7 +59,7 @@ re-subscribes the feed and re-warms scanners.
 ```
 `status` is `"ok" | "incompatible" | "unavailable"`; only `ok` scanners can be enabled.
 
-`POST /api/scanners/:id` body `{ "enabled": true, "symbols": ["BTCUSD"], "timeframes": ["15m"], "exitMode": "levels" }` (all optional) → updated scanner.
+`POST /api/scanners/:id` body `{ "enabled": true, "symbols": ["BTCUSD"], "timeframes": ["15m"], "exitMode": "levels", "hidden": false }` (all optional; `hidden: true` also disables) → updated scanner. Scanner objects carry `hidden`; the dashboard lists hidden ones only behind a "show removed" toggle.
 
 `POST /api/scanners/:id/run` → runs now on all its symbols/timeframes; returns `{ "queued": 2 }`.
 

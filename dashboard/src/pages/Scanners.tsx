@@ -25,6 +25,7 @@ export function Scanners() {
   const [cat, setCat] = useState<Category>('All')
   const [filter, setFilter] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [showHidden, setShowHidden] = useState(false)
 
   // Inline chips offer the globally configured symbols plus anything a scanner already uses
   // (the full market list is hundreds of symbols — edit the global list on Settings).
@@ -36,10 +37,11 @@ export function Scanners() {
   }, [config.data, markets.data, scanners.data])
 
   const rows = useMemo(() => {
-    const list = scanners.data ?? []
+    const list = (scanners.data ?? []).filter((s) => showHidden || !s.hidden)
     const f = filter.trim().toLowerCase()
     return list.filter((s) => (cat === 'All' || categorize(s.name) === cat) && (!f || s.name.toLowerCase().includes(f) || s.id.includes(f)))
-  }, [scanners.data, cat, filter])
+  }, [scanners.data, cat, filter, showHidden])
+  const hiddenCount = (scanners.data ?? []).filter((s) => s.hidden).length
 
   const counts = useMemo(() => {
     const c = new Map<Category, number>()
@@ -60,7 +62,7 @@ export function Scanners() {
     })
 
   const bulk = async (enabled: boolean) => {
-    const list = (scanners.data ?? []).filter((s) => (enabled ? s.status === 'ok' && !s.enabled : s.enabled))
+    const list = (scanners.data ?? []).filter((s) => (enabled ? s.status === 'ok' && !s.enabled && !s.hidden : s.enabled))
     if (!list.length) {
       const all = scanners.data ?? []
       const runnable = all.filter((s) => s.status === 'ok').length
@@ -176,6 +178,9 @@ export function Scanners() {
       align: 'right',
       render: (s) => (
         <span className="row-actions">
+          <button className="btn btn-xs" onClick={() => patch(s, { hidden: !s.hidden })} disabled={update.isPending} title={s.hidden ? 'Restore to the list' : 'Remove from the list (disables it)'}>
+            {s.hidden ? 'Restore' : 'Remove'}
+          </button>
           <button className="btn btn-xs" onClick={() => runNow(s)} disabled={s.status !== 'ok' || run.isPending} title="Run now">
             <IconPlay /> Run
           </button>
@@ -190,10 +195,13 @@ export function Scanners() {
   return (
     <div className="page">
       <div className="page-head">
-        <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.length} scripts · ${scanners.data.filter((s) => s.status === 'ok').length} runnable · ${scanners.data.filter((s) => s.enabled).length} enabled` : undefined} />
+        <PageTitle pre="Every scanner," accent="one" post="terminal." sub={scanners.data ? `${scanners.data.filter((s) => !s.hidden).length} in list · ${scanners.data.filter((s) => s.enabled).length} enabled · ${hiddenCount} removed` : undefined} />
         <div className="page-actions">
           <button className="btn btn-cta" onClick={() => bulk(true)} disabled={bulkBusy || !scanners.data}>
             {bulkBusy ? 'Working…' : 'Enable all runnable'}
+          </button>
+          <button className="btn" onClick={() => setShowHidden((v) => !v)} disabled={!scanners.data} title="Removed scanners stay disabled; restore any from here">
+            {showHidden ? 'Hide removed' : `Show removed (${hiddenCount})`}
           </button>
           <button className="btn" onClick={() => bulk(false)} disabled={bulkBusy || !scanners.data}>
             Disable all
@@ -234,7 +242,7 @@ export function Scanners() {
         <div className="cards-2">
           {rows.length === 0 && <div className="state muted">No scanners match.</div>}
           {rows.map((s) => (
-            <ScannerCard key={s.id} s={s} now={now} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} busy={update.isPending} />
+            <ScannerCard key={s.id} s={s} now={now} onToggle={(v) => patch(s, { enabled: v })} onRun={() => runNow(s)} onHide={() => patch(s, { hidden: !s.hidden })} busy={update.isPending} />
           ))}
         </div>
       )}
@@ -242,7 +250,7 @@ export function Scanners() {
   )
 }
 
-function ScannerCard({ s, now, onToggle, onRun, busy }: { s: Scanner; now: number; onToggle: (v: boolean) => void; onRun: () => void; busy: boolean }) {
+function ScannerCard({ s, now, onToggle, onRun, busy, onHide }: { s: Scanner; now: number; onToggle: (v: boolean) => void; onRun: () => void; busy: boolean; onHide: () => void }) {
   const st = s.stats
   const tfs = (s.timeframes ?? []).join('/') || 'global'
   return (
@@ -299,6 +307,9 @@ function ScannerCard({ s, now, onToggle, onRun, busy }: { s: Scanner; now: numbe
           )}
         </span>
         <span className="row-actions">
+          <button className="btn btn-xs" onClick={onHide} disabled={busy} title={s.hidden ? 'Restore to the list' : 'Remove from the list (disables it)'}>
+            {s.hidden ? 'Restore' : 'Remove'}
+          </button>
           <button className="btn btn-xs" onClick={onRun} disabled={s.status !== 'ok'} title="Run now">
             <IconPlay /> Run
           </button>

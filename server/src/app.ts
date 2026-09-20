@@ -95,7 +95,7 @@ export class App {
     stats.signals = this.db.countSignals(id);
     stats.backtest = this.scanners.backtestSummary(id);
     return {
-      id: s.id, name: s.name, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: this.scanners.isActive(s),
+      id: s.id, name: s.name, file: s.file, url: s.url, status: s.status, reason: s.reason, category: s.category, enabled: this.scanners.isActive(s), hidden: Boolean(c.hidden),
       overlay: s.overlay, pineVersion: s.pineVersion, lines: s.lines, updated: s.updated, patches: s.patches,
       symbols: this.scanners.symbolsFor(id), timeframes: this.scanners.timeframesFor(id), exitMode: c.exitMode,
       lastRun: this.scanners.getLastRun(id), stats,

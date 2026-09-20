@@ -63,7 +63,7 @@ export class ScannerEngine extends EventEmitter {
   }
   symbolsFor(id: string): string[] { return this.scannerConfig(id).symbols ?? this.cfgRef().symbols; }
   timeframesFor(id: string): string[] { return this.scannerConfig(id).timeframes ?? this.cfgRef().timeframes; }
-  isActive(s: LoadedScanner): boolean { return s.status === 'ok' && this.scannerConfig(s.id).enabled; }
+  isActive(s: LoadedScanner): boolean { const c = this.scannerConfig(s.id); return s.status === 'ok' && c.enabled && !c.hidden; }
 
   /** All (symbol, tf) pairs any active scanner needs. */
   requiredSeries(): Array<{ symbol: string; tf: string }> {

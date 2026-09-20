@@ -35,6 +35,8 @@ export interface PaperConfig {
 
 export interface ScannerConfig {
   enabled: boolean;
+  /** Removed from the dashboard list (kept disabled); restorable. */
+  hidden?: boolean;
   symbols: string[] | null;
   timeframes: string[] | null;
   exitMode: ExitMode;

@@ -130,6 +130,7 @@ export interface Scanner {
   status: ScannerStatus
   reason: string | null
   enabled: boolean
+  hidden?: boolean
   overlay: boolean
   pineVersion: string
   lines: number
@@ -142,6 +143,7 @@ export interface Scanner {
 
 export interface ScannerUpdate {
   enabled?: boolean
+  hidden?: boolean
   symbols?: string[]
   timeframes?: string[]
   exitMode?: ExitMode

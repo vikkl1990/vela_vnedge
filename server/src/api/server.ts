@@ -186,6 +186,7 @@ export class ApiServer {
       if (Array.isArray(body?.timeframes)) { for (const tf of body.timeframes) if (!(tf in TF_SECONDS)) throw new HttpError(400, `unsupported tf ${tf}`); patch.timeframes = body.timeframes; }
       if (body?.timeframes === null) patch.timeframes = null;
       if (body?.exitMode) { if (!['levels', 'script', 'both'].includes(body.exitMode)) throw new HttpError(400, 'bad exitMode'); patch.exitMode = body.exitMode; }
+      if (typeof body?.hidden === 'boolean') { patch.hidden = body.hidden; if (body.hidden) patch.enabled = false; }
       a.config.setScanner(p.id, patch);
       await a.onConfigChanged();
       return a.scannerView(p.id);

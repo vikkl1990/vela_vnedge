@@ -40,7 +40,7 @@ export function Overview() {
   return (
     <div className="page">
       <TickerTape />
-      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub="Paper-trading 42 Pine scanners on Delta India, live." />
+      <PageTitle pre="The market's noise," accent="filtered" post="to conviction." sub={`Paper-trading ${(scanners.data ?? []).filter((s) => !s.hidden).length || 42} Pine scanners on Delta India, live.`} />
 
       {stats.isLoading && !s && <Loading label="Loading stats…" />}
       {stats.isError && !s && <ErrorState error={stats.error} onRetry={() => stats.refetch()} />}
