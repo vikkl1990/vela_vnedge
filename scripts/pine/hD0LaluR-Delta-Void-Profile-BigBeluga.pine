@@ -1,0 +1,117 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Delta Void Profile [BigBeluga]", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+int lookback      = input.int(400, "Lookback Period", minval=50, tooltip="The number of historical bars used to calculate the volume and void data. Larger values provide a more macro view of market structure.")
+int binCount      = input.int(30, "Number of Bins", minval=10, tooltip="Sets the vertical resolution of the profile. More bins create a detailed 'high-definition' view, while fewer bins simplify the structure.")
+int profileWidth  = input.int(50, "Max Profile Width (Bars)", minval=5, tooltip="The maximum horizontal length of the volume bars, measured in chart bars.")
+string levelMode  = input.string("Highest Volume", "Level Display", options=["None", "Highest Volume", "Volume Gaps"], tooltip="Choose which key structural levels to highlight: High Volume Nodes (HVN) for support/resistance or Volume Gaps for liquidity vacuums.")
+color invColor    = input.color(#39c596, "Inverse Peak (Left)", tooltip="Color for the 'Void' profile on the left, representing areas where liquidity is missing.")
+color normColor   = input.color(#3981c5, "Normal Bin Base", tooltip="Color for the standard volume profile on the right side.")
+color levelColor  = input.color(color.new(color.white, 30), "Level Color", tooltip="The color used for the dashed horizontal pivot lines and their price labels.")
+
+// UI Scaling
+string labelSize  = input.string(size.small, "Global Text Size", options=[size.tiny, size.small, size.normal, size.large], tooltip="Adjusts the size of all text labels, including percentages and structural price levels.")
+string boxTxtSize = labelSize
+
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+float hi = ta.highest(high, lookback)
+float lo = ta.lowest(low, lookback)
+float binStep = (hi - lo) / binCount
+
+var float[] binTotalVol = array.new_float(binCount, 0.0)
+var float[] binBuyVol   = array.new_float(binCount, 0.0)
+array.fill(binTotalVol, 0.0)
+array.fill(binBuyVol, 0.0)
+
+for i = 0 to lookback - 1
+    float bHi  = high[i], bLo = low[i], bCl = close[i], vol = volume[i]
+    float buyPercent = (bHi == bLo) ? 0.5 : (bCl - bLo) / (bHi - bLo)
+    int binIdx = math.floor((bCl - lo) / binStep)
+    if binIdx >= 0 and binIdx < binCount
+        binTotalVol.set(binIdx, binTotalVol.get(binIdx) + vol)
+        binBuyVol.set(binIdx, binBuyVol.get(binIdx) + (vol * buyPercent))
+
+float maxVol = binTotalVol.max()
+
+// Cleanup Cache 
+var box[] b_cache = array.new_box()
+var line[] l_cache = array.new_line()
+var label[] lbl_cache = array.new_label()
+
+for b in b_cache 
+    box.delete(b)
+for l in l_cache 
+    line.delete(l)
+for lb in lbl_cache 
+    label.delete(lb)
+array.clear(b_cache), array.clear(l_cache), array.clear(lbl_cache)
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+if barstate.islast
+    // Find deepest vacuum for highlighting
+    float maxGap = 0.0
+    for i = 0 to binCount - 1
+        maxGap := math.max(maxGap, maxVol - binTotalVol.get(i))
+
+    for i = 0 to binCount - 1
+        float tVol = binTotalVol.get(i), bVol = binBuyVol.get(i), sVol = tVol - bVol
+        float binTop = lo + ((i + 1) * binStep), binBot = lo + (i * binStep), midY = (binTop + binBot) / 2
+
+        // 1. Inverse Profile (LEFT)
+        float gapStr = maxVol - tVol
+        int invW = math.round((gapStr / maxVol) * profileWidth)
+        color currentInvColor = color.from_gradient(invW, 0, profileWidth, chart.bg_color, invColor)
+        color borderC = gapStr == maxGap ? invColor : chart.bg_color
+        float gapPct = (gapStr / maxVol) * 100 
+
+        b_cache.push(box.new(bar_index - lookback + invW, binTop, bar_index - lookback, binBot, 
+                     bgcolor=currentInvColor, border_color=borderC, 
+                     text = invW > profileWidth * 0.7 ? str.format("{0,number,#}% Gap", gapPct) : "", 
+                     text_halign = text.align_right, text_size = boxTxtSize))
+
+        // 2. Normal Profile (RIGHT)
+        int normW = math.round((tVol / maxVol) * profileWidth)
+        int startX = bar_index + profileWidth, endX = startX - normW
+        b_cache.push(box.new(startX, binTop, endX, binBot, 
+                     bgcolor=color.from_gradient(normW, 0, profileWidth, chart.bg_color, normColor), border_color=chart.bg_color))
+
+        if tVol > 0
+            float bPct = bVol / tVol, sPct = sVol / tVol
+            int deltaX = math.round(startX - (normW * bPct))
+            l_cache.push(line.new(deltaX, binTop, deltaX, binBot, color=chart.fg_color, width=1, force_overlay=true))
+
+            if normW > 18 
+                lbl_cache.push(label.new(deltaX + 1, midY, str.format("{0,number,#}%", bPct * 100), 
+                               textcolor=color.rgb(36, 240, 196), style=label.style_label_left, color=#00000000, size=labelSize, tooltip = "BUY Percent"))
+                lbl_cache.push(label.new(deltaX - 1, midY, str.format("{0,number,#}%", sPct * 100), 
+                               textcolor=color.rgb(255, 140, 87), style=label.style_label_right, color=#00000000, size=labelSize, tooltip = "SELL Percent"))
+
+    // Structural Level Pivot Detection
+    if levelMode != "None"
+        for i = 1 to binCount - 2
+            float prev = levelMode == "Highest Volume" ? binTotalVol.get(i-1) : (maxVol - binTotalVol.get(i-1))
+            float curr = levelMode == "Highest Volume" ? binTotalVol.get(i)   : (maxVol - binTotalVol.get(i))
+            float next = levelMode == "Highest Volume" ? binTotalVol.get(i+1) : (maxVol - binTotalVol.get(i+1))
+
+            if curr > prev and curr > next
+                float pivotP = lo + (i * binStep) + (binStep / 2)
+                string prefix = levelMode == "Highest Volume" ? "HVN | " : "GAP | "
+                
+                l_cache.push(line.new(bar_index - lookback, pivotP, bar_index + profileWidth, pivotP, color=levelColor, style=line.style_dashed))
+                lbl_cache.push(label.new(bar_index + profileWidth, pivotP, prefix + str.tostring(pivotP, "###,####"), 
+                               textcolor=levelColor, style=label.style_label_left, color=#00000000, size=labelSize))
+
+// }

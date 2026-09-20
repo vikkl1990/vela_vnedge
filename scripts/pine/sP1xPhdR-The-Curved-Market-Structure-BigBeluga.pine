@@ -1,0 +1,225 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('The Curved Market Structure [BigBeluga]', overlay = true, max_polylines_count = 100, max_labels_count = 500, max_lines_count = 500)
+
+// UDT         ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Define the UDT to encapsulate lines, slopes, and pivot information
+type PivotData
+	float high_val // Stores high pivot value
+	float low_val // Stores low pivot value
+	line line_high_1 // First line segment for high pivots
+	line line_high_2 // Second line segment for high pivots
+	line line_low_1 // First line segment for low pivots
+	line line_low_2 // Second line segment for low pivots
+	float high_slope1 // Slope of the first high pivot line
+	float high_slope2 // Slope of the second high pivot line
+	float low_slope1 // Slope of the first low pivot line
+	float low_slope2 // Slope of the second low pivot line
+	line target1 // Stores upper target1 line
+	line target2 // Stores upper target2 line
+	line target3 // Stores upper target3 line
+	line target_1 // Stores lower target1 line
+	line target_2 // Stores lower target2 line
+	line target_3 // Stores lower target3 line
+
+// }
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int left_bars = input.int(15, 'Period', inline = "ms")
+int right_bars = left_bars
+int line_len = input.int(19, 'Length', inline = "ms")
+float atr_mult = input.float(1, step = 0.1, title = 'Angle', inline = "ms")
+target_mult = input.int(3, "Targets Distance")
+color up_color = input.color(color.lime, "", inline = "1")
+color down_color = input.color(#00b0e6, "", inline = "1")
+
+// Initialize UDT instance
+var PivotData data = PivotData.new(na, na, na, na, na, na, na, na, na, na, na, na, na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Calculate ATR and pivots
+series float atr = ta.atr(200)
+series float atr_val = ta.atr(150) * atr_mult / 100
+series float pivot_high = ta.pivothigh(left_bars, right_bars)
+series float pivot_low = ta.pivotlow(left_bars, right_bars)
+
+bool is_high_pivot = not na(pivot_high)
+bool is_low_pivot = not na(pivot_low)
+
+var trend = bool(na)
+
+// If a pivot high is detected, store the high value, if a low is detected, store the low value
+switch 
+    is_high_pivot => 
+	    data.high_val := high[right_bars]
+    is_low_pivot => 
+	    data.low_val := low[right_bars]
+
+// Further refine the pivot detection logic
+if ta.crossover(close, data.high_val)
+    trend := true
+if ta.crossunder(close, data.low_val)
+    trend := false
+
+is_high_pivot := is_high_pivot and trend
+is_low_pivot := is_low_pivot and not trend
+
+// Methods for line calculations price and crossovers
+method calc_line_price(int time_offset, float start_price, float slope_val) =>
+    var float price_at_time = 0.0
+    int time_diff = bar_index - time_offset
+    price_at_time := start_price + time_diff * slope_val
+    price_at_time
+
+method detect_crossover(float price, int start_time, float start_price, float slope_val, bool upward = true, x2) =>
+    if bar_index <= x2
+        float calc_price = start_time.calc_line_price(start_price, slope_val)
+        bool crossed = upward ? price > calc_price and price[1] <= calc_price[1] and barstate.isconfirmed : price < calc_price and price[1] >= calc_price[1] and barstate.isconfirmed
+        crossed
+
+// Method for lines slope calculations
+method slope(line line_id) =>
+    slope = (line_id.get_y2() - line_id.get_y1()) / (line_id.get_x2() - line_id.get_x1())
+    slope
+
+// Draw Label function
+label_(x, y, txt, side, color) =>
+    label.new(x, y, txt, style = side ? label.style_label_up : label.style_label_down, textcolor = color, color = color(na), size = size.normal)
+
+// Check for crossovers between lines and price
+detect_cross(line line_1, line line_2, slope, up_dn = true) =>
+    bool cross = detect_crossover(close, line_1.get_x1(), line_1.get_y1(), slope, up_dn, line_1.get_x2())
+    if cross and barstate.isconfirmed
+        label_(bar_index, low, up_dn ? '▲' : '▼', up_dn, up_dn ? up_color : down_color)
+    cross
+
+delete_lines(PivotData data) =>
+    line.delete(data.target1)
+    line.delete(data.target2)
+    line.delete(data.target3)
+    line.delete(data.target_1)
+    line.delete(data.target_2)
+    line.delete(data.target_3)
+
+target_(PivotData data, color, value, up_dn) =>
+    target1 = value == 1 ? data.target1 : value == 2 ? data.target2 : value == 3 ? data.target3 : na
+    target2 = value == 1 ? data.target_1 : value == 2 ? data.target_2 : value == 3 ? data.target_3 : na
+
+    target = up_dn ? target1 : target2
+
+    txt = value == 1 ? '1✮' : value == 2 ? '2✮' : value == 3 ? '3✮' : na
+
+    condition1 = ta.crossover(high, target.get_y1())
+    condition2 = ta.crossunder(low, target.get_y1())
+
+    if (up_dn ? condition1 : condition2) and barstate.isconfirmed
+        line.new(bar_index - 5, target.get_y1(), bar_index, target.get_y1(), color = color)
+        label.new(bar_index - 5, target.get_y1(), txt, style = label.style_label_right, color = color(na), textcolor = color)
+        line.delete(target)
+        target := line(na)
+        target
+
+    target.set_x1(bar_index - 5)
+    target.set_x2(bar_index + 5)
+
+// Create lines and calculate slopes for high pivots
+switch 
+    is_high_pivot => 
+	    delete_lines(data)
+
+	    array<chart.point> high_points = array.new<chart.point>(line_len)
+
+	    for i = 0 to line_len - 1 by 1
+	        chart.point pt_high = chart.point.from_index(bar_index + i * 2 - right_bars, high[right_bars] - atr_val * i * i)
+	        high_points.set(i, pt_high)
+
+	    polyline.new(high_points, true, line_color = up_color, line_width = 2)
+
+	    label_(bar_index[right_bars], data.high_val, 'High', false, chart.fg_color)
+
+	    label.new(high_points.last(), text = '●', style = label.style_label_center, color = color(na), textcolor = up_color, size = size.normal)
+
+	    data.line_high_1 := line.new(high_points.first(), high_points.get(line_len / 2), color = color(na))
+	    data.line_high_2 := line.new(high_points.get(line_len / 2), high_points.last(), color = color(na))
+	    data.high_slope1 := data.line_high_1.slope()
+	    data.high_slope2 := data.line_high_2.slope()
+	    data.high_slope2
+
+    is_low_pivot => 
+	    delete_lines(data)
+
+	    array<chart.point> low_points = array.new<chart.point>(line_len)
+
+	    for i = 0 to line_len - 1 by 1
+	        chart.point pt_low = chart.point.from_index(bar_index + i * 2 - right_bars, low[right_bars] + atr_val * i * i)
+	        low_points.set(i, pt_low)
+
+	    polyline.new(low_points, true, line_color = down_color, line_width = 2)
+
+	    label_(bar_index[right_bars], data.low_val, 'Low', true, chart.fg_color)
+	    label.new(low_points.last(), text = '●', style = label.style_label_center, color = color(na), textcolor = down_color, size = size.normal)
+
+	    data.line_low_1 := line.new(low_points.first(), low_points.get(line_len / 2), color = color(na))
+	    data.line_low_2 := line.new(low_points.get(line_len / 2), low_points.last(), color = color(na))
+	    data.low_slope1 := data.line_low_1.slope()
+	    data.low_slope2 := data.line_low_2.slope()
+	    data.low_slope2
+
+
+// Check for crossovers between lines and price
+if detect_cross(data.line_high_1, data.line_high_2, data.high_slope1)
+    data.line_high_1 := na
+    data.line_high_2 := na
+    data.target1 := line.new(bar_index, close + atr * target_mult, bar_index + 25, close + atr * target_mult, color = up_color)
+    data.target2 := line.new(bar_index, close + atr * target_mult*2, bar_index + 25, close + atr * target_mult*2, color = up_color)
+    data.target3 := line.new(bar_index, close + atr * target_mult*3, bar_index + 25, close + atr * target_mult*3, color = up_color)
+    data.target3
+
+else if detect_cross(data.line_high_2, data.line_high_1, data.high_slope2)
+    data.line_high_1 := na
+    data.line_high_2 := na
+    data.target1 := line.new(bar_index, close + atr * target_mult, bar_index + 25, close + atr * target_mult, color = up_color)
+    data.target2 := line.new(bar_index, close + atr * target_mult*2, bar_index + 25, close + atr * target_mult*2, color = up_color)
+    data.target3 := line.new(bar_index, close + atr * target_mult*3, bar_index + 25, close + atr * target_mult*3, color = up_color)
+    data.target3
+
+if detect_cross(data.line_low_1, data.line_low_2, data.low_slope1, false)
+    data.line_low_1 := na
+    data.line_low_2 := na
+    data.target_1 := line.new(bar_index, close - atr * target_mult, bar_index + 25, close - atr * target_mult, color = down_color)
+    data.target_2 := line.new(bar_index, close - atr * target_mult*2, bar_index + 25, close - atr * target_mult*2, color = down_color)
+    data.target_3 := line.new(bar_index, close - atr * target_mult*3, bar_index + 25, close - atr * target_mult*3, color = down_color)
+    data.target_3
+
+
+else if detect_cross(data.line_low_2, data.line_low_1, data.low_slope2, false)
+    data.line_low_1 := na
+    data.line_low_2 := na
+    data.target_1 := line.new(bar_index, close - atr * target_mult, bar_index + 25, close - atr * target_mult, color = down_color)
+    data.target_2 := line.new(bar_index, close - atr * target_mult*2, bar_index + 25, close - atr * target_mult*2, color = down_color)
+    data.target_3 := line.new(bar_index, close - atr * target_mult*3, bar_index + 25, close - atr * target_mult*3, color = down_color)
+    data.target_3
+
+
+// Plot pivot highs and lows
+plotshape(is_high_pivot ? high[right_bars] : na, 'Pivot High', shape.circle, location.absolute, color = up_color, size = size.tiny, offset = -right_bars)
+plotshape(is_high_pivot ? high[right_bars] : na, 'Pivot High', shape.circle, location.absolute, color = color.new(up_color, 70), size = size.small, offset = -right_bars)
+
+plotshape(is_low_pivot ? low[right_bars] : na, 'Pivot Low', shape.circle, location.absolute, color = down_color, size = size.tiny, offset = -right_bars)
+plotshape(is_low_pivot ? low[right_bars] : na, 'Pivot Low', shape.circle, location.absolute, color = color.new(down_color, 70), size = size.small, offset = -right_bars)
+
+
+target_(data, up_color, 1, true)
+target_(data, up_color, 2, true)
+target_(data, up_color, 3, true)
+
+target_(data, down_color, 1, false)
+target_(data, down_color, 2, false)
+target_(data, down_color, 3, false)
+// }

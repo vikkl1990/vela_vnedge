@@ -279,6 +279,8 @@ export function positionView(p: Position, mark?: number) {
     entryPrice: p.entryPrice, entryAt: p.entryAt, sl: p.sl, slOriginal: p.slOriginal, tp: p.tp, tpHit: p.tpHit, breakEven: p.breakEven, markPrice: m,
     unrealizedPnl: unrealized(p, m), realizedPnl: p.realizedPnl, fees: p.fees, riskAmount: p.riskAmount, rMultiple: p.riskAmount ? (p.realizedPnl - p.fees + unrealized(p, m)) / p.riskAmount : null,
     levelsSource: p.levelsSource, leverage: p.leverage, liqPrice: p.liqPrice, signalId: p.signalId, status: p.status,
+    notional: p.qtyOpen * p.contractValue * m, notionalEntry: p.qty * p.contractValue * p.entryPrice,
+    margin: p.leverage > 0 ? (p.qtyOpen * p.contractValue * p.entryPrice) / p.leverage : null,
   };
 }
 

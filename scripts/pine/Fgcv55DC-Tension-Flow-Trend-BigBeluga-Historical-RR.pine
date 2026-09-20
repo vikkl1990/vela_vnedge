@@ -1,0 +1,230 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+//@version=6
+
+indicator('Tension Flow Trend [BigBeluga] - Historical RR', overlay = true, max_boxes_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+hmaLen     = input.int(50,  'HMA Length',            minval = 1,   group = "Settings",         tooltip = "Length of the Hull Moving Average used as the trend baseline.")
+zLen       = input.int(50,  'Z-Score Length',         minval = 1,   group = "Settings",         tooltip = "Lookback period for the Z-Score standard deviation calculation.")
+offsetMult = input.float(0.5,'Ribbon Width',          step   = 0.1, group = "Settings",         tooltip = "ATR multiplier that controls how wide the trend ribbon is drawn around the HMA.")
+
+signalGap  = input.int(30,  'Signal Cooldown (Bars)', minval = 1,                               tooltip = "Minimum number of bars that must pass before a new signal can trigger. Prevents signal clustering.")
+showLabels = input.bool(true,'Show Trend Start Labels',              group = "Visibility",       tooltip = "Display START labels on the chart when a new trend signal is detected.")
+showTable  = input.bool(true,'Show Energy Dashboard',                group = "Visibility",       tooltip = "Show the Z-Score and trend status dashboard in the bottom-right corner.")
+showRRTable= input.bool(true,'Show RR Performance Dashboard',        group = "Visibility",       tooltip = "Show the win/loss backtest performance table.")
+
+atrMultSL  = input.float(2,'Stop Loss ATR Multiplier', step = 0.1, group = "Risk Management", tooltip = "Multiplier applied to ATR(200) to calculate the stop loss distance from entry.")
+rrRatio    = input.float(1.0,'Risk:Reward Ratio',         step = 0.1, group = "Risk Management", tooltip = "Take profit is set at this multiple of the stop loss distance from entry.")
+
+maxTrades  = input.int(100, 'Backtest Trade Window',  minval = 1,   group = "Backtest",         tooltip = "Maximum number of closed trades to include in the win/loss performance calculation. Only the most recent N closed trades are counted.")
+
+colorBull  = input.color(#00ffbb, 'Bullish Color', group = "Appearance", tooltip = "Color used for bullish signals, TP boxes, and uptrend ribbon.")
+colorBear  = input.color(#ff0055, 'Bearish Color', group = "Appearance", tooltip = "Color used for bearish signals, SL boxes, and downtrend ribbon.")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+hmaValue      = ta.hma(close, hmaLen)
+hmaSlopeUp    = hmaValue > hmaValue[1]
+priceDist     = close - hmaValue
+stdDev        = ta.stdev(priceDist, zLen)
+zScore        = priceDist / stdDev
+absZ          = math.abs(zScore)
+dynamicTransp = math.min(90, math.max(10, absZ * 25))
+
+upperRibbon = hmaValue + ta.atr(14) * offsetMult
+lowerRibbon = hmaValue - ta.atr(14) * offsetMult
+
+// Signals
+var int lastSignalBar = -100
+canTrigger = (bar_index - lastSignalBar) >= signalGap
+
+crossUp = ta.crossover(close, hmaValue[0])
+crossDn = ta.crossunder(close, hmaValue[0])
+
+bullSignal = hmaSlopeUp   and crossUp     and canTrigger
+bearSignal = not hmaSlopeUp and crossDn  and canTrigger
+
+if bullSignal or bearSignal
+    lastSignalBar := bar_index
+// }
+
+// ———————————————————— HISTORICAL BOX LOGIC ———————————————————— {
+
+// Rolling trade outcome history (true = win, false = loss)
+var tradeHistory = array.new_bool()
+
+// Active trade tracking arrays
+var activeSLBoxes = array.new_box()
+var activeTPBoxes = array.new_box()
+var entryPrices   = array.new_float()
+var slPrices      = array.new_float()
+var tpPrices      = array.new_float()
+var directions    = array.new_int()
+
+float atr = ta.atr(200)
+
+trendChange = hmaSlopeUp != hmaSlopeUp[1]
+
+
+if (bullSignal or bearSignal) and not trendChange and not trendChange[1]
+    float entry = close
+    int   dir   = bullSignal ? 1 : -1
+    float sl    = dir == 1 ? entry - (atr * atrMultSL) : entry + (atr * atrMultSL)
+    float risk  = math.abs(entry - sl)
+    float tp    = dir == 1 ? entry + (risk * rrRatio)  : entry - (risk * rrRatio)
+
+    box newSL = box.new(
+         left         = bar_index,
+         top          = dir == 1 ? entry : sl,
+         right        = bar_index,
+         bottom       = dir == 1 ? sl    : entry,
+         bgcolor      = color.new(colorBear, 85),
+         border_color = color.new(colorBear, 40))
+
+    box newTP = box.new(
+         left         = bar_index,
+         top          = dir == 1 ? tp    : entry,
+         right        = bar_index,
+         bottom       = dir == 1 ? entry : tp,
+         bgcolor      = color.new(colorBull, 85),
+         border_color = color.new(colorBull, 40),
+         text         = "RR: " + str.tostring(rrRatio),
+         text_color   = color.white,
+         text_size    = size.normal)
+
+    array.push(activeSLBoxes, newSL)
+    array.push(activeTPBoxes, newTP)
+    array.push(entryPrices,   entry)
+    array.push(slPrices,      sl)
+    array.push(tpPrices,      tp)
+    array.push(directions,    dir)
+
+// Update all active boxes and check exits
+if array.size(activeSLBoxes) > 0
+    for i = array.size(activeSLBoxes) - 1 to 0
+        box   currSL = array.get(activeSLBoxes, i)
+        box   currTP = array.get(activeTPBoxes, i)
+        float sL     = array.get(slPrices,      i)
+        float tP     = array.get(tpPrices,      i)
+        int   d      = array.get(directions,    i)
+
+        box.set_right(currSL, bar_index)
+        box.set_right(currTP, bar_index)
+
+        bool hitSL = d == 1 ? low  <= sL : high >= sL
+        bool hitTP = d == 1 ? high >= tP : low  <= tP
+
+        if hitTP or hitSL
+            // Push outcome into rolling history
+            array.push(tradeHistory, hitTP)
+            // Trim to the user-defined window
+            if array.size(tradeHistory) > maxTrades
+                array.shift(tradeHistory)
+
+            array.remove(activeSLBoxes, i)
+            array.remove(activeTPBoxes, i)
+            array.remove(entryPrices,   i)
+            array.remove(slPrices,      i)
+            array.remove(tpPrices,      i)
+            array.remove(directions,    i)
+// }
+
+// ———————————————————— DERIVE STATS FROM ROLLING HISTORY ———————————————————— {
+
+int   totalWins   = 0
+int   totalLosses = 0
+
+if array.size(tradeHistory) > 0
+    for i = 0 to array.size(tradeHistory) - 1
+        if array.get(tradeHistory, i)
+            totalWins   += 1
+        else
+            totalLosses += 1
+
+int   totalClosed = totalWins + totalLosses
+float winRate     = totalClosed > 0 ? (totalWins / totalClosed) * 100 : 0.0
+// }
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+p1 = plot(upperRibbon, color = color.new(hmaSlopeUp ? colorBull : colorBear, 60), display = display.none)
+p2 = plot(lowerRibbon, color = color.new(hmaSlopeUp ? colorBull : colorBear, 60), display = display.none)
+fillColor = hmaSlopeUp ? colorBull : colorBear
+fill(p1, p2, upperRibbon, hmaValue, color.new(fillColor, 80 - dynamicTransp), color.new(fillColor, 100))
+fill(p1, p2, hmaValue, lowerRibbon, color.new(fillColor, 100), color.new(fillColor, 80 - dynamicTransp))
+plot(hmaValue, 'Trend Baseline', color = color.new(fillColor, 0), linewidth = 2)
+
+plotshape(showLabels ? bullSignal : false, style = shape.labelup,   location = location.belowbar, color = color.new(colorBull, 50), text = 'START', size = size.tiny, textcolor = chart.fg_color)
+plotshape(showLabels ? bearSignal : false, style = shape.labeldown, location = location.abovebar, color = color.new(colorBear, 50), text = 'START', size = size.tiny, textcolor = chart.fg_color)
+// }
+
+// ———————————————————— ENERGY DASHBOARD (bottom-right) ———————————————————— {
+if showTable
+    var table trendTable = table.new(position.bottom_right, 2, 2, border_width = 1)
+    statusText  = absZ > 2.0 ? 'Overextended' : 'Strong'
+    statusColor = absZ > 2.0 ? color.orange : hmaSlopeUp ? colorBull : colorBear
+    table.cell(trendTable, 0, 0, 'Z-Score',  bgcolor = #131722, text_color = color.white)
+    table.cell(trendTable, 1, 0, str.tostring(zScore, '#.##'), bgcolor = #131722, text_color = statusColor)
+    table.cell(trendTable, 0, 1, 'Status',   bgcolor = #131722, text_color = color.white)
+    table.cell(trendTable, 1, 1, statusText, bgcolor = #131722, text_color = statusColor)
+// }
+
+// ———————————————————— RR PERFORMANCE DASHBOARD (top-right) ———————————————————— {
+if showRRTable
+    var table rrTable = table.new(position.top_right, 2, 5, border_width = 1, border_color = color.new(color.gray, 60))
+
+    winRateColor = winRate >= 55 ? color.new(#22c55e, 15) : winRate >= 40 ? color.orange : color.new(#ef4444, 15)
+
+    // Header row
+    table.cell(rrTable, 0, 0, 'RR Performance',
+         bgcolor    = color.new(#1e222d, 0),
+         text_color = color.white,
+         text_size  = size.normal)
+    table.cell(rrTable, 1, 0, 'RR ' + str.tostring(rrRatio, '#.#') + ':1',
+         bgcolor    = color.new(#1e222d, 0),
+         text_color = color.new(color.gray, 20),
+         text_size  = size.normal)
+
+    // Wins row
+    table.cell(rrTable, 0, 1, '✔  Wins',
+         bgcolor    = color.new(#131722, 0),
+         text_color = color.white,
+         text_size  = size.normal)
+    table.cell(rrTable, 1, 1, str.tostring(totalWins),
+         bgcolor    = color.new(#22c55e, 75),
+         text_color = color.white,
+         text_size  = size.normal)
+
+    // Losses row
+    table.cell(rrTable, 0, 2, 'X  Losses',
+         bgcolor    = color.new(#131722, 0),
+         text_color = color.white,
+         text_size  = size.normal)
+    table.cell(rrTable, 1, 2, str.tostring(totalLosses),
+         bgcolor    = color.new(#ef4444, 75),
+         text_color = color.white,
+         text_size  = size.normal)
+
+    // Win Rate row
+    table.cell(rrTable, 0, 3, 'Win Rate',
+         bgcolor    = color.new(#131722, 0),
+         text_color = color.white,
+         text_size  = size.normal)
+    table.cell(rrTable, 1, 3, str.tostring(winRate, '#.##') + '%',
+         bgcolor    = winRateColor,
+         text_color = color.white,
+         text_size  = size.normal)
+
+    // Sample size row
+    table.cell(rrTable, 0, 4, 'Sample  (last)',
+         bgcolor    = color.new(#131722, 0),
+         text_color = color.new(color.gray, 20),
+         text_size  = size.normal)
+    table.cell(rrTable, 1, 4, str.tostring(totalClosed) + ' / ' + str.tostring(maxTrades),
+         bgcolor    = color.new(#131722, 0),
+         text_color = color.new(color.gray, 20),
+         text_size  = size.normal)
+// }

@@ -1,0 +1,174 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Inverse Fisher Oscillator [BigBeluga]")
+
+
+// ＩＮＰＵＴＳ ========================================================================================================{
+
+int    period1  = input.int(20, "Length")  // Input for the length of the normalization period
+int    period2  = input.int(10, "Smooth")  // Input for the smoothing period
+int    multi    = input.int(1, "Bands Multiplier")  // Multiplier for the volatility bands
+string mid_line = input.string("Bands", "Mid Line Type:", ["Bands", "Simple"])  // Option to choose between Bands or Simple
+bool   signals  = input.bool(false, "Show Numbers Marks")  // Toggle to show signals on the chart
+int    mid_len  = 500  // Constant for mid-line length
+
+// Colors
+color top    = #0ff589  // Color for the top band (green)
+color mid    = color.yellow  // Color for the middle band (yellow)
+color bottom = color.red  // Color for the bottom band (red)
+
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ ============================================================================================={
+// Method to normalize price data
+method norm_price(series float src)=>
+    avg = math.sum(src, period1) / period1  // Calculate the average of the source over the normalization period
+    (src - avg) / ta.stdev(src, period1)  // Return the normalized price based on standard deviation
+
+// Method to apply smoothing using WMA
+method smooth(series float src, period2)=>
+    ta.wma(src, period2)  // Apply weighted moving average smoothing
+
+// Method to calculate the inverse Fisher transform
+method inverse_fisher(series float src)=>
+    (math.exp(2 * src) - 1) / (math.exp(2 * src) + 1)  // Inverse Fisher formula
+
+// Calculate the inverse Fisher Oscillator for different smoothed price series
+ifish  = close.norm_price().smooth(period2 * 1).inverse_fisher()
+ifish1 = close.norm_price().smooth(period2 * 2).inverse_fisher()
+ifish2 = close.norm_price().smooth(period2 * 3).inverse_fisher()
+ifish3 = close.norm_price().smooth(period2 * 4).inverse_fisher()
+ifish4 = close.norm_price().smooth(period2 * 5).inverse_fisher()
+ifish5 = close.norm_price().smooth(period2 * 6).inverse_fisher()
+
+// Calculate constants for the Butterworth filter
+float piPrd = math.pi / mid_len
+float g     = math.sqrt(2)
+float a1    = math.exp(-g * piPrd)
+float b1    = 2 * a1 * math.cos(g * piPrd)
+float coef2 = b1
+float coef3 = -a1 * a1
+float coef1 = (1 - b1 + a1 * a1) / 4
+
+// Source data for the Butterworth filter
+float source = ifish  // The first inverse Fisher Oscillator is used as the source
+
+// Previous source and butter filter values
+var float butter = na  // Initialize the 'butter' variable
+
+// Handle null values using the nz function
+float prevB1 = nz(butter[1], source)  // Use 'source' as a fallback if butter[1] is null
+float prevB2 = nz(butter[2], source)  // Use 'source' as a fallback if butter[2] is null
+
+// Calculate the Butterworth filter value
+butter := coef1 * (source + (2 * source[1]) + source[2]) + (coef2 * prevB1) + (coef3 * prevB2)
+
+// If Mid Line Type is set to "Mid Line", set butter to 0
+butter := mid_line == "Bands" ? butter : 0
+
+// Calculate volatility as the SMA of the absolute difference between the current and previous inverse Fisher values
+volatility = ta.sma(math.abs(ifish - ifish[2]), 400) * multi
+
+// Calculate upper and lower volatility bands
+upper_band = (volatility + butter) * (butter == 0 ? 0 : 1)
+lower_band = (butter - volatility) * (butter == 0 ? 0 : 1)
+
+
+// }
+
+// ＰＬＯＴ============================================================================================================={
+
+// Plot the Butterworth filter and volatility bands
+m = plot(butter, color = bar_index % 5 == 0 ? chart.fg_color : na, editable = false)  // Plot the Butterworth filter
+plot(upper_band == 0 ? na : upper_band, color = color.gray, editable = false)  // Plot the upper band
+plot(lower_band == 0 ? na : lower_band, color = color.gray, editable = false)  // Plot the lower band
+
+// Assign colors to each inverse Fisher Oscillator based on its relation to the volatility bands
+color1 = ifish  > upper_band ? top : ifish  < lower_band ? bottom : mid
+color2 = ifish1 > upper_band ? top : ifish1 < lower_band ? bottom : mid
+color3 = ifish2 > upper_band ? top : ifish2 < lower_band ? bottom : mid
+color4 = ifish3 > upper_band ? top : ifish3 < lower_band ? bottom : mid
+color5 = ifish4 > upper_band ? top : ifish4 < lower_band ? bottom : mid
+color6 = ifish5 > upper_band ? top : ifish5 < lower_band ? bottom : mid
+
+// Plot the inverse Fisher Oscillator lines with corresponding colors
+f1 = plot(ifish,  color = color1, editable = false)
+f2 = plot(ifish1, color = color.new(color2, 20), editable = false)
+f3 = plot(ifish2, color = color.new(color3, 40), editable = false)
+f4 = plot(ifish3, color = color.new(color4, 60), editable = false)
+f5 = plot(ifish4, color = color.new(color5, 80), editable = false)
+f6 = plot(ifish5, color = color.new(color6, 90), editable = false)
+
+// Method to determine direction symbols based on relation to bands
+method show_direction(float src)=>
+    src > upper_band ? "🡅" : src < lower_band ? "🡇" : "〰"
+
+// Create a dashboard in the bottom-right corner of the chart
+if barstate.islast
+    var dasboard = table.new(position.bottom_right, 10, 10, force_overlay = true)
+    
+    // Display the symbol and current price with color based on the relation to the open price
+    dasboard.merge_cells(0, 0, 3, 0)
+    dasboard.merge_cells(4, 0, 6, 0)
+    dasboard.cell(0, 0, syminfo.basecurrency, text_color = chart.fg_color)
+    dasboard.cell(4, 0, str.tostring(close), text_color = close > open ? top : bottom)
+
+    // Add a separator line and title
+    dasboard.merge_cells(0, 1, 6, 1)
+    dasboard.cell(0, 1, "     ⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺⎺")
+    dasboard.merge_cells(0, 2, 6, 2)
+    dasboard.cell(0, 2, "   Market Trend", text_color = chart.fg_color)
+
+    // Display inverse Fisher Oscillator numbers in the dashboard
+    dasboard.cell(1, 3, "1")
+    dasboard.cell(2, 3, "2")
+    dasboard.cell(3, 3, "3")
+    dasboard.cell(4, 3, "4")
+    dasboard.cell(5, 3, "5")
+    dasboard.cell(6, 3, "6")
+
+    // Display direction symbols with appropriate colors
+    dasboard.cell(1, 4, ifish.show_direction(),  
+                 text_color = ifish.show_direction()  == "🡅" ? top : ifish.show_direction()  == "🡇" ? bottom : mid)
+    dasboard.cell(2, 4, ifish1.show_direction(), 
+                 text_color = ifish1.show_direction() == "🡅" ? top : ifish1.show_direction() == "🡇" ? bottom : mid)
+    dasboard.cell(3, 4, ifish2.show_direction(), 
+                 text_color = ifish2.show_direction() == "🡅" ? top : ifish2.show_direction() == "🡇" ? bottom : mid)
+    dasboard.cell(4, 4, ifish3.show_direction(), 
+                 text_color = ifish3.show_direction() == "🡅" ? top : ifish3.show_direction() == "🡇" ? bottom : mid)
+    dasboard.cell(5, 4, ifish4.show_direction(), 
+                 text_color = ifish4.show_direction() == "🡅" ? top : ifish4.show_direction() == "🡇" ? bottom : mid)
+    dasboard.cell(6, 4, ifish5.show_direction(), 
+                 text_color = ifish5.show_direction() == "🡅" ? top : ifish5.show_direction() == "🡇" ? bottom : mid)
+
+// Fill areas between the Butterworth filter and the inverse Fisher Oscillator
+fill(m, f1, ifish, 
+     ifish > upper_band ? upper_band : ifish < lower_band ? lower_band : na,
+     ifish > butter ? color.new(top, 80) : color.new(bottom, 80),
+     na)
+
+// Plot signals for crossovers and crossunders, with number marks if enabled
+plotchar(ta.crossover(ifish, upper_band) and signals, "", "1", 
+         location = location.belowbar, color = top, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossover(ifish1, upper_band) and signals, "", "2", 
+         location = location.belowbar, color = top, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossover(ifish2, upper_band) and signals, "", "3", 
+         location = location.belowbar, color = top, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossover(ifish3, upper_band) and signals, "", "4", 
+         location = location.belowbar, color = top, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossover(ifish4, upper_band) and signals, "", "5", 
+         location = location.belowbar, color = top, force_overlay = true, size = size.tiny, editable = false)
+
+plotchar(ta.crossunder(ifish, lower_band) and signals, "", "1", 
+         location = location.abovebar, color = bottom, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossunder(ifish1, lower_band) and signals, "", "2", 
+         location = location.abovebar, color = bottom, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossunder(ifish2, lower_band) and signals, "", "3", 
+         location = location.abovebar, color = bottom, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossunder(ifish3, lower_band) and signals, "", "4", 
+         location = location.abovebar, color = bottom, force_overlay = true, size = size.tiny, editable = false)
+plotchar(ta.crossunder(ifish4, lower_band) and signals, "", "5", 
+         location = location.abovebar, color = bottom, force_overlay = true, size = size.tiny, editable = false)
+// }

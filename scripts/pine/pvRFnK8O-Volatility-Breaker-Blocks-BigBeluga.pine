@@ -1,0 +1,200 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Volatility Breaker Blocks [BigBeluga]",
+         overlay = true, max_boxes_count = 300, max_lines_count = 300)
+
+// USER INPUTS --------------------------------------------------------------------------------------------------------{
+//@variable: Input for the window of calculation
+int  calcWindow     = input.int(500, "Calculation Window", step = 50)
+//@variable: Input for volatility threshold value
+int  volThreshold   = input.int(3, "Volatility Sensitivity", [1,2,3,4,5,6])
+bool retest         = input.bool(false, "Retest Signals")
+bool extend         = input.bool(false, "Extend Right")
+
+//@variable: Colors for bullish and bearish zones
+color bullColor    = #06a57d
+color bearColor    = color.rgb(6, 70, 165)
+//@variable: Color for neutral zones
+color neutralColor = #6a7788
+
+//@variable: Boxes for lower and upper zones
+var lowerBox = box(na)
+var upperBox = box(na)
+// -- }
+
+// CALCULATION & PLOT -------------------------------------------------------------------------------------------------{
+
+//@variable: ATR for volatility measurement (used for scaling volatility breakouts)
+float atrValue   = ta.atr(200)
+
+//@variable: Volatility calculated using standard deviation of the close price, adjusted with 3.5 factor
+float volatility = ta.stdev(close, 10) * 3.5
+volatility      := volatility / ta.stdev(volatility, 200)
+
+//@variable: Boolean for checking if the current bar is within the calculation window
+bool inWindow = last_bar_index - bar_index < calcWindow
+
+//@variable: Arrays to store the lower and upper boxes
+var lowerBoxes = array.new<box>(1, box(na))
+var upperBoxes = array.new<box>(1, box(na))
+
+//@variable: Booleans for pivot highs and pivot lows
+int  len       = 5
+bool pivotHigh = not na(ta.pivothigh(len, len))
+bool pivotLow  = not na(ta.pivotlow(len, len))
+
+//@function: Draws the zone using boxes based on the trend and removes overlapping boxes
+//@param boxes (array<box>) Array of boxes representing breakout zones.
+//@param isBullTrend (bool) Boolean value determining if the zone is for a bullish breakout (true) or bearish breakout (false).
+method drawZone(array<box> boxes, bool isBullTrend = true)=>
+
+    //@variable: Temporary array for storing new boxes
+    var tempBoxes = array.new<box>(1)
+
+    // If the bar is confirmed and within the window of calculation
+    if inWindow and barstate.isconfirmed
+        // Loop through each box in the array to manage zones
+        for box_id in boxes
+            // Extend the box to the current bar
+            box_id.set_extend(extend ? extend.right : extend.none)
+            box_id.set_right(bar_index)
+            // Get the top and bottom coordinates of the current box
+            float top = box_id.get_top()
+            float bottom = box_id.get_bottom()
+
+            // Check for crossover conditions (bullish or bearish)
+            bool cross = isBullTrend ? low > top and low[1] <= top         
+                                     : high < bottom and high[1] >= bottom 
+
+            if cross
+                // Extend the current box to the right and remove it from the array
+                box_id.set_extend(extend.none)
+                box_id.set_right(bar_index)
+                
+                // Create a label to indicate the breakout (▲ for bullish, ▼ for bearish)
+                label.new(
+                         bar_index, isBullTrend ? bottom : top, isBullTrend ? "▲" : "▼", 
+                         style          = label.style_label_center, 
+                         textcolor      = isBullTrend ? bullColor : bearColor,
+                         size           = size.large, 
+                         color          = color(na),
+                         force_overlay  = true
+                         )
+
+                // Remove the current box from the array (as it has been extended)
+                array.remove(boxes, array.indexof(boxes, box_id))
+
+                // Create a new box representing the new zone and add it to the temporary array
+                tempBoxes.push(
+                         box.new(
+                                 bar_index, top, bar_index + 1, bottom, 
+                                 bgcolor        = color.new(neutralColor, 75), 
+                                 border_color   = color.new(neutralColor, 100),
+                                 border_style   = line.style_solid, 
+                                 force_overlay  = true
+                                 )
+                              )
+
+        // Loop through each box in the temporary array
+        for tempBox in tempBoxes
+            // Extend the box to the current bar
+            tempBox.set_extend(extend ? extend.right : extend.none)
+            tempBox.set_right(bar_index)
+            // Get the top, bottom, and midpoint of the current box
+            float top1      = tempBox.get_top()
+            float bottom1   = tempBox.get_bottom()
+            float mid       = (top1 + bottom1) / 2
+
+            // Check for breakout conditions relative to the midpoint (i.e., cross above or below)
+            bool midCross = not isBullTrend ? close > top1 and close[1] <= top1 : close < bottom1 and close[1] >= bottom1
+
+            // If the breakout condition is met, extend the box and remove it from the array
+            if midCross
+                tempBox.set_extend(extend.none)
+                tempBox.set_right(bar_index)
+
+                array.remove(tempBoxes, array.indexof(tempBoxes, tempBox))
+            
+            // Retest Signals
+            if retest
+                if low > top1 and low[1] <= top1 
+                    label.new(bar_index-1, low[1], "●", 
+                             style      = label.style_label_up, 
+                             color      = color(na), 
+                             textcolor  = bullColor)
+            
+                if high < bottom1 and high[1] >= bottom1 
+                    label.new(bar_index-1, high[1], "●", 
+                             style      = label.style_label_down,
+                             color      = color(na), 
+                             textcolor  = bearColor)
+            
+        
+    // Loop to check for overlapping boxes
+    for int i = 0 to array.size(boxes) - 1
+        // Get the first box
+        box box1 = array.get(boxes, i)
+        // Get the last box in the array
+        box box2 = array.last(boxes)
+        
+        // Get top and bottom coordinates of the two boxes
+        float top1      = box1.get_top()
+        float bottom1   = box1.get_bottom()
+        float top2      = box2.get_top()
+        float bottom2   = box2.get_bottom()
+
+        // If the boxes overlap, delete one of them
+        if (top1 > top2 and top2 > bottom1) 
+             or (bottom1 < bottom2 and bottom2 < top1) 
+            box.delete(box1)
+            array.set(boxes, i, box(na))
+
+    
+
+
+//@variable: Boolean condition for volatility exceeding the threshold
+bool isVolatilityHigh = volatility[len] > volThreshold
+//@variable: Boolean condition for lower block volatility with a pivot low
+bool lowerBreakout    =  pivotLow  and isVolatilityHigh
+//@variable: Boolean condition for upper block volatility with a pivot high
+bool upperBreakout    =  pivotHigh and isVolatilityHigh
+
+// If the current bar is within the calculation window
+if inWindow
+    // If there is a lower block volatility breakout
+    if lowerBreakout
+        // Create a new lower box representing the bearish breakout zone
+        lowerBox := box.new(
+                             bar_index[len], low[len]+atrValue, bar_index, low[len], 
+                             force_overlay  = true, 
+                             bgcolor        = color.new(bullColor, 70), 
+                             border_color   = color.new(bullColor, 0)
+                             )
+
+        // Add the lower box to the lowerBoxes array (representing bearish zones)
+        array.push(lowerBoxes, lowerBox)
+
+    // If there is an upper block volatility breakout
+    if upperBreakout
+        // Create a new upper box representing the bullish breakout zone
+        upperBox := box.new(
+                             bar_index[len], high[len], bar_index, high[len] - atrValue, 
+                             force_overlay  = true, 
+                             bgcolor        = color.new(bearColor, 70), 
+                             border_color   = color.new(bearColor, 0)
+                             )
+
+        // Add the upper box to the upperBoxes array (representing bullish zones)
+        array.push(upperBoxes, upperBox)
+
+// Draw the zones for lower and upper boxes using the `drawZone` function
+lowerBoxes.drawZone(false)
+upperBoxes.drawZone()
+
+// Set the background color based on the window condition
+bgcolor(ta.change(inWindow) ? color.new(chart.fg_color, 80) : na)
+
+// -- }

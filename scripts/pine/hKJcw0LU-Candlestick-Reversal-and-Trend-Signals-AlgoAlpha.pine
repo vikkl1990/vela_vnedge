@@ -1,0 +1,145 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Candlestick Reversal and Trend Signals [AlgoAlpha]", overlay = true)//, timeframe = "", timeframe_gaps = false)
+len = input.int(20, "Filter Period", group = "Main Settings")
+fthresh = input.float(2, "Filter Signal Threshold", group = "Main Settings")
+elen1 = input.int(10, "3EMA Periods", group = "Main Settings", inline = "ema")
+elen2 = input.int(21, "", group = "Main Settings", inline = "ema")
+elen3 = input.int(50, "", group = "Main Settings", inline = "ema")
+wickratio_cutoff = input.int(10, "Upper and Lower Wick Ratio Threshold", group = "Main Settings")
+wicktobody_cutoff = input.int(10, "Body Size and Wick Length Ratio Threshold", group = "Main Settings")
+mult = input.int(8, "TimeFrame Multiplier", tooltip = "The script multiplies the chart's timeframe by this number to get data from higher timeframes. For example, if you are using this indicator on the 15 minute chart and this value is 2, then the indicator will be operating on the 30 minute timeframe, as 15 times 2 is 30. This means you should set this number to 1 if you want to apply it on your chart's current timeframe.", group = "Main Settings", minval = 1)
+ftype = input.string("3 EMA Trend + Relative Candle Size", "Filter Type", ["3 EMA Trend + Relative Candle Size", "3 EMA Trend + Relative Volume", "3 EMA Trend", "Relative Candle Size", "Relative Volume", "None"], group = "Main Settings")
+swing = input.bool(true, "Swing Levels", group = "Main Settings")
+ema = input.bool(true, "3 EMA", group = "Main Settings")
+eng = input.bool(true, "Bull/Bear Engulfings", group = "Patterns")
+doji = input.bool(true, "Bull/Bear Dojis", group = "Patterns")
+harami = input.bool(true, "Bull/Bear Haramis", group = "Patterns")
+pl_dcc = input.bool(true, "Piercing Line and Dark Cloud Cover", group = "Patterns")
+stars = input.bool(true, "Morning/Evening Stars", group = "Patterns")
+red = input.color(#ff1100, "Down Color", group = "Appearance")
+green = input.color(#00ffbb, "Up Color", group = "Appearance")
+
+var peakprinted = 0
+var valleyprinted = 0
+var c = array.new_float(2)
+var o = array.new_float(2)
+var h = array.new_float(2)
+var l = array.new_float(2)
+
+if bar_index%mult == 0
+    c.insert(0, close)
+    o.insert(0, open)
+    h.insert(0, high)
+    l.insert(0, low)
+    peakprinted := 0
+    valleyprinted:= 0
+
+valleyform = l.get(1) < l.first() and l.get(2) > l.get(1)
+peakform =  h.get(1) > h.first() and h.get(2) < h.get(1)
+
+var aR = array.new_line()
+var aS = array.new_line()
+
+candledir = close > open ? 1 : -1
+bodylen = math.abs(close-open)
+candlerange = high-low
+rangemid = math.avg(high, low)
+candlemid = math.avg(close, open)
+bullishwickratio = (math.min(open,close)-low) / (high-math.max(open,close))
+bearishwickratio = (high-math.max(open,close)) / (math.min(open,close)-low)
+wickbodyratio = (high-low)/(math.abs(close-open))
+C_WhiteBody = open < close
+C_BlackBody = open > close
+C_BodyHi = math.max(close, open)
+C_BodyLo = math.min(close, open)
+
+rvol = volume/ta.sma(volume, len) // volume filter
+rlen = bodylen/ta.sma(bodylen, len) // candle body filter
+ema1 = ta.ema(close, elen1)
+ema2 = ta.ema(close, elen2)
+ema3 = ta.ema(close, elen3)
+
+filter(type, dir) =>
+    switch type
+        "Relative Candle Size" => rlen > fthresh
+        "3 EMA Trend" => dir == 1 ? ema2 > ema3 : ema2 < ema3
+        "Relative Volume" => rvol > fthresh
+        "3 EMA Trend + Relative Volume" => (dir == 1 ? ema2 > ema3 : ema2 < ema3) and rvol > fthresh
+        "3 EMA Trend + Relative Candle Size" => (dir == 1 ? ema2 > ema3 : ema2 < ema3) and rlen > fthresh
+        "None" => true
+
+bullish_eng = bodylen > bodylen[1] and candledir * candledir[1] < 0 and candledir == 1 and filter(ftype,1) and eng
+bearish_eng = bodylen > bodylen[1] and candledir * candledir[1] < 0 and candledir == -1 and filter(ftype,-1) and eng
+grnfly_doji = bullishwickratio > wickratio_cutoff and wickbodyratio > wicktobody_cutoff and filter(ftype,1) and doji
+grvstne_doji = bearishwickratio > wickratio_cutoff and wickbodyratio > wicktobody_cutoff and filter(ftype,-1) and doji
+bull_harami = C_WhiteBody and C_BlackBody[1] and high <= C_BodyHi[1] and low >= C_BodyLo[1] and filter(ftype,1) and harami
+bear_harami = C_WhiteBody[1] and C_BlackBody and high <= C_BodyHi[1] and low >= C_BodyLo[1] and filter(ftype,-1) and harami
+piercingline = candledir * candledir[1] == -1 and candledir == 1 and close > ((open[1]+close[1])/2) and (not bullish_eng) and filter(ftype,1) and pl_dcc
+darkcloudcover = candledir * candledir[1] == -1 and candledir == -1 and close < ((open[1]+close[1])/2) and (not bearish_eng) and filter(ftype,-1) and pl_dcc
+morningstar = candledir * candledir[2] == -1  and candledir == 1 and bodylen[1] < (bodylen[2]/3) and close > ((open[2]+close[2])/2) and filter(ftype,1) and stars
+eveningstar = candledir * candledir[2] == -1  and candledir == -1 and bodylen[1] < (bodylen[2]/3) and close < ((open[2]+close[2])/2) and filter(ftype,-1) and stars
+
+emac = ema1 > ema2 and ema1 > ema3 ? green : ema1 < ema2 and ema1 > ema3 ? chart.fg_color : ema1 < ema2 ? red : ema1 > ema2 and ema1 < ema3 ? chart.fg_color : na
+plen = 77
+t = 90
+emac1 = color.from_gradient(low-ema1, 0, ta.highest(plen)-low, emac, color.new(chart.fg_color, t))
+emac2 = color.from_gradient(low-ema2, 0, ta.highest(plen)-low, emac, color.new(chart.fg_color, t))
+emac3 = color.from_gradient(low-ema3, 0, ta.highest(plen)-low, emac, color.new(chart.fg_color, t))
+emac1a = color.from_gradient(ema1-high, 0, high-ta.lowest(plen), emac, color.new(chart.fg_color, t))
+emac2a = color.from_gradient(ema2-high, 0, high-ta.lowest(plen), emac, color.new(chart.fg_color, t))
+emac3a = color.from_gradient(ema3-high, 0, high-ta.lowest(plen), emac, color.new(chart.fg_color, t))
+
+vol = ta.atr(14)
+base = math.min(low, ema1, ema2, ema3)
+base1 = math.max(high, ema1, ema2, ema3)
+
+plotchar(bullish_eng ? base - vol * 1.0 : na, "Bullish Enguling", "▲", location.absolute, green, 0, "Engulfing", chart.fg_color, true, size.tiny)
+plotchar(grnfly_doji ? base - vol * 1.5 : na, "Bullish Doji (Dragonfly)", "▲", location.absolute, green, 0, "Doji", chart.fg_color, true, size.tiny)
+plotchar(bull_harami ? base - vol * 2.0 : na, "Bullish Harami", "▲", location.absolute, green, 0, "Harami", chart.fg_color, true, size.tiny)
+plotchar(piercingline ? base - vol * 2.5 : na, "Piercing Line", "▲", location.absolute, green, 0, "Piercing Line", chart.fg_color, true, size.tiny)
+plotchar(morningstar ? base - vol * 3.0 : na, "Morning Star", "▲", location.absolute, green, 0, "Morning Star", chart.fg_color, true, size.tiny)
+
+plotchar(bearish_eng ? base1 + vol * 1.0 : na, "Bearish Enguling", "▼", location.absolute, red, 0, "Engulfing", chart.fg_color, true, size.tiny)
+plotchar(grvstne_doji ? base1 + vol * 1.5 : na, "Bearish Doji (Gravestone)", "▼", location.absolute, red, 0, "Doji", chart.fg_color, true, size.tiny)
+plotchar(bear_harami ? base1 + vol * 2.0 : na, "Bearish Harami", "▼", location.absolute, red, 0, "Harami", chart.fg_color, true, size.tiny)
+plotchar(darkcloudcover ? base1 + vol * 2.5 : na, "Dark Cloud Cover", "▼", location.absolute, red, 0, "Dark Cloud Cover", chart.fg_color, true, size.tiny)
+plotchar(eveningstar ? base1 + vol * 3.0 : na, "Evening Star", "▼", location.absolute, red, 0, "Evening Star", chart.fg_color, true, size.tiny)
+
+p = plot(ema1, color = ema1 > ema2 and ema1 > ema3 ? emac1 : emac1a, linewidth = 2, display = ema ? display.all : display.none)
+pp = plot(ema2, color = ema1 > ema2 and ema1 > ema3 ? emac2 : emac2a, linewidth = 2, display = ema ? display.all : display.none)
+p1 = plot(ema3, color = ema1 > ema2 and ema1 > ema3 ? emac3 : emac3a, linewidth = 2, display = ema ? display.all : display.none)
+fill(pp, p1, math.max(ema3, ema2), math.min(ema3, ema2), color.new(emac, ema2 > ema3 ? 100 : 70), color.new(emac, ema2 > ema3 ? 70 : 100), display = ema ? display.all : display.none)
+
+
+
+plotchar(peakform and peakprinted != 1 ? high[mult] : na, "Bearish Swing", "●", location = location.absolute,  color = color.new(red, 70), offset = -mult, size = size.small, display = swing ? display.all : display.none)
+plotchar(valleyform and valleyprinted != 1 ? low[mult] : na, "Bullish Swing", "●", location = location.absolute, color = color.new(green, 70), offset = -mult, size = size.small, display = swing ? display.all : display.none)
+
+if peakform and peakprinted != 1 and swing
+    aR.push(line.new(bar_index-mult, h.get(1), bar_index+20, h.get(1), color = red))
+    peakprinted := 1
+
+if valleyform and valleyprinted != 1 and swing
+    aS.push(line.new(bar_index-mult, l.get(1), bar_index+20, l.get(1), color = green))
+    valleyprinted := 1
+
+
+
+//Alerts
+alertcondition(ta.crossover(ema2, ema3), "Bullish Trend")
+alertcondition(ta.crossunder(ema2, ema3), "Bearish Trend")
+alertcondition(bullish_eng, title="Bullish Engulfing", message="A bullish engulfing pattern has formed.")
+alertcondition(bearish_eng, title="Bearish Engulfing", message="A bearish engulfing pattern has formed.")
+alertcondition(grnfly_doji, title="Bullish Doji (Dragonfly)", message="A bullish dragonfly doji has formed.")
+alertcondition(grvstne_doji, title="Bearish Doji (Gravestone)", message="A bearish gravestone doji has formed.")
+alertcondition(bull_harami, title="Bullish Harami", message="A bullish harami pattern has formed.")
+alertcondition(bear_harami, title="Bearish Harami", message="A bearish harami pattern has formed.")
+alertcondition(piercingline, title="Piercing Line", message="A piercing line pattern has formed.")
+alertcondition(darkcloudcover, title="Dark Cloud Cover", message="A dark cloud cover pattern has formed.")
+alertcondition(morningstar, title="Morning Star", message="A morning star pattern has formed.")
+alertcondition(eveningstar, title="Evening Star", message="An evening star pattern has formed.")
+alertcondition(peakform and peakprinted == 1, title="Bearish Swing High", message="A bearish swing high has been identified.")
+alertcondition(valleyform and valleyprinted == 1, title="Bullish Swing Low", message="A bullish swing low has been identified.")

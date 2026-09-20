@@ -1,0 +1,329 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Machine Learning Price Target Prediction Signals [AlgoAlpha]", shorttitle = "AlgoAlpha - ML Price Targets", overlay=true, max_bars_back = 5000, precision = 5, max_boxes_count = 500)
+
+// ===========================================================================
+// ┌───────────────────────────────────────────────────────────────────────────┐
+// │                          Input & Setup                                    │
+// └───────────────────────────────────────────────────────────────────────────┘
+
+// Trend Indicator Settings
+trndMethod = input.string("EMA Cross (Fast Slow)", "Trend Indicator for Signals", 
+     options=["SuperTrend", "HMA (Increasing or Decreasing)", "EMA Cross (Fast Slow)"],
+     group="Trend Indicator Settings",
+     tooltip="Select the method used to determine trend direction")
+     
+MAlen_roc = input.int(93, "Hull Moving Average Length", 
+     group="Trend Indicator Settings",
+     tooltip="Length of the Hull Moving Average used for trend detection")
+Ema_fast = input.int(50, "Fast EMA Length", 
+     group="Trend Indicator Settings",
+     tooltip="Length of the faster Exponential Moving Average")
+Ema_slow = input.int(200, "Slow EMA Length", 
+     group="Trend Indicator Settings", 
+     tooltip="Length of the slower Exponential Moving Average")
+supertrend_factor = input.float(3, "SuperTrend Factor",
+     group="Trend Indicator Settings",
+     tooltip="Multiplier for the ATR in SuperTrend calculation")
+atr_length = input.int(10, "ATR Length",
+     group="Trend Indicator Settings",
+     tooltip="Length of the Average True Range used in SuperTrend")
+
+// Machine Learning Settings
+bandwidth = input.float(5, "Kernel Regression Bandwidth", 
+     tooltip="Controls how much weight is given to distant data points in the kernel regression. Higher values create smoother predictions but may potentially result in underfitting while smaller values give more weight to recent data points, potentially leading to overfitting if it's too small.",
+     group="Kernel Regression Settings", minval = 2)
+
+hide_na_sig = input.bool(true, "Hide NaN Predictions", "In some instances, the prediction might be NaN due to the input data resulting in very small results inside the internal calculations, which result in NaN predictions. This setting hides signals where there is no value for the predicted move size.")
+
+// Visual Settings
+green = input.color(#00ffbb, title="Bullish Color",
+     group="Visuals",
+     tooltip="Color used for bullish signals and indicators")
+red = input.color(#ff1100, title="Bearish Color",
+     group="Visuals",
+     tooltip="Color used for bearish signals and indicators")
+
+[ST, Direction] = ta.supertrend(supertrend_factor, atr_length)
+
+hull     = ta.hma(close, MAlen_roc)
+hmaSig   = hull > hull[1] ? 1 : -1
+
+ema1     = ta.ema(close, Ema_fast)
+ema2     = ta.ema(close, Ema_slow)
+emasig   = ema1 > ema2 ? 1 : -1
+
+// Smoothing MA Calculation
+binarySignal(_method) =>
+    switch _method
+        "SuperTrend"                     => -Direction
+        "HMA (Increasing or Decreasing)" => hmaSig
+        "EMA Cross (Fast Slow)"          => emasig
+
+// ===========================================================================
+// ┌───────────────────────────────────────────────────────────────────────────┐
+// │                           Feature Calculations                            │
+// └───────────────────────────────────────────────────────────────────────────┘
+
+// 1) Dump from High
+h1  = ta.highest(14)
+l1  = ta.lowest(14)
+v1  = (h1 - close) / h1
+vS1 = ta.rsi(v1, 14)
+
+// 2) Pump from Low
+h2  = ta.highest(14)
+l2  = ta.lowest(14)
+v2  = (close - l2) / l2
+vS2 = ta.rsi(v2, 14)
+
+// 3) Volatility Change
+v3     = ta.sma(high - low, 40)
+vs3    = ta.ema(v3, 20)
+x3     = v3 - vs3
+sLen3  = 1000
+xS3    = (x3 - ta.lowest(x3, sLen3)) / (ta.highest(x3, sLen3) - ta.lowest(x3, sLen3)) * 100
+
+// 4) Volatility Change's Change
+v4        = ta.sma(high - low, 40)
+vs4       = ta.ema(v4, 20)
+vss4      = ta.ema(v4 - vs4, 10)
+x4        = (v4 - vs4) - vss4
+sLen4     = 1000
+x_min4    = ta.lowest(x4, sLen4)
+x_max4    = ta.highest(x4, sLen4)
+x_scaled4 = (x4 - x_min4) / (x_max4 - x_min4) * 100
+
+// 5) Volume Oscillator
+var cumVol = 0.
+cumVol += nz(volume)
+if barstate.islast and cumVol == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+shortlen5 = 7
+longlen5  = 14
+short5    = ta.ema(volume, shortlen5)
+long5     = ta.ema(volume, longlen5)
+osc5      = 100 * (short5 - long5) / long5
+
+// 6) Choppiness Index
+length6 = 14
+ci6     = 100 * math.log10(math.sum(ta.atr(1), length6) / (ta.highest(length6) - ta.lowest(length6))) / math.log10(length6)
+offset6 = 0
+
+// 7) Relative Strength Index
+rsi7 = ta.rsi(close, 14)
+
+// 8) Trend Indicator Signal Direction
+trendSignal = binarySignal(trndMethod)
+scaled_trendSignal = trendSignal == 1 ? 1 : trendSignal == -1 ? 0 : na
+
+// ===========================================================================
+// ┌───────────────────────────────────────────────────────────────────────────┐
+// │                            Training Logic                                 │
+// └───────────────────────────────────────────────────────────────────────────┘
+
+duration  = ta.barssince(ta.cross(trendSignal, 0))
+signalMoveUp = (high - close[duration]) / close[duration]
+signalMoveDown = (low - close[duration]) / close[duration]
+
+runup    = ta.highest(signalMoveUp, math.max(1, nz(duration)))
+drawdown = ta.lowest(signalMoveDown,  math.max(1, nz(duration)))
+
+absoluteMove = math.abs(trendSignal > 0 ? runup : drawdown)
+
+var target        = array.new_float()
+var feature1      = array.new_float()
+var feature2      = array.new_float()
+var feature3      = array.new_float()
+var feature4      = array.new_float()
+var feature5      = array.new_float()
+var feature6      = array.new_float()
+var feature7      = array.new_float()
+var feature8      = array.new_float()
+var current_features = array.new_float()
+
+look_back = duration[1] + 1
+
+if ta.cross(trendSignal, 0) and (trendSignal[1] != 0 or not na(trendSignal[1]))
+    if not (na(absoluteMove[1]) or na(vS1[look_back]) or na(vS2[look_back]) or na(xS3[look_back]) or na(x_scaled4[look_back]) or na(osc5[look_back]) or na(ci6[look_back]) or na(rsi7[look_back]))
+        target.unshift(absoluteMove[1])
+        feature1.unshift(vS1[look_back])
+        feature2.unshift(vS2[look_back])
+        feature3.unshift(xS3[look_back])
+        feature4.unshift(x_scaled4[look_back])
+        feature5.unshift(osc5[look_back])
+        feature6.unshift(ci6[look_back])
+        feature7.unshift(rsi7[look_back])
+        feature8.unshift(scaled_trendSignal[look_back])
+
+if ta.cross(trendSignal, 0)
+    current_features.clear()
+    current_features.push(vS1[0])
+    current_features.push(vS2[0])
+    current_features.push(xS3[0])
+    current_features.push(x_scaled4[0])
+    current_features.push(osc5[0])
+    current_features.push(ci6[0])
+    current_features.push(rsi7[0])
+    current_features.push(scaled_trendSignal[0])
+
+// ===========================================================================
+// ┌───────────────────────────────────────────────────────────────────────────┐
+// │                         Kernel Regression                                 │
+// └───────────────────────────────────────────────────────────────────────────┘
+
+kernelRBF(float distance, float bandwidth) =>
+    math.exp(-math.pow(distance / bandwidth, 2))
+
+predictKernelRegression(bandwidth) =>
+    sumWeightedTargets = 0.0
+    sumKernels         = 0.0
+    numPoints          = array.size(target)
+
+    if (numPoints > 0)
+        for i = 0 to numPoints - 1
+            storedTarget = array.get(target, i)
+            distSq = 0.0
+            distSq += math.pow(array.get(feature1, i) - current_features.get(0), 2)
+            distSq += math.pow(array.get(feature2, i) - current_features.get(1), 2)
+            distSq += math.pow(array.get(feature3, i) - current_features.get(2), 2)
+            distSq += math.pow(array.get(feature4, i) - current_features.get(3), 2)
+            distSq += math.pow(array.get(feature5, i) - current_features.get(4), 2)
+            distSq += math.pow(array.get(feature6, i) - current_features.get(5), 2)
+            distSq += math.pow(array.get(feature7, i) - current_features.get(6), 2)
+            distSq += math.pow(array.get(feature8, i) - current_features.get(7), 2)
+
+            distance = math.sqrt(distSq)
+            
+            kernelValue = kernelRBF(distance, bandwidth)
+            
+            sumWeightedTargets += kernelValue * storedTarget
+            sumKernels         += kernelValue
+        
+    sumKernels != 0 ? (sumWeightedTargets / sumKernels) : na
+
+predictedMove = predictKernelRegression(bandwidth)
+
+var total_predictions = 0
+var correct_predictions = 0
+
+if ta.cross(trendSignal, 0) and not na(predictedMove[1])
+    total_predictions += 1
+    if absoluteMove[1] > predictedMove[1]
+        correct_predictions += 1
+
+win_rate = correct_predictions/total_predictions
+
+recommended_RR = 1/win_rate - 1
+
+var tp = array.new_box()
+var sl = array.new_box()
+var in_trade = 0
+
+tp_level = trendSignal > 0 ? close + close*predictedMove : close - close*predictedMove
+sl_level = trendSignal > 0 ? close - close*predictedMove/recommended_RR : close + close*predictedMove/recommended_RR
+
+if ta.cross(trendSignal, 0) and (hide_na_sig ? not na(predictedMove) : true)
+    while tp.size() > 0
+        tp.shift()
+    while sl.size() > 0
+        sl.shift()
+    tp.unshift(box.new(bar_index, math.max(close, tp_level), bar_index + 1, math.min(close, tp_level), 
+         color.new(green, 100), bgcolor = color.new(green, 80), 
+         force_overlay = true))
+    sl.unshift(box.new(bar_index, math.max(close, sl_level), bar_index + 1, math.min(close, sl_level), 
+         color.new(red, 100), bgcolor = color.new(red, 80),
+         force_overlay = true))
+    in_trade := 1
+
+is_not_first = trendSignal == trendSignal[1]
+
+// Track if TP/SL is hit
+var bool tp_hit = false
+var bool sl_hit = false
+
+if tp.size() > 0
+    Upper = tp.first().get_top()
+    Lower = tp.first().get_bottom()
+    if (trendSignal > 0 and high < Upper) or (trendSignal < 0 and low > Lower) or not is_not_first
+        tp.first().set_right(bar_index)
+    else
+        tp_hit := true
+        tp.first().set_right(bar_index)
+        sl.first().set_right(bar_index)
+        tp.shift()
+        sl.shift()
+        in_trade := 0
+
+if sl.size() > 0
+    Upper = sl.first().get_top()
+    Lower = sl.first().get_bottom()
+    if (trendSignal > 0 and low > Lower) or (trendSignal < 0 and high < Upper) or not is_not_first
+        sl.first().set_right(bar_index)
+    else
+        sl_hit := true
+        sl.first().set_right(bar_index)
+        tp.shift()
+        sl.shift()
+        in_trade := 0
+
+barcolor(in_trade == 0 ? color.gray : trendSignal > 0 ? green : red, title="Trade Status")
+
+Volatility = ta.atr(14)
+
+plotshape(ta.crossover(trendSignal, 0) and (hide_na_sig ? not na(predictedMove) : true) ? sl_level - Volatility : na, 
+     title="Bullish Entry Signal", 
+     style=shape.labelup, 
+     location=location.absolute, 
+     color=green, 
+     text = "▲", 
+     textcolor = chart.fg_color, 
+     size = size.small)
+
+plotshape(ta.crossunder(trendSignal, 0) and (hide_na_sig ? not na(predictedMove) : true) ? sl_level + Volatility : na, 
+     title="Bearish Entry Signal",
+     style=shape.labeldown, 
+     location=location.absolute, 
+     color=red, 
+     text = "▼", 
+     textcolor = chart.fg_color, 
+     size = size.small)
+
+if barstate.islast
+    var data_table = table.new(position=position.top_right, columns=2, rows=6, bgcolor=chart.bg_color, border_width=1, border_color=chart.fg_color, frame_color=chart.fg_color, frame_width=1)
+    
+    // Headers
+    table.cell(data_table, text_halign=text.align_center, column=0, row=0, text="Indicator Metrics", text_size = size.tiny, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=0, text="Value", text_size = size.tiny, text_color=chart.fg_color)
+    
+    // Training Data Size
+    table.cell(data_table, text_halign=text.align_left, column=0, row=1, text="Training Data Size", text_size = size.tiny, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=1, text=str.tostring(target.size()), text_size = size.tiny, text_color=chart.fg_color)
+    
+    // Predicted Move
+    table.cell(data_table, text_halign=text.align_left, column=0, row=2, text="Predicted Move Size", text_size = size.tiny, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=2, text=str.format("{0,number,#.##}%", predictedMove*100), text_size = size.tiny, text_color=chart.fg_color)
+    
+    // Success Rate
+    table.cell(data_table, text_halign=text.align_left, column=0, row=3, text="Success Rate (When price moves \nmore or equal to predicted amount)", text_size = size.tiny, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=3, text=str.format("{0,number,#.##}%", win_rate*100), text_size = size.tiny, text_color=chart.fg_color)
+    
+    // Risk/Reward Ratio
+    table.cell(data_table, text_halign=text.align_left, column=0, row=4, text="Recommended Reward/Risk Ratio", text_size = size.tiny, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=4, text=str.format("{0,number,#.##}", recommended_RR), text_size = size.tiny, text_color=chart.fg_color)
+    
+    // Trade Status
+    table.cell(data_table, text_halign=text.align_left, column=0, row=5, text="In Trade", text_size = size.tiny, text_color=chart.fg_color)
+    table.cell(data_table, text_halign=text.align_center, column=1, row=5, text=in_trade != 0 ? "Yes" : "No", 
+		 text_size = size.tiny,
+         bgcolor=in_trade == 0 ? color.gray : trendSignal > 0 ? color.new(green, 70) : color.new(red, 70),
+         text_color=chart.fg_color)
+
+// Alert conditions
+alertcondition(ta.crossover(trendSignal, 0), "Bullish Signal", "New bullish trend signal detected")
+alertcondition(ta.crossunder(trendSignal, 0), "Bearish Signal", "New bearish trend signal detected")
+alertcondition(tp_hit, "Take Profit Hit", "Take profit level has been reached")
+alertcondition(sl_hit, "Stop Loss Hit", "Stop loss level has been reached")

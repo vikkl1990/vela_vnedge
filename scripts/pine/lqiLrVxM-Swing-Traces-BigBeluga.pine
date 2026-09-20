@@ -1,0 +1,69 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Swing Traces [BigBeluga]", overlay = true, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+sensitivityLength     = input.int(50, "Sensitivity")
+upperTraceLongevity   = input.int(150, "Upper Trace Longevity")
+lowerTraceLongevity   = input.int(150, "Lower Trace Longevity")
+
+var lastUpperSwing    = float(na)
+var lastLowerSwing    = float(na)
+
+var upperBarsActive   = 0
+var lowerBarsActive   = 0
+
+var upperTraceSize    = 0.0
+var lowerTraceSize    = 0.0
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+highestInRange = ta.highest(sensitivityLength)
+lowestInRange  = ta.lowest(sensitivityLength)
+
+// Reset when new highs/lows form
+if highestInRange == high
+    lastUpperSwing := float(na)
+if lowestInRange == low
+    lastLowerSwing := float(na)
+
+// Detect upper swing
+if high[1] == highestInRange[1] and high < highestInRange
+    upperBarsActive := 0
+    lastUpperSwing := high[1]
+    upperTraceSize := (high - low) / 2
+
+// Detect lower swing
+if low[1] == lowestInRange[1] and low > lowestInRange
+    lowerBarsActive := 0
+    lastLowerSwing := low[1]
+    lowerTraceSize := (high - low) / 2
+
+// Increment longevity counters
+if not na(lastUpperSwing)
+    upperBarsActive += 1
+if not na(lastLowerSwing)
+    lowerBarsActive += 1
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plotchar(upperBarsActive >  4 ? lastUpperSwing : na, "Upper Trace", "▅", location.absolute, color.from_gradient(upperBarsActive, 3, upperTraceLongevity, color.blue, color(na)))
+plotchar(upperBarsActive >= 4 ? lastUpperSwing : na, "Upper Trace", "▅", location.absolute, upperBarsActive <= 7 ? color.blue : color(na), offset = -3)
+plotchar(upperBarsActive >  4 ? lastUpperSwing - upperTraceSize : na, "Upper Trace", "▂", location.absolute, color.from_gradient(upperBarsActive, 3, upperTraceLongevity, color.blue, color(na)))
+plotchar(upperBarsActive >= 4 ? lastUpperSwing - upperTraceSize : na, "Upper Trace", "▂", location.absolute, upperBarsActive <= 7 ? color.blue : color(na), offset = -3)
+
+plotchar(lowerBarsActive >  4 ? lastLowerSwing : na, "Lower Trace", "▅", location.absolute, color.from_gradient(lowerBarsActive, 3, lowerTraceLongevity, color.lime, color(na)))
+plotchar(lowerBarsActive >= 4 ? lastLowerSwing : na, "Lower Trace", "▅", location.absolute, lowerBarsActive <= 7 ? color.lime : color(na), offset = -3)
+plotchar(lowerBarsActive >  4 ? lastLowerSwing + lowerTraceSize : na, "Lower Trace", "▂", location.absolute, color.from_gradient(lowerBarsActive, 3, lowerTraceLongevity, color.lime, color(na)))
+plotchar(lowerBarsActive >= 4 ? lastLowerSwing + lowerTraceSize : na, "Lower Trace", "▂", location.absolute, lowerBarsActive <= 7 ? color.lime : color(na), offset = -3)
+
+// Signals
+if ta.crossover(low, lastLowerSwing + lowerTraceSize) and not na(lastLowerSwing) and lowerBarsActive > 5
+    label.new(bar_index - 1, low[1], style = label.style_label_up, color = color(na), text = "●", textcolor = color.lime)
+
+if ta.crossunder(high, lastUpperSwing - upperTraceSize) and not na(lastUpperSwing) and upperBarsActive > 5
+    label.new(bar_index - 1, high[1], style = label.style_label_down, color = color(na), text = "●", textcolor = color.blue)
+// }

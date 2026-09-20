@@ -226,6 +226,11 @@ export interface Position {
   qty: number
   qtyOpen: number
   contractValue: number
+  leverage?: number
+  liqPrice?: number | null
+  notional?: number
+  notionalEntry?: number
+  margin?: number | null
   entryPrice: number
   entryAt: number
   sl: number | null

@@ -1,0 +1,298 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+// ========================= Inputs =========================
+indicator("Volume Sentiment Breakout Channels [AlgoAlpha]", shorttitle = "AlgoAlpha - Sentiment Breakout", max_boxes_count = 500, overlay = true, max_bars_back = 5000, behind_chart = false)
+length_ = input.int(100, title="Normalization Length", minval=1, group = "Main Settings", tooltip="The number of bars used to calculate the highest high and lowest low for price normalization. Higher values create more stable normalization but may be less responsive to recent price changes.")
+length = input.int(14, "Box Detection Length", minval=1, group = "Main Settings", tooltip="The number of bars used to detect channel formation patterns. Lower values create more frequent channels but may be more sensitive to noise. Higher values create fewer but potentially more significant channels.")
+overlap = false
+strong = input.bool(true, "Strong Closes Only", group = "Main Settings", tooltip = "When enabled, breakouts only trigger when more than 50% of the candle body is outside the channel. This reduces false signals from wicks. When disabled, any price movement outside the channel triggers a breakout.")
+green = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color used for bullish visuals and positive sentiment texts.")
+red   = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color used for bearish visuals and negative sentiment texts.")
+res = 20
+scale = 30
+
+// ========================= Calculations =========================
+lowestLow = ta.lowest(low, length_)
+highestHigh = ta.highest(high, length_)
+normalizedPrice = (close - lowestLow) / (highestHigh - lowestLow)
+vol = ta.stdev(normalizedPrice, 14)
+
+// Persistent containers for channel visuals
+var boxes = array.new_box()
+var boxes_u = array.new_box()
+var boxes_l = array.new_box()
+var line[] centerLines = array.new<line>()
+var sentiments = array.new_box()
+
+// Additional line arrays for upper/lower shaded region boundaries
+var line[] upperTopLines = array.new<line>()
+var line[] upperBottomLines = array.new<line>()
+var line[] lowerTopLines = array.new<line>()
+var line[] lowerBottomLines = array.new<line>()
+
+// Helper to prevent overlapping channels when overlap is disabled
+f_can_create(float tNew, float bNew) =>
+    ok = true
+    if boxes.size() > 0
+        for j = 0 to boxes.size() - 1
+            if (tNew > boxes.get(j).get_bottom()) and (bNew < boxes.get(j).get_top())
+                ok := false
+                break
+    ok
+profileCalculation(start_index, end_index, res, scale, top_truncation, bottom_truncation) =>
+    top_boundaries = array.new_float(res)
+    bottom_boundaries = array.new_float(res)
+    binlen = array.new_float(res)
+    bintype = array.new_float(res)
+    highs = array.new_float()
+    lows = array.new_float()
+    volumes = array.new_float()
+    dirs = array.new_int()
+
+    for i = bar_index-start_index to bar_index-end_index
+        highs.push(high[i])
+        lows.push(low[i])
+        volumes.push(volume[i])
+        dirs.push(close[i] > open[i] ? 1 : -1)
+
+    maxx = array.max(highs)
+    minn = array.min(lows)
+    size = array.size(highs)
+
+    poc = 0.0
+
+    if not na(top_truncation)
+        maxx := math.min(maxx, top_truncation)
+    if not na(bottom_truncation)
+        minn := math.max(minn, bottom_truncation)
+
+    if size > 0 and maxx > minn
+        step = (maxx - minn) / res
+        granularity = res
+        for i = 0 to granularity - 1
+            bin_size = 0.0
+            bin_signed = 0.0
+            bottom = minn + (i * step)
+            top = minn + ((i + 1) * step)
+            bottom_boundaries.insert(i, bottom)
+            top_boundaries.insert(i, top)
+            for j = 0 to array.size(highs) - 1
+                candle_above_hbar = lows.get(j) > top
+                candle_below_hbar = highs.get(j) < bottom
+                is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+                if is_candle_in_bucket
+                    v = volumes.get(j)
+                    bin_size += v
+                    bin_signed += v * dirs.get(j)
+            array.insert(binlen, i, bin_size)
+            array.insert(bintype, i, bin_signed)
+        boc = binlen.max()
+        boci = binlen.indexof(boc) > 0 ? binlen.indexof(boc) : 0
+        poc := math.avg(top_boundaries.get(boci), bottom_boundaries.get(boci))
+
+    [top_boundaries, bottom_boundaries, binlen, bintype, poc]
+
+upper = vol
+lower = ta.wma(vol, length)
+
+duration = math.max(nz(ta.barssince(ta.crossover(lower,upper))), 1)
+h = ta.highest(duration)
+l = ta.lowest(duration)
+
+vola = ta.atr(length) / 2
+
+newChannel = false
+
+// ========================= Visuals & Channel Rendering =========================
+if ta.crossover(upper, lower) and duration > 10
+    if overlap or f_can_create(h, l)
+        boxes.unshift(box.new(bar_index - duration, h, bar_index, l, bgcolor = color.new(chart.fg_color, 90), border_color = na))
+        boxes_u.unshift(box.new(bar_index - duration, h, bar_index, h - vola, bgcolor = color.new(red, 70), border_color = na))
+        boxes_l.unshift(box.new(bar_index - duration, l + vola, bar_index, l, bgcolor = color.new(green, 70), border_color = na))
+        start_index = boxes.first().get_left()
+        end_index = bar_index
+        [top_boundaries, bottom_boundaries, binlen, bintype, poc] = profileCalculation(start_index, end_index, res, scale, boxes.first().get_top(), boxes.first().get_bottom())
+        for i_ = 0 to res - 1
+            box_right = boxes.first().get_left()
+            box_left = int(box_right-(boxes.first().get_right()-box_right)*0.15)
+            box_top = array.get(top_boundaries, i_)
+            box_bottom = array.get(bottom_boundaries, i_)
+            gradient_color = bintype.get(i_) > 0 ? color.from_gradient(binlen.get(i_), 0, binlen.max(), color.new(green, 90), green) : color.from_gradient(binlen.get(i_), 0, binlen.max(), color.new(red, 90), red)
+            array.push(sentiments, box.new(box_left, box_top, box_right, box_bottom, border_style = line.style_solid, border_color = gradient_color, border_width = 1, bgcolor = gradient_color, text_size = size.auto))
+
+
+        float centerY = (h + l) / 2
+        centerLines.unshift(line.new(bar_index - duration, centerY, bar_index, centerY, color = color.new(chart.fg_color, 50), width = 1, style = line.style_dashed))
+
+        upperTopLines.unshift(line.new(bar_index - duration, h, bar_index, h, color = color.new(red, 0), width = 2))
+        upperBottomLines.unshift(line.new(bar_index - duration, h - vola, bar_index, h - vola, color = color.new(red, 20), width = 1, style = line.style_dotted))
+        lowerTopLines.unshift(line.new(bar_index - duration, l + vola, bar_index, l + vola, color = color.new(green, 20), width = 1, style = line.style_dotted))
+        lowerBottomLines.unshift(line.new(bar_index - duration, l, bar_index, l, color = color.new(green, 0), width = 2))
+        curIdx = int(na)
+        if array.size(top_boundaries) > 0 and array.size(bottom_boundaries) > 0 and array.size(bintype) > 0
+            for ii = 0 to res - 1
+                bb = array.get(bottom_boundaries, ii)
+                tb = array.get(top_boundaries, ii)
+                if close >= bb and close <= tb
+                    curIdx := ii
+                    break
+        if not na(curIdx)
+            maxAbsBt = math.max(math.abs(bintype.max()), math.abs(bintype.min()))
+            curBt = bintype.get(curIdx)
+            sentimentText = "Current Sentiment: " + str.tostring(curBt/maxAbsBt*100) + "%"
+            channelSum = 0.0
+            if array.size(bintype) > 0
+                for jj = 0 to res - 1
+                    channelSum += bintype.get(jj)
+            channelText = "Overall Sentiment: " + (channelSum > 0 ? "Bullish" : "Bearish")
+            if close > centerY
+                boxes_l.first().set_text(sentimentText)
+                boxes_l.first().set_text_color(curBt >= 0 ? green : red)
+                boxes_u.first().set_text(channelText)
+                boxes_u.first().set_text_color(chart.fg_color)
+            else
+                boxes_u.first().set_text(sentimentText)
+                boxes_u.first().set_text_color(curBt >= 0 ? green : red)
+                boxes_l.first().set_text(channelText)
+                boxes_l.first().set_text_color(chart.fg_color)
+        newChannel := true
+
+var boxes_ = array.new_box()
+
+while boxes_.size() > 0
+    boxes_.shift().delete()
+
+channelBreak = false
+channelBreak_ = false
+
+if boxes.size() > 0
+    for i = 0 to boxes.size() - 1
+        float priceToCompare = strong ? math.avg(close, open) : close
+        if priceToCompare > boxes.get(i).get_top()
+            boxes.remove(i)
+            boxes_u.remove(i)
+            boxes_l.remove(i)
+            centerLines.remove(i)
+            upperTopLines.remove(i)
+            upperBottomLines.remove(i)
+            lowerTopLines.remove(i)
+            lowerBottomLines.remove(i)
+            sentiments.clear()
+            channelBreak:=true
+        else if priceToCompare < boxes.get(i).get_bottom()
+            boxes.remove(i)
+            boxes_u.remove(i)
+            boxes_l.remove(i)
+            centerLines.remove(i)
+            upperTopLines.remove(i)
+            upperBottomLines.remove(i)
+            lowerTopLines.remove(i)
+            lowerBottomLines.remove(i)
+            sentiments.clear()
+            channelBreak_:=true
+        else
+            boxes.get(i).set_right(bar_index)
+            boxes_u.get(i).set_right(bar_index)
+            boxes_l.get(i).set_right(bar_index)
+            centerLines.get(i).set_x2(bar_index)
+            upperTopLines.get(i).set_x2(bar_index)
+            upperBottomLines.get(i).set_x2(bar_index)
+            lowerTopLines.get(i).set_x2(bar_index)
+            lowerBottomLines.get(i).set_x2(bar_index)
+            start_index = boxes.get(i).get_left()
+            end_index = bar_index
+
+            [top_boundaries, bottom_boundaries, binlen, bintype, poc] = profileCalculation(start_index, end_index, res, scale, boxes.get(i).get_top(), boxes.get(i).get_bottom())
+            max_abs_bt = math.max(math.abs(bintype.max()), math.abs(bintype.min()))
+            for i_ = 0 to res - 1
+                box_right = bar_index + 7 + scale
+                box_left = box_right - math.round(binlen.get(i_)) / math.round(binlen.max()) * scale
+                box_top = array.get(top_boundaries, i_)
+                box_bottom = array.get(bottom_boundaries, i_)
+                gradient_color = bintype.get(i_) > 0 ? color.from_gradient(binlen.get(i_), 0, binlen.max(), color.new(green, 90), green) : color.from_gradient(binlen.get(i_), 0, binlen.max(), color.new(red, 90), red)
+                array.push(boxes_, box.new(box_left, box_top, box_right, box_bottom, border_style = line.style_solid, border_color = gradient_color, border_width = 1, bgcolor = gradient_color))
+                cLeft = boxes.get(i).get_left()
+                cRight = boxes.get(i).get_right()
+                sentiments.get(i_).set_left(int(cLeft-(cRight-cLeft)*0.15))
+                signed_v = bintype.get(i_)
+                mag = math.abs(signed_v)
+                ratio = max_abs_bt > 0 ? mag / max_abs_bt : 0.0
+                tr = int(100 - math.round(ratio * 100))
+                colBase = signed_v > 0 ? green : red
+                col = color.from_gradient(tr, 0, 100, colBase, chart.bg_color)//color.new(colBase, tr)
+                sentiments.get(i_).set_bgcolor(col)
+                sentiments.get(i_).set_border_color(col)
+                sentiments.get(i_).set_text(str.tostring(100*math.abs(signed_v)/math.abs(bintype.max()), format.percent))
+                if i_ == res - 1
+                    centerLines.get(i).set_x1(int(cLeft-(cRight-cLeft)*0.15))
+                    upperTopLines.get(i).set_x1(int(cLeft-(cRight-cLeft)*0.15))
+                    upperBottomLines.get(i).set_x1(int(cLeft-(cRight-cLeft)*0.15))
+                    lowerTopLines.get(i).set_x1(int(cLeft-(cRight-cLeft)*0.15))
+                    lowerBottomLines.get(i).set_x1(int(cLeft-(cRight-cLeft)*0.15))
+
+            curIdx_ = int(na)
+            if array.size(top_boundaries) > 0 and array.size(bottom_boundaries) > 0 and array.size(bintype) > 0
+                for kk = 0 to res - 1
+                    bb_ = array.get(bottom_boundaries, kk)
+                    tb_ = array.get(top_boundaries, kk)
+                    if close >= bb_ and close <= tb_
+                        curIdx_ := kk
+                        break
+            if not na(curIdx_)
+                maxAbsBt_ = math.max(math.abs(bintype.max()), math.abs(bintype.min()))
+                curBt_ = bintype.get(curIdx_)
+                sentimentText_ = "Current Sentiment: " + str.tostring(curBt_/maxAbsBt_*100, format.percent) + "%"
+                channelSum_ = 0.0
+                if array.size(bintype) > 0
+                    for mm = 0 to res - 1
+                        channelSum_ += bintype.get(mm)
+                channelText_ = "Overall Sentiment: " + (channelSum_ > 0 ? "Bullish" : "Bearish")
+                centerY_ = (boxes.get(i).get_top() + boxes.get(i).get_bottom()) / 2.0
+                if close > centerY_
+                    boxes_l.get(i).set_text(sentimentText_)
+                    boxes_l.get(i).set_text_color(curBt_ >= 0 ? green : red)
+                    boxes_u.get(i).set_text(channelText_)
+                    boxes_u.get(i).set_text_color(chart.fg_color)
+                else
+                    boxes_u.get(i).set_text(sentimentText_)
+                    boxes_u.get(i).set_text_color(curBt_ >= 0 ? green : red)
+                    boxes_l.get(i).set_text(channelText_)
+                    boxes_l.get(i).set_text_color(chart.fg_color)
+
+midp = math.avg(close, open)
+mid = plot(midp, display = display.none)
+
+trnd_up = ta.sma(low, math.max(nz(ta.barssince(channelBreak),0), 1))
+var activeUp = false
+
+if channelBreak
+    activeUp := true
+
+if activeUp and ta.crossunder(close, trnd_up)
+    activeUp := false
+
+b1 = plot(activeUp ? trnd_up : na, "Bullish Trend", color = green, style = plot.style_linebr)
+
+trnd_dn = ta.sma(high, math.max(nz(ta.barssince(channelBreak_),0), 1))
+var activeDn = false
+
+if channelBreak_
+    activeDn := true
+
+if activeDn and ta.crossover(close, trnd_dn)
+    activeDn := false
+
+b2 = plot(activeDn ? trnd_dn : na, "Bearish Trend", color = red, style = plot.style_linebr)
+
+fill(mid, b1, midp, trnd_up, color.new(chart.bg_color, 70), color.new(green, 70), "Bullish Fill")
+fill(mid, b2, trnd_dn, midp, color.new(red, 70), color.new(chart.bg_color, 70), "Bearish Fill")
+
+plotchar(channelBreak ? math.min(low, low[1], low[2]) : na, "Bullish Breakout", "▲", location.absolute, green, size = size.tiny)
+plotchar(channelBreak_ ? math.max(high, high[1], high[2]) : na, "Bearish Breakout", "▼", location.absolute, red, size = size.tiny)
+
+// ========================= Alerts =========================
+alertcondition(newChannel, "Channel Formed", "A new channel has formed.")
+alertcondition(channelBreak, "Bullish Channel Break", "Price broke above the channel.")
+alertcondition(channelBreak_, "Bearish Channel Break", "Price broke below the channel.")

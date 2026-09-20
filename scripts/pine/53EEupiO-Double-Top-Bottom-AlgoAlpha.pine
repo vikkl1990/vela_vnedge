@@ -1,0 +1,169 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Double Top/Bottom [AlgoAlpha]", shorttitle = "AlgoAlpha - Double Top/Bottom", overlay = true, max_labels_count = 500, max_bars_back = 5000, max_lines_count = 500)
+
+x = input.int(21, "Time Horizon", tooltip = "Controls the look-back and time horizon of the patterns, a larger value will detect longer term patterns")
+sig = input.bool(false, "Show Signal Labels Only", tooltip = "When enabled, only the labels showing the second pivot of the double top/bottom will show")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance", tooltip="Color for bullish trend")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance", tooltip="Color for bearish trend")
+
+
+type store
+    int   dir
+    int   n
+    float y
+
+limit = ta.sma(math.abs(open-close), 100)
+
+ph = ta.pivothigh(close, x,x)
+pl = ta.pivotlow(close, x,x)
+
+var pph = float(na)
+var ppl = float(na)
+var cpph = float(na)
+var cppl = float(na)
+var ln = int(na)
+var hn = int(na)
+var lpt = 0
+var awaiting_DBC = 0
+var awaiting_DTC = 0
+
+potential = false
+var store[] sequence = array.new<store>()
+var t = array.new_line()
+var t1 = array.new_line()
+var tthresh = 0.0
+var bthresh = 0.0
+
+if not na(ph)
+    lpt := 1
+    if awaiting_DBC == 1
+        awaiting_DBC := 0
+        if not sig
+            label.new(bar_index, bthresh, style = label.style_diamond, size = size.tiny, color = color.orange)
+    if awaiting_DTC == 1
+        awaiting_DTC := 0
+        if not sig
+            label.new(bar_index, tthresh, style = label.style_diamond, size = size.tiny, color = color.orange)
+    if na(ppl)
+        hn := bar_index-x
+        cpph := ph
+        sequence.unshift(store.new(1, hn, close[bar_index-hn]))
+        pph := ph
+        
+    else if ph > ppl and (lpt == lpt[1] ? ph > pph : true)
+        hn := bar_index-x
+        cppl := ppl
+        sequence.unshift(store.new(-1, ln, close[bar_index-ln]))
+        pph := ph
+        
+
+if not na(pl)
+    lpt := -1
+    if awaiting_DBC == 1
+        awaiting_DBC := 0
+        if not sig
+            label.new(bar_index, bthresh, style = label.style_diamond, size = size.tiny, color = color.orange)
+    if awaiting_DTC == 1
+        awaiting_DTC := 0
+        if not sig
+            label.new(bar_index, tthresh, style = label.style_diamond, size = size.tiny, color = color.orange)
+    if na(pph)
+        ln := bar_index-x
+        cppl := pl
+        sequence.unshift(store.new(-1, ln, close[bar_index-ln]))
+        ppl := pl
+        
+    else if pl < pph and (lpt == lpt[1] ? pl < ppl : true)
+        ln := bar_index-x
+        cpph := pph
+        sequence.unshift(store.new(1, hn, close[bar_index-hn]))
+        ppl := pl
+
+while sequence.size() > 3
+    sequence.pop()
+
+if sequence.size() > 2
+    if not na(ph) and sequence.first().dir == -1 and sequence.get(1).dir == 1 and math.abs(close[x] - sequence.get(1).y) < limit and lpt[1] != 1
+        trigger = sequence.get(0).y
+        label.new(bar_index-x, close[x], style = label.style_label_down, size = size.large, color = red)
+        if not sig
+            t1.unshift(line.new(sequence.get(0).n, sequence.get(0).y, sequence.get(0).n + 1, sequence.get(0).y, xloc = xloc.bar_index, color = red, width = 2, style = line.style_dashed))
+        awaiting_DTC := 1
+        tthresh := sequence.get(0).y
+        if not sig
+            l0 = line.new(sequence.get(1).n, sequence.get(1).y, sequence.get(2).n, sequence.get(2).y, xloc = xloc.bar_index, color = red, width = 2)
+            l1 = line.new(sequence.get(1).n, sequence.get(1).y, sequence.get(0).n, sequence.get(0).y, xloc = xloc.bar_index, color = red, width = 2)
+            l2 = line.new(sequence.get(0).n, sequence.get(0).y, bar_index-x, ph, xloc = xloc.bar_index, color = red, width = 2)
+            linefill.new(l0, l1, color.new(red, 70))
+            linefill.new(t1.first(), l2, color.new(red, 70))
+
+    if not na(pl) and sequence.first().dir == 1 and sequence.get(1).dir == -1 and math.abs(close[x] - sequence.get(1).y) < limit and lpt[1] != -1
+        trigger = sequence.get(0).y
+        label.new(bar_index-x, close[x], style = label.style_label_up, size = size.large, color = green)
+        if not sig
+            t.unshift(line.new(sequence.get(0).n, sequence.get(0).y, sequence.get(0).n + 1, sequence.get(0).y, xloc = xloc.bar_index, color = green, width = 2, style = line.style_dashed))
+        awaiting_DBC := 1
+        bthresh := sequence.get(0).y
+        if not sig
+            l0 = line.new(sequence.get(1).n, sequence.get(1).y, sequence.get(2).n, sequence.get(2).y, xloc = xloc.bar_index, color = green, width = 2)
+            l1 = line.new(sequence.get(1).n, sequence.get(1).y, sequence.get(0).n, sequence.get(0).y, xloc = xloc.bar_index, color = green, width = 2)
+            l2 = line.new(sequence.get(0).n, sequence.get(0).y, bar_index-x, pl, xloc = xloc.bar_index, color = green, width = 2)
+            linefill.new(l0, l1, color.new(green, 70))
+            linefill.new(t.first(), l2, color.new(green, 70))
+
+DTC = 0
+DBC = 0
+
+if awaiting_DTC == 1
+    if close < tthresh
+        awaiting_DTC := 0
+        tthresh := 0
+        if not sig
+            t1.first().set_x2(bar_index)
+        DTC := 1
+
+if awaiting_DBC == 1
+    if close > bthresh
+        awaiting_DBC := 0
+        awaiting_DBC := 0
+        if not sig
+            t.first().set_x2(bar_index)
+        DBC := 1
+
+if t.size() > 0
+    qt = t.size()
+
+    for i = qt - 1 to 0
+        if i < t.size()
+            cL = t.get(i)
+            yL = cL.get_x1()
+            vert = cL.get_y1()
+
+            if awaiting_DBC == 1
+                cL.set_x2(bar_index + 1)
+
+            else
+                t.pop()
+
+if t1.size() > 0
+    qt = t.size()
+
+    for i = qt - 1 to 0
+        if i < t1.size()
+            cL = t1.get(i)
+            yL = cL.get_x1()
+            vert = cL.get_y1()
+
+            if awaiting_DTC == 1
+                cL.set_x2(bar_index + 1)
+
+            else
+                t1.pop()
+
+alertcondition(not na(pl) and sequence.first().dir == 1 and sequence.get(1).dir == -1 and math.abs(close[x] - sequence.get(1).y) < limit and lpt[1] != -1, "Potential Double Bottom")
+alertcondition(not na(ph) and sequence.first().dir == -1 and sequence.get(1).dir == 1 and math.abs(close[x] - sequence.get(1).y) < limit and lpt[1] != 1, "Potential Double Top")
+alertcondition(DBC == 1, "Double Bottom Confirmed")
+alertcondition(DTC == 1, "Double Top Confirmed")

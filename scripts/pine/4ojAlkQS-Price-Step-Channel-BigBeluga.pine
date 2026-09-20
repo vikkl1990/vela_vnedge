@@ -1,0 +1,68 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Price Step Channel [BigBeluga]', overlay = true)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float mult = input.float(2.5, 'Width', minval = 2, maxval = 5, step = 0.01, group = 'Main Settings')
+float src = input.source(close, 'Source', group = 'Main Settings')
+bool display_fo = input.bool(true, 'Display FakeOuts', group = 'Main Settings')
+bool bands = input.bool(true, 'Display Bands', group = 'Main Settings', inline = 'b')
+bool fill = input.bool(true, 'Fill', group = 'Main Settings', inline = 'b')
+
+color col_up = input.color(#1fd3a6, 'Up', inline = 'c')
+color col_dn = input.color(#dd1b55, 'Dn', inline = 'c')
+
+color ch_col = chart.fg_color
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+step_channel(mult, src) =>
+    var color col = na
+
+    float atr = ta.highest(ta.atr(200), 100) * mult
+    float st = 0.
+    float st1 = st[1]
+    float up = st1 + atr
+    float lw = st1 - atr
+    st := bar_index == 200 ? src : src > up and barstate.isconfirmed ? src : src < lw and barstate.isconfirmed ? src : st1
+
+    bool change = st1 != st1[1]
+    bool fakeOut_up = ta.crossunder(high, up) and not change
+    bool fakeOut_dn = ta.crossover(low, lw) and not change
+
+    switch 
+        ta.crossover(st, st1) => 
+    	    col := col_up
+    	    col
+        ta.crossunder(st, st1) => 
+    	    col := col_dn
+    	    col
+
+    if display_fo
+        if fakeOut_up
+            label.new(bar_index[1], high[1], '✖', style = label.style_label_down, color = #00000001, size = size.small, textcolor = ch_col, tooltip = str.tostring(high[1]))
+        if fakeOut_dn
+            label.new(bar_index[1], low[1], '✖', style = label.style_label_up, color = #00000001, size = size.small, textcolor = ch_col, tooltip = str.tostring(low[1]))
+
+    if barstate.islast and bands
+        color col1 = color.new(col, 90)
+        label.delete(label.new(bar_index, up, '▲ ' + str.tostring(up, '#,###.##'), style = label.style_label_lower_left, color = col1, textcolor = col == col_up ? col : ch_col)[1])
+        label.delete(label.new(bar_index, lw, '▼ ' + str.tostring(lw, '#,###.##'), style = label.style_label_upper_left, color = col1, textcolor = col == col_dn ? col : ch_col)[1])
+    [st, up, lw, col]
+
+[st, up, lw, col] = step_channel(mult, src)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+st_p = plot(st, "step line", color = col, linewidth = 2)
+p_up = plot(up, "upper line", color = color.new(col, bands ? 40 : 100))
+p_lw = plot(lw, "lower line", color = color.new(col, bands ? 40 : 100))
+
+fill(st_p, p_up, up, st, color.new(col, fill and bands ? 90 : 100), na)
+fill(st_p, p_lw, st, lw, na, color.new(col, fill and bands ? 90 : 100))
+// }

@@ -1,0 +1,132 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Candle Volume HeatMap [BigBeluga]', overlay = true, max_boxes_count = 500, max_bars_back = 500, max_labels_count = 500, max_lines_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int timeframe_factor = timeframe.in_seconds() / 60
+int levels = 10
+
+color heat_col = input.color(color.orange, 'Heat Color', inline = 'cvp', group = 'Candle Volume Type', tooltip = 'HeatMap Color')
+
+bool display_poc = input.bool(true, '', inline = 'POC', group = 'Point Of Control')
+string poc_style = input.string('Solid', 'POC Style', ['Solid', 'Dashed', 'Dotted'], inline = 'POC', group = 'Point Of Control')
+int width = input.int(1, '', inline = 'POC', group = 'Point Of Control')
+color poc_color = input.color(color.orange, '', inline = 'POC', group = 'Point Of Control')
+
+bool display_delta = input.bool(false, 'Delta', inline = 'Delta', group = 'Delta')
+string delta_size = input.string('Auto', '|   Size', ['Auto', 'Small', 'Large'], inline = 'Delta', group = 'Delta')
+
+var array<line> lines_array = array.new_line()
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+float vol = close > open ? volume : -volume
+float normalized_vol = (vol - 0) / ta.stdev(vol, 100)
+normalized_vol := normalized_vol > 10 ? 0 : normalized_vol
+int timeframe_lvl = math.round(timeframe_factor / levels)
+string timeframe = str.tostring(timeframe_lvl)
+float atr_val = ta.atr(200) * 0.5
+
+
+// Adjust timeframe for seconds and some minutes 
+timeframe := timeframe.isseconds and timeframe_factor <= 0.2 ? '1S' : timeframe.isseconds and timeframe_factor <= 1 ? '5S' : timeframe.isminutes and timeframe_factor == 1 ? '10S' : timeframe.isminutes and timeframe_factor == 3 ? '30S' : timeframe.isminutes and timeframe_factor == 5 ? '30S' : timeframe
+
+
+array<float> req = request.security_lower_tf('', timeframe, vol)
+array<int> delta_sign = request.security_lower_tf('', timeframe, close > open ? 1 : -1)
+
+float delta_sum = req.sum()
+float delta_abs_sum = req.abs().sum()
+float delta_percent = delta_sum / delta_abs_sum * 100
+
+int buyers = 0
+int sellers = 0
+
+if delta_sign.size() > 0
+
+    for i = 0 to delta_sign.size() - 1 by 1
+
+        value = delta_sign.get(i)
+        buyers := buyers + (value > 0 ? 1 : 0)
+        sellers := sellers + (value < 0 ? -1 : 0)
+        sellers
+        // }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+if barstate.islast
+
+    for int j = 0 to 45 by 1 // >>
+
+        array<float> value1 = req[j]
+        float step = (high[j] - low[j]) / value1.size()
+
+        if value1.size() > 0
+            for int i = 0 to value1.size() - 1 by 1 // >>
+
+                float value = value1.get(i)
+                float value_abs = math.abs(value1.get(i))
+                array<float> value_arr = value1.abs()
+
+                float value_max = value_arr.max()
+                float value_min = value_arr.min()
+   
+
+                color heat_color = color.from_gradient(value_abs, value_min, value_max, chart.bg_color, heat_col)
+
+                float bottom = low[j] + step * i
+                float top = bottom + step
+
+                box.new(left = bar_index - j, bottom = bottom, right = bar_index + 1 - j, top = top, bgcolor = heat_color, text = value_abs == value_max ? str.tostring(value, '#.#') : '', text_color = chart.fg_color, border_color = chart.bg_color, force_overlay = true)
+
+                // Create POC line if maximum value
+                if value_abs == value_max and display_poc and j > 1
+
+                    string line_style = switch poc_style
+                        'Solid' => line.style_solid
+                        'Dotted' => line.style_dotted
+                        'Dashed' => line.style_dashed
+
+                    line l = line.new(x1 = bar_index - j, y1 = math.avg(bottom, top), x2 = last_bar_index + 2, y2 = math.avg(bottom, top), width = width, color = poc_color, style = line_style, extend = extend.right)
+
+
+                    if l.get_x2() - l.get_x1() < 1
+                        l.delete()
+
+                    lines_array.push(l)
+
+            if display_delta
+                string deltaSize = switch delta_size
+                    'Large' => size.small
+                    'Auto' => size.auto
+                    'Small' => size.tiny
+
+                string txt = 'Delta:\nBuyers | Sellers\n' + str.tostring(buyers[j]) + ' | ' + str.tostring(sellers[j] * -1) + '\n' + str.tostring(math.round(delta_percent[j]), format.percent)
+
+                color color = delta_percent[j] > 0 ? chart.fg_color : color.red
+
+                box.new(left = bar_index - j, bottom = high[j], right = bar_index + 1 - j, top = high[j] + atr_val, border_color = color(na), bgcolor = color(na), text = txt, text_color = color, force_overlay = true, text_size = deltaSize)
+
+        for int g = 0 to 46 by 1 // >>
+
+            for l_id in lines_array
+
+                float price = l_id.get_y2()
+                int index = bar_index - l_id.get_x1()
+
+                if high[g] > price and low[g] < price and g + 1 <= index
+
+                    lines_array.remove(lines_array.indexof(l_id))
+                    l_id.delete()
+
+                if index == 46
+                    line.delete(lines_array.shift())
+
+// }

@@ -1,0 +1,134 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title = "MVRV Z-Score [AlgoAlpha]", shorttitle = '∑ MVRV Z-Score [AlgoAlpha]', precision = 2)
+import TradingView/ta/7
+
+// [Grouped Inputs]
+groupCalcParams = "Calculation Parameters"
+zScoreLookback = input.int(150, "Z score Lookback Length", group=groupCalcParams)
+movingAverageLength = input.int(93, "Moving Average Lookback Length", group=groupCalcParams)
+movingAverageType = input.string("HMA", title="MA Type", options=["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA", "HMA"], group=groupCalcParams)
+deviationMultiplier = input(4.0, "Deviation Range Multiplier", group=groupCalcParams)
+useHeikenAshiPlots = input.bool(true, "Heiken Ashi Plots?")
+useUpHollowCandle = input.bool(true, "Hollow Up Candle?")
+useDownHollowCandle = input.bool(true, "Hollow Down Candle?")
+colorBearish = #6d6dff
+colorBullish = #ffd16d
+
+// [Moving Average Function]
+calculateMA(source, period, maType) =>
+    switch maType
+        "SMA" => ta.sma(source, period)
+        "EMA" => ta.ema(source, period)
+        "SMMA (RMA)" => ta.rma(source, period)
+        "WMA" => ta.wma(source, period)
+        "VWMA" => ta.vwma(source, period)
+        "HMA" => ta.hma(source, period)
+
+// [Data Source & Calculations]
+marketValue = request.security("BTC_MVRV", "1D", barstate.isconfirmed ? close : close[1])
+meanValue = ta.sma(marketValue, zScoreLookback)
+zScoreValue = (marketValue - meanValue) / ta.stdev(marketValue, zScoreLookback)
+adjustedZScore = request.security(syminfo.tickerid, "1D", zScoreValue)
+zScoreMA = calculateMA(adjustedZScore, movingAverageLength, movingAverageType)
+
+// [Plot Definitions]
+plot(adjustedZScore, color=color.gray, display = useHeikenAshiPlots ? display.none : display.all)
+plot(zScoreMA, color = zScoreMA > zScoreMA[2] ? color.new(colorBullish, 30) : color.new(colorBearish, 30), title = "MVRV Z-score MA")
+midLine = plot(0, color = adjustedZScore > 0 ? colorBullish : colorBearish)
+
+// [Heiken Ashi Calculation & Plot]
+calculateHeikenAshi() =>
+    openValue = adjustedZScore[1]
+    highValue = math.max(adjustedZScore, adjustedZScore[1])
+    lowValue = math.min(adjustedZScore, adjustedZScore[1])
+    closeValue = adjustedZScore
+    var haOpen = 0.0
+    haClose = (openValue + highValue + lowValue + closeValue) / 4
+    haOpen := na ? (openValue + closeValue) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2
+    haHigh = math.max(highValue, math.max(haOpen, haClose))
+    haLow = math.min(lowValue, math.min(haOpen, haClose))
+    [haClose,haOpen,haHigh,haLow]
+
+[haClose, haOpen, haHigh, haLow] = calculateHeikenAshi()
+haTrendUp = haClose > haOpen
+haTrendDown = haClose < haOpen
+haSmooth = ta.hma(haClose, 56)
+plotcandle(haClose, haOpen, haHigh, haLow, "Heiken Ashi RSI", haClose > haOpen ? color.new(colorBullish, useUpHollowCandle ? 100 : 0) : color.new(colorBearish, useDownHollowCandle ? 100 : 0), haClose > haOpen ? colorBullish : colorBearish, bordercolor = haClose > haOpen ? colorBullish : colorBearish, display = useHeikenAshiPlots ? display.all : display.none)
+
+// [Overbought & Oversold Levels with Fills]
+overboughtLine = plot(deviationMultiplier, color=color.gray, display = display.none)
+midOverboughtLine = plot(deviationMultiplier * 0.58, color=color.gray, display = display.none)
+oversoldLine = plot(-1 * deviationMultiplier, color=color.gray, display = display.none)
+midOversoldLine = plot(-1 * deviationMultiplier * 0.58, color=color.gray, display = display.none)
+fill(midLine, overboughtLine, top_value =  deviationMultiplier, bottom_value = deviationMultiplier * 0.58, bottom_color = na, top_color = color.from_gradient(haSmooth, -deviationMultiplier, deviationMultiplier, color.new(colorBearish,100), color.new(colorBearish,40)))
+fill(midLine, oversoldLine, top_value =  -1 * deviationMultiplier * 0.58, bottom_value = -deviationMultiplier, bottom_color = color.from_gradient(haSmooth, -deviationMultiplier, deviationMultiplier, color.new(colorBullish,40), color.new(colorBullish,100)), top_color = na)
+
+// [Alerts for Overbought & Oversold Crossovers]
+plotchar(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, -1 * deviationMultiplier) ? -1 * deviationMultiplier * 1.2 : na, char = "▲", color = colorBullish, location = location.absolute, size = size.tiny)
+plotchar(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, deviationMultiplier) ? deviationMultiplier * 1.2 : na, char = "▼", color = colorBearish, location = location.absolute, size = size.tiny)
+plotchar(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, -1 * deviationMultiplier * 0.58) ? -1 * deviationMultiplier * 1.2 : na, char = "∧", color = colorBullish, location = location.absolute, size = size.tiny)
+plotchar(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, deviationMultiplier * 0.58) ? deviationMultiplier * 1.2 : na, char = "∨", color = colorBearish, location = location.absolute, size = size.tiny)
+
+// [Divergences Settings]
+enablePlotBullish = input(title="Plot Bullish", defval=true, group = "Divergences")
+enablePlotHiddenBullish = input(title="Plot Hidden Bullish", defval=false, group = "Divergences")
+enablePlotBearish = input(title="Plot Bearish", defval=true, group = "Divergences")
+enablePlotHiddenBearish = input(title="Plot Hidden Bearish", defval=false, group = "Divergences")
+divergenceBearColor = colorBearish
+divergenceBullColor = colorBullish
+hiddenBullishColor = color.new(colorBullish, 80)
+hiddenBearishColor = color.new(colorBearish, 80)
+labelTextColor = color.white
+noColor = color.new(color.white, 100)
+
+lookbackRight = input(title="Pivot Lookback Right", defval=1)
+lookbackLeft = input(title="Pivot Lookback Left", defval=30)
+
+findPivotLow = na(ta.pivotlow(haClose, lookbackLeft, lookbackRight)) ? false : true
+findPivotHigh = na(ta.pivothigh(haClose, lookbackLeft, lookbackRight)) ? false : true
+isInRange(cond) =>
+    barsSince = ta.barssince(cond == true)
+    -80 <= barsSince and barsSince <= 80
+
+// Regular Bullish Divergence
+oscHigherLow = haClose[lookbackRight] > ta.valuewhen(findPivotLow, haClose[lookbackRight], 1) and isInRange(findPivotLow[1])
+priceLowerLow = low[lookbackRight] < ta.valuewhen(findPivotLow, low[lookbackRight], 1)
+bullishCondition = enablePlotBullish and priceLowerLow and oscHigherLow and findPivotLow
+plot(findPivotLow ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Regular Bullish", linewidth=2, color=(bullishCondition ? divergenceBullColor : noColor))
+plotshape(bullishCondition ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Regular Bullish Label", text=" Bull ", style=shape.labelup, location=location.absolute, color=divergenceBullColor, textcolor=labelTextColor)
+
+// Hidden Bullish Divergence
+oscLowerLow = haClose[lookbackRight] < ta.valuewhen(findPivotLow, haClose[lookbackRight], 1) and isInRange(findPivotLow[1])
+priceHigherLow = low[lookbackRight] > ta.valuewhen(findPivotLow, low[lookbackRight], 1)
+hiddenBullishCondition = enablePlotHiddenBullish and priceHigherLow and oscLowerLow and findPivotLow
+plot(findPivotLow ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Hidden Bullish", linewidth=2, color=(hiddenBullishCondition ? hiddenBullishColor : noColor))
+plotshape(hiddenBullishCondition ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Hidden Bullish Label", text=" H Bull ", style=shape.labelup, location=location.absolute, color=divergenceBullColor, textcolor=labelTextColor)
+
+// Regular Bearish Divergence
+oscLowerHigh = haClose[lookbackRight] < ta.valuewhen(findPivotHigh, haClose[lookbackRight], 1) and isInRange(findPivotHigh[1])
+priceHigherHigh = high[lookbackRight] > ta.valuewhen(findPivotHigh, high[lookbackRight], 1)
+bearishCondition = enablePlotBearish and priceHigherHigh and oscLowerHigh and findPivotHigh
+plot(findPivotHigh ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Regular Bearish", linewidth=2, color=(bearishCondition ? divergenceBearColor : noColor))
+plotshape(bearishCondition ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Regular Bearish Label", text=" Bear ", style=shape.labeldown, location=location.absolute, color=divergenceBearColor, textcolor=labelTextColor)
+
+// Hidden Bearish Divergence
+oscHigherHigh = haClose[lookbackRight] > ta.valuewhen(findPivotHigh, haClose[lookbackRight], 1) and isInRange(findPivotHigh[1])
+priceLowerHigh = high[lookbackRight] < ta.valuewhen(findPivotHigh, high[lookbackRight], 1)
+hiddenBearishCondition = enablePlotHiddenBearish and priceLowerHigh and oscHigherHigh and findPivotHigh
+plot(findPivotHigh ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Hidden Bearish", linewidth=2, color=(hiddenBearishCondition ? hiddenBearishColor : noColor))
+plotshape(hiddenBearishCondition ? haClose[lookbackRight] : na, offset=-lookbackRight, title="Hidden Bearish Label", text=" H Bear ", style=shape.labeldown, location=location.absolute, color=divergenceBearColor, textcolor=labelTextColor)
+
+//Alerts
+alertcondition(ta.crossover(haClose, 0), title="Bullish Long Term", message="MVRV z-score has crossed over the zero line")
+alertcondition(ta.crossunder(haClose, 0), title="Bearish Long Term", message="MVRV z-score has crossed under the zero line")
+alertcondition(ta.crossover(haClose, haOpen), title="Bullish Short Term", message="MVRV z-score is in an up-swing")
+alertcondition(ta.crossunder(haClose, haOpen), title="Bearish Short Term", message="MVRV z-score is in a down-swing")
+alertcondition(bullishCondition, title="Bullish Divergence", message="MVRV Bullish Divergence")
+alertcondition(bearishCondition, title="Bearish Divergence", message="MVRV Bearish Divergence")
+alertcondition(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, -1 * deviationMultiplier), title="Strong Bullish Reversal", message="MVRV Strong Bullish Reversal")
+alertcondition(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, deviationMultiplier), title="Strong Bearish Reversal", message="MVRV Strong Bearish Reversal")
+alertcondition(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, -1 * deviationMultiplier * 0.58), title="Weak Bullish Reversal", message="MVRV Weak Bullish Reversal")
+alertcondition(ta.crossover(useHeikenAshiPlots ? haClose : adjustedZScore, deviationMultiplier * 0.58), title="Weak Bearish Reversal", message="MVRV Weak Bearish Reversal")

@@ -1,0 +1,149 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Reversal Signals [AlgoAlpha]", "AlgoAlpha - Reversal Signals", overlay = true)
+
+// Inputs
+lookbackPeriod = input.int(defval = 12, title = "Candle Lookback", tooltip = "Number of candles to look back for reversal detection", group = "Reversal Detection Settings")
+confirmationPeriod = input.int(defval = 3, title = "Confirm Within", tooltip = "Number of candles within which the reversal must be confirmed", group = "Reversal Detection Settings")
+enableVolumeConfirmation = input.bool(defval = true, title = "Use Volume Confirmation", tooltip = "Enable or disable volume confirmation for signals", group = "Reversal Detection Settings")
+trendMAPeriod = input.int(defval = 50, title = "Trend MA Period", tooltip = "Period for the moving average used in trend detection", group = "Trend Settings")
+trendMAType = input.string(defval = "EMA", title = "MA Type", options = ["SMA", "EMA", "WMA", "VWMA"], tooltip = "Type of moving average to use", group = "Trend Settings")
+maStepPeriod = input.int(defval = 33, title = "MA Step Period", tooltip = "Number of bars after which the stepped MA updates", group = "Trend Settings")
+bullColor = input.color(#00ffbb, title = "Bullish Color", tooltip = "Color used for bullish signals and trends", group = "Appearance")
+bearColor = input.color(#ff1100, title = "Bearish Color", tooltip = "Color used for bearish signals and trends", group = "Appearance")
+fill = input.bool(true, "Trend Fill", tooltip = "Enable/disable trend fills", group = "Appearance")
+steps = input.bool(true, "MA Steps", tooltip = "Enable/disable MA steps", group = "Appearance")
+
+// Variables
+var int bullCandleScore = 0
+var int bearCandleScore = 0
+
+bullSignal = false
+bearSignal = false
+
+var bool bullReversalCandidate = false
+var bool bearReversalCandidate = false
+
+var float bullReversalLow = 0.0
+var float bullReversalHigh = 0.0
+var float bearReversalLow = 0.0
+var float bearReversalHigh = 0.0
+
+var bool bullSignalConfirmed = false
+var bool bearSignalConfirmed = false
+
+var int bullCandleCounter = 0
+var int bearCandleCounter = 0
+
+volumeIsHigh = volume > ta.sma(volume, 20)
+
+// Calculate the moving average value based on selected type
+ma_current = switch trendMAType
+    "SMA" => ta.sma(close, trendMAPeriod)
+    "EMA" => ta.ema(close, trendMAPeriod)
+    "WMA" => ta.wma(close, trendMAPeriod)
+    "VWMA" => ta.vwma(close, trendMAPeriod)
+
+// Update the stepped moving average
+var float steppedMAValue = na
+var int maLastUpdateBar = 0
+var int maDirection = 1
+
+if na(steppedMAValue)
+    steppedMAValue := ma_current
+    maLastUpdateBar := bar_index
+else
+    if maDirection == 1
+        if close < steppedMAValue
+            maDirection := -1
+            steppedMAValue := ma_current
+            maLastUpdateBar := bar_index
+        else if bar_index - maLastUpdateBar >= maStepPeriod
+            newMAValue = ma_current
+            steppedMAValue := math.max(steppedMAValue, newMAValue)
+            maLastUpdateBar := bar_index
+    else
+        if close > steppedMAValue
+            maDirection := 1
+            steppedMAValue := ma_current
+            maLastUpdateBar := bar_index
+        else if bar_index - maLastUpdateBar >= maStepPeriod
+            newMAValue = ma_current
+            steppedMAValue := math.min(steppedMAValue, newMAValue)
+            maLastUpdateBar := bar_index
+
+// Reset candle scores
+bullCandleScore := 0
+bearCandleScore := 0
+
+// Loop through the lookback period
+for i = 0 to (lookbackPeriod - 1)
+    if close < low[i]
+        bullCandleScore += 1
+    if close > high[i]
+        bearCandleScore += 1
+
+// Bearish reversal detection
+if bearCandleScore == (lookbackPeriod - 1)
+    bearReversalCandidate := true
+    bearReversalLow := low
+    bearReversalHigh := high
+    bearSignalConfirmed := false
+    bearCandleCounter := 0
+
+if bearReversalCandidate
+    bearCandleCounter += 1
+    if close > bearReversalHigh
+        bearReversalCandidate := false
+
+bearCondition = false
+
+if bearReversalCandidate and close < bearReversalLow and not bearSignalConfirmed and bearCandleCounter <= (confirmationPeriod + 1)
+    bearSignalConfirmed := true
+    bearCondition := true
+
+if bearCondition
+    if not enableVolumeConfirmation or volumeIsHigh
+        bearSignal := true
+
+// Bullish reversal detection
+if bullCandleScore == (lookbackPeriod - 1)
+    bullReversalCandidate := true
+    bullReversalLow := low
+    bullReversalHigh := high
+    bullSignalConfirmed := false
+    bullCandleCounter := 0
+
+if bullReversalCandidate
+    bullCandleCounter += 1
+    if close < bullReversalLow
+        bullReversalCandidate := false
+
+bullCondition = false
+
+if bullReversalCandidate and close > bullReversalHigh and not bullSignalConfirmed and bullCandleCounter <= (confirmationPeriod + 1)
+    bullSignalConfirmed := true
+    bullCondition := true
+
+if bullCondition
+    if not enableVolumeConfirmation or volumeIsHigh
+        bullSignal := true
+
+// Plot signals
+plotshape(bullSignal, title = "Buy Signal", style = shape.labelup, location = location.belowbar, color = bullColor, size = size.small, text = "𝓡", textcolor = chart.bg_color)
+plotshape(bearSignal, title = "Sell Signal", style = shape.labeldown, location = location.abovebar, color = bearColor, size = size.small, text = "𝓡", textcolor = chart.bg_color)
+
+// Plot moving averages
+stma = plot(steppedMAValue, title = "Stepped MA", color = close > steppedMAValue ? bullColor : bearColor, linewidth = 2, display = steps ? display.all : display.none)
+cm = plot((open + close) / 2, title = "Center Line", display = display.none)
+
+fill(stma, cm, steppedMAValue, (open + close) / 2, steppedMAValue < close ? color.new(bullColor, 70) : na, steppedMAValue < close ? color.new(bullColor, 100) : na, display = fill ? display.all : display.none)
+fill(stma, cm, (open + close) / 2, steppedMAValue, steppedMAValue > close ? color.new(bearColor, 100) : na, steppedMAValue > close ? color.new(bearColor, 70) : na, display = fill ? display.all : display.none)
+
+// Alerts
+alertcondition(bullSignal, "Bullish Reversal", "Bullish Reversal Signal Detected")
+alertcondition(bearSignal, "Bearish Reversal", "Bearish Reversal Signal Detected")
+alertcondition(ta.crossover(close, steppedMAValue), "Bullish Trend", "Bullish Trend Shift")
+alertcondition(ta.crossunder(close, steppedMAValue), "Bearish Trend", "Bearish Trend Shift")

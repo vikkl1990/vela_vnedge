@@ -1,0 +1,167 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Elliott Wave [BigBeluga]", overlay = true, max_lines_count = 500, max_bars_back = 5000, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+len        = input.int(20, "Length", step = 5)
+lblSize    = input.string("normal", "Text Size", ["tiny", "small", "normal", "large"])
+showBroken = input.bool(false, "Show Broken")
+color_up   = input.color(color.rgb(35, 209, 125), "", inline = "color")
+
+
+txtSize = switch lblSize
+    "tiny"   => size.tiny
+    "small"  => size.small
+    "normal" => size.normal
+    "large"  => size.large
+
+var int     index_low   = na
+var float   loww        = na
+var int     index_high  = na
+var float   highh       = na
+var bool    direction   = bool(na)
+
+type pivot 
+    float value 
+    int   index
+    bool  isLow
+
+type drawObj
+    polyline     poly
+    polyline     poly1
+    array<label> lbl
+
+var storeDraws  = array.new<drawObj>()
+var storePivots = array.new<pivot>()
+
+var start        = 0
+var broke        = false
+var level5       = 0.
+var line breaker = na
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float highest = ta.highest(len)
+float lowest  = ta.lowest(len)
+
+if storePivots.size() > 6
+    storePivots.shift()
+
+
+labels = array.new<label>()
+stl1   = line.style_solid
+
+if high == highest
+    direction := true
+if low  == lowest
+    direction := false
+
+if low[1] == lowest[1] and low > lowest
+    index_low := bar_index[1]
+    loww      := low[1]
+
+if high[1] == highest[1] and high < highest
+    index_high := bar_index[1]
+    highh      := high[1]
+
+if direction != direction[1] and direction
+    storePivots.push(pivot.new(loww, index_low, true))
+
+if direction != direction[1] and not direction
+    storePivots.push(pivot.new(highh, index_high, false))
+
+
+//  ==============================
+
+
+if storePivots.size() > 6
+    
+
+    pivot0 = storePivots.get(0)
+    pivot1 = storePivots.get(1)
+    pivot2 = storePivots.get(2)
+    pivot3 = storePivots.get(3)
+    pivot4 = storePivots.get(4)
+    pivot5 = storePivots.get(5)
+    pivot6 = storePivots.get(6)
+
+    bPoint = math.avg(pivot5.value, pivot6.value)
+
+
+
+    cond = pivot1.value > pivot2.value 
+             and pivot1.value < pivot3.value 
+             and pivot3.value < pivot5.value 
+             and pivot4.value < pivot3.value 
+             and pivot4.value > pivot2.value
+             and pivot6.value < pivot5.value 
+             and pivot6.value < pivot3.value 
+             and pivot6.value > pivot1.value 
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+    if cond and not broke and bar_index - start > 200
+        start := bar_index
+        cp = array.new<chart.point>()
+        cp1 = array.new<chart.point>()
+
+        breaker := line.new(pivot5.index, pivot5.value, bar_index, pivot5.value, style = line.style_dotted, color = chart.fg_color)
+        line.new(pivot4.index, pivot4.value, bar_index-25, pivot4.value, style = line.style_dotted, color = chart.fg_color)
+
+        level5 := pivot5.value
+        for p in storePivots
+
+            l = label.new(p.index, p.value
+             , text = storePivots.indexof(p) == 6 ? "(a)" : storePivots.indexof(p) == 0 ? "" : str.tostring(storePivots.indexof(p))
+             , style = p.isLow ? label.style_label_up : label.style_label_down
+             , color = color(na)
+             , textcolor = storePivots.indexof(p) == 6 ? color.orange : chart.fg_color
+             , size = txtSize
+             )
+
+            labels.push(l)
+
+            cp.push(chart.point.from_index(p.index, p.value))
+
+        cp1.push(chart.point.from_index(pivot6.index, pivot6.value))
+        cp1.push(chart.point.from_index(bar_index+15, bPoint))
+        cp1.push(chart.point.from_index(bar_index+45, pivot6.value))
+
+        lbl1 = label.new(bar_index+15, bPoint, "(b)", style = label.style_label_down, color = color(na), textcolor = color.orange, size = txtSize)
+        lbl2 = label.new(bar_index+45, pivot6.value, "(c)", style = label.style_label_up, color = color(na), textcolor = color.orange, size = txtSize)
+
+        labels.push(lbl1)
+        labels.push(lbl2)
+
+        poly  = polyline.new(cp, line_color = color_up, line_width = 2)
+        poly1 = polyline.new(cp1, line_color = chart.fg_color, line_style = line.style_dashed)
+
+        storeDraws.push(drawObj.new(poly, poly1, labels))
+
+        
+
+
+if close > level5 and close[1] < level5 and bar_index - start < 100 and not broke and not showBroken
+
+    if storeDraws.size() > 0
+        last = storeDraws.pop()
+
+        last.poly.delete()
+        last.poly1.delete()
+
+        for lbl in last.lbl
+            lbl.delete()
+
+    breaker.set_x2(bar_index)
+    broke := true
+    
+
+
+if bar_index - start > 100 
+    broke := false
+// }

@@ -1,0 +1,95 @@
+//@version=5
+indicator("Rolling Price Activity Heatmap [AlgoAlpha]", "AlgoAlpha - 🔫 Rolling Price Activity",overlay = true, max_boxes_count = 500)
+
+plook = input.int(200, "Heatmap Lookback")
+filter = input.int(25, "Transparency Filter", tooltip = "Increase to filter out less significant areas", minval = 0, maxval = 99)
+res = 15
+inv = input.bool(false, "Inverse Heatmap")
+ncol = input.color(color.gray, "Main Color")
+
+var poc = 0.0
+var left = 0
+top_boundaries = array.new_float(res)
+bottom_boundaries = array.new_float(res)
+binlen = array.new_float(res)
+var boxes = array.new_box()
+var lines = array.new_line()
+highs = array.new_float()
+lows = array.new_float()
+segments = array.new_float()
+strength = array.new_float()
+
+for i = 0 to bar_index - (bar_index - plook)
+    highs.push(high[i])
+    lows.push(low[i])
+
+maxx = array.max(highs)
+minn = array.min(lows)
+size = array.size(highs)
+
+while boxes.size() > 0
+    boxes.shift().delete()
+while lines.size() > 0
+    lines.shift().delete()
+
+if size > 0
+    step = (maxx - minn) / res
+    granularity = res
+    for i = 0 to granularity - 1
+        bin_size = 0.0
+        bottom = minn + (i*step)
+        top = minn + ( (i+1)*step )
+        bottom_boundaries.insert(i, bottom)
+        top_boundaries.insert(i, top)   
+        for j = 0 to array.size(highs) - 1
+            candle_above_hbar = lows.get(j) > top
+            candle_below_hbar = highs.get(j) < bottom
+            is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+            bin_size += is_candle_in_bucket ? 1 : 0
+        array.insert(binlen, i, bin_size)
+    boc = binlen.max()
+    boci = binlen.indexof(boc) > 0 ? binlen.indexof(boc) : 0
+    poc := math.avg(top_boundaries.get(boci), bottom_boundaries.get(boci))
+
+for i = 0 to res - 1
+    strength.unshift((inv ? 1 : 0) + ((inv ? -1 : 1 ) * binlen.get(i)/binlen.max()))
+
+rh = ta.highest(plook)
+rl = ta.lowest(plook)
+seg = (rh - rl) / (res)
+for i = 0 to res - 1
+    segments.unshift(rl + seg * i)
+
+hh = plot(rh, color = ncol, display = display.none)
+p15 = plot(segments.get(14), display = display.none, style = plot.style_stepline)
+p16 = plot(segments.get(13), display = display.none, style = plot.style_stepline)
+p17 = plot(segments.get(12), display = display.none, style = plot.style_stepline)
+p18 = plot(segments.get(11), display = display.none, style = plot.style_stepline)
+p19 = plot(segments.get(10), display = display.none, style = plot.style_stepline)
+p20 = plot(segments.get(9), display = display.none, style = plot.style_stepline)
+p21 = plot(segments.get(8), display = display.none, style = plot.style_stepline)
+p22 = plot(segments.get(7), display = display.none, style = plot.style_stepline)
+p23 = plot(segments.get(6), display = display.none, style = plot.style_stepline)
+p24 = plot(segments.get(5), display = display.none, style = plot.style_stepline)
+p25 = plot(segments.get(4), display = display.none, style = plot.style_stepline)
+p26 = plot(segments.get(3), display = display.none, style = plot.style_stepline)
+p27 = plot(segments.get(2), display = display.none, style = plot.style_stepline)
+p28 = plot(segments.get(1), display = display.none, style = plot.style_stepline)
+p29 = plot(segments.get(0), display = display.none, style = plot.style_stepline)
+ll = plot(rl, color = ncol, display = display.none)
+
+fill(hh, p29, color.new(ncol, 100-strength.get(0)*100+filter))
+fill(p29, p28, color.new(ncol, 100-strength.get(1)*100+filter))
+fill(p28, p27, color.new(ncol, 100-strength.get(2)*100+filter))
+fill(p27, p26, color.new(ncol, 100-strength.get(3)*100+filter))
+fill(p26, p25, color.new(ncol, 100-strength.get(4)*100+filter))
+fill(p25, p24, color.new(ncol, 100-strength.get(5)*100+filter))
+fill(p24, p23, color.new(ncol, 100-strength.get(6)*100+filter))
+fill(p23, p22, color.new(ncol, 100-strength.get(7)*100+filter))
+fill(p22, p21, color.new(ncol, 100-strength.get(8)*100+filter))
+fill(p21, p20, color.new(ncol, 100-strength.get(9)*100+filter))
+fill(p20, p19, color.new(ncol, 100-strength.get(10)*100+filter))
+fill(p19, p18, color.new(ncol, 100-strength.get(11)*100+filter))
+fill(p18, p17, color.new(ncol, 100-strength.get(12)*100+filter))
+fill(p17, p16, color.new(ncol, 100-strength.get(13)*100+filter))
+fill(p16, p15, color.new(ncol, 100-strength.get(14)*100+filter))

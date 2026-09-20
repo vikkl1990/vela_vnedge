@@ -1,0 +1,140 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Visible Range Support and Resistance [BigBeluga]", "VR SR [BigBeluga]", overlay = true, max_lines_count = 500, max_boxes_count = 500, calc_bars_count = 5000)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+displaySr1   = input.bool(true, "", inline = "1")
+srPivotsQty  = input.int(2, "Pivots", options = [2, 3, 4, 5], tooltip = "How many pivots to collect, before plot level", inline = "1")
+displaySr2   = input.bool(false, "", inline = "2")
+srPivotsQty1 = input.int(4, "Pivots", options = [2, 3, 4, 5], tooltip = "How many pivots to collect, before plot level", inline = "2")
+supColor     = input.color(#1ee585, "Support")
+resColor     = input.color(#1e8be5, "Resistance")
+bgColor      = input.color(color.rgb(255, 255, 255, 98), "Background Color")
+smaCol       = input.color(color.yellow, "Session SMA Color")
+
+type sr 
+    line level 
+    label lbl
+
+var pivots    = array.new<float>()
+var bins      = 100
+var pivotBins = array.new<int>(bins, 0)
+var BinsPivot = array.new<float>(bins, 0.)
+var topLow    = array.new<float>()
+var SR        = array.new<sr>()
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+leftChart = chart.left_visible_bar_time
+atr       = ta.atr(200) * 0.2
+
+ph = ta.pivothigh(2, 2)
+pl = ta.pivotlow(2, 2)
+
+
+tStep = time - time[1]
+bgcolor(time-tStep*2 > leftChart ? bgColor : na)
+
+// @function clean up overlapped levels
+cleanupOverlap(self, threshold) =>
+
+    if self.size() > 0
+        for i = self.size() - 1 to 1
+            sr1 = self.get(i)
+            price1 = sr1.level.get_y1()
+            
+            sr1.level.set_x2(last_bar_time)
+            sr1.lbl.set_x(last_bar_time)
+
+            for j = i - 1 to 0 
+                sr2 = self.get(j)
+                price2 = sr2.level.get_y1()
+                sr2.level.set_x2(last_bar_time)
+                sr2.lbl.set_x(last_bar_time)
+
+                if math.abs(price1 - price2) < threshold
+                    sr2.level.delete()
+                    sr2.lbl.delete()
+
+                    self.remove(j)
+                    break  
+
+
+// Store viaibile range pivots and high/low values
+var len = 1
+if time > leftChart
+    len += 1
+    switch
+        not na(ph) => pivots.push(ph)
+        not na(pl) => pivots.push(pl)
+    topLow.push(high)
+    topLow.push(low)
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+sessionBars = int((time-leftChart)/tStep)
+sma = ta.sma(close, len)
+
+plot(time > leftChart ? sma : float(na), title = "Session SMA", color = smaCol)
+
+var dash = table.new(position.top_right, 1, 1, chart.bg_color)
+
+if barstate.islast
+
+    dash.cell(0, 0, "Visible Range Bars: "+ str.tostring(sessionBars), text_color = color.gray)
+
+    top  = topLow.max()
+    bot  = topLow.min()
+    step = (top-bot)/bins
+
+    // Clean arrays
+    for i = 0 to bins -1 
+        pivotBins.set(i, 0)
+    for i = 0 to bins -1 
+        BinsPivot.set(i, 0.)
+
+    for k = 0 to bins - 1
+        lower = bot + step * k
+        mid   = lower + step/2
+
+        for i = 0 to pivots.size() - 1
+            getPivot = pivots.get(i)
+            closeTo  = math.abs(getPivot-mid) < atr
+
+            if closeTo  // if pivot close to the middle of the bin add +1 to the pivotBins and store pivot value at BinsPivot
+                pivotBins.set(k, pivotBins.get(k) + 1)
+                BinsPivot.set(k, getPivot)
+
+        BinsValue = pivotBins.get(k)
+        pivot     = BinsPivot.get(k)
+        mColor    = close > mid ? supColor : resColor
+        direction = close > mid ? "▲" : "▼"
+        srColor   = color.from_gradient(BinsValue, 0, 5, color.new(color.black, 100), mColor)
+
+        if BinsValue == srPivotsQty and displaySr1
+            lvl = line.new(leftChart, pivot, last_bar_time, pivot, xloc.bar_time, color = srColor, width = srPivotsQty)
+            lbl = label.new(last_bar_time, pivot, str.tostring(BinsValue)+ " Pivots"+direction, xloc.bar_time, style = label.style_label_left, textcolor = chart.fg_color, color = color.new(color.black, 100))
+            SR.push(sr.new(lvl, lbl))
+
+        if BinsValue == srPivotsQty1 and displaySr2
+            lvl = line.new(leftChart, pivot, last_bar_time, pivot, xloc.bar_time, color = srColor, width = srPivotsQty1)
+            lbl = label.new(last_bar_time, pivot, str.tostring(BinsValue)+ " Pivots"+direction, xloc.bar_time, style = label.style_label_left, textcolor = chart.fg_color, color = chart.bg_color, force_overlay = true)
+            SR.push(sr.new(lvl, lbl))
+
+    // Top/Bottom Range levels
+    line.delete(line.new(leftChart, top, last_bar_time, top, xloc.bar_time, color = resColor, style = line.style_dashed)[1])
+    line.delete(line.new(leftChart, bot, last_bar_time, bot, xloc.bar_time, color = supColor, style = line.style_dashed)[1])
+
+    label.delete(label.new(last_bar_time - (last_bar_time-leftChart)/2, top, "Top Range\n" + str.tostring(top, "(##,###,###.###)") + "\n▼", xloc = xloc.bar_time, textcolor = chart.fg_color, color = color.new(color.black, 100), style = label.style_label_down)[1])
+    label.delete(label.new(last_bar_time - (last_bar_time-leftChart)/2, bot,  "▲\n" + str.tostring(bot, "(##,###,###.###)") + "\nBottom Range", xloc = xloc.bar_time, textcolor = chart.fg_color, color = color.new(color.black, 100), style = label.style_label_up)[1])
+
+    // Clean Levels
+    cleanupOverlap(SR, atr*10)
+// }

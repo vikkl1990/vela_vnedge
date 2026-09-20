@@ -1,0 +1,157 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title="Liquidation Levels with Liquidity Sweeps/Breakouts [AlgoAlpha]", shorttitle="AlgoAlpha - 🧹 Liqudity Levels with sweeps", overlay = true, max_lines_count = 100, max_labels_count = 500)
+
+mult = input.int(8, "TimeFrame Multiplier", tooltip = "The script multiplies the chart's timeframe by this number to get data from higher timeframes. For example, if you are using this indicator on the 15 minute chart and this value is 2, then the indicator will be operating on the 30 minute timeframe, as 15 times 2 is 30. This means you should set this number to 1 if you want to apply it on your chart's current timeframe.", group = "TimeFrame Settings", minval = 1)
+threshold = input.float(2, "High Volume Threshold", tooltip = "Increase this to make the indicator less sensitive to breakouts", group = "Reltaive Volume Settings")
+clr = input.bool(false, "Remove Mitigated Lines From Chart")
+vlen = input.int(20, minval = 1, title = "Reltaive Volume Period", group = "Reltaive Volume Settings")
+
+shw = input.bool(true, "Show Swept Liquidity", "Show the amount of Liquidity that was Swept", group = "Liquidity Levels")
+br = input.bool(true, "Highlight Breakouts", "Highlight Liquidity Breakouts (Background Colour)", group = "Liquidity Levels")
+
+green = input.color(#00ffbb, "Bullish Colour", group = "Appearance")
+red = input.color(#ff1100, "Bearish Colour", group = "Appearance")
+yellow = input.color(color.yellow, "Breakout Color", group = "Appearance")
+
+rvol = volume/ta.sma(volume, vlen)
+strongvol = rvol > threshold
+
+bearishsweep = 0
+bullishsweep = 0
+breakout = 0
+liquidation = 0.0
+var peakprinted = 0
+var valleyprinted = 0
+var c = array.new_float(2)
+var o = array.new_float(2)
+var h = array.new_float(2)
+var l = array.new_float(2)
+
+if bar_index%mult == 0
+    c.insert(0, close)
+    o.insert(0, open)
+    h.insert(0, high)
+    l.insert(0, low)
+    peakprinted := 0
+    valleyprinted:= 0
+
+// Calculating
+candledir = c.first() > o.first() ? 1 : -1
+candlelen = math.abs(c.first()-o.first())
+
+valleyform = l.get(1) < l.first() and l.get(2) > l.get(1)
+peakform =  h.get(1) > h.first() and h.get(2) < h.get(1)
+
+type bar
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+
+x = 0.0
+var xx = 0.0
+var hh = 0.0
+var ll = 0.0
+var aR = array.new_line()
+var aS = array.new_line()
+var aRv = array.new_float(1)
+var aSv = array.new_float(1)
+
+plotchar(peakform and peakprinted != 1 ? high[mult] : na, "Bearish Swing Liqudity", "●", location = location.absolute,  color = color.new(red, 70), offset = -mult, size = size.normal)
+plotchar(valleyform and valleyprinted != 1 ? low[mult] : na, "Bullish Swing Liqudity", "●", location = location.absolute, color = color.new(green, 70), offset = -mult, size = size.normal)
+
+if peakform and peakprinted != 1
+    aR.push(line.new(bar_index-mult, h.get(1), bar_index+1, h.get(1), color = red))
+    aRv.push(h.get(1))
+    peakprinted := 1
+    //aRv.sort(order.descending)
+
+if valleyform and valleyprinted != 1
+    aS.push(line.new(bar_index-mult, l.get(1), bar_index+1, l.get(1), color = green))
+    aSv.push(l.get(1))
+    valleyprinted := 1
+    //aSv.sort(order.descending)
+
+if aR.size() > 0
+    qt = aR.size()
+
+    for ln = qt - 1 to 0
+        if ln < aR.size()
+            cL = aR.get(ln)
+            yL = cL.get_y1()
+
+            if h.first() > yL
+                if clr
+                    aR.remove(ln).delete()
+                    aRv.remove(ln)
+                else
+                    aR.remove(ln)
+                    aRv.remove(ln)
+
+                //aRb.push(line.new(bar_index, yL, bar_index+1, yL, color = red, style = line.style_dashed))
+                x := c.first() < yL and o.first() > c.first() ? 1 : 0
+
+            else
+                cL.set_x2(b.i + 1)
+
+            if high > yL and open < yL and close < yL
+                bearishsweep := 1
+                liquidation := volume * high
+
+            if candledir == 1 and close > yL
+                breakout := 1
+
+    if aR.size() > 500
+        aR.shift().delete()
+
+if aS.size() > 0
+    qt = aS.size()
+
+    for ln = qt - 1 to 0
+        if ln < aS.size()
+            cL = aS.get(ln)
+            yL = cL.get_y1()
+
+            if l.first() < yL
+                if clr
+                    aS.remove(ln).delete()
+                    aSv.remove(ln)
+                else
+                    aS.remove(ln)
+                    aSv.remove(ln)
+                //aSb.push(line.new(bar_index, yL, bar_index+1, yL, color = green, style = line.style_dashed))
+
+            else
+                cL.set_x2(b.i + 1)
+
+            if low < yL and open > yL and close > yL
+                bullishsweep := 1
+                liquidation := volume * low
+
+            if candledir == -1 and close < yL
+                breakout := 1
+
+    if aS.size() > 500
+        aS.shift().delete()
+
+plotchar(bearishsweep > 0 ? high : na, "Bearish Sweep", "♦️", location = location.absolute,  color = color.new(red, 0), offset = 0, size = size.tiny)
+plotchar(bullishsweep > 0 ? low : na, "Bullish Sweep", "♦️", location = location.absolute, color = color.new(green, 0), offset = 0, size = size.tiny)
+
+if bearishsweep > 0 and shw
+    label.new(bar_index, high, str.tostring(liquidation, format.volume), color = red, style = label.style_label_down, textcolor = color.white, size = size.small)
+
+if bullishsweep > 0 and shw
+    label.new(bar_index, low, str.tostring(liquidation, format.volume), color = green, style = label.style_label_up, textcolor = color.white, size = size.small)
+
+bgcolor(breakout == 1 and strongvol and br ? color.new(yellow, 90) : na)
+
+//Alerts
+alertcondition(breakout == 1 and strongvol and br, "Liquidity Breakout", "Liquidity Breakout")
+alertcondition(bullishsweep > 0, "Bullish Liquidity Sweep", "Bullish Liquidity Sweep")
+alertcondition(bearishsweep > 0, "Bearish Liquidity Sweep", "Bearish Liquidity Sweep")

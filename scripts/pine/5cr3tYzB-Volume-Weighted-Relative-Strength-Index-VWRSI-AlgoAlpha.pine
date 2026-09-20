@@ -1,0 +1,70 @@
+//@version=5
+indicator(title="Volume Weighted Relative Strength Index [AlgoAlpha]", shorttitle="AlgoAlpha - 𝑽𝑾𝑹𝑺𝑰", format=format.price, precision=2, timeframe="", timeframe_gaps=true, explicit_plot_zorder = true)
+
+rsiLengthInput = input.int(14, minval=1, title="RSI Length", group="RSI Settings")
+rsiSourceInput = input.source(close, "RSI Source", group="RSI Settings")
+rangeLen = input.int(10, minval=1, title="Consolidation Detection Length", group="RSI Settings")
+
+enma = input.bool(false, "Enable RSI MA", inline = "rsima", group = "RSI MA Settings")
+mat = input.string("EMA", "", ["EMA", "SMA", "HMA", "SMMA (RMA)", "WMA", "VWMA"], inline = "rsima", group = "RSI MA Settings")
+malen = input.int(14, "RSI MA Length", group = "RSI MA Settings")
+
+colorUp = input.color(#00ffbb, title="Up Color")
+colorDown = input.color(#ff1100, title="Down Color")
+
+range_score(src, int length) =>
+	dir = src > 50 ? 1 : -1
+
+	dist = 1
+
+	t = dir + dir[1] == 0 ? 1 : 0
+
+	w = dist/(math.sum(dist, length))
+
+	p = ta.sma(t*w, length)
+
+	v = length/2
+
+	f = ta.hma(p, v) * (v + ((2/3) * v))
+
+    math.max(ta.hma(f, length*2),0)
+
+ma(source, length, type) =>
+    switch type
+        "SMA" => ta.sma(source, length)
+        "HMA" => ta.hma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+pine_vwrma(x, y) =>
+    ta.rma(x * volume, y) / ta.rma(volume, y)
+
+up = pine_vwrma(math.max(ta.change(rsiSourceInput), 0), rsiLengthInput)
+down = pine_vwrma(-math.min(ta.change(rsiSourceInput), 0), rsiLengthInput)
+rsi = down == 0 ? 100 : up == 0 ? 0 : 100 - (100 / (1 + up / down))
+
+p = plot(rsi, histbase = 50, color = chart.fg_color, title = "RSI")
+mid = plot(50, color = chart.fg_color, title = "Mid line")
+
+f=plot(90, display = display.none)
+negf=plot(10, display = display.none)
+
+fill(mid, f, top_value =  90, bottom_value = 80, bottom_color = na, top_color = color.from_gradient(rsi, 20, 90, color.new(colorDown,100), color.new(colorDown,40)))
+fill(mid, negf, top_value =  20, bottom_value = 10, bottom_color = color.from_gradient(rsi, 20, 90, color.new(colorUp,40), color.new(colorUp,100)) , top_color = na)
+fill(p, mid, color = rsi > 50 ? color.new(colorUp, 90) : color.new(colorDown, 90), title="Trend Fill")
+fill(p, mid, rsi, 50, color.new(chart.bg_color, 1000), rsi > 50 ? colorUp : colorDown)
+plot((range_score(rsi, rangeLen))*50, style = plot.style_columns, title = "Consolidation Strength", color = (range_score(rsi, rangeLen)) > (range_score(rsi, rangeLen))[1] ? chart.fg_color : color.new(chart.fg_color, 50))
+plot(ma(rsi, malen, mat), "RSI MA", chart.fg_color, display = enma ? display.all : display.none, style = plot.style_circles)
+plotchar(ta.crossunder(rsi, 80) ? 95 : na, "Bearish TP", "▼", location.absolute, colorDown, size = size.tiny)
+plotchar(ta.crossover(rsi, 20) ? 5 : na, "Bullish TP", "▲", location.absolute, colorUp, size = size.tiny)
+
+///////////Alerts
+alertcondition(ta.crossover(rsi, 50), "Bullish Trend Shift")
+alertcondition(ta.crossunder(rsi, 50), "Bearish Trend Shift")
+alertcondition(ta.crossunder(rsi, 80), "Bearish TP")
+alertcondition(ta.crossover(rsi, 20), "Bullish TP")
+alertcondition((range_score(rsi, rangeLen)) > 0 and (range_score(rsi, rangeLen))[1] == 0, "Consolidating Market")
+alertcondition(ta.crossunder((range_score(rsi, rangeLen)), (range_score(rsi, rangeLen))[1]), "Consolidating to Trending Market")
+alertcondition((range_score(rsi, rangeLen)) == 0 and (range_score(rsi, rangeLen))[1] > 0, "Trending Market")

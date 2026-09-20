@@ -1,0 +1,382 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("High Volume Breakout Targets [AlgoAlpha]", "AlgoAlpha - High Volume Breakout", overlay = true, max_boxes_count = 500, max_lines_count = 500, behind_chart = false)
+
+// Inputs
+
+const string GROUP_LEVELS = "Levels"
+const string GROUP_SIGNALS = "Signals"
+const string GROUP_VOLUME = "Volume Analysis"
+const string GROUP_APPEARANCE = "Appearance"
+
+pivot_length = input.int(14, "Pivot Length", minval = 1, maxval = 200, group = GROUP_LEVELS, tooltip = "Number of bars used on each side to confirm pivot highs and lows. Higher values detect larger and less frequent structures.")
+zone_expiry = input.int(1000, "Zone Max Age", minval = 50, maxval = 5000, group = GROUP_LEVELS, tooltip = "Maximum number of bars a zone can extend from its first pivot. Expired zones stop extending but remain visible.")
+show_zones = input.bool(true, "Show Zones", group = GROUP_LEVELS, tooltip = "Controls zone visibility. Hidden zones remain active and can still produce breakout signals.")
+
+minimum_breakout_range = input.float(40.0, "Minimum Breakout Range", minval = 1.0, maxval = 100.0, step = 1.0, group = GROUP_SIGNALS, tooltip = "Minimum percentage of the breakout candle's full high-to-low range that must lie beyond the zone boundary in the breakout direction. The close must also be outside the zone, but its distance beyond the boundary does not matter.")
+show_breakout_labels = input.bool(true, "Show Breakout Labels", group = GROUP_SIGNALS, tooltip = "Displays a label when a breakout satisfies both the close and outside-range requirements.")
+show_target_drawings = input.bool(true, "Show Targets", inline = "targets", group = GROUP_SIGNALS)
+target_expiry = input.int(33, "Expiry", minval = 1, maxval = 500, inline = "targets", group = GROUP_SIGNALS, tooltip = "Show Targets enables the entry line, target box, and three TP lines. Expiry sets their initial duration. When a new target is reached, only the remaining unhit targets reset to the hit bar plus this expiry.")
+show_tp3_checkmark = input.bool(true, "Show TP3 Checkmark", group = GROUP_SIGNALS, tooltip = "Prints a green checkmark on the first candle that wicks the third target.")
+
+show_volume_analysis = input.bool(true, "Show Volume Analysis", group = GROUP_VOLUME, tooltip = "Displays normalized volume candles inside the four most recently active zones. A zone begins displaying volume when it is confirmed and stops when the zone stops extending.")
+
+bearish_color = input.color(#ff1100, "Bearish Color", inline = "colors", group = GROUP_APPEARANCE, tooltip = "Color of bearish zones and bearish breakout labels.")
+bullish_color = input.color(#00ffbb, "Bullish Color", inline = "colors", group = GROUP_APPEARANCE, tooltip = "Color of bullish zones, bullish breakout labels, target drawings, and TP3 checkmarks.")
+zone_fill_transparency = input.int(85, "Zone Fill", minval = 0, maxval = 100, inline = "fills", group = GROUP_APPEARANCE)
+target_fill_transparency = input.int(90, "Target Fill", minval = 0, maxval = 100, inline = "fills", group = GROUP_APPEARANCE, tooltip = "Zone Fill controls pivot-zone transparency. Target Fill controls target-box transparency. Higher values are more transparent.")
+target_line_transparency = input.int(20, "Target Lines", minval = 0, maxval = 100, inline = "targetLines", group = GROUP_APPEARANCE)
+target_line_width = input.int(1, "Width", minval = 1, maxval = 4, inline = "targetLines", group = GROUP_APPEARANCE, tooltip = "Target Lines controls entry and TP line transparency. Width controls their thickness.")
+
+// Calculations
+
+const float LABEL_OFFSET_MULTIPLIER = 0.15
+const float VOLUME_SCALE = 0.5
+const int SIGNAL_ATR_LENGTH = 14
+const int VOLUME_SMOOTHING_LENGTH = 20
+const int TP_LEVEL_COUNT = 3
+const int INVISIBLE = 100
+
+breakout_ratio = minimum_breakout_range / 100.0
+
+bearish_zone_fill = color.new(bearish_color, show_zones ? zone_fill_transparency : INVISIBLE)
+bullish_zone_fill = color.new(bullish_color, show_zones ? zone_fill_transparency : INVISIBLE)
+target_drawing_color = color.new(bullish_color, target_line_transparency)
+target_box_color = color.new(bullish_color, target_fill_transparency)
+
+pivot_high = ta.pivothigh(high, pivot_length, pivot_length)
+pivot_low = ta.pivotlow(low, pivot_length, pivot_length)
+smoothed_volume = ta.sma(volume, VOLUME_SMOOTHING_LENGTH)
+
+// State
+
+var float previous_high_wick = na
+var float previous_high_body_top = na
+var float previous_high_body_bottom = na
+var int previous_high_bar = na
+
+var float previous_low_wick = na
+var float previous_low_body_top = na
+var float previous_low_body_bottom = na
+var int previous_low_bar = na
+
+var array<box> active_zones = array.new<box>()
+var array<int> active_zone_types = array.new<int>()
+
+var array<int> pending_directions = array.new<int>()
+var array<int> pending_signal_bars = array.new<int>()
+var array<float> pending_entry_values = array.new<float>()
+var array<float> pending_target_1_values = array.new<float>()
+var array<float> pending_target_2_values = array.new<float>()
+var array<float> pending_target_3_values = array.new<float>()
+
+var array<int> target_directions = array.new<int>()
+var array<int> target_expiry_bars = array.new<int>()
+var array<int> target_reached_levels = array.new<int>()
+var array<float> target_1_values = array.new<float>()
+var array<float> target_2_values = array.new<float>()
+var array<float> target_3_values = array.new<float>()
+var array<line> target_entry_lines = array.new<line>()
+var array<line> target_1_lines = array.new<line>()
+var array<line> target_2_lines = array.new<line>()
+var array<line> target_3_lines = array.new<line>()
+var array<box> target_boxes = array.new<box>()
+
+bool new_bearish_zone = false
+bool new_bullish_zone = false
+bool bullish_breakout_signal = false
+bool bearish_breakout_signal = false
+bool bullish_third_target_wick = false
+bool bearish_third_target_wick = false
+
+// Helpers
+
+f_volume_transparency(float current_volume, float average_volume) =>
+    float volume_ratio = average_volume > 0.0 ? current_volume / average_volume : 0.0
+    int(math.round(math.max(20.0, math.min(80.0, 80.0 - (volume_ratio - 0.5) * 40.0))))
+
+f_volume_slot(int slot_index) =>
+    float candle_open = na
+    float candle_high = na
+    float candle_low = na
+    float candle_close = na
+    color candle_color = na
+
+    int zone_index = array.size(active_zones) - 1 - slot_index
+    bool valid_slot = show_volume_analysis and barstate.isconfirmed and zone_index >= 0 and not na(volume) and not na(smoothed_volume) and smoothed_volume > 0.0
+
+    if valid_slot
+        box zone = array.get(active_zones, zone_index)
+        float zone_top = box.get_top(zone)
+        float zone_bottom = box.get_bottom(zone)
+        float zone_midpoint = math.avg(zone_top, zone_bottom)
+        float channel_height = (zone_top - zone_bottom) * VOLUME_SCALE
+        float volume_height = volume / smoothed_volume * (channel_height / 4.0)
+        int transparency = f_volume_transparency(volume, smoothed_volume)
+
+        candle_open := zone_midpoint - volume_height
+        candle_high := zone_midpoint + volume_height
+        candle_low := zone_midpoint - volume_height
+        candle_close := zone_midpoint + volume_height
+        candle_color := color.new(chart.fg_color, transparency)
+
+    [candle_open, candle_high, candle_low, candle_close, candle_color]
+
+// Zone creation
+
+if barstate.isconfirmed and not na(pivot_high)
+    int current_pivot_bar = bar_index - pivot_length
+    float current_high_wick = pivot_high
+    float current_body_top = math.max(open[pivot_length], close[pivot_length])
+    float current_body_bottom = math.min(open[pivot_length], close[pivot_length])
+
+    bool high_inside_previous_high_body = not na(previous_high_bar) and current_high_wick >= previous_high_body_bottom and current_high_wick <= previous_high_body_top
+    bool association_within_expiry = not na(previous_high_bar) and current_pivot_bar - previous_high_bar <= zone_expiry
+
+    if high_inside_previous_high_body and association_within_expiry
+        float zone_top = math.max(previous_high_wick, current_high_wick)
+        float zone_bottom = math.min(previous_high_body_top, current_body_top)
+
+        if zone_top > zone_bottom
+            box zone = box.new(left = previous_high_bar, top = zone_top, right = current_pivot_bar, bottom = zone_bottom, xloc = xloc.bar_index, extend = extend.right, border_color = color.new(bearish_color, INVISIBLE), border_width = 1, bgcolor = bearish_zone_fill)
+            array.push(active_zones, zone)
+            array.push(active_zone_types, 1)
+            new_bearish_zone := true
+
+    previous_high_wick := current_high_wick
+    previous_high_body_top := current_body_top
+    previous_high_body_bottom := current_body_bottom
+    previous_high_bar := current_pivot_bar
+
+if barstate.isconfirmed and not na(pivot_low)
+    int current_pivot_bar = bar_index - pivot_length
+    float current_low_wick = pivot_low
+    float current_body_top = math.max(open[pivot_length], close[pivot_length])
+    float current_body_bottom = math.min(open[pivot_length], close[pivot_length])
+
+    bool low_inside_previous_low_body = not na(previous_low_bar) and current_low_wick >= previous_low_body_bottom and current_low_wick <= previous_low_body_top
+    bool association_within_expiry = not na(previous_low_bar) and current_pivot_bar - previous_low_bar <= zone_expiry
+
+    if low_inside_previous_low_body and association_within_expiry
+        float zone_top = math.max(previous_low_body_bottom, current_body_bottom)
+        float zone_bottom = math.min(previous_low_wick, current_low_wick)
+
+        if zone_top > zone_bottom
+            box zone = box.new(left = previous_low_bar, top = zone_top, right = current_pivot_bar, bottom = zone_bottom, xloc = xloc.bar_index, extend = extend.right, border_color = color.new(bullish_color, INVISIBLE), border_width = 1, bgcolor = bullish_zone_fill)
+            array.push(active_zones, zone)
+            array.push(active_zone_types, -1)
+            new_bullish_zone := true
+
+    previous_low_wick := current_low_wick
+    previous_low_body_top := current_body_top
+    previous_low_body_bottom := current_body_bottom
+    previous_low_bar := current_pivot_bar
+
+// Zone management
+
+int zone_index = 0
+
+while zone_index < array.size(active_zones)
+    box zone = array.get(active_zones, zone_index)
+    int zone_type = array.get(active_zone_types, zone_index)
+
+    float zone_top = box.get_top(zone)
+    float zone_bottom = box.get_bottom(zone)
+    int zone_expiry_bar = box.get_left(zone) + zone_expiry
+
+    bool expired = barstate.isconfirmed and bar_index >= zone_expiry_bar
+    bool closed_through = barstate.isconfirmed and (zone_type > 0 ? close > zone_top : close < zone_bottom)
+
+    if expired or closed_through
+        int stop_bar = closed_through ? bar_index : zone_expiry_bar
+
+        box.set_right(zone, stop_bar)
+        box.set_extend(zone, extend.none)
+
+        if closed_through
+            float candle_range = math.max(high - low, syminfo.mintick)
+            float range_outside_zone = zone_type > 0 ? math.max(0.0, high - math.max(low, zone_top)) : math.max(0.0, math.min(high, zone_bottom) - low)
+            bool qualified_breakout = range_outside_zone / candle_range >= breakout_ratio
+
+            if qualified_breakout
+                int direction = zone_type > 0 ? 1 : -1
+                float breakout_entry = close
+                float zone_height = zone_top - zone_bottom
+                float target_step = zone_height / TP_LEVEL_COUNT
+
+                if direction > 0
+                    bullish_breakout_signal := true
+                else
+                    bearish_breakout_signal := true
+
+                if show_target_drawings
+                    array.push(pending_directions, direction)
+                    array.push(pending_signal_bars, bar_index)
+                    array.push(pending_entry_values, breakout_entry)
+                    array.push(pending_target_1_values, breakout_entry + direction * target_step)
+                    array.push(pending_target_2_values, breakout_entry + direction * target_step * 2.0)
+                    array.push(pending_target_3_values, breakout_entry + direction * zone_height)
+
+        array.remove(active_zones, zone_index)
+        array.remove(active_zone_types, zone_index)
+    else
+        zone_index += 1
+
+// Target creation
+
+int pending_index = array.size(pending_directions) - 1
+
+while pending_index >= 0
+    int signal_bar = array.get(pending_signal_bars, pending_index)
+
+    if bar_index > signal_bar
+        int direction = array.get(pending_directions, pending_index)
+        float entry_price = array.get(pending_entry_values, pending_index)
+        float target_1 = array.get(pending_target_1_values, pending_index)
+        float target_2 = array.get(pending_target_2_values, pending_index)
+        float target_3 = array.get(pending_target_3_values, pending_index)
+        int initial_expiry_bar = signal_bar + target_expiry
+
+        line entry_line = line.new(x1 = signal_bar, y1 = entry_price, x2 = initial_expiry_bar, y2 = entry_price, xloc = xloc.bar_index, extend = extend.none, color = target_drawing_color, style = line.style_solid, width = target_line_width)
+        line target_1_line = line.new(x1 = signal_bar, y1 = target_1, x2 = initial_expiry_bar, y2 = target_1, xloc = xloc.bar_index, extend = extend.none, color = target_drawing_color, style = line.style_dashed, width = target_line_width)
+        line target_2_line = line.new(x1 = signal_bar, y1 = target_2, x2 = initial_expiry_bar, y2 = target_2, xloc = xloc.bar_index, extend = extend.none, color = target_drawing_color, style = line.style_dashed, width = target_line_width)
+        line target_3_line = line.new(x1 = signal_bar, y1 = target_3, x2 = initial_expiry_bar, y2 = target_3, xloc = xloc.bar_index, extend = extend.none, color = target_drawing_color, style = line.style_dashed, width = target_line_width)
+        box target_box = box.new(left = signal_bar, top = direction > 0 ? target_3 : entry_price, right = initial_expiry_bar, bottom = direction > 0 ? entry_price : target_3, xloc = xloc.bar_index, border_color = color.new(bullish_color, INVISIBLE), border_width = 1, bgcolor = target_box_color)
+
+        array.push(target_directions, direction)
+        array.push(target_expiry_bars, initial_expiry_bar)
+        array.push(target_reached_levels, 0)
+        array.push(target_1_values, target_1)
+        array.push(target_2_values, target_2)
+        array.push(target_3_values, target_3)
+        array.push(target_entry_lines, entry_line)
+        array.push(target_1_lines, target_1_line)
+        array.push(target_2_lines, target_2_line)
+        array.push(target_3_lines, target_3_line)
+        array.push(target_boxes, target_box)
+
+        array.remove(pending_directions, pending_index)
+        array.remove(pending_signal_bars, pending_index)
+        array.remove(pending_entry_values, pending_index)
+        array.remove(pending_target_1_values, pending_index)
+        array.remove(pending_target_2_values, pending_index)
+        array.remove(pending_target_3_values, pending_index)
+
+    pending_index -= 1
+
+// Target management
+
+int target_index = 0
+
+while target_index < array.size(target_directions)
+    int direction = array.get(target_directions, target_index)
+    int expiry_bar = array.get(target_expiry_bars, target_index)
+    int reached_level = array.get(target_reached_levels, target_index)
+
+    float target_1 = array.get(target_1_values, target_index)
+    float target_2 = array.get(target_2_values, target_index)
+    float target_3 = array.get(target_3_values, target_index)
+
+    line entry_line = array.get(target_entry_lines, target_index)
+    line target_1_line = array.get(target_1_lines, target_index)
+    line target_2_line = array.get(target_2_lines, target_index)
+    line target_3_line = array.get(target_3_lines, target_index)
+    box target_box = array.get(target_boxes, target_index)
+
+    int newest_reached_level = reached_level
+
+    if bar_index <= expiry_bar
+        newest_reached_level := direction > 0 ? high >= target_3 ? 3 : high >= target_2 ? 2 : high >= target_1 ? 1 : reached_level : low <= target_3 ? 3 : low <= target_2 ? 2 : low <= target_1 ? 1 : reached_level
+
+    bool new_level_reached = newest_reached_level > reached_level
+
+    if new_level_reached
+        if reached_level < 1 and newest_reached_level >= 1
+            line.set_x2(target_1_line, bar_index)
+
+        if reached_level < 2 and newest_reached_level >= 2
+            line.set_x2(target_2_line, bar_index)
+
+        if reached_level < 3 and newest_reached_level >= 3
+            line.set_x2(target_3_line, bar_index)
+
+            if direction > 0
+                bullish_third_target_wick := true
+            else
+                bearish_third_target_wick := true
+
+        array.set(target_reached_levels, target_index, newest_reached_level)
+
+        if newest_reached_level < TP_LEVEL_COUNT
+            int reset_expiry_bar = bar_index + target_expiry
+
+            array.set(target_expiry_bars, target_index, reset_expiry_bar)
+            line.set_x2(entry_line, reset_expiry_bar)
+            box.set_right(target_box, reset_expiry_bar)
+
+            if newest_reached_level < 2
+                line.set_x2(target_2_line, reset_expiry_bar)
+
+            if newest_reached_level < 3
+                line.set_x2(target_3_line, reset_expiry_bar)
+        else
+            line.set_x2(entry_line, bar_index)
+            box.set_right(target_box, bar_index)
+
+    int effective_expiry_bar = array.get(target_expiry_bars, target_index)
+    bool all_targets_reached = newest_reached_level >= TP_LEVEL_COUNT
+    bool targets_expired = bar_index > effective_expiry_bar
+
+    if all_targets_reached or targets_expired
+        array.remove(target_directions, target_index)
+        array.remove(target_expiry_bars, target_index)
+        array.remove(target_reached_levels, target_index)
+        array.remove(target_1_values, target_index)
+        array.remove(target_2_values, target_index)
+        array.remove(target_3_values, target_index)
+        array.remove(target_entry_lines, target_index)
+        array.remove(target_1_lines, target_index)
+        array.remove(target_2_lines, target_index)
+        array.remove(target_3_lines, target_index)
+        array.remove(target_boxes, target_index)
+    else
+        target_index += 1
+
+// Volume visuals
+
+[volume_open_1, volume_high_1, volume_low_1, volume_close_1, volume_color_1] = f_volume_slot(0)
+[volume_open_2, volume_high_2, volume_low_2, volume_close_2, volume_color_2] = f_volume_slot(1)
+[volume_open_3, volume_high_3, volume_low_3, volume_close_3, volume_color_3] = f_volume_slot(2)
+[volume_open_4, volume_high_4, volume_low_4, volume_close_4, volume_color_4] = f_volume_slot(3)
+
+plotcandle(volume_open_1, volume_high_1, volume_low_1, volume_close_1, title = "Normalized Volume Zone 1", color = volume_color_1, wickcolor = volume_color_1, bordercolor = volume_color_1)
+plotcandle(volume_open_2, volume_high_2, volume_low_2, volume_close_2, title = "Normalized Volume Zone 2", color = volume_color_2, wickcolor = volume_color_2, bordercolor = volume_color_2)
+plotcandle(volume_open_3, volume_high_3, volume_low_3, volume_close_3, title = "Normalized Volume Zone 3", color = volume_color_3, wickcolor = volume_color_3, bordercolor = volume_color_3)
+plotcandle(volume_open_4, volume_high_4, volume_low_4, volume_close_4, title = "Normalized Volume Zone 4", color = volume_color_4, wickcolor = volume_color_4, bordercolor = volume_color_4)
+
+// Signals
+
+signal_atr = ta.atr(SIGNAL_ATR_LENGTH)
+signal_offset = nz(signal_atr, high - low) * LABEL_OFFSET_MULTIPLIER
+
+plotshape(show_breakout_labels and bullish_breakout_signal ? low - signal_offset : na, title = "Bullish Zone Breakout", style = shape.labelup, location = location.absolute, color = bullish_color, text = "▲", textcolor = color.white, size = size.small)
+plotshape(show_breakout_labels and bearish_breakout_signal ? high + signal_offset : na, title = "Bearish Zone Breakout", style = shape.labeldown, location = location.absolute, color = bearish_color, text = "▼", textcolor = color.white, size = size.small)
+
+plotchar(show_tp3_checkmark and bullish_third_target_wick, title = "Bullish Third Target Wick", char = "✅", location = location.abovebar, color = bullish_color, size = size.tiny)
+plotchar(show_tp3_checkmark and bearish_third_target_wick, title = "Bearish Third Target Wick", char = "✅", location = location.belowbar, color = bullish_color, size = size.tiny)
+
+// Alerts
+
+alertcondition(new_bullish_zone, "New Bullish Zone")
+alertcondition(new_bearish_zone, "New Bearish Zone")
+alertcondition(new_bullish_zone or new_bearish_zone, "New Zone")
+
+alertcondition(bullish_breakout_signal, "Bullish Breakout")
+alertcondition(bearish_breakout_signal, "Bearish Breakout")
+alertcondition(bullish_breakout_signal or bearish_breakout_signal, "Any Breakout")
+
+alertcondition(bullish_third_target_wick, "Bullish TP3 Hit")
+alertcondition(bearish_third_target_wick, "Bearish TP3 Hit")
+alertcondition(bullish_third_target_wick or bearish_third_target_wick, "Any TP3 Hit")

@@ -1,0 +1,149 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Multi Pivot Trend [BigBeluga]", overlay = true, max_lines_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+mitigation = input.string(
+     "close",
+     "Mitigation Method",
+     options = ["close", "wicks", "hl2"],
+     tooltip = "Select how mitigation is confirmed:\n• close — confirmation when candle closes beyond level\n• wicks — confirmation when wick violates level\n• hl2 — confirmation based on average of high & low",
+     group   = "Settings"
+ )
+colTrendUp = input.color(color.blue, "", group = "Style", inline = "stl") 
+colTrendL  = input.color(#e96f1e, "", group = "Style", inline = "stl") 
+colTrendDn = input.color(#e91e63, "", group = "Style", inline = "stl") 
+
+colLines   = input.color(color.white, "Breakout Lines", group = "Style")
+candlesExtension = input.int(70, "Candles Extension Transparency", minval = 20, maxval = 90)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+pivotTrend(len, color = chart.fg_color)=>
+
+    ph = ta.pivothigh(len, len)
+    pl = ta.pivotlow(len, len)
+
+    var upper = float(na)
+    var lower = float(na)
+
+    if not na(ph)
+        upper := ph
+    if not na(pl)
+        lower := pl
+       
+    indexDn = ta.valuewhen(not na(pl), bar_index-len, 0)
+    indexUp = ta.valuewhen(not na(ph), bar_index-len, 0)
+
+    var trend = 0
+
+    src1 = switch mitigation
+        "close" => close
+        "hl2" => hl2
+
+
+    srcH = switch mitigation
+        "wicks" => high
+
+    srcL = switch mitigation
+        "wicks" => low
+
+    SRCh = mitigation != "wicks" ? src1 : srcH
+    SRCl = mitigation != "wicks" ? src1 : srcL
+
+
+    if ta.crossover(SRCh, upper) and trend <= 0 and bar_index - indexUp < 100
+        trend := 1 
+        line.new(indexUp, upper, bar_index, upper, color = color)
+
+    if ta.crossunder(SRCl, lower) and trend >= 0 and bar_index - indexDn < 100
+        trend := -1 
+        line.new(indexDn, lower, bar_index, lower, color = color)
+      
+
+
+    trend 
+
+pivotTrendLabels(len, trendVal)=>
+    ph = ta.pivothigh(len, len)
+    pl = ta.pivotlow(len, len)
+
+    var upper = float(na)
+    var lower = float(na)
+
+    if not na(ph)
+        upper := ph
+    if not na(pl)
+        lower := pl
+       
+    indexDn = ta.valuewhen(not na(pl), bar_index-len, 0)
+    indexUp = ta.valuewhen(not na(ph), bar_index-len, 0)
+
+    var trend = 0
+
+    if ta.crossover(close, upper) and trend <= 0 and bar_index - indexUp < 100
+        trend := 1 
+        label.new(int(math.avg(indexUp, bar_index)), upper, text = str.tostring(trendVal*100, format.percent), style = "ldn", color = color(na), textcolor = colTrendUp)
+
+    if ta.crossunder(close, lower) and trend >= 0 and bar_index - indexDn < 100
+        trend := -1 
+        label.new(int(math.avg(indexDn, bar_index)), lower, text = str.tostring(trendVal*100, format.percent), style = "lup", color = color(na), textcolor = colTrendDn)
+
+    0 
+
+
+GradientColor(val)=> 
+    color.from_gradient(val, 1, 11, color.new(colLines, 70), colLines)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+p1 = pivotTrend(2, GradientColor(2))
+p2 = pivotTrend(3, GradientColor(3))
+p3 = pivotTrend(4, GradientColor(4))
+p4 = pivotTrend(5, GradientColor(5))
+p5 = pivotTrend(6, GradientColor(6))
+p6 = pivotTrend(7, GradientColor(7))
+p7 = pivotTrend(8, GradientColor(8))
+p8 = pivotTrend(9, GradientColor(9))
+p9 = pivotTrend(10, GradientColor(10))
+p10= pivotTrend(11, GradientColor(11))
+
+trendAvg = math.avg(p1, p2, p3, p4, p5, p6, p7, p8, p9, p10)
+trendColor = trendAvg < 0.3 and trendAvg > -0.3 ? colTrendL : color.from_gradient(trendAvg, -1, 1, colTrendDn, colTrendUp)
+
+pivotTrendLabels(10, trendAvg)
+
+if barstate.islast 
+    label.delete(label.new(bar_index+2, hl2
+                             , str.tostring(trendAvg*100, format.percent) 
+                             , color = trendColor
+                             , style = label.style_label_left)[1])
+
+
+atr         = ta.atr(50)*2
+sizeCandle1 = atr * trendAvg
+sizeCandle2 = trendAvg < 0 ? atr * trendAvg : 0
+
+top = math.max(open, close)
+bot = math.min(open, close)
+val = trendAvg < 0 ? top : bot
+
+barcolor(trendColor)
+
+plotcandle(open, high, low, close, title='Candles Trend' 
+     , color = trendColor 
+     , wickcolor=trendColor 
+     , bordercolor = trendColor) 
+     
+
+plotcandle(val-sizeCandle1, val, val, val-sizeCandle1, title='Candles Trend Extension' 
+     , color = color.new(trendColor, 0) 
+     , wickcolor= color.new(trendColor, candlesExtension)  
+     , bordercolor =  color.new(trendColor, candlesExtension-20)) 
+// }

@@ -1,0 +1,77 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Z Score Overlay [BigBeluga]", overlay = true, scale = scale.none)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length = input.int(25, "Z Length")
+offset = input.int(5, "Scale offset")
+
+col_up = input.color(color.rgb(27, 233, 133), "+4")
+col_n  = input.color(color.yellow, "0")
+col_bt = input.color(color.rgb(236, 32, 32), "-4")
+
+
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+z = (close - ta.sma(close, length)) / ta.stdev(close, length)
+
+z_col = z < 0 ? color.from_gradient(z, -4, 0, col_bt, col_n) : z > 0 ? color.from_gradient(z, 0, 4, col_n, col_up) : color(na)
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+hline(0)
+plot(z, color = z_col, linewidth = 3)
+
+
+type draw
+    line l 
+    label lbl 
+    label lbl1
+    box b
+
+var draw_obj = array.new<draw>()
+
+if barstate.islast
+    
+    level = line(na)
+    label_ = label(na)
+    label_1 = label(na)
+    box_ = box(na)
+
+
+    if draw_obj.size() > 0
+        for dr in draw_obj
+            line.delete(dr.l)
+            label.delete(dr.lbl)
+            label.delete(dr.lbl1)
+            box.delete(dr.b)
+
+    for i = -4 to 4 
+
+        if i <= 3
+            color2 =  i < 0 ? color.from_gradient(i, -4, 0, col_bt, col_n): i >= 0 ? color.from_gradient(i, 0, 3, col_n, col_up):na
+            txt_ = z > i and z < i+1 ? "◀" : ""
+
+            box_ := box.new(bar_index+10+offset, i+1, bar_index + 15+offset, i, bgcolor = color2, border_color = chart.bg_color, text = txt_, text_color = color.white)
+
+        if (i != 0)
+            color1 = i < 0 ? color.from_gradient(i, -4, 0, col_bt, col_n): i >= 0 ? color.from_gradient(i, 0, 4, col_n, col_up):na
+
+            level := line.new(bar_index - math.abs(i*i*i)+offset, i, bar_index + 15+offset, i, color =  color1, width = 2)
+            label_ := label.new(bar_index+15+offset, i, i <= 0 ? str.tostring(i) : "+" + str.tostring(i), style = label.style_label_left, color = color(na), textcolor = color1)
+            
+        if z > i and z < i+1
+            label_1 := label.new(bar_index+15+offset, math.avg(i, i+1), str.tostring(z, "##.##"), style = label.style_label_left, color = color.new(z_col, 80), textcolor = z_col, size = size.large)
+
+        dr = draw.new(level, label_, label_1, box_)
+
+        draw_obj.push(dr)
+// }

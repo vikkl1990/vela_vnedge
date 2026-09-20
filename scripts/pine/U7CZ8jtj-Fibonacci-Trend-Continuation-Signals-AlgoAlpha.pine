@@ -1,0 +1,193 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Fibonacci Trend Continuation Signals [AlgoAlpha]", "AlgoAlpha - Fibonacci Trend", true)
+
+// Inputs
+
+midlineLength = input.int(200, "Midline Length", minval = 1, tooltip = "Number of bars used to calculate the midline. Higher values make the midline smoother.", group = "Settings")
+pivotLength = input.int(7, "Pivot Length", minval = 1, tooltip = "Number of bars used to calculate price movement for the trend bands. Higher values make the bands smoother.", group = "Settings")
+bandWidth = input.float(3.0, "Band Width", minval = 0.1, step = 0.1, tooltip = "Controls the distance between the midline and the outer bands. Higher values make the bands wider.", group = "Settings")
+
+show786 = input.bool(true, "0.786", group = "Fibonacci Levels", inline = "786")
+c786 = input.color(color.rgb(0, 188, 212), "", tooltip = "Enable or disable the 0.786 Fibonacci level and select its color.", group = "Fibonacci Levels", inline = "786")
+
+show618 = input.bool(true, "0.618", group = "Fibonacci Levels", inline = "618")
+c618 = input.color(color.rgb(8, 153, 129), "", tooltip = "Enable or disable the 0.618 Fibonacci level and select its color.", group = "Fibonacci Levels", inline = "618")
+
+show500 = input.bool(true, "0.500", group = "Fibonacci Levels", inline = "500")
+c500 = input.color(color.rgb(76, 175, 80), "", tooltip = "Enable or disable the 0.500 Fibonacci level and select its color.", group = "Fibonacci Levels", inline = "500")
+
+show382 = input.bool(true, "0.382", group = "Fibonacci Levels", inline = "382")
+c382 = input.color(color.rgb(255, 152, 0), "", tooltip = "Enable or disable the 0.382 Fibonacci level and select its color.", group = "Fibonacci Levels", inline = "382")
+
+show236 = input.bool(true, "0.236", group = "Fibonacci Levels", inline = "236")
+c236 = input.color(color.rgb(242, 54, 69), "", tooltip = "Enable or disable the 0.236 Fibonacci level and select its color.", group = "Fibonacci Levels", inline = "236")
+
+bullColor = input.color(#00ffbb, "Bullish Color", group = "Appearance", inline = "colors")
+bearColor = input.color(#ff1100, "", tooltip = "Select the colors used for bullish and bearish signals.", group = "Appearance", inline = "colors")
+
+// Core calculations
+
+volatility = ta.sma(ta.rma(high - low, pivotLength), 200)
+v = ta.ema(close, midlineLength)
+
+b1 = v + volatility * bandWidth
+b2 = v - volatility * bandWidth
+
+var direction = 0
+
+if direction == 0 and not na(b1)
+    direction := close >= v ? 1 : -1
+
+previousDirection = direction
+
+if close > b1
+    direction := 1
+else if close < b2
+    direction := -1
+
+bullish = direction == 1
+bearish = direction == -1
+trendFlip = direction != previousDirection and previousDirection != 0
+
+// Fibonacci levels
+
+bull786 = b2 + (v - b2) * 0.786
+bull618 = b2 + (v - b2) * 0.618
+bull500 = b2 + (v - b2) * 0.500
+bull382 = b2 + (v - b2) * 0.382
+bull236 = b2 + (v - b2) * 0.236
+
+bear786 = b1 + (v - b1) * 0.786
+bear618 = b1 + (v - b1) * 0.618
+bear500 = b1 + (v - b1) * 0.500
+bear382 = b1 + (v - b1) * 0.382
+bear236 = b1 + (v - b1) * 0.236
+
+// Dynamic transparency
+
+activeBand = bullish ? b2 : bearish ? b1 : na
+bandRange = math.max(math.abs(v - activeBand), syminfo.mintick)
+distanceFromBand = math.abs(close - activeBand)
+distanceRatio = math.min(distanceFromBand / bandRange, 1.0)
+
+lineTransparency = int(math.round(distanceRatio * 75))
+fillTransparency = int(math.round(72 + distanceRatio * 22))
+
+// Fibonacci plots
+
+cOuter = color.rgb(120, 123, 134)
+
+p1 = plot(v, "1", color = cOuter, linewidth = 2)
+
+pBull786 = plot(bullish and show786 ? bull786 : na, "Bull 0.786", color = color.new(c786, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBull618 = plot(bullish and show618 ? bull618 : na, "Bull 0.618", color = color.new(c618, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBull500 = plot(bullish and show500 ? bull500 : na, "Bull 0.500", color = color.new(c500, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBull382 = plot(bullish and show382 ? bull382 : na, "Bull 0.382", color = color.new(c382, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBull236 = plot(bullish and show236 ? bull236 : na, "Bull 0.236", color = color.new(c236, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBull0 = plot(bullish ? b2 : na, "Bull 0", color = color.new(cOuter, lineTransparency), linewidth = 2, style = plot.style_linebr)
+
+pBear786 = plot(bearish and show786 ? bear786 : na, "Bear 0.786", color = color.new(c786, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBear618 = plot(bearish and show618 ? bear618 : na, "Bear 0.618", color = color.new(c618, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBear500 = plot(bearish and show500 ? bear500 : na, "Bear 0.500", color = color.new(c500, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBear382 = plot(bearish and show382 ? bear382 : na, "Bear 0.382", color = color.new(c382, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBear236 = plot(bearish and show236 ? bear236 : na, "Bear 0.236", color = color.new(c236, lineTransparency), linewidth = 2, style = plot.style_linebr)
+pBear0 = plot(bearish ? b1 : na, "Bear 0", color = color.new(cOuter, lineTransparency), linewidth = 2, style = plot.style_linebr)
+
+// Fibonacci fills
+
+fill(p1, pBull786, color = show786 ? color.new(c786, fillTransparency) : na, fillgaps = false)
+fill(pBull786, pBull618, color = show786 and show618 ? color.new(c786, fillTransparency) : na, fillgaps = false)
+fill(pBull618, pBull500, color = show618 and show500 ? color.new(c618, fillTransparency) : na, fillgaps = false)
+fill(pBull500, pBull382, color = show500 and show382 ? color.new(c500, fillTransparency) : na, fillgaps = false)
+fill(pBull382, pBull236, color = show382 and show236 ? color.new(c382, fillTransparency) : na, fillgaps = false)
+fill(pBull236, pBull0, color = show236 ? color.new(c236, fillTransparency) : na, fillgaps = false)
+
+fill(p1, pBear786, color = show786 ? color.new(c786, fillTransparency) : na, fillgaps = false)
+fill(pBear786, pBear618, color = show786 and show618 ? color.new(c786, fillTransparency) : na, fillgaps = false)
+fill(pBear618, pBear500, color = show618 and show500 ? color.new(c618, fillTransparency) : na, fillgaps = false)
+fill(pBear500, pBear382, color = show500 and show382 ? color.new(c500, fillTransparency) : na, fillgaps = false)
+fill(pBear382, pBear236, color = show382 and show236 ? color.new(c382, fillTransparency) : na, fillgaps = false)
+fill(pBear236, pBear0, color = show236 ? color.new(c236, fillTransparency) : na, fillgaps = false)
+
+// Current level labels
+
+var levelLabels = array.new_label()
+
+if array.size(levelLabels) > 0
+    for i = 0 to array.size(levelLabels) - 1
+        label.delete(array.get(levelLabels, i))
+    array.clear(levelLabels)
+
+if barstate.islast and bullish
+    array.push(levelLabels, label.new(bar_index, b2, "0 (" + str.tostring(b2, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(cOuter, lineTransparency), textcolor = color.white, size = size.small))
+    if show236
+        array.push(levelLabels, label.new(bar_index, bull236, "0.236 (" + str.tostring(bull236, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c236, lineTransparency), textcolor = color.white, size = size.small))
+    if show382
+        array.push(levelLabels, label.new(bar_index, bull382, "0.382 (" + str.tostring(bull382, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c382, lineTransparency), textcolor = color.white, size = size.small))
+    if show500
+        array.push(levelLabels, label.new(bar_index, bull500, "0.500 (" + str.tostring(bull500, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c500, lineTransparency), textcolor = color.white, size = size.small))
+    if show618
+        array.push(levelLabels, label.new(bar_index, bull618, "0.618 (" + str.tostring(bull618, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c618, lineTransparency), textcolor = color.white, size = size.small))
+    if show786
+        array.push(levelLabels, label.new(bar_index, bull786, "0.786 (" + str.tostring(bull786, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c786, lineTransparency), textcolor = color.white, size = size.small))
+
+if barstate.islast and bearish
+    array.push(levelLabels, label.new(bar_index, b1, "0 (" + str.tostring(b1, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(cOuter, lineTransparency), textcolor = color.white, size = size.small))
+    if show236
+        array.push(levelLabels, label.new(bar_index, bear236, "0.236 (" + str.tostring(bear236, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c236, lineTransparency), textcolor = color.white, size = size.small))
+    if show382
+        array.push(levelLabels, label.new(bar_index, bear382, "0.382 (" + str.tostring(bear382, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c382, lineTransparency), textcolor = color.white, size = size.small))
+    if show500
+        array.push(levelLabels, label.new(bar_index, bear500, "0.500 (" + str.tostring(bear500, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c500, lineTransparency), textcolor = color.white, size = size.small))
+    if show618
+        array.push(levelLabels, label.new(bar_index, bear618, "0.618 (" + str.tostring(bear618, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c618, lineTransparency), textcolor = color.white, size = size.small))
+    if show786
+        array.push(levelLabels, label.new(bar_index, bear786, "0.786 (" + str.tostring(bear786, format.mintick) + ")", xloc = xloc.bar_index, style = label.style_label_left, color = color.new(c786, lineTransparency), textcolor = color.white, size = size.small))
+
+// Signal positions
+
+bullSignalGuide = b2 + (v - b2) * -0.10
+bearSignalGuide = b1 + (v - b1) * -0.10
+
+plot(bullish ? bullSignalGuide : bearSignalGuide, "Signal Guide", display = display.none)
+
+// Fibonacci close signals
+
+bullCross786 = ta.crossover(close, bull786)
+bullCross618 = ta.crossover(close, bull618)
+bullCross500 = ta.crossover(close, bull500)
+bullCross382 = ta.crossover(close, bull382)
+bullCross236 = ta.crossover(close, bull236)
+
+bearCross786 = ta.crossunder(close, bear786)
+bearCross618 = ta.crossunder(close, bear618)
+bearCross500 = ta.crossunder(close, bear500)
+bearCross382 = ta.crossunder(close, bear382)
+bearCross236 = ta.crossunder(close, bear236)
+
+bullFibCross = bullish and ((show786 and bullCross786) or (show618 and bullCross618) or (show500 and bullCross500) or (show382 and bullCross382) or (show236 and bullCross236))
+bearFibCross = bearish and ((show786 and bearCross786) or (show618 and bearCross618) or (show500 and bearCross500) or (show382 and bearCross382) or (show236 and bearCross236))
+
+// Signals
+
+plotchar(bullFibCross ? bullSignalGuide : na, title = "Bullish Fibonacci Close", char = "▲", location = location.absolute, color = bullColor, size = size.tiny)
+plotchar(bearFibCross ? bearSignalGuide : na, title = "Bearish Fibonacci Close", char = "▼", location = location.absolute, color = bearColor, size = size.tiny)
+
+// Trend start dots
+
+plotchar(trendFlip ? (bullish ? b2 : b1) : na, title = "0 Start", char = "●", location = location.absolute, color = cOuter, size = size.small)
+plotchar(trendFlip and show236 ? (bullish ? bull236 : bear236) : na, title = "0.236 Start", char = "●", location = location.absolute, color = color.new(c236, 10), size = size.small)
+plotchar(trendFlip and show382 ? (bullish ? bull382 : bear382) : na, title = "0.382 Start", char = "●", location = location.absolute, color = color.new(c382, 30), size = size.small)
+plotchar(trendFlip and show500 ? (bullish ? bull500 : bear500) : na, title = "0.500 Start", char = "●", location = location.absolute, color = color.new(c500, 50), size = size.small)
+plotchar(trendFlip and show618 ? (bullish ? bull618 : bear618) : na, title = "0.618 Start", char = "●", location = location.absolute, color = color.new(c618, 70), size = size.small)
+plotchar(trendFlip and show786 ? (bullish ? bull786 : bear786) : na, title = "0.786 Start", char = "●", location = location.absolute, color = color.new(c786, 90), size = size.small)
+
+// Alerts 
+
+alertcondition(bullFibCross, title = "Bullish Fibonacci Close")
+alertcondition(bearFibCross, title = "Bearish Fibonacci Close")
+alertcondition(trendFlip and bullish, title = "Bullish Trend Change")
+alertcondition(trendFlip and bearish, title = "Bearish Trend Change")

@@ -1,0 +1,64 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Hullinger Bands [AlgoAlpha]", "AlgoAlpha - Hullinger", true)
+length = input.int(20, title = "Main Length", minval=1, group = "Main Settings")
+src = input(hlc3, title="Source", group = "Main Settings")
+mult = input.float(2.0, minval=0.001, maxval=50, title="StdDev", group = "Main Settings")
+mult1 = input.float(1.5, minval=0.001, maxval=50, title="Extended Bands Multiplier", group = "Main Settings")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance")
+
+//Modified Stdev
+isZero(val, eps) => math.abs(val) <= eps
+
+SUM(fst, snd) =>
+    EPS = 1e-10
+    res = fst + snd
+    if isZero(res, EPS)
+        res := 0
+    else
+        if not isZero(res, 1e-4)
+            res := res
+        else
+            15
+
+pine_stdev(src, length) =>
+    avg = ta.hma(src, length)
+    sumOfSquareDeviations = 0.0
+    for i = 0 to length - 1
+        sum = SUM(src[i], -avg)
+        sumOfSquareDeviations := sumOfSquareDeviations + sum * sum
+
+    stdev = math.sqrt(sumOfSquareDeviations / length)
+
+basis = ta.sma(src, length)
+dev = mult * pine_stdev(src, length)
+upper = basis + dev
+lower = basis - dev
+upper1 = basis + dev*mult1
+lower1 = basis - dev*mult1
+
+upper_col = color.from_gradient(upper-close, 0, ta.highest(upper-close, length/2), color.new(red, 0), color.new(chart.fg_color, 90))
+lower_col = color.from_gradient(close-lower, 0, ta.highest(close-lower, length/2), color.new(green, 0), color.new(chart.fg_color, 90))
+mid_col = color.from_gradient(math.abs(close-basis), 0, ta.highest(math.abs(close-basis), length/2), color.new(chart.fg_color, 0), color.new(chart.fg_color, 90))
+
+plotchar(ta.crossunder(close, upper) ? high + ta.atr(7)*1.4 : na, "Long TP Signal", "◆", location.absolute, red, size = size.tiny)
+plotchar(ta.crossover(close, lower) ? low - ta.atr(7)*1.4 : na, "Short TP Signal", "◆", location.absolute, green, size = size.tiny)
+
+mid = plot(basis, "Basis", color=mid_col)
+mb = plot(math.avg(open, close), "Candle Body Middle", display = display.none)
+u = plot(upper, "Upper", color=upper_col)
+l = plot(lower, "Lower", color=lower_col)
+uu = plot(upper1, "Upper1", color=color.new(upper_col, 70))
+ll = plot(lower1, "Lower1", color=color.new(lower_col, 70))
+fill(mid, mb, title = "Background", color=color.new(chart.fg_color, 95))
+fill(u, uu, upper1, upper, color.new(upper_col, 70), color.new(upper_col, 95))
+fill(l, ll, lower1, lower, color.new(lower_col, 70), color.new(lower_col, 95))
+
+//////////////////Alerts
+alertcondition(ta.crossover(close, basis), "Bullish Trend")
+alertcondition(ta.crossunder(close, basis), "Bearish Trend")
+alertcondition(ta.crossunder(close, upper), "Long TP")
+alertcondition(ta.crossover(close, lower), "Short TP")

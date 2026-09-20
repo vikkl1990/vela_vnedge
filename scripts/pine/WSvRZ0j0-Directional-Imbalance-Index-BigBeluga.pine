@@ -1,0 +1,80 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator(title="Directional Imbalance Index [BigBeluga]", overlay=false, max_labels_count = 500, max_bars_back = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length = input.int(10, "Highest/Lowest Length", minval=1)
+period = input.int(70, "Calculation Period")
+
+showBul = input.bool(true, "", inline = "Bull")
+colUp  = input.color(#FB8C00, "Bull", inline = "Bull")
+showBer = input.bool(true, "", inline = "Bear")
+colDn  = input.color(#2962FF, "Bear", inline = "Bear")
+
+countUp    = array.new<int>(1, 0)
+countDn    = array.new<int>(1, 0)
+var labels = array.new<label>()
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+upper  = ta.highest(high, length + 1)
+lower  = ta.lowest(low, length + 1)
+
+for i = 0 to period-1
+
+    h = high[i]
+    l = low[i]
+
+    if h == upper[i]
+        countUp.push(1)
+    if l == lower[i]
+        countDn.push(1)
+
+Up = countUp.sum()
+Dn = countDn.sum()
+
+total = Up + Dn
+bulls = Up / total * 100
+bears = Dn / total * 100
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if barstate.islast
+
+    if labels.size() > 0 
+        for lbl in labels
+            lbl.delete()
+
+    for i = 0 to period-1
+
+        h = high[i]
+        l = low[i]
+
+        if h == upper[i]
+            labels.push(label.new(bar_index-i, h, "+1", force_overlay = true, color = color(na), textcolor = colUp, style = "ldn"))
+        if l == lower[i]
+            labels.push(label.new(bar_index-i, l, "+1", force_overlay = true, color = color(na), textcolor = colDn, style = "lup"))
+      
+if barstate.islast
+    if showBul
+        l1 = label.new(bar_index, Up, str.tostring(bulls, format.percent), style = "llf", color = color(na), textcolor = colUp)
+        (l1[1]).delete()
+    if showBer
+        l2 = label.new(bar_index, Dn, str.tostring(bears, format.percent), style = "llf", color = color(na), textcolor = colDn)
+        (l2[1]).delete()
+
+pUp = plot(Up, "Up", color =  (showBul ? Up > Dn ? colUp : color.new(colUp, 20) : color(na)))
+pDn = plot(Dn, "Down", color = (showBer ? Up < Dn ? colDn : color.new(colDn, 20) : color(na)))
+col1 = Up > Dn ? colUp : color(na)
+col2 = Up < Dn ? colDn : color(na)
+
+fill(pUp, pDn, Up, Dn, color.new(col1, showBul ? 50 : 100), color.new(col2, showBer ? 50 : 100))
+
+plot(upper, "Upper", color = colUp, force_overlay = true)
+plot(lower, "Lower", color = colDn, force_overlay = true)
+
+// }

@@ -1,0 +1,38 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Algoalpha
+
+//@version=5
+indicator("Volume-Trend Sentiment [AlgoAlpha]", "AlgoAlpha - ⨇⨈ Volume-Trend Sentiment", overlay=false, timeframe = "", timeframe_gaps = false, precision = 2)
+
+// --- Inputs ---
+showNoise = input.bool(true, "Show Noise?", group = "Settings")
+showVolumeTrendPlot = input.bool(true, "Show Main Plot?", group = "Settings")
+showBackgroundColor = input.bool(true, "Show Background Color?", group = "Settings")
+volumeTrendLength = input.int(7, minval = 2, title = "VTS Length", group = "Volume Trend Sentiment")
+standardDeviationLength = input.int(7, minval = 2, title = "Standard Deviation Length", group = "Volume Trend Sentiment")
+smaLength = input.int(7, minval = 2, title = "VTS SMA Length", group = "Volume Trend Sentiment")
+upColor = input.color(#00ffbb, title = "Up Color")
+downColor = input.color(#ff1100, title = "Down Color")
+
+// --- VTS Calculation ---
+volumeTrend = ta.ema((close - open) / volume, volumeTrendLength) - ta.ema(ta.ema((close - open) / volume, volumeTrendLength), volumeTrendLength)
+standardDeviation = ta.stdev(volumeTrend, standardDeviationLength) * 1
+smoothedVolumeTrend = ta.sma(volumeTrend / (standardDeviation + standardDeviation), smaLength)
+
+// --- Sentiment Background Colors ---
+getColor(volumeTrendValue) =>
+    sentimentLevel = math.abs(volumeTrendValue * 10)
+    baseTransparency = 60  // Base transparency level
+    colorTransparency = math.max(90 - sentimentLevel * 5, baseTransparency)
+    volumeTrendValue > 0 ? color.new(upColor, colorTransparency) : color.new(downColor, colorTransparency)
+bgcolor(showBackgroundColor ? getColor(smoothedVolumeTrend) : na)
+
+// --- Plots ---
+histogramPlot = plot(showNoise ? (volumeTrend / (standardDeviation + standardDeviation)) : na, color = volumeTrend > 0 ? upColor : downColor, style = plot.style_circles, linewidth = 2)
+volumeTrendPlot = plot(showVolumeTrendPlot ? smoothedVolumeTrend : na, color = color.new(color.white, 30), style = plot.style_histogram, linewidth = 2)
+midlinePlot = plot(0, color = color.gray, style = plot.style_circles, linewidth = 1)
+fill(volumeTrendPlot, midlinePlot, color = smoothedVolumeTrend > 0 ? color.new(upColor, 90) : color.new(downColor, 90))
+
+// --- Alerts ---
+alertcondition(ta.crossover(smoothedVolumeTrend, 0), title="VTS Cross Above Midline", message="VTS crossed above the midline")
+alertcondition(ta.crossunder(smoothedVolumeTrend, 0), title="VTS Cross Below Midline", message="VTS crossed below the midline")

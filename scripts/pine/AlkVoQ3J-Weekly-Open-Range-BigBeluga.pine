@@ -1,0 +1,57 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Weekly Open Range [BigBeluga]", overlay = true)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Sunday 21:00 UTC
+isWeeklyOpen = timeframe.change("W")
+
+var float weeklyOpen_h  = na
+var float weeklyOpen_l  = na
+var range_box           = box(na)
+var lbl                 = label(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if last_bar_index - bar_index < 5000
+
+    if isWeeklyOpen
+        lbl.delete()
+        range_box := box.new(bar_index, high, na, low, border_width = 0, bgcolor = color.new(color.blue, 50))
+        lbl := label.new(bar_index, low, "Sunday 21:00 UTC", style = label.style_label_upper_right, color = color.new(color.blue, 50), textcolor = chart.fg_color)
+
+    if isWeeklyOpen or isWeeklyOpen[1] or isWeeklyOpen[2] or isWeeklyOpen[3]
+
+        h = math.max(high, range_box.get_top())
+        l = math.min(low, range_box.get_bottom())
+
+        range_box.set_right(bar_index)
+        range_box.set_top(h)
+        range_box.set_bottom(l)
+
+        weeklyOpen_h := h
+        weeklyOpen_l := l
+        lbl.set_y(l)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plot(weeklyOpen_h != weeklyOpen_h[1] ? na : weeklyOpen_h, title="Weekly Open High", color=color.orange, linewidth=1, style = plot.style_linebr)
+plot(weeklyOpen_l != weeklyOpen_l[1] ? na : weeklyOpen_l, title="Weekly Open Low", color=color.orange, linewidth=1, style = plot.style_linebr)
+
+// Dashboard
+if barstate.islast
+    dash = table.new(position.top_right, 10, 10)
+
+    dash.cell(0, 0, syminfo.ticker, text_color = chart.fg_color)
+    dash.cell(1, 0, str.tostring(close) + (close > open ? " ▲" : " ▼"), text_color = (close > open ? color.blue : color.orange))
+
+    dash.cell(0, 1, "Range ▲", text_color = chart.fg_color)
+    dash.cell(1, 1, str.tostring(weeklyOpen_h), text_color = chart.fg_color)
+    dash.cell(0, 2, "Range ▼", text_color = chart.fg_color)
+    dash.cell(1, 2, str.tostring(weeklyOpen_l), text_color = chart.fg_color)
+// }

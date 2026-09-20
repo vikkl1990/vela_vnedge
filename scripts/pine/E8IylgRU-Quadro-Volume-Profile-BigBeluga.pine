@@ -1,0 +1,203 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=6
+indicator("Quadro Volume Profile [BigBeluga]", overlay = true, max_boxes_count = 500, calc_bars_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+lookBack = input.int(200, "Calculation Period", maxval = 500)
+bins     = input.int(60)
+offset   = input.int(60)
+
+//Upper  
+showProfile1 = input.bool(true, "Upper Sell Quad", inline = "1")
+showPoc1     = input.bool(true, "PoC", inline = "1")
+
+showProfile2 = input.bool(true, "Upper Buy Quad", inline = "2")
+showPoc2     = input.bool(false, "PoC", inline = "2")
+
+//Lower  
+showProfile3 = input.bool(true, "Lower Buy Quad", inline = "3")
+showPoc3     = input.bool(true, "PoC", inline = "3")
+
+showProfile4 = input.bool(true, "Lower Sell Quad", inline = "4")
+showPoc4     = input.bool(false, "PoC", inline = "4")
+
+
+colorPlus  = input.color(color.rgb(32, 180, 108), "", inline = "col")
+colorMinus = input.color(color.rgb(180, 32, 32),  "", inline = "col")
+
+type values 
+    float BuyVol
+    float SellVol
+    float price
+
+
+var vValues = array.new<values>(lookBack)
+var topBot = array.new<float>()
+
+var leftProfile = array.new<float>(bins, 0)
+var rightProfile = array.new<float>(bins, 0)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+start = bar_index + offset
+
+if barstate.islast
+    var boxes  = array.new<box>()
+    var lines  = array.new<line>()
+    var labels = array.new<label>()
+
+    for i = 0 to leftProfile.size() -1
+        leftProfile.set(i, 0)
+        rightProfile.set(i, 0)
+
+    if boxes.size() > 0 
+        for b in boxes
+            b.delete()
+        for l in lines
+            l.delete()
+        for lbl in labels
+            lbl.delete()
+
+        lines.clear()
+        boxes.clear()
+        labels.clear()
+    for i = 0 to lookBack - 1
+
+        isBull = close[i] > open[i]
+
+        vValues.set(i, values.new(isBull ? volume[i] : 0, isBull ? 0 : volume[i], close[i]))
+
+        topBot.push(high[i])
+        topBot.push(low[i])
+
+    top  = topBot.max()
+    bot  = topBot.min()
+    step = (top-bot)/bins
+    mid  = bot + ((top - bot)/2)
+
+
+    for i = 0 to lookBack - 1
+
+        vals    = vValues.get(i)
+        price   = vals.price 
+        bullVol = vals.BuyVol
+        bearVol = vals.SellVol
+
+        for k = 0 to bins -1
+            loww = bot + step * k
+            highh = loww + step 
+            middle= loww + step/2
+
+            if price >= loww-step and price <= highh+step and close > middle
+                leftProfile.set(k, leftProfile.get(k) + bullVol)
+
+            if price >= loww-step and price <= highh+step and close < middle
+                leftProfile.set(k, leftProfile.get(k) + bearVol)
+
+
+            if price >= loww-step and price <= highh+step and close > middle
+                rightProfile.set(k, rightProfile.get(k) + bearVol)
+
+            if price >= loww-step and price <= highh+step and close < middle
+                rightProfile.set(k, rightProfile.get(k) + bullVol)
+
+
+    totBuy1  = array.new<float>()
+    totBuy2  = array.new<float>()
+    totSell1 = array.new<float>()
+    totSell2 = array.new<float>()
+
+    totalVol = 0.
+
+    for k = 0 to bins -1
+        loww   = bot + step * k
+        highh  = loww + step
+        middle = loww + step/2
+        Vol1   = leftProfile.get(k)
+        Vol2   = rightProfile.get(k)
+
+        volValue1 = int(Vol1/leftProfile.max()*50)
+        volValue2 = int(Vol2/rightProfile.max()*50)
+
+        if close < loww
+            totSell1.push(Vol1)
+            totBuy1.push(Vol2)
+
+        if close > highh
+            totBuy2.push(Vol1)
+            totSell2.push(Vol2)
+            
+        totalVol := totSell1.sum() + totBuy1.sum() + totSell2.sum() + totBuy2.sum()
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+        // Lower Quads
+        if close > highh
+            if showProfile3
+                boxes.push(box.new(start-volValue1-1, highh, start-1, loww, chart.bg_color, 1, bgcolor = color.from_gradient(volValue1, 0, 50, color.new(colorPlus, 50), colorPlus)))
+            if showProfile4
+                boxes.push(box.new(start+volValue2+1, highh, start+1, loww, chart.bg_color, 1, bgcolor = color.from_gradient(volValue2, 0, 50, color.new(colorMinus, 50), colorMinus)))
+
+        // Upper Quads
+        if close < loww
+            if showProfile1
+                boxes.push(box.new(start-volValue1-1, highh, start-1, loww, chart.bg_color, 1, bgcolor = color.from_gradient(volValue1, 0, 50, color.new(colorMinus, 50), colorMinus)))
+            if showProfile2
+                boxes.push(box.new(start+volValue2+1, highh, start+1, loww, chart.bg_color, 1, bgcolor = color.from_gradient(volValue2, 0, 50, color.new(colorPlus, 50), colorPlus)))
+
+
+        if close < highh and close > loww
+            lines.push(line.new(start-lookBack-offset, close, start+50, close, color = close < open ? colorMinus : colorPlus, width = 1, style = line.style_solid, extend = extend.right))
+
+    for k = 0 to bins -1
+        loww   = bot + step * k
+        highh  = loww + step
+        middle = loww + step/2
+        Vol1   = leftProfile.get(k)
+        Vol2   = rightProfile.get(k)
+
+        volValue1 = int(Vol1/leftProfile.max()*50)
+        volValue2 = int(Vol2/rightProfile.max()*50)
+
+
+        if close < highh and close > loww
+            labels.push(label.new(start, middle, "SELL\n" + str.tostring(totSell1.sum(), format.volume) + "\n" + str.tostring(totSell1.sum()/ totalVol*100, format.percent), style = label.style_label_lower_right, textcolor = chart.fg_color, color = color.new(chart.bg_color, 80), force_overlay = true))
+            labels.push(label.new(start, middle, "BUY\n" + str.tostring(totBuy1.sum(), format.volume) + "\n" + str.tostring(totBuy1.sum()/ totalVol*100, format.percent), style = label.style_label_lower_left, textcolor = chart.fg_color, color = color.new(chart.bg_color, 80), force_overlay = true))
+
+            labels.push(label.new(start, middle,  str.tostring(totSell2.sum()/ totalVol*100, format.percent) + "\n" + str.tostring(totSell2.sum(), format.volume) + "\nSELL", style = label.style_label_upper_left, textcolor = chart.fg_color, color = color.new(chart.bg_color, 80), force_overlay = true))
+            labels.push(label.new(start, middle,   str.tostring(totBuy2.sum()/ totalVol*100, format.percent) + "\n" + str.tostring(totBuy2.sum(), format.volume) + "\nBUY", style = label.style_label_upper_right, textcolor = chart.fg_color, color = color.new(chart.bg_color, 80), force_overlay = true))
+
+        if close > highh
+            if Vol1 == totBuy2.max()
+                if showPoc3 and (totBuy2.max() != 0)
+                    lines.push(line.new(start-lookBack-offset, middle, start-volValue1, middle, color = colorPlus, width = 1, force_overlay = true, style = line.style_dashed))
+                    labels.push(label.new(start-volValue1, middle, text = "+"+str.tostring(totBuy2.max(), format.volume), style = label.style_label_left, color = color(na), textcolor = chart.fg_color))
+
+            if Vol2 == totSell2.max() 
+                if showPoc4 and (totSell2.max() != 0)
+                    lines.push(line.new(start-lookBack-offset, middle, start, middle, color = colorMinus, width = 1, force_overlay = true, style = line.style_dashed))
+                    labels.push(label.new(start+volValue2, middle, text ="-"+ str.tostring(totSell2.max(), format.volume), style = label.style_label_right, color = color(na), textcolor = chart.fg_color))
+                    
+
+        if close < loww
+            if Vol2 == totBuy1.max()
+                if showPoc2 and (totBuy1.max() != 0)
+                    lines.push(line.new(start-lookBack-offset, middle, start, middle, color = colorPlus, width = 1, force_overlay = true, style = line.style_dashed))
+                    labels.push(label.new(start+volValue2, middle, text = "+"+str.tostring(totBuy1.max(), format.volume), style = label.style_label_right, color = color(na), textcolor = chart.fg_color))
+
+            if Vol1 == totSell1.max()
+                if showPoc1 and (totSell1.max() != 0)
+                    lines.push(line.new(start-lookBack-offset, middle, start-volValue1, middle, color = colorMinus, width = 1, force_overlay = true, style = line.style_dashed))
+                    labels.push(label.new(start-volValue1, middle, text = "-"+str.tostring(totSell1.max(), format.volume), style = label.style_label_left, color = color(na), textcolor = chart.fg_color))
+
+    line.delete(line.new(start, top, start, bot, color = chart.fg_color, width = 3, force_overlay = true)[1])
+
+
+// }

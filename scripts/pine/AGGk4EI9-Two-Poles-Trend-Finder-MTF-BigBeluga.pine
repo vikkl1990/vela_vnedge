@@ -1,0 +1,92 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Two Poles Trend Finder MTF [BigBeluga]", overlay = true)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+alpha = input.float(0.10, minval=0.01, maxval=1.0, step = 0.01, title="Alpha")
+source = input.source(close, "Source")
+
+offset = 3
+
+tf1 = input.timeframe("60", "Timeframe1")
+tf2 = input.timeframe("120", "Timeframe2")
+tf3 = input.timeframe("240", "Timeframe3")
+tf4 = input.timeframe("720", "Timeframe4")
+tf5 = input.timeframe("D", "Timeframe5")
+
+c_up = input.color(#00b8a5, "")
+c_dn = input.color(#b80090, "")
+
+var float f = na
+var float f_prev1 = na
+var float f_prev2 = na
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Apply two-pole Gaussian filter
+if bar_index >= 2
+    f := math.pow(alpha, 2) * source + 2 * (1 - alpha) * f_prev1 - math.pow(1 - alpha, 2) * f_prev2
+else
+    f := source  // Warm-up for first bars
+
+// Shift state
+f_prev2 := f_prev1
+f_prev1 := f
+
+
+
+tp1 = request.security("", tf1, f_prev1 > f_prev1[offset])
+tp2 = request.security("", tf2, f_prev1 > f_prev1[offset])
+tp3 = request.security("", tf3, f_prev1 > f_prev1[offset])
+tp4 = request.security("", tf4, f_prev1 > f_prev1[offset])
+tp5 = request.security("", tf5, f_prev1 > f_prev1[offset])
+
+
+avg = math.avg(tp1 ? 1 : 0, tp2 ? 1 : 0, tp3 ? 1 : 0, tp4 ? 1 : 0, tp5 ? 1 : 0)
+
+
+
+dash = table.new(position.bottom_right, 100, 100)
+if barstate.islast
+    dash.merge_cells(0, 0, 8, 0)
+    dash.cell(0, 0, str.tostring(syminfo.basecurrency) + (avg > 0.5 ? " 🢁" : " 🢃"), text_color = avg > 0.5 ? c_up : c_dn, tooltip = "Average Trend")
+
+
+draw_gauge(col, tf, trend)=>
+
+    if barstate.islast
+
+        s = timeframe.in_seconds(tf)
+        m = timeframe.in_seconds(tf) / 60
+        h = timeframe.in_seconds(tf) / 60 / 60
+        d = timeframe.in_seconds(tf) / 60 / 60 / 24
+
+        tff = h < 24 and h >= 1 ? str.tostring(h) + "H" :  m >= 1440 ? str.tostring(d) + "D" : m < 60 and m > 1 ? str.tostring(m) + "M" : m < 1 ? str.tostring(s) + "S" : tf 
+
+        color = trend ? c_up : c_dn
+
+        dash.cell(col, 1, "", bgcolor = color)
+        dash.cell(col, 2, tff, text_color = chart.fg_color, text_size = size.normal)
+        dash.cell(col+1, 1, "", bgcolor = color(na), width = 1)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+draw_gauge(0, tf1, tp1)
+draw_gauge(2, tf2, tp2)
+draw_gauge(4, tf3, tp3)
+draw_gauge(6, tf4, tp4)
+draw_gauge(8, tf5, tp5)
+
+
+plot(f_prev1, "1", color = f_prev1 > f_prev1[offset] ? c_up : c_dn, linewidth = 3)
+plot(f_prev1, "2", color = color.new(f_prev1 > f_prev1[offset] ? c_up : c_dn, 80), linewidth = 25)
+
+// }

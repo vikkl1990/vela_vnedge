@@ -1,0 +1,110 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha X © Sushiboi77
+
+//@version=5
+indicator("∂ Limited Growth Stock-to-Flow [AlgoAlpha]", shorttitle = "∂ LG-S2F [AlgoAlpha]", overlay = true)
+
+green = input.color(#00ffbb, "Up Color") //#00ffbb
+red = input.color(#ff1100, "Down Color") //#ff1100
+
+//Getting info for BTC supply and block height
+
+s = request.security("BTC_SUPPLY", "D", close)
+h = request.security("BTC_BLOCKS", "D", close)
+
+//Getting the +/- values for the error bands based on uncertainty values derived via error propagation of the standard errors from the model parameters.
+
+ae1 = 0.17/2
+ae2 = 0.17
+ae3 = 0.17*(3.0/2)
+be1 = 0.02/2
+be2 = 0.02
+be3 = 0.02*(3.0/2)
+ce1 = (22.7*1000000000000)/2
+ce2 = 22.7*1000000000000
+ce3 = (22.7*1000000000000)*(3.0/2)
+
+////getting variations of coefficients a, b and c for the error bands using values above.
+
+a = 24.160
+a1a = a+ae1
+a1b = a+ae2
+a1c = a+ae3
+a2a = a-ae1
+a2b = a-ae2
+a2c = a-ae3
+b = 0.377
+b1a = b+be1
+b1b = b+be2
+b1c = b+be3
+b2a = b-be1
+b2b = b-be2
+b2c = b-be3
+c = 81.000*1000000000000
+c1a = c+ce1
+c1b = c+ce2
+c1c = c+ce3
+c2a = c-ce1
+c2b = c-ce2
+c2c = c-ce3
+
+//The price formula is long, therefore I split the formula into multiple parts.
+// Getting the values for the parts of the price model formula as well as the error bands.
+
+w = a*math.pow((3.64568*1000000), b)
+w1a = a1a*math.pow((3.64568*1000000), b1a)
+w1b = a1b*math.pow((3.64568*1000000), b1b)
+w1c = a1c*math.pow((3.64568*1000000), b1c)
+w2a = a2a*math.pow((3.64568*1000000), b2a)
+w2b = a2b*math.pow((3.64568*1000000), b2b)
+w2c = a2c*math.pow((3.64568*1000000), b2c)
+e = -0.0000047619*b*h
+e1a = -0.0000047619*b1a*h
+e1b = -0.0000047619*b1b*h
+e1c = -0.0000047619*b1c*h
+e2a = -0.0000047619*b2a*h
+e2b = -0.0000047619*b2b*h
+e2c = -0.0000047619*b2c*h
+r = -math.pow(2, e)
+r1a = -math.pow(2, e1a)
+r1b = -math.pow(2, e1b)
+r1c = -math.pow(2, e1c)
+r2a = -math.pow(2, e2a)
+r2b = -math.pow(2, e2b)
+r2c = -math.pow(2, e2c)
+t = math.pow(s, -b)
+t1a = math.pow(s, -b1a)
+t1b = math.pow(s, -b1b)
+t1c = math.pow(s, -b1c)
+t2a = math.pow(s, -b2a)
+t2b = math.pow(s, -b2b)
+t2c = math.pow(s, -b2c)
+
+//Putting back the formula together, where p is the price and the rest are error bands.
+
+p = (1/s)*(c*math.exp(w*r*t))
+p1a = (1/s)*(c1a*math.exp(w1a*r1a*t1a))
+p1b = (1/s)*(c1b*math.exp(w1b*r1b*t1b))
+p1c = (1/s)*(c1c*math.exp(w1c*r1c*t1c))
+p2a = (1/s)*(c2a*math.exp(w2a*r2a*t2a))
+p2b = (1/s)*(c2b*math.exp(w2b*r2b*t2b))
+p2c = (1/s)*(c2c*math.exp(w2c*r2c*t2c))
+
+// labelling the plots so I can use the fill() function.
+
+mm = plot(p, color = color.gray)
+ul = plot(p1a, color = color.new(red, 50))
+um = plot(p1b, color = color.new(red, 70))
+uu = plot(p1c, color = color.new(red, 90))
+lu = plot(p2a, color = color.new(green, 50))
+lm = plot(p2b, color = color.new(green, 70))
+ll = plot(p2c, color = color.new(green, 90))
+
+// filling the spaces inbetween the errorbands and the price to mark out overbought and oversold conditions.
+
+fill(mm, ul, color = color.new(red, 50))
+fill(ul, um, color = color.new(red, 70))
+fill(um, uu, color = color.new(red, 90))
+fill(ll, lm, color = color.new(green, 90))
+fill(lm, lu, color = color.new(green, 70))
+fill(lu, mm, color = color.new(green, 50))

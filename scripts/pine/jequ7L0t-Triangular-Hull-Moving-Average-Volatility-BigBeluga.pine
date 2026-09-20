@@ -1,0 +1,62 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Triangular Hull Moving Average + Volatility [BigBeluga]", "THMA + Volatility [BigBeluga]", overlay = true)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int  len_  = input.int(40, "Length")
+float source = input.source(close, "Source")
+bool volat = input.bool(true, "Volatility", inline = "vola"), len_vol = input.int(15, "", inline = "vola")
+color_u = input.color(#16e5a0, "", inline = "colors")
+color_d = input.color(#741ddd, "", inline = "colors")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float volatility = ta.hma(high-low, len_vol)
+var string trend = ""
+
+vv = ta.percentile_nearest_rank(volatility, 1000, 100)
+vol = volatility / vv
+
+// THMA
+thma(_src, _length) =>  
+    ta.wma(ta.wma(_src,_length / 3) * 3 - ta.wma(_src, _length / 2) - ta.wma(_src, _length), _length)
+    
+float thma  = thma(source, len_)
+float thma1 = thma[2]
+
+bool signal_up = ta.crossover(thma, thma1)
+bool signal_dn = ta.crossunder(thma, thma1)
+
+
+switch
+    signal_up => trend := "🢁"
+    signal_dn => trend := "🢃"
+
+// colors
+color  = thma > thma1 ? color_u : color_d
+color1 = color
+// }
+
+atr = ta.atr(200)
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Hull Plot
+plotcandle(thma, thma  + volatility, thma1 - volatility, thma1, "", color.new(color1, volat ? 40 : 0), color.new(color1, volat ? 40 : 100), bordercolor = color.new(color1,0))
+
+// Signals
+plotshape(signal_up ? thma1 - atr : na, "Up", shape.triangleup, location.absolute, color = color.new(color, 60), size = size.small, force_overlay = true)
+plotshape(signal_up ? thma1 - atr : na, "Up", shape.triangleup, location.absolute, color = color.new(color, 0 ), size = size.tiny, force_overlay = true)
+
+plotshape(signal_dn ? thma1 + atr : na, "Dn", shape.triangledown, location.absolute, color = color.new(color, 60), size = size.small, force_overlay = true)
+plotshape(signal_dn ? thma1 + atr : na, "Dn", shape.triangledown, location.absolute, color = color.new(color, 0 ), size = size.tiny, force_overlay = true)
+
+if barstate.islast
+    dash = table.new(position.bottom_right, 10, 10, bgcolor = color.new(chart.fg_color, 90), border_color = chart.bg_color, border_width = 5)
+    dash.cell(0, 0, "Trend: "+ trend, text_color = trend == "🢃" ? color_d : color_u)
+    dash.cell(0, 1, "Volatility: "+ str.tostring(vol*100, format.percent), text_color = chart.fg_color)
+
+// }

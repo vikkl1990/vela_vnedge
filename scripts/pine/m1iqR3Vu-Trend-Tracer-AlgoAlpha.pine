@@ -1,0 +1,76 @@
+//@version=6
+indicator("Trend Tracer [AlgoAlpha]", shorttitle="AlgoAlpha - Trend Tracer", overlay=true)
+
+group_calcs = "Calculations"
+group_app = "Appearance"
+
+length = input.int(20, minval = 1, title="Length", group=group_calcs, tooltip="Main length for the indicator, a larger value results in longer term signals")
+
+st1_factor = input.float(0.5, title="Main Factor", group=group_calcs, tooltip="Factor for the first Supertrend calculation step.")
+st1_period = input.int(10, title="Main ATR Period", group=group_calcs, tooltip="ATR Period for the first Supertrend calculation step.")
+
+st2_factor = input.float(0.7, title="Signal Factor", group=group_calcs, tooltip="Factor for the second Supertrend calculation step.")
+st2_period = input.int(14, title="Signal ATR Period", group=group_calcs, tooltip="ATR Period for the second Supertrend calculation step.")
+
+green = input.color(#00ffbb, title = "Bullish Colour", group = group_app, tooltip = "Color used for bullish visuals and positive sentiment texts.")
+red   = input.color(#ff1100, title = "Bearish Colour", group = group_app, tooltip = "Color used for bearish visuals and negative sentiment texts.")
+
+lower =  ta.lowest(length)
+upper =  ta.highest(length)
+basis =  math.avg(upper, lower)
+
+calculateATR(source, atrLength) =>
+    highestHigh = ta.highest(source, atrLength)
+    lowestLow = ta.lowest(source, atrLength)
+    trueRange = na(highestHigh[1]) ? highestHigh - lowestLow : math.max(highestHigh - lowestLow, math.abs(highestHigh - source[1]), math.abs(lowestLow - source[1]))
+    ta.rma(trueRange, atrLength)
+
+calculateSupertrend(factor, atrPeriod, source) =>
+    priceSource = source
+    atr = calculateATR(source, atrPeriod)
+    upperBand = priceSource + factor * atr
+    lowerBand = priceSource - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand := lowerBand > prevLowerBand or source[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or source[1] > prevUpperBand ? upperBand : prevUpperBand
+    int trendDirection = na 
+    float supertrendValue = na
+    prevSupertrend = supertrendValue[1]
+    if na(atr[1]) 
+        trendDirection := 1
+    else if prevSupertrend == prevUpperBand
+        trendDirection := source > upperBand ? -1 : 1
+    else
+        trendDirection := source < lowerBand ? 1 : -1
+    supertrendValue := trendDirection == -1 ? lowerBand : upperBand
+    [supertrendValue, trendDirection]
+
+[stv, dir] = calculateSupertrend(st1_factor, st1_period, basis)
+[stv_, dir_] = calculateSupertrend(st2_factor, st2_period, stv)
+
+
+p1 = plot(stv_, color = color.new(dir_ > 0 ? red : green, 50))
+p2 = plot(stv, color = color.new(dir_ > 0 ? red : green, 50), linewidth = 3)
+
+dist = ta.rsi(close-stv, 14)
+col = dir_ > 0 ? red : green
+
+fill(p1, p2, color.from_gradient(dist, 0, 100, chart.bg_color, color.new(col, 50)))
+
+lwst = ta.lowest(14)
+hst =  ta.highest(14)
+
+bullish_cond = ta.crossunder(dir_, 0)
+bearish_cond = ta.crossover(dir_, 0)
+
+plotshape(bullish_cond ? lwst : na, "Bullish Signal", shape.labelup, location.absolute, green, size = size.small, text = "▲", textcolor = chart.fg_color)
+plotshape(bearish_cond ? hst : na, "Bearish Signal", shape.labeldown, location.absolute, red, size = size.small, text = "▼", textcolor = chart.fg_color)
+
+plotchar(dir_ < 0 and close > stv and open < stv ? lwst : na, "Bullish Bounce", "▲", location.absolute, green, size = size.tiny)
+plotchar(dir_ > 0 and close < stv and open > stv ? hst : na, "Bearish Bounce", "▼", location.absolute, red, size = size.tiny)
+
+
+//ALERTS
+alertcondition(bullish_cond, title="Bullish Trend Change", message="Trend changed to Bullish")
+alertcondition(bearish_cond, title="Bearish Trend Change", message="Trend changed to Bearish")

@@ -1,0 +1,205 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © HunterAlgos
+
+//@version=5
+indicator("Psychological Support/Resistence [HunterAlgos]", shorttitle = "Psychological Support/Resistence [1.0.0]", overlay = true, max_boxes_count = 500, max_lines_count = 500)
+
+num    = input.int   (3    , "Box"                                                            , group = "Settings")
+thresh = input.int   (2    , "Number of sequential candle"                                    , group = "Settings")
+src    = input.string("Avg", "Source"                     , options = ["Avg", "Open", "Close"], group = "Settings")
+stxt   = input.bool(false  , "Hide volume"                                                    , group = "Settings")
+
+cssbull = input.color(color.aqua , "Support"   , group = "Colors")
+cssbear = input.color(color.red  , "Resistence", group = "Colors")
+textcss = input.color(color.white, "Text"      , group = "Colors")
+
+textcss := stxt ? color.new(color.white, 100) : textcss
+
+float _src = na
+switch src
+    "Avg"   => _src := math.avg(high[thresh - 1], low[thresh - 1])
+    "Close" => _src := close[thresh - 1]
+    "Open"  => _src := open[thresh - 1]
+
+type point
+    float[] bl
+    float[] bo
+    int  [] bt
+
+    float[] sh
+    float[] so
+    int  [] st
+
+    string[] vu
+    string[] vd
+
+type draw
+    box [] bx
+    line[] ln
+
+    box [] sbx
+    line[] sln
+
+    line[] upext
+    line[] dnext
+
+
+
+var p = point.new(array.new<float>(), array.new<float>(), array.new<int>(), array.new<float>(), array.new<float>(), array.new<int> (), array.new<string>(), array.new<string>())
+var d = draw.new (array.new<box>  (), array.new<line> (), array.new<box>(), array.new<line> (), array.new<line> (), array.new<line>())
+
+up = close > open
+dn = close < open
+
+check(bool bull) =>
+    point = bull ? close > open : close < open
+    var y = array.new<int>()
+    y.clear()
+    for i = 0 to thresh - 1
+        if point[i]
+            y.push(1)
+
+    y.sum()
+
+vol(bool bull) =>
+    var vol = array.new<float>()
+    vol.clear()
+    for i = 0 to thresh - 1
+        vol.push(volume[i])
+    out = str.tostring(math.abs(vol.sum()))
+    if bull
+        p.vu.push(out)
+    if bull == false
+        p.vd.push(out)
+
+if check(true) == thresh and dn[thresh]
+    p.bl.unshift(low[thresh - 1])
+    p.bt.unshift(time - (time - time[1]) * thresh + 1)
+    p.bo.unshift(_src)
+    vol(true)
+
+if check(false) == thresh and up[thresh]
+    p.sh.unshift(high[thresh - 1])
+    p.st.unshift(time - (time - time[1]) * thresh + 1)
+    p.so.unshift(_src)
+    vol(false)
+
+rm(bool bull) =>
+    if barstate.isconfirmed
+        target = bull ? p.bl : p.sh
+        for stuff in target
+            idx = target.indexof(stuff)
+            if bull
+                if close < stuff
+                    p.bl.remove(idx)
+                    p.bo.remove(idx)
+                    p.bt.remove(idx)
+                   
+          
+            if bull == false
+                if close > stuff
+                    p.sh.remove(idx)
+                    p.so.remove(idx)
+                    p.st.remove(idx)
+
+overlap(bool bull) =>
+    if bull
+        for i = 0 to d.bx.size() - 1
+            gbox = d.bx.get(i)
+            gline = d.ln.get(i)
+            if d.ln.size() > 0
+                if line.get_y2(d.ln.first()) < gbox.get_top()
+                    p.bl.remove(i)
+                    p.bo.remove(i)
+                    p.bt.remove(i)
+
+
+
+
+create(bool bull,color css) =>
+    if barstate.isfirst
+        if bull
+            for i = 0 to num - 1
+                d.bx   .unshift(box.new (na, na, na, na, xloc = xloc.bar_time, bgcolor = color.new(css, 80), border_color = color.new(color.white, 100)))
+                d.ln   .unshift(line.new(na, na, na, na, xloc = xloc.bar_time, color = color.new(css, 0), width = 2))
+                d.upext.unshift(line.new(na, na, na, na, xloc = xloc.bar_time, color = color.new(css, 0), width = 2, extend = extend.right, style = line.style_dashed))
+        if bull == false
+            for i = 0 to num - 1
+                d.sbx.unshift(box.new (na, na, na, na, xloc = xloc.bar_time, bgcolor = color.new(css, 80), border_color = color.new(color.white, 100)))
+                d.sln.unshift(line.new(na, na, na, na, xloc = xloc.bar_time, color = color.new(css, 0), width = 2))   
+                d.dnext.unshift(line.new(na, na, na, na, xloc = xloc.bar_time, color = color.new(css, 0), width = 2, extend = extend.right, style = line.style_dashed))
+
+get(bool bull) =>
+    if barstate.islast
+        if bull
+            if d.bx.size() > 0
+                for i = 0 to math.min(num - 1, d.bx.size() - 1)
+                    gbox  = d.bx.get(i)
+                    gline = d.ln.get(i)
+                    ext   = d.upext.get(i)
+
+                    gbox.set_left  (p.bt.get(i))
+                    gbox.set_right (time)
+                    gbox.set_top   (p.bo.get(i))
+                    gbox.set_bottom(p.bl.get(i))
+                    gbox.set_text(p.vu.get(i))
+                    gbox.set_text_color(textcss)
+                    top = gbox.get_top()
+                    bottom = gbox.get_bottom()
+
+                    gline.set_x1(p.bt.get(i))
+                    gline.set_x2(time)
+                    gline.set_y1(p.bl.get(i))
+                    gline.set_y2(p.bl.get(i))
+
+                    ext.set_x1(time)
+                    ext.set_x2(time + (time - time[1]))
+                    ext.set_y1(p.bl.get(i))
+                    ext.set_y2(p.bl.get(i))
+
+                    if (open > bottom and open < top) or (low > bottom and low < top)
+                        p.bl.shift()
+                        p.bo.shift()
+                        p.bt.shift()
+
+        if bull == false
+            if d.sbx.size() > 0
+                for i = 0 to math.min(num - 1, d.sbx.size() - 1)
+                    gbox  = d.sbx.get(i)
+                    gline = d.sln.get(i)
+                    ext   = d.dnext.get(i)
+
+                    gbox.set_left  (p.st.get(i))
+                    gbox.set_right (time)
+                    gbox.set_top   (p.sh.get(i))
+                    gbox.set_bottom(p.so.get(i))
+                    gbox.set_text(p.vd.get(i))
+                    gbox.set_text_color(textcss)
+                    top = gbox.get_top()
+                    bottom = gbox.get_bottom()
+                    if open[1] < bottom and open[1] > top
+                        p.sh.shift()
+                        p.so.shift()
+                        p.st.shift()
+
+                    gline.set_x1(p.st.get(i))
+                    gline.set_x2(time)
+                    gline.set_y1(p.sh.get(i))
+                    gline.set_y2(p.sh.get(i))    
+
+                    ext.set_x1(time)
+                    ext.set_x2(time + (time - time[1]))
+                    ext.set_y1(p.sh.get(i))
+                    ext.set_y2(p.sh.get(i)) 
+
+            
+rm(true)
+rm(false)
+
+create(true, cssbull)
+create(false, cssbear)
+
+get(true)
+get(false)
+
+overlap(true)

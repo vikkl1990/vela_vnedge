@@ -1,0 +1,377 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("HTF Log-Regression Volume Profile [BigBeluga]", overlay=true, max_lines_count=500, max_boxes_count=500, max_polylines_count=100)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+group_htf     = "Higher Timeframe Settings"
+group_chan    = "Channel & Dimensions"
+group_lines   = "Visuals & Colors"
+group_stats   = "Volume Profile & Statistics"
+group_hist    = "History & Extension"
+
+bool    auto_htf     = input.bool(true, "Auto HTF (Adaptive to Chart Timeframe)", tooltip="Automatically adjusts the higher timeframe based on the current chart resolution.", group=group_htf)
+string  manual_htf   = input.timeframe("D", "Manual Higher Timeframe Session", active = not auto_htf, tooltip="Defines the higher timeframe session manually when Auto HTF is disabled.", group=group_htf)
+
+float   channel_width = input.float(1, "Channel Width (StDev for VP)", tooltip="Number of standard deviations used to determine the width of the regression channel and volume profile bounds.", group=group_chan)
+
+int     line_w       = input.int(2, "Line Width", tooltip="Thickness of the session high and low lines.", group=group_lines)
+bool    mid_disp     = input.bool(true, "Display Mid/Open Line", tooltip="Toggles the display of the middle/equilibrium line within the active session.", group=group_lines)
+color   col_high     = input.color(color.blue, "High Line Color", tooltip="Color assigned to the session high boundary line.", group=group_lines)
+color   col_mid      = input.color(color.gray, "Mid Line Color", tooltip="Color assigned to the session middle/equilibrium line.", group=group_lines)
+color   col_low      = input.color(color.blue, "Low Line Color", tooltip="Color assigned to the session low boundary line.", group=group_lines)
+color   col_bull     = input.color(color.green, "Bullish Color", tooltip="Color assigned to bullish elements and positive volume delta.", group=group_lines)
+color   col_bear     = input.color(color.red, "Bearish Color", tooltip="Color assigned to bearish elements and negative volume delta.", group=group_lines)
+
+// New Channel Line Style & Color Inputs
+color   col_chan_upper = input.color(color.new(color.gray, 0), "Channel Upper Line Color", group=group_lines)
+string  style_chan_upper = input.string(line.style_dashed, "Channel Upper Line Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group=group_lines)
+color   col_chan_lower = input.color(color.new(color.gray, 0), "Channel Lower Line Color", group=group_lines)
+string  style_chan_lower = input.string(line.style_dashed, "Channel Lower Line Style", options=[line.style_solid, line.style_dashed, line.style_dotted], group=group_lines)
+
+bool    show_stats   = input.bool(true, "Show Statistics Label", tooltip="Displays buy volume, sell volume, and delta statistics box.", group=group_stats)
+bool    show_vp      = input.bool(true, "Show Volume Profile", tooltip="Toggles the rendering of the logarithmic regression volume profile inside the channel.", group=group_stats)
+int     bin_count    = input.int(30, "Volume Profile Bins", minval=5, maxval=100, tooltip="Resolution and number of horizontal histogram bins inside the volume profile.", group=group_stats)
+int     max_w        = input.int(15, "Volume Profile Max Width (Bars)", tooltip="Maximum horizontal length of the volume profile bars measured in chart bars.", group=group_stats)
+bool    show_poc     = input.bool(true, "Show POC Line", tooltip="Toggles the Point of Control (POC) line highlighting the highest volume bin.", group=group_stats)
+
+bool    extend_ch    = input.bool(true, "Extend Levels Forward", tooltip="Extends session high, low, and mid levels forward into future bars.", group=group_hist)
+int     ext_bars     = input.int(25, "Extension Bars", tooltip="Number of bars to project the levels forward when extension is enabled.", group=group_hist)
+int     max_history  = input.int(10, "Max Historical Sessions to Keep", minval=1, maxval=50, tooltip="Limits the number of historical finished sessions kept on the chart.", group=group_hist)
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+//  Helper: Auto-Select HTF based on Chart Resolution 
+f_get_auto_htf() =>
+    string tf = timeframe.period
+    string res = "D"
+    
+    int_val = str.tonumber(tf)
+    if not na(int_val)
+        if int_val <= 1
+            res := "240" 
+        else if int_val < 15
+            res := "720"    
+        else if int_val >= 15 and int_val < 60
+            res := "2D"    
+        else if int_val >= 60 and int_val < 240
+            res := "1W"     
+        else if int_val >= 240 and int_val < 1440
+            res := "1M"      
+        else
+            res := "12M"   
+    else
+        if tf == "1D" 
+            res := "2M"
+        else if tf == "2D" or tf == "3D"
+            res := "3M"
+        else if tf == "W" or tf == "1W" or tf == "1M"
+            res := "12M"
+        else
+            res := "D"
+    res
+
+string htf_period = auto_htf ? f_get_auto_htf() : manual_htf
+
+//  Helper: Format Volume Strings 
+f_format_vol(val) =>
+    val >= 1e9 ? str.tostring(val / 1e9, "#.##") + "B" :
+     val >= 1e6 ? str.tostring(val / 1e6, "#.##") + "M" :
+     val >= 1e3 ? str.tostring(val / 1e3, "#.##") + "K" :
+     str.tostring(val, "#.##")
+
+//  Helper: Dynamic HTF Label Prefix 
+f_get_tf_label(tf_str) =>
+    string res = tf_str
+    if tf_str == "D" or tf_str == "1D"
+        res := "Daily"
+    else if tf_str == "W" or tf_str == "1W"
+        res := "Weekly"
+    else if tf_str == "M" or tf_str == "1M"
+        res := "Monthly"
+    else
+        int_val = str.tonumber(tf_str)
+        if not na(int_val)
+            if int_val >= 60 and int_val % 60 == 0
+                res := str.tostring(int_val / 60) + "h"
+            else
+                res := tf_str + "m"
+    res
+
+//  Logarithmic Regression Calculation Engine 
+f_log_regression(src, length) =>
+    float sum_X    = 0.0
+    float sum_Y    = 0.0
+    float sumXSqr = 0.0
+    float sumXY   = 0.0
+
+    for i = 0 to length - 1
+        val = math.log(src[i])
+        per = i + 1.0
+        sum_X    += per
+        sum_Y    += val
+        sumXSqr += per * per
+        sumXY   += val * per
+
+    slope     = (length * sumXY - sum_X * sum_Y) / (length * sumXSqr - sum_X * sum_X)
+    intercept = (sum_Y - slope * sum_X) / length
+
+    [slope, intercept]
+
+//  Session Container Type 
+type SessionDrawings
+    line high_line
+    line low_line
+    line mid_line
+    label stats_lbl
+    polyline vp_poly
+    line poc_line
+    line vp_upper_line
+    line vp_lower_line
+
+// Persistent storage for historical finished sessions
+var SessionDrawings[] historical_sessions = array.new<SessionDrawings>()
+
+// Active session drawing references
+var line active_high = na
+var line active_low  = na
+var line active_mid  = na
+var line active_high_ext = na
+var line active_low_ext  = na
+var line active_mid_ext  = na
+var label active_stats = na
+var polyline active_vp = na
+var line active_poc  = na
+var line active_vp_upper = na
+var line active_vp_lower = na
+
+//  Dynamic Bar Counter for Higher Timeframe Session 
+bool is_new_htf = timeframe.change(htf_period)
+
+var int htf_length = 1
+if is_new_htf
+    if not na(active_high)
+        array.unshift(historical_sessions, SessionDrawings.new(active_high, active_low, active_mid, active_stats, active_vp, active_poc, active_vp_upper, active_vp_lower))
+        
+        if array.size(historical_sessions) > max_history
+            SessionDrawings removed = array.pop(historical_sessions)
+            line.delete(removed.high_line)
+            line.delete(removed.low_line)
+            line.delete(removed.mid_line)
+            label.delete(removed.stats_lbl)
+            polyline.delete(removed.vp_poly)
+            line.delete(removed.poc_line)
+            line.delete(removed.vp_upper_line)
+            line.delete(removed.vp_lower_line)
+
+    active_high := na
+    active_low  := na
+    active_mid  := na
+    active_stats:= na
+    active_vp   := na
+    active_poc  := na
+    active_vp_upper := na
+    active_vp_lower := na
+    htf_length  := 1
+else
+    htf_length  += 1
+
+int start_idx = bar_index[htf_length - 1]
+int mid_bar_idx = start_idx + math.round((htf_length - 1) / 2)
+
+[slope, intercept] = f_log_regression(close, htf_length)
+
+float reg_start    = math.exp(intercept + slope * htf_length)
+float reg_end      = math.exp(intercept)
+float deviation    = ta.stdev(close, htf_length)
+
+float htf_high     = ta.highest(high, htf_length)
+float htf_low      = ta.lowest(low, htf_length)
+float htf_mid      = (htf_high + htf_low) / 2
+
+float upper_start = reg_start + deviation * channel_width
+float upper_end   = reg_end + deviation * channel_width
+float lower_start = reg_start - deviation * channel_width
+float lower_end   = reg_end - deviation * channel_width
+
+// Volume Profile Data Collection Loop
+float buy_vol = 0.0
+float sell_vol = 0.0
+float[] bin_vols = array.new_float(bin_count, 0.0)
+
+for i = 0 to htf_length - 1
+    if close[i] > open[i]
+        buy_vol += volume[i]
+    else if close[i] < open[i]
+        sell_vol += volume[i]
+    
+    if show_vp
+        float hist_reg_mid    = math.exp(intercept + slope * i)
+        float hist_upper_line = hist_reg_mid + deviation * channel_width
+        float hist_lower_line = hist_reg_mid - deviation * channel_width
+        float hist_height     = hist_upper_line - hist_lower_line
+        
+        if close[i] >= hist_lower_line and close[i] <= hist_upper_line
+            float bar_bin_step = hist_height / bin_count
+            int bin_index = math.floor((close[i] - hist_lower_line) / bar_bin_step)
+            bin_index := math.min(math.max(bin_index, 0), bin_count - 1)
+            array.set(bin_vols, bin_index, array.get(bin_vols, bin_index) + volume[i])
+
+float total_vol = buy_vol + sell_vol
+float delta_pct = total_vol > 0 ? ((buy_vol - sell_vol) / total_vol) * 100 : 0.0
+
+string buy_str   = f_format_vol(buy_vol)
+string sell_str  = f_format_vol(sell_vol)
+string delta_str = (delta_pct >= 0 ? "+" : "") + str.tostring(delta_pct, "#.#") + "%"
+string tf_header = f_get_tf_label(htf_period)
+string stats_text = tf_header + "\nBuy: " + buy_str + "\nSell: " + sell_str + "\nDelta: " + delta_str
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// 1. Update Active Session High Line
+if na(active_high)
+    active_high := line.new(start_idx, htf_high, bar_index, htf_high, width=line_w, color=col_high)
+else
+    active_high.set_xy1(start_idx, htf_high)
+    active_high.set_xy2(bar_index, htf_high)
+    active_high.set_width(line_w)
+
+// 2. Update Active Session Low Line
+if na(active_low)
+    active_low := line.new(start_idx, htf_low, bar_index, htf_low, width=line_w, color=col_low)
+else
+    active_low.set_xy1(start_idx, htf_low)
+    active_low.set_xy2(bar_index, htf_low)
+    active_low.set_width(line_w)
+
+// 3. Update Active Session Mid Line
+if mid_disp
+    if na(active_mid)
+        active_mid := line.new(start_idx, htf_mid, bar_index, htf_mid, color=col_mid, style=line.style_dashed)
+    else
+        active_mid.set_xy1(start_idx, htf_mid)
+        active_mid.set_xy2(bar_index, htf_mid)
+else
+    line.delete(active_mid)
+
+// 4. Process Extensions
+if extend_ch
+    if na(active_high_ext)
+        active_high_ext := line.new(bar_index, htf_high, bar_index + ext_bars, htf_high, color=col_high, style=line.style_dashed, width=line_w)
+    else
+        active_high_ext.set_xy1(bar_index, htf_high)
+        active_high_ext.set_xy2(bar_index + ext_bars, htf_high)
+        active_high_ext.set_width(line_w)
+
+    if na(active_low_ext)
+        active_low_ext := line.new(bar_index, htf_low, bar_index + ext_bars, htf_low, color=col_low, style=line.style_dashed, width=line_w)
+    else
+        active_low_ext.set_xy1(bar_index, htf_low)
+        active_low_ext.set_xy2(bar_index + ext_bars, htf_low)
+        active_low_ext.set_width(line_w)
+
+    if mid_disp
+        if na(active_mid_ext)
+            active_mid_ext := line.new(bar_index, htf_mid, bar_index + ext_bars, htf_mid, color=col_mid, style=line.style_dotted)
+        else
+            active_mid_ext.set_xy1(bar_index, htf_mid)
+            active_mid_ext.set_xy2(bar_index + ext_bars, htf_mid)
+    else
+        line.delete(active_mid_ext)
+else
+    line.delete(active_high_ext)
+    line.delete(active_low_ext)
+    line.delete(active_mid_ext)
+
+// 5. Render Statistics Label
+if show_stats
+    if na(active_stats)
+        active_stats := label.new(mid_bar_idx, htf_high, text=stats_text, style=label.style_label_down, color=color.new(color.black, 100), textcolor=chart.fg_color, size=size.small)
+    else
+        active_stats.set_xy(mid_bar_idx, htf_high)
+        active_stats.set_text(stats_text)
+else
+    label.delete(active_stats)
+
+// 6. Render Active Polyline Volume Profile, POC, and Profile Upper/Lower Lines
+if show_vp
+    float max_bin_vol = array.max(bin_vols)
+    int poc_bin_idx = bin_vols.indexof(max_bin_vol) 
+    
+    chart.point[] vp_points = array.new<chart.point>()
+    float total_start_height = upper_start - lower_start
+    float start_bin_step = total_start_height / bin_count
+    float channel_slope_per_bar = (reg_end - reg_start) / htf_length
+
+    if max_bin_vol > 0
+        float poc_offset_from_bottom = (poc_bin_idx + 0.5) * start_bin_step
+        float poc_start_y = lower_start + poc_offset_from_bottom
+        float poc_end_y   = lower_end + poc_offset_from_bottom
+        
+
+        bool is_poc_up = poc_end_y >= poc_start_y
+        color dynamic_color = is_poc_up ? col_bull : col_bear
+
+        for idx = 0 to bin_count - 1
+            float current_vol = array.get(bin_vols, idx)
+            int calculated_width_bars = math.round((current_vol / max_bin_vol) * max_w)
+            
+            float price_bottom_start = lower_start + (idx * start_bin_step)
+            float price_top_start    = price_bottom_start + start_bin_step
+
+            float price_bottom_projected = price_bottom_start + (channel_slope_per_bar * calculated_width_bars)
+            float price_top_projected    = price_top_start + (channel_slope_per_bar * calculated_width_bars)
+
+            array.push(vp_points, chart.point.from_index(start_idx, price_bottom_start))
+            array.push(vp_points, chart.point.from_index(start_idx + calculated_width_bars, price_bottom_projected))
+            array.push(vp_points, chart.point.from_index(start_idx + calculated_width_bars, price_top_projected))
+            array.push(vp_points, chart.point.from_index(start_idx, price_top_start))
+
+        polyline.delete(active_vp)
+        active_vp := polyline.new(vp_points, line_color=dynamic_color, fill_color=color.new(dynamic_color, 85), closed=true, line_width=1, force_overlay=true)
+        
+        // Profile Upper Channel Line with custom styles and colors
+        if na(active_vp_upper)
+            active_vp_upper := line.new(start_idx, upper_start, bar_index, upper_end, color=col_chan_upper, style=style_chan_upper, width=1)
+        else
+            line.set_xy1(active_vp_upper, start_idx, upper_start)
+            line.set_xy2(active_vp_upper, bar_index, upper_end)
+            line.set_color(active_vp_upper, col_chan_upper)
+            line.set_style(active_vp_upper, style_chan_upper)
+
+        // Profile Lower Channel Line with custom styles and colors
+        if na(active_vp_lower)
+            active_vp_lower := line.new(start_idx, lower_start, bar_index, lower_end, color=col_chan_lower, style=style_chan_lower, width=1)
+        else
+            line.set_xy1(active_vp_lower, start_idx, lower_start)
+            line.set_xy2(active_vp_lower, bar_index, lower_end)
+            line.set_color(active_vp_lower, col_chan_lower)
+            line.set_style(active_vp_lower, style_chan_lower)
+
+        if show_poc
+
+            slopePoc = (poc_start_y-poc_end_y)/(bar_index-start_idx)
+
+
+
+            if na(active_poc)
+                active_poc := line.new(start_idx+15, poc_start_y-slopePoc*15, bar_index, poc_end_y, color=dynamic_color, width=2, style=line.style_solid)
+            else
+                line.set_xy1(active_poc, start_idx+15, poc_start_y-slopePoc*15)
+                line.set_xy2(active_poc, bar_index, poc_end_y)
+                line.set_color(active_poc, dynamic_color)
+        else
+            line.delete(active_poc)
+    else
+        polyline.delete(active_vp)
+        line.delete(active_poc)
+        line.delete(active_vp_upper)
+        line.delete(active_vp_lower)
+else
+    polyline.delete(active_vp)
+    line.delete(active_poc)
+    line.delete(active_vp_upper)
+    line.delete(active_vp_lower)
+// }

@@ -1,0 +1,98 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Max Trend Points [BigBeluga]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+var line_up = line(na)
+var line_dn = line(na)
+var lbl_up  = label(na)
+var lbl_dn  = label(na)
+
+var highest = array.new<float>()
+var lowest = array.new<float>()
+
+var int start = na
+
+factor = input.float(2.5, step = 0.01)
+
+col_up = input.color(color.rgb(28, 194, 216), "Color Up")
+col_dn = input.color(color.rgb(228, 144, 19), "Color Dn")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+trend_line(factor)=>
+    src = hl2
+    dist = ta.hma(high-low, 200)
+    upperBand = src + factor * dist
+    lowerBand = src - factor * dist
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+
+    int _direction = na
+    float trend_line = na
+    prevTrendLine = trend_line[1]
+    if na(dist[1])
+        _direction := 1
+    else if prevTrendLine == prevUpperBand
+        _direction := close > upperBand ? -1 : 1
+    else
+        _direction := close < lowerBand ? 1 : -1
+
+    
+    trend_line := _direction == -1 ? lowerBand : upperBand
+
+    [trend_line, _direction]
+
+[trend_line, _direction] = trend_line(factor)
+
+t_change = ta.cross(_direction, 0)
+
+if t_change
+    highest.clear()
+    lowest.clear()
+    start := bar_index
+
+if t_change and _direction == 1 
+    line_dn := line.new(bar_index, close, na, na, color = chart.fg_color, style = line.style_dashed)
+    lbl_dn  := label.new(bar_index, low, color = color.new(col_dn, 50), textcolor = chart.fg_color, size = size.small, style = label.style_label_up)
+
+if t_change and _direction == -1 
+    lbl_up  := label.new(bar_index, high, color = color.new(col_up, 50), textcolor = chart.fg_color, size = size.small, style = label.style_label_down)
+    line_up := line.new(bar_index, close, na, na, color = chart.fg_color, style = line.style_dashed)
+
+if not t_change and _direction == -1 
+    highest.push(high)
+    lbl_up.set_xy(start + highest.indexof(highest.max())+1, highest.max())
+    line_up.set_xy2(start + highest.indexof(highest.max())+1, highest.max())
+
+
+if not t_change and _direction == 1 
+    lowest.push(low)
+    lbl_dn.set_xy(start + lowest.indexof(lowest.min())+1, lowest.min())
+    line_dn.set_xy2(start + lowest.indexof(lowest.min())+1, lowest.min())
+
+if line_up.get_y2() > line_up.get_y1()
+    lbl_up.set_text(str.tostring((line_up.get_y2() - line_up.get_y1()) / line_up.get_y1() * 100, format.percent))
+if line_dn.get_y2() < line_dn.get_y1()
+    lbl_dn.set_text(str.tostring((line_dn.get_y2() - line_dn.get_y1()) / line_dn.get_y1() * 100, format.percent))
+
+t_color = _direction == -1 ? col_up : col_dn
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plotshape(t_change ? trend_line : na, "Trend Change", style = shape.circle, location = location.absolute, color = t_color, size = size.tiny)
+
+t_p = plot(trend_line, "Trend Line", color = t_change ? color.new(t_color, 100) : t_color, linewidth = 2)
+m_p = plot(hl2, color = color(na), editable = false)
+
+fill(t_p, m_p, hl2, trend_line, color.new(t_color, 95), color.new(t_color, 90))
+// }

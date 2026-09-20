@@ -1,0 +1,139 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Market Pressure Index [AlgoAlpha]", "AlgoAlpha - Market Pressure", explicit_plot_zorder = true)
+
+//–––INPUTS
+x = input.int(
+     defval = 21,
+     title  = "Pressure Look Back",
+     group  = "Calculation Settings",
+     tooltip= "Sets how many bars back are used to sum bullish or bearish volatility before applying the moving average."
+ )
+
+deviation_period = input.int(
+     defval = 200,
+     title  = "Deviation LookBack",
+     group  = "Calculation Settings",
+     tooltip= "Defines the period used to calculate the deviation-based upper band for volatility measurements."
+ )
+
+mult = input.int(
+     defval = 3,
+     title  = "Deviation Multiplier",
+     group  = "Calculation Settings",
+     tooltip= "Scales the standard deviation of the average volatility by this multiplier for the upper band."
+ )
+
+// Visualization
+green = input.color(
+     defval = #00ffbb,
+     title  = "Bullish Color",
+     group  = "Visualization",
+     tooltip= "Sets the color used to represent bullish signals and breakout lines. This color is displayed when a bullish crossover is detected, highlighting potential upward momentum."
+ ) 
+
+red = input.color(
+     defval = #ff1100,
+     title  = "Bearish Color",
+     group  = "Visualization",
+     tooltip= "Sets the color used to represent bearish signals and breakout lines. This color is displayed when a bearish crossover is detected, highlighting potential downward momentum."
+ )
+
+//–––CALCULATIONS
+dir   = close > open ? 1 : -1
+normal_volatility = math.abs(close - open)
+
+var bullvolatility = 0.0
+var bearvolatility = 0.0
+
+bullvolatility := dir == 1 ? normal_volatility : 0
+bearvolatility := dir == -1 ? normal_volatility : 0
+
+bullv = ta.hma(math.sum(bullvolatility, x), 21)
+bearv = ta.hma(math.sum(bearvolatility, x), 21)
+
+// Determine state
+var state = 0
+if ta.crossover(bullv, bearv)
+    state := 1
+if ta.crossover(bearv, bullv)
+    state := -1
+
+// Basis and upper band
+basis = ta.sma(math.avg(bearv, bullv), deviation_period)
+upper = basis + ta.stdev(math.avg(bearv, bullv), int(deviation_period / 3)) * mult
+
+// Color gradients
+v = math.max(bearv, bullv)
+n = (v - ta.lowest(v, 200)) / (ta.highest(v, 200) - ta.lowest(v, 200))
+
+bullcol = color.from_gradient(n, 0, 1, color.new(green, 70), green)
+bearcol = color.from_gradient(n, 0, 1, color.new(red, 70), red)
+
+//–––PLOTS (all labeled)
+plot(
+     state == -1 ? bearv : 0,
+     title     = "Active Bearish Vol Columns",
+     color     = (state == 1 ? color.new(chart.bg_color, 0) : bearcol),
+     style     = plot.style_columns,
+     histbase  = 0.0010
+ )
+
+plot(
+     bullv,
+     title     = "Bullish Vol Columns",
+     style     = plot.style_columns,
+     color     = (state == -1 ? color.new(chart.bg_color, 0) : bullcol),
+     histbase  = 0.0010
+ )
+
+plot(
+     state != -1 ? bearv : 0,
+     title     = "Inactive Bearish Vol Columns",
+     color     = (state == 1 ? color.new(chart.bg_color, 0) : na),
+     style     = plot.style_columns,
+     histbase  = 0.0010
+ )
+
+plot(
+     basis,
+     title     = "Volatility Basis",
+     color     = color.gray,
+     style     = plot.style_circles
+ )
+
+plot(
+     upper,
+     title     = "Upper Deviation Band",
+     color     = color.from_gradient((v - upper) / (upper - basis), 0, 1, color.new(color.gray, 0), color.new(color.gray, 90)),
+     linewidth = 3
+ )
+
+plotchar(
+     ta.crossunder(v, upper) ? upper + (upper - basis) * 0.3 : na,
+     title    = "TP Signal",
+     char     = "🔸",
+     location = location.absolute,
+     size     = size.tiny
+ )
+
+//–––ALERT CONDITIONS
+alertcondition(
+     ta.crossover(bullv, bearv),
+     title   = "Bullish Signal",
+     message = "Bullish signal triggered."
+ )
+
+alertcondition(
+     ta.crossover(bearv, bullv),
+     title   = "Bearish Signal",
+     message = "Bearish signal triggered."
+ )
+
+alertcondition(
+     ta.crossunder(v, upper),
+     title   = "TP Signal",
+     message = "Take Profit signal triggered."
+ )

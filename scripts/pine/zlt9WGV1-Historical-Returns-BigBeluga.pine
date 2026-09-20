@@ -1,0 +1,144 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Historical Returns [BigBeluga]", overlay = false, max_bars_back = 1000, max_labels_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+daily_ret        = input.bool(true, "Show Daily Return Bubbles", tooltip = "Displays daily returns as bubbles. Larger bubbles represent higher return percentages.", inline = "1")
+display_extraret = input.bool(false, "Extreme Returns", tooltip = "Displays daily return values above +4% or below -4%.", inline = "1")
+current_yret     = input.bool(true, "Show Current Year Return", tooltip = "Displays the current year's return inside the dashboard.")
+current_mret     = input.bool(true, "Show Current Month Avg Return", tooltip = "Displays the current month's average return inside the dashboard.")
+monthly_ret      = input.bool(true, "Show Monthly Returns", tooltip = "Displays historical monthly returns.")
+monthly_RetType  = input.string("Cumulative", "Monthly Returns Performance Type", ["Average", "Cumulative"], tooltip = "Change the type of the displayed historical monthly returns curves") == "Average"
+
+green = input.color(#17c5e4, "+", inline = "2")
+red   = input.color(#e67e1c, "-", inline = "2")
+
+var month_avg = array.new<float>(31, na)
+var indx = 0
+
+monthly_returns = float(na)
+ret = float(na)
+retY = float(na)
+
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+new_day = timeframe.change("D")
+new_month = timeframe.change("M")
+new_year = timeframe.change("12M")
+
+getMonthName(m) =>
+    m == 1  ? "January" :
+     m == 2  ? "February" :
+     m == 3  ? "March" :
+     m == 4  ? "April" :
+     m == 5  ? "May" :
+     m == 6  ? "June" :
+     m == 7  ? "July" :
+     m == 8  ? "August" :
+     m == 9  ? "September" :
+     m == 10 ? "October" :
+     m == 11 ? "November" :
+     m == 12 ? "December" : "Invalid"
+
+
+
+if timeframe.in_seconds("") == timeframe.in_seconds("D")
+    ret             := request.security(syminfo.tickerid, "D", (close - open) / open * 100)
+    monthly_returns := request.security(syminfo.tickerid, "M", (close[1] - open[1]) / open[1], lookahead = barmerge.lookahead_on)
+    retY            := request.security(syminfo.tickerid, "12M", (close - open) / open * 100)
+
+
+    if new_month
+
+        for i = 0 to month_avg.size() - 1
+            month_avg.set(i, na)
+
+        indx := bar_index
+        if monthly_ret
+            label.new(bar_index- (indx-indx[1])/2, -20, getMonthName(month[1]) + "\n" + str.tostring(monthly_returns, "##.##%"), style = label.style_label_center, color = color.new(chart.bg_color, 60), textcolor = monthly_returns < 0 ? red : green)
+
+    if new_day 
+        month_avg.set(dayofmonth - 1, ret)
+
+
+    mReturns = monthly_RetType ? month_avg.avg() : month_avg.sum()
+
+    if barstate.islast
+        label.delete(label.new(bar_index, mReturns, getMonthName(month[1]) + "\n" + str.tostring(mReturns/100, "##.##%"), style = label.style_label_left, color = color.new(mReturns > 0 ? green : red, 50), textcolor = chart.fg_color)[1])
+
+
+    if (ret > 4 or ret < -4) and display_extraret and daily_ret
+        label.new(bar_index, ret, str.tostring(ret/100, "##.##%"), style = ret > 0 ? label.style_label_down : label.style_label_up, color = color(na), textcolor = ret > 0 ? green : red)
+
+
+
+    if barstate.islast
+
+        dash = table.new(position.middle_right, 100, 100, border_color = chart.bg_color, border_width = 1)
+        dash.merge_cells(0, 0, 6, 0)
+        dash.cell(0, 0, str.upper( getMonthName(month) ), text_color = chart.fg_color)
+
+        for row = 1 to 5
+            for col = 0 to 6
+                dash.cell(col, row, "------", bgcolor = color.new(chart.fg_color, 90))
+
+
+        for i = 0 to dayofmonth - 1
+            var col = 0
+            row = math.floor(i / 7) + 1
+
+            if i % 7 == 0 
+                col := 0
+            else 
+                col += 1
+            
+            returns =  month_avg.get( i )
+    
+            col_returns = returns > 0 ? color.from_gradient(returns, 0, 5, na, green) : color.from_gradient(returns, -5, 0, red, na)
+
+            dash.cell(col, row, str.tostring(returns/100, "##.##%"), bgcolor = col_returns, tooltip = str.tostring(dayofmonth[dayofmonth - 1-i]) + "-" + getMonthName(month), text_color = chart.fg_color)
+
+        if current_mret
+            dash.merge_cells(0, 6, 2, 6)
+            dash.cell(0, 6, monthly_RetType ? "Average " : "Cumulative " +  getMonthName(month) + "\nReturn", bgcolor = color.new(chart.fg_color, 80) , text_color = chart.fg_color)
+            dash.merge_cells(3, 6, 6, 6)
+            dash.cell(3, 6, str.tostring(mReturns/100, "##.##%"), bgcolor = color.new(chart.fg_color, 80) , text_color = color.from_gradient(month_avg.avg(), -1, 1, red, green))
+
+        if current_yret
+            dash.merge_cells(0, 7, 2, 7)
+            dash.cell(0, 7, str.tostring(year)+"\nReturn", bgcolor = color.new(chart.fg_color, 80) , text_color = chart.fg_color)
+            dash.merge_cells(3, 7, 6, 7)
+            dash.cell(3, 7, str.tostring(retY/100, "##.##%"), bgcolor = color.new(chart.fg_color, 80) , text_color = color.from_gradient(retY, -50, 50, red, green))
+else 
+    if barstate.islast
+        label.new(bar_index, 0, "⚠️USE DAILY TIMEFRAME", color = color(na), textcolor = color.orange, size = size.huge)
+
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+col_threshold = monthly_RetType ? 4 : 20
+col = color.from_gradient(ret, -5, 5, red, green)
+
+display = daily_ret ? display.all : display.none
+plot(ret < 1 and ret > -1 ? ret : na , "1%", style = plot.style_circles, color = col, display = display)
+plot(ret >= 2 and ret < 3 or ret <= -2 and ret > -3 ? ret : na, "2%", style = plot.style_circles, linewidth = 2, color = col, display = display)
+plot(ret >= 3 and ret < 4 or ret <= -3 and ret > -4 ? ret : na, "3%", style = plot.style_circles, linewidth = 3, color = col, display = display)
+plot(ret >= 4 and ret < 5 or ret <= -4 and ret > -5 ? ret : na, "4%", style = plot.style_circles, linewidth = 4, color = col, display = display)
+plot(ret >= 5 and ret < 6 or ret <= -5 and ret > -6 ? ret : na, "5%", style = plot.style_circles, linewidth = 5, color = col, display = display)
+plot(ret >= 6 and ret < 7 or ret <= -6 and ret > -7 ? ret : na, "6%", style = plot.style_circles, linewidth = 6, color = col, display = display)
+plot(ret >= 7 or ret <= -7 ? ret : na, "7%+", style = plot.style_circles, linewidth = 7, color = col, display = display)
+
+avgM_p = plot(new_month ? na : (monthly_RetType ? month_avg.avg() : month_avg.sum()), "Average/Cumulative Monthly Return", color = #868a96, style = plot.style_linebr, linewidth = 1, display = monthly_ret ? display.all : display.none)
+p0 = plot(0, "Zero Line", color = color.gray)
+
+
+fill(avgM_p, p0, col_threshold, 0, color.new(green, 10), color.new(green, 90), display = monthly_ret ? display.all : display.none)
+fill(avgM_p, p0, 0, -col_threshold, color.new(red, 90), color.new(red, 10), display = monthly_ret ? display.all : display.none)
+bgcolor(new_month ? color.new(chart.fg_color, 90) : na)
+// }

@@ -1,0 +1,140 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("MTF Oscillator Stack [BigBeluga]", overlay = true, scale = scale.none, max_bars_back = 5000, max_labels_count = 500)
+
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+scale_use = input.bool(true, "Scale", inline = "scale")
+scale_ = input.int(-150, "", inline = "scale")
+
+typeOsc = input.string("RSI", "Oscilator", ["RSI", "MFI", "Stochastic"])
+
+// Tf1 
+rsi1     = input.bool(true, "Display", group = "1")
+tf1      = input.timeframe("60", "Timeframe", group = "1", inline = "1")
+rsi_len1 = input.int(14, "RSI", group = "1", inline = "1")
+sig_len1 = input.int(14, "Signal line", group = "1", inline = "1")
+// Tf2 
+rsi2     = input.bool(true, "Display", group = "2")
+tf2      = input.timeframe("120", "Timeframe", group = "2", inline = "2")
+rsi_len2 = input.int(14, "RSI", group = "2", inline = "2")
+sig_len2 = input.int(14, "Signal line", group = "2", inline = "2")
+// Tf3 
+rsi3     = input.bool(true, "Display", group = "3")
+tf3      = input.timeframe("180", "Timeframe", group = "3", inline = "3")
+rsi_len3 = input.int(14, "RSI", group = "3", inline = "3")
+sig_len3 = input.int(14, "Signal line", group = "3", inline = "3")
+// Tf3 
+rsi4     = input.bool(true, "Display", group = "4")
+tf4      = input.timeframe("240", "Timeframe", group = "4", inline = "4")
+rsi_len4 = input.int(14, "RSI", group = "4", inline = "4")
+sig_len4 = input.int(14, "Signal line", group = "4", inline = "4")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+
+
+convert_tf(tf)=>
+
+    s = timeframe.in_seconds(tf)
+    m = timeframe.in_seconds(tf) / 60
+    h = timeframe.in_seconds(tf) / 60 / 60
+    d = timeframe.in_seconds(tf) / 60 / 60 / 24
+
+    h < 24 and h >= 1 ? str.tostring(h) + "H" :  m >= 1440 ? str.tostring(d) + "D" : m < 60 and m > 1 ? str.tostring(m) + "M" : m < 1 ? str.tostring(s) + "S" : tf 
+
+stochRsi(lengthRsi) =>
+    rsi = ta.rsi(close, lengthRsi)
+    k = ta.sma(ta.stoch(rsi, rsi, rsi, 14), 3)
+    k
+
+
+f_mtfRsi(length, sig_len, tf, lookback, offset = 0, labels = false)=>
+
+    float osc = switch typeOsc
+        "RSI" => ta.rsi(close, length)
+        "MFI" => ta.mfi(hlc3, length)
+        "Stochastic" => stochRsi(length)
+
+    sig_l = ta.sma(osc, sig_len)
+
+    [r,s]=request.security("", tf, [osc, sig_l])
+
+    var poly1 = array.new<chart.point>()
+    var poly2 = array.new<chart.point>()
+
+    if barstate.islast
+        poly1.clear()
+        poly2.clear()
+        l0 = line.new(bar_index+offset, 50, bar_index-lookback+offset, 50, style = line.style_dashed, color = color.gray)
+        l1 = line.new(bar_index+offset, 70, bar_index-lookback+offset, 70, style = line.style_dashed, color = color.gray)
+        l2 = line.new(bar_index+offset, 30, bar_index-lookback+offset, 30, style = line.style_dashed, color = color.gray)
+
+        line.delete(l0[1])
+        line.delete(l1[1])
+        line.delete(l2[1])
+
+        linefill.delete(linefill.new(l1, l2, color.new(color.purple, 90))[1])
+
+
+        for i = 0 to lookback - 1
+
+            rsi_ = r[i]
+            sig_ = s[i]
+
+            poly1.push(chart.point.from_index(bar_index-i+offset, rsi_))
+            poly2.push(chart.point.from_index(bar_index-i+offset, sig_))
+
+        direction = r > s ? " ↑" : " ↓"
+
+        label.delete(label.new(bar_index-int(lookback/2)+offset, 20, "Timeframe: "+ convert_tf(tf) + direction, style = label.style_label_up, textcolor = chart.fg_color, color = color(na))[1])
+        if labels
+            label.delete(label.new(bar_index+offset, 70, "70", style = label.style_label_left, textcolor = chart.fg_color, color = color(na))[1])
+            label.delete(label.new(bar_index+offset, 30, "30", style = label.style_label_left, textcolor = chart.fg_color, color = color(na))[1])
+            label.delete(label.new(bar_index+offset, 50, typeOsc, style = label.style_label_left, textcolor = chart.fg_color, color = color(na))[1])
+          
+
+    polyline.delete(polyline.new(poly1, line_color = color.purple)[1])
+    polyline.delete(polyline.new(poly2, line_color = color.yellow)[1])
+
+// Count enabled RSI plots
+enabled_rsi1 = rsi1 ? 1 : 0
+enabled_rsi2 = rsi2 ? 1 : 0
+enabled_rsi3 = rsi3 ? 1 : 0
+enabled_rsi4 = rsi4 ? 1 : 0
+
+count_before_rsi2 = enabled_rsi1
+count_before_rsi3 = enabled_rsi1 + enabled_rsi2
+count_before_rsi4 = enabled_rsi1 + enabled_rsi2 + enabled_rsi3
+
+
+spacing = -60
+offset_rsi1 = spacing * 0 + 60
+offset_rsi2 = spacing * count_before_rsi2+ 60
+offset_rsi3 = spacing * count_before_rsi3+ 60
+offset_rsi4 = spacing * count_before_rsi4+ 60
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+if rsi1
+    f_mtfRsi(rsi_len1, sig_len1, tf1, 50, offset_rsi1, true)
+if rsi2
+    f_mtfRsi(rsi_len2, sig_len2, tf2, 50, offset = offset_rsi2, labels = not rsi1)
+if rsi3
+    f_mtfRsi(rsi_len3, sig_len3, tf3, 50, offset_rsi3, labels = not rsi1 and not rsi2)
+if rsi4
+    f_mtfRsi(rsi_len4, sig_len4, tf4, 50, offset_rsi4, labels = not rsi1 and not rsi2 and not rsi3)
+
+plot(scale_use ? scale_ : 50, display = display.all, editable = false, color = color(na))
+// }

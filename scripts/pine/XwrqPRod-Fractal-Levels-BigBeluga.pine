@@ -1,0 +1,189 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Fractal Levels [BigBeluga]", 
+         overlay            = true,
+         max_labels_count   = 75,
+         max_bars_back      = 1000, 
+         max_lines_count    = 500, 
+         max_boxes_count    = 100)
+
+// USER INPUTS‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗{
+
+// Inputs for fractal detection and filtering
+int  length     = input(10, "Length")                         // Length for detecting pivot highs and lows
+int  filter     = input(2)                                   // Filter to display only significant volume levels
+bool zone       = input.string("Wide", "Level Detects Zones", ["Wide", "Tight"]) == "Tight"  // Detection zone type (Tight or Wide)
+
+// Additional options for volume delta display and line styles
+bool show_delta = input.bool(false, "Delta Volume Fractals")  // Show volume delta for fractals
+bool show_broke = input.bool(false, "Broken Levels")         // Display broken levels
+
+// Color inputs for bullish and bearish fractal lines
+color up        = #14b477                              // Color for bullish fractals (up)
+color dn        = color.rgb(204, 51, 71)              // Color for bearish fractals (down)
+
+// }
+// CALCULATIONS‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗{
+
+// Detecting pivot highs and lows based on the input length
+series float ph = ta.pivothigh(open, length, length)           // Detect pivot highs
+series float pl = ta.pivotlow (close, length, length)         // Detect pivot lows
+
+// Initialize label variables to store fractal markers
+label lbl1      = label(na)                                   // Label for bullish fractals
+label lbl2      = label(na)                                  // Label for bearish fractals
+
+// Arrays to store volume data and fractal levels
+array<float>    vol1  = array.new<float>()                    // Array for normalized volume values
+array<float>    vol2  = array.new<float>()                   // Array for delta volume values
+var array<line> lines = array.new<line>(50)                 // Array to store fractal lines
+array<box>      boxes = array.new<box>()                   // Array to store fractal zones (boxes)
+
+// Method to normalize values between 0 and 100
+method normalize(float src)=>
+    int   coef  = 100
+    float value = ((src - ta.lowest(src, 200)) / (ta.highest(src, 200) - ta.lowest(src, 200))) * coef
+    value
+
+// Calculating normalized volume and volatility
+series float volume_val = volume.normalize()                  // Normalize volume between 0 and 100
+series float volatility = ta.sma(high - low, 200)            // Calculate volatility using the simple moving average of range
+series float delta_vol  = close > open ? volume : -volume   // Delta volume calculation (positive for bullish candles, negative for bearish candles)
+
+// }
+// FRACTAL DETECTION AND VOLUME ZONES‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗{
+
+if last_bar_index - bar_index < 1000   // Limiting the calculation within the lookback period
+    // Detect Pivot High (Bearish Fractals)
+    if not na(ph)
+        lbl1 := label.new(na, na, color = color(na), style = label.style_label_down)
+
+        // Calculate average volume and delta volume for the detected fractal
+        for i = 0 to length * 2
+            vol1.push(volume_val[i])
+            vol2.push(delta_vol[i])
+
+        series float volume_avg1 = math.round(vol1.avg())      // Average normalized volume
+        series float volume_sum2 = vol2.sum()                 // Sum of delta volume
+
+        // Creating labels and drawing lines and boxes for bearish fractals
+        string txt = str.tostring(volume_avg1) + "\n🢃" 
+        int    x1  = bar_index[length]
+        int    x2  = bar_index[length]
+        float  y1  = high[length] + volatility * (zone ? 1.5 : 2.5)
+        float  y2  = high[length] - volatility * (zone ? 1.5 : 2.5)
+        float  y   = high[length]
+
+        color color = color.from_gradient(volume_avg1, 0, 20,  color.new(dn, 70), dn)
+
+        // Drawing lines and boxes if volume exceeds filter
+        if volume_avg1 > filter
+            lines.push(line.new(x1, y, x2, y, color = color, width = 3))
+            boxes.push(box.new(x1, y1, x2, y2, border_width = 0, bgcolor = color(na)))
+
+            // Optionally display delta volume for fractals
+            if show_delta
+                box.new(
+                         bar_index[length*2], high[length], bar_index, high[length] - volatility*2.5, 
+                         border_width = 0, 
+                         bgcolor      = color.from_gradient(vol1.avg(), 0, 205, 
+                                         color.new(chart.fg_color, 98), color.new(chart.fg_color, 40)), 
+                         text         = str.tostring(volume_sum2, format.volume), 
+                         text_size    = size.small,
+                         text_color   = chart.fg_color,
+                         text_halign  = text.align_right, 
+                         text_valign  = text.align_top
+                         )
+
+            lbl1.set_xy(bar_index[length], high[length])
+            lbl1.set_text(txt)
+            lbl1.set_textcolor(dn)
+
+    // Detect Pivot Low (Bullish Fractals)
+    if not na(pl)
+        lbl2 := label.new(na, na, color = color(na), style = label.style_label_up)
+
+        // Calculate average volume and delta volume for the detected fractal
+        for i = 0 to length * 2
+            vol1.push(volume_val[i])
+            vol2.push(delta_vol[i])
+
+        series float volume_avg1 = math.round(vol1.avg())      // Average normalized volume
+        series float volume_sum2 = vol2.sum()                 // Sum of delta volume
+
+        // Creating labels and drawing lines and boxes for bullish fractals
+        string txt = "🢁\n" + str.tostring(volume_avg1)  
+        int    x1  = bar_index[length]
+        int    x2  = bar_index[length]
+        float  y1  = low[length] + volatility * (zone ? 1 : 1.5)
+        float  y2  = low[length] - volatility * (zone ? 1 : 1.5)
+        float  y   = low[length]
+
+        color color = color.from_gradient(volume_avg1, 0, 20, color.new(up, 70), up)
+        
+        // Drawing lines and boxes if volume exceeds filter
+        if volume_avg1 > filter
+            lines.push(line.new(x1, y, x2, y, color = color, width = 3))
+            boxes.push(box.new(x1, y1, x2, y2, border_width = 0, bgcolor = color(na)))
+
+            // Optionally display delta volume for fractals
+            if show_delta
+                box.new(
+                         bar_index[length*2], low[length], bar_index, low[length] + volatility*2.5, 
+                         border_width = 0, 
+                         bgcolor      = color.new(chart.fg_color, 90), 
+                         text         = str.tostring(volume_sum2, format.volume), 
+                         text_size    = size.small,
+                         text_color   = chart.fg_color,
+                         text_halign  = text.align_left, 
+                         text_valign  = text.align_bottom
+                         )
+
+            lbl2.set_xy(bar_index[length], low[length])
+            lbl2.set_text(txt)
+            lbl2.set_textcolor(up)
+
+
+// }
+// BROKEN LEVELS DETECTION ‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗‗{
+
+// Handle logic for broken levels (levels that price crosses)
+for line_id in lines
+    float line_y  = line_id.get_y1()
+
+    // If price crosses the fractal line, change its width or delete it
+    if hl2 > line_y and hl2[1] <= line_y or hl2 < line_y and hl2[1] >= line_y and barstate.isconfirmed
+        if show_broke
+            line_id.set_width(3)
+            line_id.set_color(color.new(chart.fg_color, 92))
+        if not show_broke
+            line.delete(line_id)
+
+    // Extend the fractal lines as the bars move forward
+    if  line_id.get_x1() < line_id.get_x2()
+        line_id.set_x2(bar_index+15)
+
+// Update boxes with fractal lines
+for box_id in boxes
+    float top    = box_id.get_top()
+    float bottom = box_id.get_bottom()
+
+    for line_id in lines
+        float line_y = line_id.get_y2()
+
+        // Adjust box dimensions when lines are broken
+        if line_y > bottom and line_y < top
+            line_id.set_x2(bar_index[length])
+
+// A dummy line to ensure proper execution of the script
+line.new(na, na, na, na)
+
+// Warning if no volume
+if ta.cum(volume) <= 0 and barstate.islast
+    label.new(bar_index, hl2, "No Volume Data is provided\n Check other tickers",
+                  style     = label.style_label_left, 
+                  textcolor = chart.fg_color) 
+
+// }

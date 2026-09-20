@@ -1,0 +1,104 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("DSL Oscillator [BigBeluga]")
+
+// ====================================================================================================================}
+// ＩＮＰＵＴＳ
+// ===================================================================================================================={
+
+// User inputs for customization
+len      = input.int(10, "Length")
+dsl_mode = input.string("Fast", "DSL Lines Mode", ["Fast", "Slow"]) == "Fast" ? 2 : 1
+
+// Color definitions
+color_up = #8BD8BD
+color_dn = #436cd3
+
+// Condition for a dashed line
+bool dashed = bool(bar_index % 2)
+
+// ====================================================================================================================}
+// ＣＡＬＣＵＬＡＴＩＯＮＳ
+// ===================================================================================================================={
+
+// Calculate RSI with a period of 10
+RSI = ta.rsi(close, 10)
+
+// Zero-Lag Exponential Moving Average function
+zlema(src, length) =>
+    lag      = math.floor((length - 1) / 2)
+    ema_data = 2 * src - src[lag]
+    ema2     = ta.ema(ema_data, length)
+    ema2
+
+// Discontinued Signal Lines
+dsl_lines(src, length)=>
+    up  = 0.
+    dn  = 0.
+    up := (src > ta.sma(src, length)) ? nz(up[1]) + dsl_mode / length * (src - nz(up[1])) : nz(up[1])  
+    dn := (src < ta.sma(src, length)) ? nz(dn[1]) + dsl_mode / length * (src - nz(dn[1])) : nz(dn[1])
+    [up, dn]
+
+// Calculate DSL lines for RSI
+[lvlu, lvld] = dsl_lines(RSI, len)
+
+// Calculate DSL oscillator using ZLEMA of the average of upper and lower DSL Lines
+dsl_osc = zlema((lvlu + lvld) / 2, 10)
+
+// Calculate DSL Lines for the oscillator
+[level_up, level_dn] = dsl_lines(dsl_osc, 10)
+
+// Determine color based on oscillator position relative to its DSL Lines
+color = color.from_gradient(dsl_osc, level_dn, level_up, color_dn, color_up)
+
+// ====================================================================================================================}
+// ＰＬＯＴ
+// ===================================================================================================================={
+
+// Plot upper and lower DSL Lines
+plot(level_up, color = dashed ? color.new(color_up, 20) : na, editable = false)
+plot(level_dn, color = dashed ? color.new(color_dn, 20) : na, editable = false)
+
+// Plot the DSL oscillator
+plot(dsl_osc, color = color, linewidth = 2)
+
+// Detect crossovers for signal generation
+up = ta.crossover(dsl_osc, level_dn) and dsl_osc < 55
+dn = ta.crossunder(dsl_osc, level_up) and dsl_osc > 50
+
+// Plot signals on the oscillator
+plotshape(up ? dsl_osc[1] : na, "", shape.circle, location.absolute, color_up, -1, "", chart.fg_color, false, size.tiny)
+plotshape(dn ? dsl_osc[1] : na, "", shape.circle, location.absolute, color_dn, -1, "", chart.fg_color, false, size.tiny)
+
+// Plot signals on the chart
+plotshape(up, "", shape.triangleup, location.bottom, color_up, 0, "Enter", chart.fg_color, true, size.tiny,
+         force_overlay = true)
+plotshape(dn, "", shape.triangledown, location.top, color_dn, 0, "Exit", chart.fg_color, true, size.tiny,
+         force_overlay = true)
+
+// Color the background on signal occurrences
+bgcolor(up ? color.new(color_up, 90) : na, force_overlay = true, editable = false)
+bgcolor(dn ? color.new(color_dn, 90) : na, force_overlay = true, editable = false)
+
+// Color candles based on signals
+candle_col = up ? color.new(color_up, 0) : dn ? color.new(color_dn, 0) : na
+
+plotcandle(open, high, low, close, "", 
+     candle_col, 
+     candle_col, 
+     bordercolor   = candle_col, 
+     force_overlay = true, 
+     editable      = false)
+
+// Plot horizontal lines for visual reference
+h = plot(75, display = display.none, editable = false)
+m = plot(50, display = display.none, editable = false)
+l = plot(25, display = display.none, editable = false)
+
+// Fill areas between horizontal lines
+fill(m, h, 120, 50, color_up, na, editable = false)
+fill(m, l, 50, -20, na, color_dn, editable = false)
+
+// ====================================================================================================================}

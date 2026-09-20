@@ -1,0 +1,134 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+//@version=6
+indicator("Adaptive Resonance Oscillator [AlgoAlpha]", overlay=false, shorttitle="AlgoAlpha - Adaptive Resonance")
+import TradingView/ta/9
+
+smooth = input.bool(title="Enable Smoothing", defval=true)
+smoothLength = input.int(title="Smoothing Length", defval=12, minval=1)
+medianLength = input.int(title="Frequency Detection Length", defval=100, minval=1)
+
+plotBullish = input(title="Plot Bullish Divergences", defval=true, group = "Appearance")
+plotBear = input(title="Plot Bearish Divergences", defval=true, group = "Appearance")
+lbL = input(title="Divergence Pivot Detection Length", defval=20, group = "Appearance", tooltip = "The larger this number, the less sensitive the divergence detecion is. A smaller number will detect smaller and/or shorter term divergences", display = display.data_window)
+lbR = 1//input(title="Divergence Pivot Confirmation Length", defval=1, group = "Oscillator Settings", tooltip = "This number is how many bars the indicator will wait for confirmation to plot the divergences. The higher the number, the longer the delay of the signal, but the lesser the number of false signals. Set this to 0 if you do not want any delay at all", display = display.data_window)
+
+green = input.color(
+     defval = #00ffbb,
+     title  = "Bullish Color",
+     group  = "Appearance",
+     tooltip= "Sets the color used to represent bullish signals and breakout lines. This color is displayed when a bullish crossover is detected, highlighting potential upward momentum."
+ ) 
+
+red = input.color(
+     defval = #e91e63,
+     title  = "Bearish Color",
+     group  = "Appearance",
+     tooltip= "Sets the color used to represent bearish signals and breakout lines. This color is displayed when a bearish crossover is detected, highlighting potential downward momentum."
+ )
+
+pine_rsi(x, y) => 
+    u = math.max(x - x[1], 0)
+    d = math.max(x[1] - x, 0)
+    rs = ta.rma2(u, y) / ta.rma2(d, y)
+    res = 100 - 100 / (1 + rs)
+    res
+
+f_atan2(y, x) =>
+    ret = x > 0 ? math.atan(y / x) : 
+          x < 0 and y >= 0 ? math.atan(y / x) + math.pi :
+          x < 0 and y < 0  ? math.atan(y / x) - math.pi :
+          y > 0 ? math.pi / 2 : y < 0 ? -math.pi / 2 : 0.0
+    ret
+
+price = close
+
+priceSmooth = (price + price[1] + price[2] + price[3]) / 4
+
+detrender = (0.0962 * priceSmooth 
+             + 0.5769 * priceSmooth[2] 
+             - 0.5769 * priceSmooth[4] 
+             - 0.0962 * priceSmooth[6])
+
+I1 = detrender[3]
+Q1 = (0.0962 * detrender 
+      + 0.5769 * detrender[2] 
+      - 0.5769 * detrender[4] 
+      - 0.0962 * detrender[6])
+    
+jI = I1[3]
+jQ = Q1[3]
+
+I2 = I1 - jQ
+Q2 = Q1 + jI
+
+Re = I2 * nz(I2[1]) + Q2 * nz(Q2[1])
+Im = I2 * nz(Q2[1]) - Q2 * nz(I2[1])
+
+phaseAngle = math.todegrees(f_atan2(Im, Re))
+phaseAngle := phaseAngle < 0 ? phaseAngle + 360 : phaseAngle
+
+minPhase = 1.0
+phaseAngleClamped = math.max(phaseAngle, minPhase)
+
+hilbertPeriodRaw = 360 / phaseAngleClamped
+
+market_frequency = ta.median(hilbertPeriodRaw, medianLength)
+
+period = int(market_frequency / 2)
+
+rsi_v = smooth ? ta.hma(pine_rsi(close, period), smoothLength) : pine_rsi(close, period)
+
+plot(rsi_v > 80 or rsi_v < 20 ? rsi_v : na, color = smooth ? (rsi_v > rsi_v[1] ? green : red) : color.white, linewidth = 4, style=plot.style_linebr)
+
+rsi_plot = plot(rsi_v, color = smooth ? color.new((rsi_v > rsi_v[1] ? green : red), 50) : color.white, linewidth = 1)
+rsi_plot1 = plot(rsi_v[1], color = smooth ? color.new((rsi_v > rsi_v[1] ? green : red), 100) : color.new(color.white, 100), linewidth = 1)
+upper_band = plot(80, "Upper Band", color.from_gradient(rsi_v, 50, 100, color.new(color.gray, 70), color.new(red, 0)), 3)
+lower_band = plot(20, "Lower Band", color.from_gradient(rsi_v, 0, 50, color.new(green, 0), color.new(color.gray, 70)), 3)
+
+midline = plot(50, "Zero Line", color.gray)
+
+col = rsi_v > 50 ? green : red
+
+fill(rsi_plot, rsi_plot1, color.new((rsi_v > rsi_v[1] ? green : red), 80), display = smooth ? display.all : display.none)
+
+fill(midline, rsi_plot, 50, rsi_v > 50 ? math.min(rsi_v, rsi_v[1]) : math.max(rsi_v, rsi_v[1]), color.new(col, 80) ,  color.new(col, 100))
+
+plotchar(ta.crossover(rsi_v, rsi_v[1]) and not (rsi_v[1] > 80 or rsi_v[1] < 20) ? rsi_v[1] : na, char='◇', location=location.absolute, color=green, textcolor=color.white, title="Bullish", display= smooth ? display.all : display.none, size=size.tiny)
+plotchar(ta.crossunder(rsi_v, rsi_v[1]) and not (rsi_v[1] > 80 or rsi_v[1] < 20) ? rsi_v[1] : na, char='◇', location=location.absolute, color=red, textcolor=color.white, title="Bearish", display= smooth ? display.all : display.none, size=size.tiny)
+
+plotchar(ta.crossover(rsi_v, rsi_v[1]) and (rsi_v[1] < 20) ? rsi_v - 7 : na, char='▲', location=location.absolute, color=green, textcolor=color.white, title="Bullish", display= smooth ? display.all : display.none, size=size.tiny)
+plotchar(ta.crossunder(rsi_v, rsi_v[1]) and (rsi_v[1] > 80) ? rsi_v + 7 : na, char='▼', location=location.absolute, color=red, textcolor=color.white, title="Bearish", display= smooth ? display.all : display.none, size=size.tiny)
+
+
+bullColor = green
+bearColor = red
+hiddenBullColor = color.new(green, 80)
+hiddenBearColor = color.new(red, 80)
+textColor = color.white
+noneColor = color.new(color.white, 100)
+plFound = na(ta.pivotlow(rsi_v, lbL, lbR)) ? false : true
+phFound = na(ta.pivothigh(rsi_v, lbL, lbR)) ? false : true
+_inRange(cond) =>
+	bars = ta.barssince(cond == true)
+	-80 <= bars and bars <= 80
+// Regular Bullish
+oscHL = rsi_v[lbR] > ta.valuewhen(plFound, rsi_v[lbR], 1) and _inRange(plFound[1])
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+bullCond = plotBullish and priceLL and oscHL and plFound
+plot(plFound  ? rsi_v[lbR] : na, offset=-lbR, title="Regular Bullish", linewidth=2, color=(bullCond ? bullColor : noneColor))
+// Regular Bearish
+oscLH = rsi_v[lbR] < ta.valuewhen(phFound, rsi_v[lbR], 1) and _inRange(phFound[1])
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+bearCond = plotBear and priceHH and oscLH and phFound
+plot(phFound  ? rsi_v[lbR] : na, offset=-lbR, title="Regular Bearish", linewidth=2, color=(bearCond ? bearColor : noneColor))
+
+///Alerts
+alertcondition(bullCond, title="Bullish Divergence", message="Bullish Divergence Detected")
+alertcondition(bearCond, title="Bearish Divergence", message="Bearish Divergence Detected")
+alertcondition(bullCond or bearCond, title="Divergence", message="Divergence Detected")
+alertcondition(ta.crossover(rsi_v, rsi_v[1]) and not (rsi_v[1] > 80 or rsi_v[1] < 20), title="Bullish")
+alertcondition(ta.crossunder(rsi_v, rsi_v[1]) and not (rsi_v[1] > 80 or rsi_v[1] < 20), title="Bearish")
+alertcondition(ta.crossover(rsi_v, rsi_v[1]) and (rsi_v[1] < 20), title="Strong Bullish")
+alertcondition(ta.crossunder(rsi_v, rsi_v[1]) and (rsi_v[1] > 80), title="Strong Bearish")
+

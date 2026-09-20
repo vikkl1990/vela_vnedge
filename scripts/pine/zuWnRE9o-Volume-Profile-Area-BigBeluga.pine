@@ -1,0 +1,235 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Volume Profile Area [BigBeluga]", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_polylines_count = 100)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+period  = input.int(200)
+valArea = input.int(50)
+bins    = input.int(100)
+
+PoCType = input.string("Main Profile", "PoCㅤㅤㅤㅤㅤㅤㅤ", ["Main Profile", "Area Profile", "Average", "None"], inline = "poc")
+pcolor  = input.color(color.rgb(33, 100, 243), "", inline = "poc")
+
+rangeMax = input.bool(true, inline = "Toggles")
+rangeMin = input.bool(true, inline = "Toggles")
+VaH      = input.bool(true, inline = "Toggles")
+VaL      = input.bool(true, inline = "Toggles")
+
+
+mColor = input.color(color.rgb(33, 100, 243, 20), "Main Profile")
+valColor = input.color(color.rgb(33, 100, 243, 30), "Value Area Profile")
+
+type plotObj
+    array<label> lbl 
+    array<line> lines 
+    array<polyline> poly
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ & ＰＬＯＴ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+if barstate.islast
+
+    var plots = array.new<plotObj>()
+
+    lines  = array.new<line>()
+    labels = array.new<label>()
+    polilines = array.new<polyline>()
+
+
+    VolBins   = array.new<float>(bins, 0.)
+    VolBins1  = array.new<float>(bins, 0.)
+    cp1       = array.new<chart.point>()
+    cp2       = array.new<chart.point>()
+
+    PoC1 = 0.0
+    PoC2 = 0.0
+    PVol1 = 0.0
+    PVol2 = 0.0
+
+    max = high
+    min = low
+
+
+
+    if plots.size() > 0 
+        for p in plots 
+            for l in p.lines
+                l.delete()
+            for l in p.lbl
+                l.delete()
+            for l in p.poly
+                l.delete()
+
+
+    
+    for i = 0 to period - 1
+        max := high[i] > max ? high[i] : max 
+        min := low[i] < min ? low[i] : min
+        
+    step = (max - min) / bins 
+
+    for i = 0 to  period - 1
+        c   = close[i]
+        v   = volume[i]
+
+        for j = 0 to bins - 1
+            l   = min + step * j
+            mid = l + step/2
+
+            if math.abs(mid - c) < step
+                VolBins.set(j, VolBins.get(j) + v)
+                break
+
+    // Total volume
+    totalVol   = array.sum(VolBins)
+    targetVol  = totalVol * (valArea/100)
+    accum      = 0.0
+    minIdx     = 0
+    maxIndx    = 0 
+
+    idx = array.new<float>()
+
+    for i = 0 to bins - 1
+        idx.push(VolBins.get(i))
+
+    idx.sort(order.descending)
+
+    indexes = array.new<int>()
+    
+    for i = 0 to bins - 1
+        vol = idx.get(i)
+
+        accum += vol
+
+        originalIndex = array.indexof(VolBins, vol)
+
+        indexes.push(originalIndex)
+
+        minIdx := indexes.min()
+        maxIndx := indexes.max()
+        
+        if accum >= targetVol
+            break
+
+    val = min + step * minIdx
+    vah = min + step * (maxIndx +1)
+
+
+    for i = 0 to bins - 1
+
+        l = min + step * i
+        h = l   + step 
+        mid = l + step/2
+
+        VolVal = int(VolBins.get(i) / VolBins.max() * 50)
+
+        if i == 0
+            cp1.push(chart.point.from_index(bar_index-period, min)) 
+
+        else if i == bins - 1
+            cp1.push(chart.point.from_index(bar_index-period, max)) 
+
+        else 
+            cp1.push(chart.point.from_index(bar_index-period+VolVal+1, l)) 
+            cp1.push(chart.point.from_index(bar_index-period+VolVal+1, h)) 
+
+
+
+
+        if VolVal == 50 
+            PoC1 := mid
+            PVol1 := VolBins.get(i)
+
+            if PoCType == "Main Profile"  
+                lines.push(line.new(bar_index+49-VolVal, PoC1, bar_index - period+51, PoC1, color = pcolor, width = 2))
+                labels.push(label.new(bar_index-period, PoC1, str.tostring(PVol1, format.volume), style = label.style_label_right, color = color.new(color.black, 100), textcolor = chart.fg_color))
+
+
+    polilines.push(polyline.new(cp1, line_color = chart.fg_color, fill_color = mColor))
+
+    if rangeMax
+        lines.push(line.new(bar_index-period, max, bar_index+50, max, color = chart.fg_color))
+    if rangeMin
+        lines.push(line.new(bar_index-period, min, bar_index+50, min, color = chart.fg_color))
+
+
+    
+
+    x1 = int(VolBins.get(minIdx) / VolBins.max() * 50)
+    x2 = int(VolBins.get(maxIndx) / VolBins.max() * 50)
+
+    // Draw VAL and VAH
+    if VaH
+        lines.push(line.new(bar_index+50, vah, bar_index - period+x2+1, vah, color=chart.fg_color, style = line.style_dashed))
+        labels.push(label.new(bar_index+50, vah, "VAH " + str.tostring(valArea, format.percent), style = label.style_label_left, color = color.new(color.black, 100), textcolor = chart.fg_color, tooltip = "Value Area High"))
+    if VaL
+        lines.push(line.new(bar_index+50, val, bar_index - period+x1+1, val, color=chart.fg_color, style = line.style_dashed))
+        labels.push(label.new(bar_index+50, val, "VAL " + str.tostring(valArea, format.percent), style = label.style_label_left, color = color.new(color.black, 100), textcolor = chart.fg_color, tooltip = "Value Area Low"))
+
+
+    step1 = (vah - val) / bins 
+
+    for j = 0 to bins - 1
+        
+        for i = 0 to  period - 1
+
+            c   = close[i]
+            v   = volume[i]
+            l   = val + step1 * j
+            mid = l + step1/2
+
+            if math.abs(mid - c) < step1
+          
+                VolBins1.set(j, VolBins1.get(j) + v)
+
+
+
+    for i = 0 to bins - 1
+
+        l = val + step1 * i
+        h = l   + step1 
+        mid = l + step1/2
+
+        VolVal = math.round(VolBins1.get(i) / VolBins1.max() * 50)
+
+        if i == 0
+            cp2.push(chart.point.from_index(bar_index+50, val)) 
+
+        else if i == bins - 1
+            cp2.push(chart.point.from_index(bar_index+50, vah)) 
+
+        else 
+            cp2.push(chart.point.from_index(bar_index+49-VolVal, l)) 
+            cp2.push(chart.point.from_index(bar_index+49-VolVal, h)) 
+
+        
+
+        if VolVal == 50 
+            
+            PoC2 := mid
+            PVol2 := VolBins1.get(i)
+
+            if PoCType == "Area Profile" or PoCType == "Average"
+
+                PoC = PoCType == "Average" ? math.avg(PoC1, PoC2) : mid
+
+                Pvol =  PoCType == "Average" ? math.avg(PVol1, PVol2) : PVol2
+
+                lines.push(line.new(bar_index+49-VolVal, PoC, bar_index - period+51, PoC, color = pcolor, width = 2))
+                labels.push(label.new(bar_index+50, PoC, str.tostring(Pvol, format.volume), style = label.style_label_left, color = color.new(color.black, 100), textcolor = chart.fg_color))
+                if PoCType == "Average"
+                    labels.push(label.new(bar_index-period, PoC, str.tostring(Pvol, format.volume), style = label.style_label_right, color = color.new(color.black, 100), textcolor = chart.fg_color))
+        
+
+
+    polilines.push(polyline.new(cp2, line_color = color.new(color.black, 100), fill_color = valColor))
+
+
+    plots.push(plotObj.new(labels, lines, polilines))
+// }

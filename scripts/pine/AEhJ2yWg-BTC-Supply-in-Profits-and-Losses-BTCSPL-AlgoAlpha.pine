@@ -1,0 +1,55 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("BTC Supply in Profits and Losses (BTCSPL) [AlgoAlpha]", precision = 2)
+isAlphaDecayAdjusted = input.bool(title = 'Alpha Decay Adjusted', defval = true)
+showMovingAverage = input.bool(title = 'Show Moving Average', defval = true)
+showRollingChange = input.bool(title = 'Show Rolling Change', defval = false)
+showValueScore = input.bool(title = 'Show BTCSPL Value Score (-1 to 1)', defval = false)
+movingAverageLength = input.int(title = 'Moving Average Length', defval = 200, minval = 1)
+rollingChangeLength = input.int(title = 'Rolling Change Length', defval = 90, minval = 1)
+valueRangeWidth = input.int(title = 'Value Range', defval = 1, minval = 1)
+colorBullish = input.color(#00ffbb)
+colorBearish = input.color(#ff1100)
+
+profitPercentage = request.security('BTC_PROFITADDRESSESPERCENTAGE', 'D', close)
+lossPercentage = request.security('BTC_LOSSESADDRESSESPERCENTAGE', 'D', close)
+minProfitLossSpread = ta.lowest(profitPercentage - lossPercentage, 140*7)
+alphaDecay = ((profitPercentage - lossPercentage) - minProfitLossSpread) / (1 - minProfitLossSpread)
+minProfitLossSpread := request.security(syminfo.tickerid, "1D", minProfitLossSpread)
+alphaDecay := request.security(syminfo.tickerid, "1D", alphaDecay)
+
+isLongTermTrendUp = (isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage) > ta.ema((isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage), movingAverageLength)
+trendCondition = isLongTermTrendUp
+
+// Plots
+zeroLine = hline(0.5, color = color.gray, display= showRollingChange or showValueScore ? display.none : display.all)
+osupper = plot(0, color = showValueScore ? color.gray : colorBullish, display= showValueScore ? display.all: display.none)
+osmid = plot(0.1, color = colorBullish, display = display.none)
+oslower = plot(0.2, color = colorBullish, display = display.none)
+obupper = plot(0.8, color = colorBearish, display = display.none)
+obmid = plot(0.9, color = colorBullish, display = display.none)
+oblower = plot(1, color = colorBearish, display = display.none)
+plot(1, "Upper Threshold", color.from_gradient(-(valueRangeWidth - (isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage) * 2 * valueRangeWidth), 0, 1, color.new(color.gray, 70), color.new(colorBearish, 0)), 3, display= showValueScore ? display.all: display.none)
+plot(-1, "Lower Threshold", color.from_gradient(-(valueRangeWidth - (isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage) * 2 * valueRangeWidth), -1, 0, color.new(colorBullish, 0), color.new(color.gray, 70)), 3, display= showValueScore ? display.all: display.none)
+
+// Shape plots for signals
+plotshape(series=ta.crossover(isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage, 0.2) ? -0.1 : na, style=shape.triangleup, location=location.absolute, color=colorBullish, size=size.tiny, title="Bullish Signal", display=showRollingChange or showValueScore ? display.none : display.all)
+plotshape(series=ta.crossunder(isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage, 0.8) ? 1.1 : na, style=shape.triangledown, location=location.absolute, color=colorBearish, size=size.tiny, title="Bearish Signal", display=showRollingChange or showValueScore ? display.none : display.all)
+
+// Main plot for Supply in Profits and Losses
+splPlot = plot(series=isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage, color=trendCondition ? colorBullish : colorBearish, title="Supply in Profits and Losses", display=showRollingChange or showValueScore ? display.none : display.all)
+movingAveragePlot = plot(series=showMovingAverage ? ta.ema(isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage, movingAverageLength) : na, color=color.gray, title="Moving Average", display=showRollingChange or showValueScore ? display.none : display.all)
+rollingChangePlot = plot(series=showRollingChange ? ta.change(isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage, rollingChangeLength) : na, color=color.new(color.yellow, 70), title="Rolling Change", style=plot.style_columns, display=showRollingChange or showValueScore ? display.all : display.none)
+valueScorePlot = plot(series=showValueScore ? -(valueRangeWidth - (isAlphaDecayAdjusted ? alphaDecay : profitPercentage - lossPercentage) * 2 * valueRangeWidth) : na, color=color.gray, title="Value Score")
+
+// Fill areas between plots
+fill(obupper, oblower, color.new(colorBearish, 80), display = showRollingChange or showValueScore ? display.none : display.all)
+fill (oblower, obmid, color.new(colorBearish, 87), display = showRollingChange or showValueScore ? display.none : display.all)
+fill(osupper, oslower, color.new(colorBullish, 87), display = showRollingChange or showValueScore ? display.none : display.all)
+fill(osupper, osmid, color.new(colorBullish, 93), display = showRollingChange or showValueScore ? display.none : display.all)
+
+// Bar color based on long term trend
+barcolor(color=trendCondition ? colorBullish : colorBearish)
+

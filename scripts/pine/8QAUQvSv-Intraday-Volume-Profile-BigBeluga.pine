@@ -1,0 +1,321 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// Â© StratifyTrade
+
+//@version=5
+indicator("Intraday Volume Profile [StratifyTrade]", shorttitle = "StratifyTrade - IVP [1.1]" ,overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+
+
+tf    = input.timeframe("5"           , "LTF            "                                                              , inline = "xxx", group = "SETTINGS")
+scale = input.int      (5             , "Sensibility    "                                                              , inline = "yyy", group = "SETTINGS", minval = 1)
+usSC  = input.string   ("close"       , "Source         ", options = ["close", "open", "ohlc4", "close + open + ohlc4"], inline = "ggg", group = "SETTINGS")
+
+sVWM  = input.bool     (false         , "VWMA"                                                                         , inline = "WMA", group = "SETTINGS")
+lVWM  = input.int      (7             , ""                                                                             , inline = "WMA", group = "SETTINGS")
+
+pllb  = input.bool     (false         , "Display  Buyers vs Sellers Activity"                                          , inline = "bbb", group = "SETTINGS")
+
+
+upcss = input.color    (#0099ff     , "Color"                                                                        , inline = "css", group = "Colors")
+dncss = input.color    (#ff5252     , ""                                                                             , inline = "css", group = "Colors")
+col   = input.color    (color.white , ""                                                                             , inline = "css", group = "Colors")
+clM   = input.string   ("Delta"       , ""                                                                             , inline = "css", options = ["Relative", "Delta", "Buyers", "Sellers"], group = "Colors")
+
+switch clM
+    "Buyers"  => dncss := #ffffff00
+    "Sellers" => upcss := #ffffff00
+    => na
+
+NOCSS = color.new(color.white, 100)
+
+check = close > open
+sens = 1.0
+per  = 0.05
+
+type bar
+    float[] level
+    float[] vol
+    int  [] buyers
+    int  [] seller
+
+type draw
+    label[] left
+    label[] right
+    label[] tp
+
+type recycle
+    bar  [] b
+    draw [] d
+
+var bin = recycle.new(
+           array.new<  bar  >(      )
+         , array.new<  draw >(      )
+         )
+
+if bin.b.size() > 0
+    bin.b.clear()
+
+if barstate.isfirst
+    bin.d.unshift(
+           draw.new(
+           array.new< label >(      )
+         , array.new< label >(      )
+         , array.new< label >(      )
+          )
+         )
+
+bin.b.unshift(
+           bar.new(
+           array.new< float >(32, na)
+         , array.new< float >(32, 0 )
+         , array.new<  int  >(32, 0 )
+         , array.new<  int  >(32, 0 )
+          )
+         )
+
+[v, o, c, x, _v] = request.security_lower_tf(
+ syminfo.tickerid , tf    ,
+
+  [
+
+   check ? volume : -volume
+   , open
+   , close
+   , ohlc4
+   , volume
+
+  ]                                         ) 
+
+
+method pos(int i, bool trend) => 
+    out = trend 
+     ? (low  + (low  * ((per * i)) / 100)) 
+     : (high - (high * ((per * i)) / 100))
+
+
+method f_createlvl(recycle r) =>
+    var float out = na
+    for i = 1 to 31
+        for b in r.b
+            b.level.set(i, i.pos(check 
+             ? true 
+             : false
+              )
+             )
+            out := b.level.get(31)
+    out
+
+
+method delta(recycle r) =>
+    float pos = na
+    float neg = na
+    int   out = na
+    for b in r.b
+
+        pos := b.vol.get(b.vol.indexof(b.vol.max()))
+        neg := b.vol.get(b.vol.indexof(b.vol.min()))
+        out := math.abs(pos) > math.abs(neg) 
+         ? b.vol.indexof(b.vol.max()) 
+         : b.vol.indexof(b.vol.min())
+
+    [out, pos, neg]
+
+
+method make(recycle r, float[] zz) =>
+    for i = 2 to 31
+        for [idx, stuff] in zz
+            if not na(zz) and not na(stuff)
+                if i > 1 and i < 31
+                    for b in r.b
+                        if check 
+                             ? stuff < b.level.get(i) and stuff > b.level.get(i - 1) 
+                             : stuff > b.level.get(i) and stuff < b.level.get(i - 1) 
+                            b.vol.set(i, b.vol.get(i) + v.get(idx))
+                            switch
+                                v.get(idx) > 0 => b.buyers.set(i, b.buyers.get(i) + 1)
+                                v.get(idx) < 0 => b.seller.set(i, b.seller.get(i) + 1)
+
+
+method empty(recycle r) =>
+    int [      ] from = array.from(30, 1)
+    for [idx, d] in r.d
+        switch idx
+            0 =>
+                if d.left  .size () > from.get(idx)
+                    d.left .shift()
+                if d.right .size () > from.get(idx)
+                    d.right.shift()
+            1 =>
+                if d.tp    .size () > from.get(idx)
+                    d.tp   .shift()
+
+
+css(src) =>
+    css = src > 0 
+     ? upcss 
+     : dncss
+    color.from_gradient(
+           math.abs(src)
+         , 0
+
+         , clM == "Delta" 
+             ?     math.abs(_v.sum()) / sens 
+             :     clM == "Relative" 
+                 ? math.abs(_v.max()) 
+                 : math.abs(_v.sum()) / sens
+
+         , NOCSS
+         , css
+         )
+
+
+grd(src, startcss, endcss, big) =>
+    color.from_gradient(
+           src
+         , 0
+         , big
+         , startcss
+         , endcss
+         )
+
+
+while check 
+     ? high > bin.f_createlvl() 
+     : low  < bin.f_createlvl()
+    per  += 0.05
+    sens += scale
+    switch check
+        true =>
+            if high <= bin.f_createlvl()
+                break
+        false =>
+            if low  >= bin.f_createlvl()
+                break
+
+
+switch usSC
+    "close"                => bin.make(c)
+    "open"                 => bin.make(o)
+    "ohlc4"                => bin.make(x)
+    "close + open + ohlc4" => bin.make(c), bin.make(o), bin.make(x)
+
+
+[dt, pos, neg] = bin.delta()
+
+
+if pllb
+    for i = 1 to 31
+        for b in bin.b
+
+            up = b.level.get(i) > high or b.level.get(i) < low 
+              ? NOCSS 
+             : grd(b.buyers.get(i), upcss, color.rgb(0, color.g(upcss), 0), b.buyers.max())
+            dn = b.level.get(i) > high or b.level.get(i) < low 
+             ? NOCSS 
+             : grd(b.seller.get(i), dncss, color.rgb(color.r(dncss), 0, 0), b.seller.max())
+
+            for d in bin.d
+                bin.empty()
+                d.left  .push(
+                         label.new(
+                         textcolor = up
+                         , color     = NOCSS
+                         , x         = bar_index
+                         , size      = size.small
+                         , y         = b.level.get(i)
+                         , style     = label.style_label_right
+                         , text      = str.tostring(b.buyers.get(i))
+                          )
+                         )
+                d.right .push(
+                         label.new(
+                         textcolor = dn
+                         , color     = NOCSS
+                         , x         = bar_index
+                         , size      = size.small
+                         , y         = b.level.get(i)
+                         , style     = label.style_label_left
+                         , text      = str.tostring(b.seller.get(i))
+                          )
+                         )
+
+                if i == 1
+                    d.tp.push(
+                         label.new(
+                         x = bar_index
+                         , y = high 
+                         , text 
+                             = "Buyers | Sellers" 
+                             + "\n" 
+                             + (b.buyers.max() < 99 
+                             ? str.tostring(b.buyers.max()) 
+                             + "  " 
+                             : str.tostring(b.buyers.max())) 
+                             + " <|> " 
+                             + (b.seller.max() < 99 
+                             ? "  " 
+                             + str.tostring(b.seller.max()) 
+                             : str.tostring(b.seller.max())) 
+                             + "\n" 
+                             + "\nDelta" 
+                             + "\n" 
+                             + str.tostring(pos > math.abs(neg) 
+                             ? math.floor(b.vol.max()) 
+                             : math.floor(b.vol.min()))
+                         , style = label.style_label_down  
+                         , textcolor = col
+                         , size = size.small
+                         , color = NOCSS
+                          )
+                         )
+
+//Levels
+
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(2 ) ? na : bin.b.get(0).level.get(2 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(2 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(3 ) ? na : bin.b.get(0).level.get(3 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(3 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(4 ) ? na : bin.b.get(0).level.get(4 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(4 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(5 ) ? na : bin.b.get(0).level.get(5 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(5 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(6 ) ? na : bin.b.get(0).level.get(6 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(6 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(7 ) ? na : bin.b.get(0).level.get(7 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(7 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(8 ) ? na : bin.b.get(0).level.get(8 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(8 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(9 ) ? na : bin.b.get(0).level.get(9 ), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(9 )))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(10) ? na : bin.b.get(0).level.get(10), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(10)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(11) ? na : bin.b.get(0).level.get(11), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(11)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(12) ? na : bin.b.get(0).level.get(12), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(12)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(13) ? na : bin.b.get(0).level.get(13), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(13)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(14) ? na : bin.b.get(0).level.get(14), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(14)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(15) ? na : bin.b.get(0).level.get(15), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(15)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(16) ? na : bin.b.get(0).level.get(16), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(16)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(17) ? na : bin.b.get(0).level.get(17), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(17)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(18) ? na : bin.b.get(0).level.get(18), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(18)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(19) ? na : bin.b.get(0).level.get(19), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(19)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(20) ? na : bin.b.get(0).level.get(20), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(20)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(21) ? na : bin.b.get(0).level.get(21), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(21)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(22) ? na : bin.b.get(0).level.get(22), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(22)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(23) ? na : bin.b.get(0).level.get(23), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(23)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(24) ? na : bin.b.get(0).level.get(24), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(24)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(25) ? na : bin.b.get(0).level.get(25), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(25)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(26) ? na : bin.b.get(0).level.get(26), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(26)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(27) ? na : bin.b.get(0).level.get(27), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(27)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(28) ? na : bin.b.get(0).level.get(28), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(28)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(29) ? na : bin.b.get(0).level.get(29), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(29)))
+plot(bin.b.get(0).level.get(dt) == bin.b.get(0).level.get(30) ? na : bin.b.get(0).level.get(30), style = plot.style_circles, linewidth = 2, color = css(bin.b.get(0).vol.get(30)))
+
+// Delta
+
+plot(
+       bin.b.get(0).level.get(dt)
+     , style = plot.style_cross  
+     , linewidth = 3
+     , color = css(bin.b.get(0).vol.get(dt))
+     )
+
+// VWMA
+
+float vwma = na
+if c.size() > 0 and sVWM
+    vwma := ta.vwma(c.get(v.indexof(v.max())), lVWM)
+
+dist = ((vwma - close) / close) * 100
+
+plot(vwma, color = color.from_gradient(dist, -1, 1, color.new(upcss, 50), color.new(dncss, 50)))

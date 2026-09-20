@@ -1,0 +1,130 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Dynamic Deviation Levels [BigBeluga]", overlay = true, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   len  = input.int(50)
+float mult = input.float(3)
+
+color col_up1 = input.color(#85C1FF, "", inline = "c")
+color col_up2 = input.color(#4FA3F2, "", inline = "c")
+color col_up3 = input.color(#3182DE, "", inline = "c")
+color col_up4 = input.color(#164F96, "", inline = "c")
+
+color col_dn1 = input.color(#FF8A64, "", inline = "cc")
+color col_dn2 = input.color(#F26947, "", inline = "cc")
+color col_dn3 = input.color(#DE5731, "", inline = "cc")
+color col_dn4 = input.color(#A13A20, "", inline = "cc")
+
+bool show_dev = input.bool(false, "Deviation Levels")
+
+
+color color_na = #363a4500
+color mid_line = color.new(chart.fg_color, 50)
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+atr = ta.atr(200)
+mid = ta.hma(ta.median(hl2, len*2), 10)
+
+stdv_lbl(condition, src, mid, txt, color, side = true)=>
+    cond = condition
+    bars = ta.barssince(cond)
+    if cond and barstate.isconfirmed and bars[1] > 20
+        label.new(bar_index-1, src, txt, style = side ? label.style_label_lower_right : label.style_label_upper_right, textcolor = color.black, color = color, tooltip = txt + " Stdev")
+        line.new(bar_index-1, mid[1], bar_index-1, hl2[1], color = chart.fg_color, style = line.style_dashed)
+
+
+mid_1 = mid - atr * mult * 1
+mid_2 = mid - atr * mult * 2
+mid_3 = mid - atr * mult * 3
+
+mid1 = mid + atr * mult * 1
+mid2 = mid + atr * mult * 2
+mid3 = mid + atr * mult * 3
+
+mid1_cond = ta.crossover(low, mid1) 
+mid2_cond = ta.crossover(low, mid2) 
+mid3_cond = ta.crossover(low, mid3) 
+
+mid_1_cond = ta.crossunder(high, mid_1) 
+mid_2_cond = ta.crossunder(high, mid_2) 
+mid_3_cond = ta.crossunder(high, mid_3) 
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+colorUp = (close > mid3 ? col_up1 : close > mid2 ? col_up2 : close > mid1 ? col_up3 : close > mid ? col_up4 : na)
+colorDn = (close < mid_3 ? col_dn1 : close < mid_2 ? col_dn2 : close < mid_1 ? col_dn3 : close < mid ? col_dn4 : na)
+
+color_ = close > mid ? colorUp : colorDn
+
+
+scoreUp = (close > mid3 ? 3 : close > mid2 ? 2 : close > mid1 ? 1 : close > mid ? 0 : na)
+scoreDn = (close < mid_3 ? -3 : close < mid_2 ? -2 : close < mid_1 ? -1 : close < mid ? 0 : na)
+
+score_ = close > mid ? scoreUp : scoreDn
+
+color = color.new(chart.fg_color, show_dev ? 70 : 100)
+
+plot(mid_1, color = color, linewidth = 2)
+plot(mid_2, color = color, linewidth = 3)
+plot(mid_3, color = color, linewidth = 4)
+
+plot(mid, "", color = chart.fg_color, linewidth = 1)
+
+plot(mid1, color = color, linewidth = 2)
+plot(mid2, color = color, linewidth = 3)
+plot(mid3, color = color, linewidth = 4)
+
+stdv_lbl(mid1_cond, mid1, mid, "1", color_)
+stdv_lbl(mid2_cond, mid2, mid, "2", color_)
+stdv_lbl(mid3_cond, mid3, mid, "3", color_)
+
+stdv_lbl(mid_1_cond, mid_1, mid, "-1", color_, false)
+stdv_lbl(mid_2_cond, mid_2, mid, "-2", color_, false)
+stdv_lbl(mid_3_cond, mid_3, mid, "-3", color_, false)
+
+if barstate.islast
+    var dash = table.new(position.bottom_right, 60, 60)
+
+    for i = 1 to 20 
+        table.cell(dash, i, 0)
+
+        table.cell(dash
+                 , score_ == 3 ? 1 : score_ == 2 ? 5 : score_ == 1 ? 8 : score_ == -1 ? 13 : score_ == -2 ? 16 : score_ == -3 ? 20 : 10
+                 , 0
+                 , text = "▼"
+                 , width = 0.5
+                 , text_color = chart.fg_color
+                 )
+
+        table.cell(dash, i, 1, width = 0.5
+                 , text_color = color.black
+                 , bgcolor = i <= 10 
+                  ? color.from_gradient(i, 0, 20, col_up1, color.new(col_up4, 50)) 
+                  : color.from_gradient(i, 0, 20, color.new(col_dn4, 50), col_dn1)
+                  )
+        table.cell(dash, i, 2
+                 , text = 
+                  i == 1 ? "3" 
+                  : i == 5 ? "2" 
+                  : i == 8 ? "1" 
+                  : i == 13 ? "-1" 
+                  : i == 16 ? "-2" 
+                  : i == 20 ?  "-3" 
+                  : ""
+                  , width = 0.5
+                  , text_color = chart.fg_color
+                  )
+
+
+plotcandle(open, high, low, close, title='Color Candles', color = color_, wickcolor=color_, bordercolor = color_)
+barcolor(color_)
+// }

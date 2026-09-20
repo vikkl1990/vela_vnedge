@@ -1,0 +1,202 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Reverse RSI Signals [AlgoAlpha]", shorttitle="AlgoAlpha - Reverse RSI", overlay=true, behind_chart = false, precision=2)
+
+//------------------------------------------------------------------------------
+// Inputs
+//------------------------------------------------------------------------------
+smoothBands = input.bool(true, title="Smooth Upper/Lower Bands (EMA)", group="RSI Settings", tooltip="Smooth RSI-derived price levels with an EMA to reduce noise. Uses a fixed EMA length for stability.")
+len   = input.int(14, title="RSI Length", minval=1, group="RSI Settings", tooltip="Lookback period for RSI used in price level inversion and divergence detection.")
+src   = input.source(close, title="Source", group="RSI Settings", tooltip="Price source used for RSI, band calculations, and divergence checks.")
+divLbL = input.int(5, title="RSI Divergence Lookback", minval=1, group="RSI Settings", tooltip="Number of bars to the left of the pivot used to confirm RSI pivots for divergence detection. Right lookback is fixed at 1 for faster, earlier signals.")
+stFactor  = input.float(0.4,  title="Supertrend Factor", group="Supertrend", tooltip="Multiplier applied to ATR when computing the midline supertrend envelope.")
+stAtrLen  = input.int(15,     title="Supertrend ATR Length", minval=1, group="Supertrend", tooltip="ATR lookback length used by the midline supertrend calculation.")
+bullCol   = input.color(#00ffbb, title="Bullish Colour", group="Appearance", tooltip="Primary colour for bullish elements (upper band, fills, markers).")
+bearCol   = input.color(#ff1100, title="Bearish Colour", group="Appearance", tooltip="Primary colour for bearish elements (lower band, fills, markers).")
+
+//------------------------------------------------------------------------------
+// Functions  
+//------------------------------------------------------------------------------
+f_price_for_rsi(level, upPrev, dnPrev, len, srcPrev) =>
+    lv  = math.max(1e-6, math.min(level, 100 - 1e-6))
+    RS  = lv / (100.0 - lv)
+    A   = upPrev * (len - 1)
+    B   = dnPrev * (len - 1)
+    c_pos = RS * B - A
+    c_neg = B - A / RS
+    c     = c_pos >= 0 ? c_pos : c_neg
+    srcPrev + c
+
+f_calc_atr(source, atrLength) =>
+    highestHigh = ta.highest(source, atrLength)
+    lowestLow   = ta.lowest(source, atrLength)
+    trueRange   = na(highestHigh[1]) ? highestHigh - lowestLow : math.max(highestHigh - lowestLow, math.abs(highestHigh - source[1]), math.abs(lowestLow - source[1]))
+    ta.rma(trueRange, atrLength)
+
+f_supertrend(factor, atrPeriod, source) =>
+    priceSource = source
+    atr = f_calc_atr(source, atrPeriod)
+    upperBand = priceSource + factor * atr
+    lowerBand = priceSource - factor * atr
+    prevLowerBand = nz(lowerBand[1])
+    prevUpperBand = nz(upperBand[1])
+    lowerBand := lowerBand > prevLowerBand or source[1] < prevLowerBand ? lowerBand : prevLowerBand
+    upperBand := upperBand < prevUpperBand or source[1] > prevUpperBand ? upperBand : prevUpperBand
+    int trendDirection = na
+    float supertrendValue = na
+    prevSupertrend = supertrendValue[1]
+    if na(atr[1])
+        trendDirection := 1
+    else if prevSupertrend == prevUpperBand
+        trendDirection := source > upperBand ? -1 : 1
+    else
+        trendDirection := source < lowerBand ? 1 : -1
+    supertrendValue := trendDirection == -1 ? lowerBand : upperBand
+    [supertrendValue, trendDirection]
+
+_inRange(cond, rangeLower, rangeUpper) =>
+    bars = ta.barssince(cond == true)
+    rangeLower <= bars and bars <= rangeUpper
+
+//------------------------------------------------------------------------------
+// Calcs
+//------------------------------------------------------------------------------
+chg   = ta.change(src)
+upNow = math.max(chg, 0)
+dnNow = math.max(-chg, 0)
+
+up    = ta.rma(upNow, len)
+dn    = ta.rma(dnNow, len)
+
+upPrev = up[1]
+dnPrev = dn[1]
+srcPrev = src[1]
+ready = not na(upPrev) and not na(dnPrev) and not na(srcPrev)
+
+obL = 70
+osL = 30
+
+obPriceRaw = ready ? f_price_for_rsi(obL, upPrev, dnPrev, len, srcPrev) : na
+osPriceRaw = ready ? f_price_for_rsi(osL, upPrev, dnPrev, len, srcPrev) : na
+
+emaLen = 14
+obPrice = smoothBands ? ta.ema(obPriceRaw, emaLen) : obPriceRaw
+osPrice = smoothBands ? ta.ema(osPriceRaw, emaLen) : osPriceRaw
+
+midPrice = ready ? f_price_for_rsi(50.0, upPrev, dnPrev, len, srcPrev) : na
+
+[stValue, stDir] = f_supertrend(stFactor, stAtrLen, midPrice)
+
+curPrice   = close
+isAboveMid = ready and curPrice > midPrice
+isBelowMid = ready and curPrice < midPrice
+
+upperDen = ready ? math.max(math.abs(obPrice - midPrice), 1e-10) : na
+lowerDen = ready ? math.max(math.abs(midPrice - osPrice), 1e-10) : na
+
+upperProxRaw = ready ? (curPrice - midPrice) / upperDen : na
+lowerProxRaw = ready ? (midPrice - curPrice) / lowerDen : na
+
+upperProx = isAboveMid and not na(upperProxRaw) ? math.min(math.max(upperProxRaw, 0.0), 1.0) : 0.0
+lowerProx = isBelowMid and not na(lowerProxRaw) ? math.min(math.max(lowerProxRaw, 0.0), 1.0) : 0.0
+
+max_transp = 1
+
+upperAlpha = ready ? int(math.round(100.0 * math.min(1.0 - ta.wma(upperProx, 14), max_transp))) : 90
+lowerAlpha = ready ? int(math.round(100.0 * math.min(1.0 - ta.wma(lowerProx, 14), max_transp))) : 90
+
+upperDistanceToMid = ready ? math.max(obPrice - midPrice, 0.0) : na
+lowerDistanceToMid = ready ? math.max(midPrice - osPrice, 0.0) : na
+bandFactor = 0.25
+upperOuter = ready ? obPrice + upperDistanceToMid * bandFactor : na
+lowerOuter = ready ? osPrice - lowerDistanceToMid * bandFactor : na
+
+hi = ta.highest(high, 7)
+lo = ta.lowest(low, 7)
+
+// Calcs - Divergences
+osc = ta.rsi(src, len)
+lbR = 1
+lbL = divLbL
+rangeUpper = 60
+rangeLower = 5
+plotBull = true
+plotBear = true
+textColor = chart.fg_color
+noneColor = color.new(color.white, 100)
+plFound = not na(ta.pivotlow(osc, lbL, lbR)) ? true : false
+phFound = not na(ta.pivothigh(osc, lbL, lbR)) ? true : false
+inRangePl = _inRange(plFound[1], rangeLower, rangeUpper)
+inRangePh = _inRange(phFound[1], rangeLower, rangeUpper)
+oscHL = osc[lbR] > ta.valuewhen(plFound, osc[lbR], 1) and inRangePl
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+bullCondAlert = priceLL and oscHL and plFound
+bullCond = plotBull and bullCondAlert
+oscLH = osc[lbR] < ta.valuewhen(phFound, osc[lbR], 1) and inRangePh
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+bearCondAlert = priceHH and oscLH and phFound
+bearCond = plotBear and bearCondAlert
+
+//------------------------------------------------------------------------------
+// Visuals - Plots
+//------------------------------------------------------------------------------
+col = stDir < 0 ? color.new(bullCol, 0) : color.new(bearCol, 0)
+
+// Plot inner lines
+pUpper = plot(obPrice, "RSI Upper", color=color.new(bearCol, upperAlpha),  linewidth=3, style=plot.style_linebr, display = display.none)
+pLower = plot(osPrice, "RSI Lower", color=color.new(bullCol, lowerAlpha), linewidth=3, style=plot.style_linebr, display = display.none)
+
+// Plot outer lines
+pUpperOuter = plot(upperOuter, "RSI Upper Outer", color=color.new(bearCol, upperAlpha), linewidth=2, style=plot.style_linebr)
+pLowerOuter = plot(lowerOuter, "RSI Lower Outer", color=color.new(bullCol, lowerAlpha), linewidth=2, style=plot.style_linebr)
+
+// Gradient fill colors using proximity metrics with dynamic transparency
+upperFillColor = color.new(color.from_gradient(upperProx, 0.0, 1.0, chart.bg_color, bearCol), upperAlpha)
+lowerFillColor = color.new(color.from_gradient(lowerProx, 0.0, 1.0, bullCol, chart.bg_color), lowerAlpha)
+
+// Fill bands between outer and inner lines
+fill(pUpperOuter, pUpper, color=upperFillColor, title="RSI Upper Band")
+fill(pLowerOuter, pLower, color=lowerFillColor, title="RSI Lower Band")
+
+plot(midPrice, "RSI Midline", color=color.new(col, 70), linewidth=2, style=plot.style_linebr)
+
+//------------------------------------------------------------------------------
+// Visuals - Plotshape/Plotchar
+//------------------------------------------------------------------------------
+plotshape(ta.crossunder(stDir, 0) ? lo : na, "Bullish Trend Shift", shape.labelup, location.absolute, color.new(bullCol, 50), size = size.small)
+plotshape(ta.crossover(stDir, 0) ? hi : na, "Bearish Trend Shift", shape.labeldown, location.absolute, color.new(bearCol, 50), size = size.small)
+
+upcandlecol = color.from_gradient(0.4, 0, 1, col, chart.bg_color)
+downcandlecol = color.from_gradient(0.7, 0, 1, col, chart.bg_color)
+candlecol = close > open ? upcandlecol : downcandlecol
+
+//------------------------------------------------------------------------------
+// Visuals - Others
+//------------------------------------------------------------------------------
+plotcandle(open, high, low, close, "Price", candlecol, candlecol, bordercolor = candlecol)
+
+//------------------------------------------------------------------------------
+// Visuals - Divergence plots
+//------------------------------------------------------------------------------
+plot(plFound ? low[lbR] : na, offset=-lbR, title="Regular Bullish", linewidth=1, color=(bullCond ? bullCol : noneColor))
+plotchar(bullCond ? low[lbR] : na, offset=-lbR, title="Regular Bullish Label", char="▲", location=location.absolute, color=bullCol, size = size.tiny)
+plot(phFound ? high[lbR] : na, offset=-lbR, title="Regular Bearish", linewidth=1, color=(bearCond ? bearCol : noneColor))
+plotchar(bearCond ? high[lbR] : na, offset=-lbR, title="Regular Bearish Label", char="▼", location=location.absolute, color=bearCol, size = size.tiny)
+
+//------------------------------------------------------------------------------
+// Alerts
+//------------------------------------------------------------------------------
+alertcondition(bullCondAlert, title='Regular Bullish Divergence')
+alertcondition(bearCondAlert, title='Regular Bearish Divergence')
+bullTrendShift = ta.crossunder(stDir, 0)
+bearTrendShift = ta.crossover(stDir, 0)
+crossedOver = ta.crossover(close, obPrice)
+crossedUnder = ta.crossunder(close, osPrice)
+enteredUpperBand = ready and crossedOver
+enteredLowerBand = ready and crossedUnder
+alertcondition(bullTrendShift, title='Trend Shift Bullish')
+alertcondition(bearTrendShift, title='Trend Shift Bearish')
+alertcondition(enteredUpperBand, title='Price Entered Upper Band')
+alertcondition(enteredLowerBand, title='Price Entered Lower Band')

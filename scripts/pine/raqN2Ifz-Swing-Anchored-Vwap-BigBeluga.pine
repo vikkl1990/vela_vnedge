@@ -1,0 +1,121 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Swing Anchored Vwap [BigBeluga]", overlay = true, max_polylines_count = 100, max_bars_back = 5000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+length = input.int(50, "Length")
+l_vwap_col = input.color(color.lime, "", inline = "col")
+h_vwap_col = input.color(color.blue, "", inline = "col")
+
+width1 = input.int(1, "Vwap Line Width")
+
+var trend = bool(na)
+var high_index = int(na)
+var high_val = float(na)
+var low_index = int(na)
+var low_val = float(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+h = ta.highest(length)
+l = ta.lowest(length)
+
+if high[1] == h[1] and high < h 
+    high_index := bar_index-1
+    high_val := high[1]
+
+h_vwap = ta.vwap(high, high[1] == h[1] and high < h)
+
+if low[1] == l[1] and low > l 
+    low_index := bar_index-1
+    low_val := low[1]
+
+l_vwap = ta.vwap(low, low[1] == l[1] and low > l)
+
+if high == h
+    trend := true
+
+if low == l
+    trend := false
+
+draw_active_vwap(trend)=>
+    src = trend ? high : low
+    index = trend ? low_index : high_index
+    vwapColor = trend ? l_vwap_col : h_vwap_col
+    stl = trend ? label.style_label_up : label.style_label_down
+
+    if trend or not trend
+        var polyline poly = na
+        var lbl = label(na)
+        var lbl1 = label(na)
+        var line_ = line(na)
+        poly.delete()
+        lbl.delete()
+        lbl1.delete()
+        line_.delete()
+
+        cp = array.new<chart.point>()
+
+ 
+        for i = 0 to bar_index - index
+
+            vwap_ = trend ? l_vwap[i] : h_vwap[i]
+
+            if i == 0
+                line_ := line.new(bar_index, vwap_, bar_index+5, vwap_, color = vwapColor, width = 2, style = line.style_arrow_right)
+                lbl1 := label.new(bar_index+5, vwap_, str.tostring(vwap_, "###,###,###.##"), color = #00000000, style = label.style_label_left, textcolor = chart.fg_color)
+
+            if i == bar_index - index
+                lbl := label.new(bar_index-i,  src[i], color = vwapColor, style = stl)
+
+            cp_ = chart.point.from_index(bar_index-i, vwap_)
+            cp.push(cp_)
+
+
+        poly := polyline.new(cp, line_color = vwapColor, line_width = 2)
+// }
+  
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+draw_active_vwap(trend)
+
+// History VWAPS
+if trend and trend != trend[1]
+
+    cp = array.new<chart.point>()
+
+    for i = 0 to bar_index - high_index
+
+        if i == bar_index - high_index
+            label.new(bar_index-i, high[i], color = color.new(h_vwap_col, 40), style = label.style_label_down)
+
+        cp_ = chart.point.from_index(bar_index-i, h_vwap[i])
+        cp.push(cp_)
+
+    polyline.new(cp, line_color = color.new(h_vwap_col, 30), line_width = width1)
+
+
+if not trend and trend != trend[1]
+
+    cp = array.new<chart.point>()
+
+    for i = 0 to bar_index - low_index
+
+        if i == bar_index - low_index
+            label.new(bar_index-i, low[i], color = color.new(l_vwap_col, 40), style = label.style_label_up)
+
+        cp_ = chart.point.from_index(bar_index-i, l_vwap[i])
+        cp.push(cp_)
+
+    polyline.new(cp, line_color = color.new(l_vwap_col, 40), line_width = width1)
+
+
+// }

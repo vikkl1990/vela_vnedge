@@ -1,0 +1,83 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Enhanced Candle Sticks [AlgoAlpha]", shorttitle = "AlgoAlpha - ⩚ Enhanced Candle Sticks", overlay = true)
+import TradingView/ta/7
+string ST_1  = "The Current Selected Input Does not Match Your Chart Timeframe"
+string textInput1       = ST_1
+string infoBoxSizeInput = "large"
+string infoBoxYPosInput = "middle"
+string infoBoxXPosInput = "center"
+int    heightInput      = 10
+int    widthInput       = 50
+color  textColorInput   = color.new(color.white, 0)
+color  bgColorInput     = #8e0000
+
+// Calculate the lower timeframe (1/12th of the current timeframe)
+currentTfMinutes = input.string("H1", options = ["M15", "M30", "H1", "H2", "H3", "H4", "H6", "H8", "H12"], title = "Select you chart timeframe") //timeframe.multiplier * (timeframe.isminutes ? 1 : 60) == 60 ? 60 : 1
+microTrends = input.bool(true, "Enable MicroTrends?")
+plotCandle = input.bool(true, "Plot Candlesticks?")
+green = input.color(#089981)
+red = input.color(#f23645)
+minutes(type) =>
+    switch type
+        "M15" => 15
+        "M30" => 30
+        "H1" => 60
+        "H2" => 120
+        "H3" => 180
+        "H4" => 240
+        "H6" => 360
+        "H8" => 480
+        "H12" => 720
+
+ctf = minutes(currentTfMinutes)
+lowerTfMinutes = math.max(1, math.round(ctf / 12))  //lowest it can go is 1m
+lowerTf = lowerTfMinutes <= 1 ? "1" : str.tostring(lowerTfMinutes)
+isMatchingTF = ctf - (timeframe.multiplier * (timeframe.isseconds ? float(1)/60 : timeframe.isminutes ? float(1) : not timeframe.isintraday ? 9999 : na)) == 0
+
+barr(timee, tf) =>
+    var c = 0
+    v = timee%(60000*ctf)
+    if v == 0
+        c += 1
+    c
+
+newBar = barr(time, currentTfMinutes) != barr(time, currentTfMinutes)[1]
+
+hourHighest = ta.highestSince(newBar)
+hourLowest = ta.lowestSince(newBar)
+
+breakLow = hourLowest < hourLowest[1]
+breakHigh = hourHighest > hourHighest[1]
+
+var state = 0
+var finalstate = 0
+
+if breakHigh
+    state := 1
+
+if breakLow
+    state := -1
+
+if newBar
+    finalstate := -state[1]
+
+ltffinalSate = request.security(syminfo.tickerid, lowerTf, barstate.isconfirmed ? finalstate : finalstate[1])
+col = close > open ? green : red
+plotchar(ltffinalSate == -1 and isMatchingTF ? low[1] : na, "Firs Wick Formation", "⩚", location.absolute, close[1] > open[1] ? green : red, -1, size = size.tiny)
+plotchar(ltffinalSate == 1 and isMatchingTF ? high[1] : na, "Firs Wick Formation", "⩛", location.absolute, close[1] > open[1] ? green : red, -1, size = size.tiny)
+plotchar(low > low[1] and isMatchingTF and microTrends ? low - (high-low) * 0.5 : na, "Micro Uptrend", "●", location.absolute, green, 0, size = size.tiny)
+plotchar(high < high[1] and isMatchingTF and microTrends ? high + (high-low) * 0.5 : na, "Micro Downtrend", "●", location.absolute, red, 0, size = size.tiny)
+plotcandle(open, high, low, close, "Chart Candle", col, col ,bordercolor = col, display = plotCandle ? display.all : display.none)
+
+var table watermark = table.new(infoBoxYPosInput + "_" + infoBoxXPosInput, 1, 1)
+if barstate.islast and not isMatchingTF
+    varip bool changeText = true
+    changeText := not changeText
+    string txt = textInput1
+    table.cell(watermark, 0, 0, txt, widthInput, heightInput, textColorInput, text_size = infoBoxSizeInput, bgcolor = bgColorInput)
+
+alertcondition(low > low[1], "Micro Uptrend", "Micro Uptrend")
+alertcondition(high < high[1], "Micro Downtrend", "Micro Downtrend")

@@ -1,0 +1,129 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Pivot Levels [BigBeluga]", overlay = true, max_lines_count = 500, max_bars_back = 5000)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+pivot1 = input.bool(true, "Pivot 1", inline = "1")
+len1   = input.int(5, "", inline = "1")
+style1 = input.string("--", "Style:", ["--", "-", ".."], inline = "1")
+extendM1 = input.string("Both", "Extend:", ["Both", "Right"], inline = "1") == "Both"
+
+pivot2 = input.bool(true, "Pivot 2", inline = "2")
+len2   = input.int(25, "", inline = "2")
+style2 = input.string("-", "Style:", ["--", "-", ".."], inline = "2")
+extendM2 = input.string("Both", "Extend:", ["Both", "Right"], inline = "2") == "Both"
+
+pivot3 = input.bool(true, "Pivot 3", inline = "3")
+len3   = input.int(50, "", inline = "3")
+style3 = input.string("-", "Style:", ["--", "-", ".."], inline = "3")
+extendM3 = input.string("Both", "Extend:", ["Both", "Right"], inline = "3") == "Both"
+
+pivot4 = input.bool(true, "Pivot 4", inline = "4")
+len4   = input.int(100, "", inline = "4")
+style4 = input.string("-", "Style:", ["--", "-", ".."], inline = "4")
+extendM4 = input.string("Both", "Extend:", ["Both", "Right"], inline = "4") == "Both"
+
+colorSup = input.color(color.rgb(30, 214, 125), "", inline = "colors")
+colorRes = input.color(#eb7c14, "", inline = "colors")
+colorActive = input.color(color.rgb(27, 133, 255), "", inline = "colors")
+
+type PivotLevel 
+    int length 
+    float levelH
+    float levelL
+    bool display
+    string style
+    int startH
+    int startL
+    bool extend 
+    float volH
+    float volL
+
+var Lines  = array.new<line>()
+var Labels = array.new<label>()
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+ph1 = ta.pivothigh(len1, len1)
+pl1 = ta.pivotlow(len1, len1)
+
+ph2 = ta.pivothigh(len2, len2)
+pl2 = ta.pivotlow(len2, len2)
+
+ph3 = ta.pivothigh(len3, len3)
+pl3 = ta.pivotlow(len3, len3)
+
+ph4 = ta.pivothigh(len4, len4)
+pl4 = ta.pivotlow(len4, len4)
+
+atr = ta.atr(200) *1.5
+
+
+array<PivotLevel> Levels = array.from(
+     PivotLevel.new(len1, ta.valuewhen(not na(ph1), high[len1], 0), ta.valuewhen(not na(pl1), low[len1], 0), pivot1, style1, ta.valuewhen(not na(ph1), bar_index[len1], 0), ta.valuewhen(not na(pl1), bar_index[len1], 0), extendM1, ta.valuewhen(not na(ph1), math.sum(volume, len1*2), 0), ta.valuewhen(not na(pl1), math.sum(volume, len1*2), 0)),
+     PivotLevel.new(len2, ta.valuewhen(not na(ph2), high[len2], 0), ta.valuewhen(not na(pl2), low[len2], 0), pivot2, style2, ta.valuewhen(not na(ph2), bar_index[len2], 0), ta.valuewhen(not na(pl2), bar_index[len2], 0), extendM2, ta.valuewhen(not na(ph2), math.sum(volume, len2*2), 0), ta.valuewhen(not na(pl2), math.sum(volume, len2*2), 0)),
+     PivotLevel.new(len3, ta.valuewhen(not na(ph3), high[len3], 0), ta.valuewhen(not na(pl3), low[len3], 0), pivot3, style3, ta.valuewhen(not na(ph3), bar_index[len3], 0), ta.valuewhen(not na(pl3), bar_index[len3], 0), extendM3, ta.valuewhen(not na(ph3), math.sum(volume, len3*2), 0), ta.valuewhen(not na(pl3), math.sum(volume, len3*2), 0)),
+     PivotLevel.new(len4, ta.valuewhen(not na(ph4), high[len4], 0), ta.valuewhen(not na(pl4), low[len4], 0), pivot4, style4, ta.valuewhen(not na(ph4), bar_index[len4], 0), ta.valuewhen(not na(pl4), bar_index[len4], 0), extendM4, ta.valuewhen(not na(ph4), math.sum(volume, len4*2), 0), ta.valuewhen(not na(pl4), math.sum(volume, len4*2), 0))
+ )
+
+drawLevel(H, L, len, style_, startH, startL, extendM, volH, volL, tot)=>
+
+    if barstate.islast
+        style = 
+             style_ == "--" ? line.style_dashed 
+             : style_ == "-" ? line.style_solid 
+             : style_ == ".." ? line.style_dotted 
+             : line.style_solid
+
+        width1 = len == len1 ? 1 : len == len2 ? 2 : len == len3 ? 3 : 4
+        width2 = len == len1 ? 3 : len == len2 ? 7 : len == len3 ? 10 : 15
+
+        color1 = low > H+atr ? colorSup : high < H-atr ? colorRes : colorActive
+        color2 = low > L+atr ? colorSup : high < L-atr ? colorRes : colorActive
+        
+        extnd = extendM ? extend.both : extend.right
+
+        Lines.push(line.new(startH, H, bar_index, H, color = color1, extend = extnd, style = style, width = width1))
+        Lines.push(line.new(startL, L, bar_index, L, color = color2, extend = extnd, style = style, width = width1))
+        Lines.push(line.new(startH, H, bar_index, H, color = color.new(color1, 80), extend = extnd, width = width2))
+        Lines.push(line.new(startL, L, bar_index, L, color = color.new(color2, 80), extend = extnd, width = width2))
+
+        Labels.push(label.new(bar_index+15, H, str.tostring(H) + " | " + str.tostring(volH, format.volume) + " | " + str.tostring(volH/tot*100, format.percent)
+                    , textcolor = color1
+                    , color = chart.bg_color
+                    , style = label.style_label_center
+                    , tooltip = "Price | Volume | Volume Distribution %")
+                    )
+        Labels.push(label.new(bar_index+15, L, str.tostring(L) + " | " + str.tostring(volL, format.volume) + " | " + str.tostring(volL/tot*100, format.percent)
+                    , textcolor = color2
+                    , color = chart.bg_color
+                    , style = label.style_label_center
+                    , tooltip = "Price | Volume | Volume Distribution %")
+                    )
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if barstate.islast
+    for l in Lines
+        l.delete()
+    for l in Labels
+        l.delete()
+
+    tot = 0.
+    for l in Levels
+        if l.display
+            tot += l.volH + l.volL
+
+    for l in Levels
+        if l.display
+            drawLevel(l.levelH, l.levelL, l.length, l.style, l.startH, l.startL, l.extend, l.volH, l.volL, tot)
+
+// }

@@ -1,0 +1,128 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Bollinger Bands Regression Forecast [BigBeluga]", "BB Regression Forecast [BigBeluga]", overlay = true, max_polylines_count = 100, max_labels_count = 500)
+
+// Custom Types
+type cPts
+    array<chart.point> a1
+    array<chart.point> a2
+    array<chart.point> a3
+    array<chart.point> a4
+
+type drw
+    polyline l1
+    polyline l2
+    polyline l3
+    polyline l4
+    label uL
+    label dL
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length       = input.int(40, "Length")
+mult         = input.float(2.0, "Multiplier", step = 0.1)
+src          = input.source(close, "Source")
+forecastBars = input.int(40, "Forecast Bars")
+
+uCol  = input.color(color.rgb(0, 137, 123, 50), "Upper", inline = "Col")
+lCol  = input.color(color.rgb(0, 137, 123, 50), "Lower", inline = "Col")
+fCol  = input.color(color.rgb(0, 187, 212, 92), "Fill", inline = "Col")
+bColU = input.color(color.teal, "Basis +", inline = "Col1")
+bColD = input.color(color.red, "Basis -", inline = "Col1")
+widthB = input.int(3, "Width", inline = "Col1")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+bas  = ta.sma(src, length)
+dev  = mult * ta.stdev(src, length)
+up   = bas + dev
+dn   = bas - dev
+bSl  = ta.linreg(bas, length, 0) - ta.linreg(bas, length, 1)
+dSl  = ta.linreg(dev, length, 0) - ta.linreg(dev, length, 1)
+minW = ta.lowest(up - dn, 50)
+
+bCol = bas > bas[2] ? bColU : bColD
+
+if barstate.islast
+    var pls = array.new<drw>()
+    var y2 = 0.
+    if pls.size() > 0
+        for p in pls
+            p.l1.delete()
+            p.l2.delete()
+            p.l3.delete()
+            p.l4.delete()
+            p.uL.delete()
+            p.dL.delete()
+
+    cps = array.new<cPts>()
+
+    a1 = array.new<chart.point>()
+    a2 = array.new<chart.point>()
+    a3 = array.new<chart.point>()
+    a4 = array.new<chart.point>()
+
+    for i = 0 to forecastBars
+        bF  = bas + bSl * i
+        dF  = math.max(dev + dSl * i, minW)
+        uF  = bF + dF
+        dF_ = bF - dF
+        w   = i / forecastBars
+
+        uSm = up * (1 - w) + uF * w
+        dSm = dn * (1 - w) + dF_ * w
+        bSm = bas * (1 - w) + bF * w
+
+        a1.push(chart.point.from_index(bar_index + i, uSm))
+        a2.push(chart.point.from_index(bar_index + i, bSm))
+        a3.push(chart.point.from_index(bar_index + i, dSm))
+        a4.push(chart.point.from_index(bar_index + i, uSm))
+
+        if i == forecastBars
+            y2 := bSm
+            for k = forecastBars to 0
+                w_   = k / forecastBars
+                bF_  = bas + bSl * k
+                dF__ = math.max(dev + dSl * k, minW)
+                dSm_ = bF_ - dF__
+                dSm2 = dn * (1 - w_) + dSm_ * w_
+                a4.push(chart.point.from_index(bar_index + k, dSm2))
+
+        cps.push(cPts.new(a1, a2, a3, a4))
+
+    c1 = cps.last()
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+    bCol1 = bas < y2 ? bColU : bColD
+
+    l1 = polyline.new(c1.a1, line_color = uCol)
+    l2 = polyline.new(c1.a2, line_color = bCol1, line_width = widthB)
+    l3 = polyline.new(c1.a3, line_color = lCol)
+    l4 = polyline.new(c1.a4, closed = true, line_color = color.new(color.black, 100), fill_color = fCol)
+
+    uLb = label.new(c1.a1.last(), style = "llf", color = color.new(color.black, 100), textcolor = chart.fg_color)
+    dLb = label.new(c1.a3.last(), style = "llf", color = color.new(color.black, 100), textcolor = chart.fg_color)
+
+    uLb.set_text(str.tostring(uLb.get_y(), "##,###,###.####"))
+    dLb.set_text(str.tostring(dLb.get_y(), "##,###,###.####"))
+
+    pls.push(drw.new(l1, l2, l3, l4, uLb, dLb))
+
+var start = 0
+
+if barstate.isconfirmed
+    if ta.crossunder(high, up) and bar_index - start > 7
+        label.new(bar_index-1, high[1], "▼", color = color.new(color.black, 100), textcolor = chart.fg_color, style = "ldn")
+        start := bar_index
+
+    if ta.crossover(low, dn) and bar_index - start > 7
+        label.new(bar_index-1, low[1], "▲", color = color.new(color.black, 100), textcolor = chart.fg_color, style = "lup")
+        start := bar_index
+
+plot(bas, "Basis", color = bCol, editable = false, linewidth = widthB)
+fill(plot(up, "Upper", color = uCol, editable = false), plot(dn, "Lower", color = lCol, editable = false), color = fCol)
+// }

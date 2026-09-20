@@ -1,0 +1,109 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Squeeze Momentum Oscillator [AlgoAlpha]", overlay = false, explicit_plot_zorder = true)
+green = input.color(#00ffbb, "Up Color")
+red = input.color(#ff1100, "Down Color")
+len = input.int(title="Underlying Momentum Oscillator Length", defval=10, minval=2, maxval = 200, group = "Momentum Settings")
+Length = input.int(title="Swing Momentum Oscillator Length", defval=20, minval=2, maxval = 200, group = "Momentum Settings")
+periodForCalculation = input.int(title="Squeeze Calculation Period", defval=14, minval=1, group = "Squeeze Settings")
+lengthForSmoothing = input.int(title="Squeeze Smoothing Length", defval=7, minval=1, group = "Squeeze Settings")
+lengthForEMA = input.int(title="Squeeze Detection Length", defval=14, minval=2, maxval = 200, group = "Squeeze Settings")
+lengthForHyperSqueezeDetection = input.int(title="Hyper Squeeze Detection Length", defval=5, minval=1, group = "Squeeze Settings")
+lbL = input(title="Divergence Pivot Detection Length", defval=15, group = "Divergence Settings", tooltip = "The larger this number, the less sensitive the divergence detecion is. A smaller number will detect smaller and/or shorter term divergences", display = display.data_window)
+lbR = input(title="Divergence Pivot Confirmation Length", defval=1, group = "Divergence Settings", tooltip = "This number is how many bars the indicator will wait for confirmation to plot the divergences. The higher the number, the longer the delay of the signal, but the lesser the number of false signals. Set this to 0 if you do not want any delay at all", display = display.data_window)
+plotBullish = input(title="Plot Bullish Divergences", defval=true, group = "Divergence Settings")
+plotBear = input(title="Plot Bearish Divergences", defval=true, group = "Divergence Settings")
+
+// Calculating ATR and its EMA
+averageTrueRange = ta.ema(ta.tr(true), periodForCalculation)
+emaOfATR = ta.ema(averageTrueRange, periodForCalculation * 2)
+volatilityIndicator = emaOfATR - averageTrueRange
+
+// Calculating SV (Squeeze Value) and SVMA (Squeeze Value Moving Average)
+emaHighLowDifference = ta.ema(high - low, periodForCalculation * 2)
+squeezeValue =  ta.ema(volatilityIndicator / emaHighLowDifference * 100, lengthForSmoothing)
+squeezeValueMA = ta.ema(squeezeValue, lengthForEMA)
+hypersqueeze = squeezeValue > 0 and ta.rising(squeezeValue, lengthForHyperSqueezeDetection)
+
+l = ta.ema(ta.lowest(low, len), len)
+h = ta.ema(ta.highest(high, len), len)
+
+var d = 0
+
+if ta.crossover(close, h)
+    d := 1
+
+if ta.crossunder(close, l)
+    d := -1
+
+val = d == 1 ? l : h
+val1 = close - val
+val2 =ta.hma(val1, len)
+vf = (val2 / (ta.ema(high - low, len*2)) * 100)/8
+
+basis = ta.sma(vf, Length)
+zscore = (vf - basis) / ta.stdev(vf, Length)
+
+zscore := ta.ema(zscore, Length)
+
+zscore := zscore*66
+
+level = 2
+
+f = plot(100, display = display.none)
+negf = plot(-100, display = display.none)
+z = plot(0, display = display.none)
+fill(z, f, top_value =  100, bottom_value = 50, bottom_color = na, top_color = color.from_gradient(vf, -100, 100, color.new(red,100), color.new(red,20)))
+fill(z, negf, top_value =  -50, bottom_value = -100, bottom_color = color.from_gradient(-vf, -100, 100, color.new(green,100), color.new(green,30)) , top_color = na)
+v1 = plot(vf, color = vf > 0 ? green : red, style = plot.style_line)
+p1 = plot(level, color = hypersqueeze ? color.yellow : squeezeValueMA-squeezeValue < 0 ? color.orange : color.gray, linewidth = 4, trackprice = false, histbase = -level, style = plot.style_columns)
+fill(p1, v1, level, vf, vf > 0 ? color.new(green, 100) : na, vf > 0 ? green : na)
+fill(p1, v1, vf, -level, vf < 0 ? red : na, vf < 0 ? color.new(red, 100) : na)
+z0 = plot(zscore, color = color.white)
+z1 = plot(zscore[1], color = color.white, display = display.none)
+fill(z0, z1, color.new(color.white, 50))
+plotchar(ta.cross(zscore, zscore[1]) ? zscore[1] : na, "Short Momentum Cross", "●", location.absolute, color.white, size = size.tiny)
+
+// Divergences Section
+wideDisplayCond = display.all
+x = zscore
+bullColor = green
+bearColor = red
+hiddenBullColor = color.new(green, 80)
+hiddenBearColor = color.new(red, 80)
+textColor = color.white
+noneColor = color.new(color.white, 100)
+plFound = na(ta.pivotlow(x, lbL, lbR)) ? false : true
+phFound = na(ta.pivothigh(x, lbL, lbR)) ? false : true
+_inRange(cond) =>
+	bars = ta.barssince(cond == true)
+	-80 <= bars and bars <= 80
+
+// Regular Bullish
+oscHL = x[lbR] > ta.valuewhen(plFound, x[lbR], 1) and _inRange(plFound[1])
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+bullCond = plotBullish and priceLL and oscHL and plFound
+plot(plFound ? x[lbR] : na, offset=-lbR, title="Regular Bullish", linewidth=2, color=(bullCond ? bullColor : noneColor), display = wideDisplayCond)
+plotshape(bullCond ? x[lbR] : na, offset=-lbR, title="Regular Bullish Label", text=" ▲ ", style=shape.labelup, location=location.absolute, color=bullColor, textcolor=textColor)
+
+// Regular Bearish
+oscLH = x[lbR] < ta.valuewhen(phFound, x[lbR], 1) and _inRange(phFound[1])
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+bearCond = plotBear and priceHH and oscLH and phFound
+plot(phFound ? x[lbR] : na, offset=-lbR, title="Regular Bearish", linewidth=2, color=(bearCond ? bearColor : noneColor), display = wideDisplayCond)
+plotshape(bearCond ? x[lbR] : na, offset=-lbR, title="Regular Bearish Label", text=" ▼ ", style=shape.labeldown, location=location.absolute, color=bearColor, textcolor=textColor)
+
+///////////Alerts
+alertcondition(ta.crossover(vf, 0), "Bullish Underlying Momentum")
+alertcondition(ta.crossunder(vf, 0), "Bearish Underlying Momentum")
+
+alertcondition(ta.crossover(zscore, zscore[1]), "Bullish Swing Momentum")
+alertcondition(ta.crossunder(zscore, zscore[1]), "Bearish Swing Momentum")
+
+alertcondition(plFound, "Bullish Divergence")
+alertcondition(phFound, "Bearish Divergence")
+
+alertcondition(ta.crossover(squeezeValueMA-squeezeValue, 0), "Normal Squeeze")
+alertcondition(hypersqueeze, "Hyper Squeeze")

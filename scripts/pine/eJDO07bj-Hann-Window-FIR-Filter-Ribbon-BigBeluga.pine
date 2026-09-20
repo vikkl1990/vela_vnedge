@@ -1,0 +1,135 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Hann Window FIR Filter Ribbon [BigBeluga]", "Hann Ribbon [BigBeluga]", overlay=true, max_lines_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+price = input.source(close, "Source")
+length = input.int(20, "Length", minval=2, maxval=200, tooltip = "Ribbon length")
+showRibbon = input.bool(true, "", inline = "ribbon")
+wide = input.int(2, "Ribbon | Size", minval=1, maxval=10, tooltip = "Display or hide Ribbon | Change the size value to make the ribbon wider or thinner", inline = "ribbon")
+
+
+colorDown = input.color(#df1818, "", inline = "color")
+colorUp = input.color(#18dfcf, "", inline = "color")
+
+hannValues = array.new<float>(6)
+hannColors = array.new<color>(6)
+ 
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+atr = ta.atr(200) * 0.1
+
+
+type levels
+    line top 
+    line bottom
+    linefill fill
+    line last
+
+var levels resistance1 = na
+var levels support1 = na
+
+var res_index = bar_index
+var sup_index = bar_index
+
+hannFilter(length)=>
+    var float hann = na  // Final filter output
+    float filt = 0
+    float coef = 0
+
+    for i = 1 to length
+        weight = 1 - math.cos(2 * math.pi * i / (length + 1))  
+        filt += price[i - 1] * weight
+        coef += weight
+
+    hann := coef != 0 ? filt / coef : na
+
+get_color(src, src1)=>
+    distance = src - src1
+    value = distance / ta.percentile_nearest_rank(distance, 500, 100) 
+    color.from_gradient(value, -0.5, 0.5, colorDown, colorUp)
+
+
+
+for i = 0 to 5 
+    hannValues.set(i, hannFilter(length+i*wide))
+
+for i = 0 to 5 
+    src  = hannValues.get(i == 5 ? i - 1 : i)
+    src1 = hannValues.get(i < 5 ? i+1 : i)
+
+    hannColors.set(i, get_color(src, src1))
+
+if ta.crossunder(hannValues.get(0), hannValues.get(1)) and bar_index - res_index > 50
+    highest = array.new<float>()
+
+    for i = 0 to 20 
+        highest.push(high[i])
+    for i = 0 to 20 
+        if high[i] == highest.max()
+            res_index := bar_index-i
+            res1 = line.new(bar_index-i, high[i], bar_index, high[i]+atr, color = color.new(colorDown, 30))
+            res2 = line.new(bar_index-i, high[i], bar_index, high[i]-atr, color = color.new(colorDown, 30))
+            lst = line.new(bar_index, high[i]+atr, bar_index, high[i]-atr, color = color.new(colorDown, 30))
+            fill = linefill.new(res1, res2, color.new(colorDown, 80))
+            resistance1 := levels.new(res1, res2, fill, lst)
+            break
+
+if ta.crossover(hannValues.get(0), hannValues.get(1)) and bar_index - sup_index > 50
+    lowest = array.new<float>()
+
+    for i = 0 to 20 
+        lowest.push(low[i])
+    for i = 0 to 20 
+        if low[i] == lowest.min()
+            sup_index := bar_index-i
+            sup1 = line.new(bar_index-i, low[i], bar_index, low[i]+atr, color = color.new(colorUp, 30))
+            sup2 = line.new(bar_index-i, low[i], bar_index, low[i]-atr, color = color.new(colorUp, 30))
+            lst = line.new(bar_index, low[i]+atr, bar_index, low[i]-atr, color = color.new(colorUp, 30))
+            fill = linefill.new(sup1, sup2, color.new(colorUp, 80))
+            support1 := levels.new(sup1, sup2, fill, lst)
+            break
+
+if not na(resistance1)
+    if close < resistance1.top.get_y1()
+        resistance1.top.set_x2(bar_index)
+        resistance1.bottom.set_x2(bar_index)
+        resistance1.last.set_x1(bar_index)
+        resistance1.last.set_x2(bar_index)
+    else
+        resistance1 := levels.new(line(na), line(na))
+
+if not na(support1)
+    if close > support1.bottom.get_y1()
+        support1.top.set_x2(bar_index)
+        support1.bottom.set_x2(bar_index)
+        support1.last.set_x1(bar_index)
+        support1.last.set_x2(bar_index)
+    else
+        support1 := levels.new(line(na), line(na))
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+displayRibbon = showRibbon ? display.all : display.none
+p1 = plot(hannValues.get(0), color=color.new(hannColors.get(0), 50), title="Hann FIR1", display = displayRibbon)
+p2 = plot(hannValues.get(1), color=color.new(hannColors.get(1), 60), title="Hann FIR2", display = displayRibbon)
+p3 = plot(hannValues.get(2), color=color.new(hannColors.get(2), 70), title="Hann FIR3", display = displayRibbon)
+p4 = plot(hannValues.get(3), color=color.new(hannColors.get(3), 80), title="Hann FIR4", display = displayRibbon)
+p5 = plot(hannValues.get(4), color=color.new(hannColors.get(4), 90), title="Hann FIR5", display = displayRibbon)
+p6 = plot(hannValues.get(5), color=color.new(hannColors.get(5), 100), title="Hann FIR6", display = displayRibbon)
+
+fill(p1, p2, color.new(hannColors.get(0), 50), display = displayRibbon)
+fill(p2, p3, color.new(hannColors.get(1), 60), display = displayRibbon)
+fill(p3, p4, color.new(hannColors.get(2), 70), display = displayRibbon)
+fill(p4, p5, color.new(hannColors.get(3), 80), display = displayRibbon)
+fill(p5, p6, color.new(hannColors.get(4), 90), display = displayRibbon)
+// }

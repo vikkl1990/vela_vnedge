@@ -1,0 +1,87 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Volume HeatMap Divergence [BigBeluga]", overlay = true, scale = scale.none, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+bool showDiv      = input.bool(true, "Divergence", group = "Divergence", inline = "div")
+bool labelVolume  = input.bool(true, "Volume", group = "Divergence", active = showDiv, inline = "div")
+bool labelPercent = input.bool(true, "Percent", group = "Divergence", active = showDiv, inline = "div")
+
+int minRange        = input.int(5, "Range Min", inline = "Range", group = "Divergence")
+int maxRange        = input.int(60, "Max", inline = "Range", group = "Divergence")
+int divLookLeft     = input.int(10, "Pivot Left", inline = "pivot", group = "Divergence")
+int divLookRight    = input.int(5, "Right", inline = "pivot", group = "Divergence")
+
+color BullColor     = input.color(#19b493, "Bullish Color")
+color BearColor     = input.color(#b95919, "Bearish Color")
+int   sizeOffset    = input.int(400, "Chart Scale") 
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+float vol         = volume / ta.percentile_nearest_rank(volume, 1000, 100) * 100
+color volColor    = vol < 20 ?  color.from_gradient(vol, 0, 20, color.aqua, color.yellow) : color.from_gradient(vol, 20, 100, color.yellow, color.red)
+color candleColor = color.from_gradient(vol, 20, 100, color.yellow, color.red)
+
+volVal = vol[divLookRight]
+
+_inRange(pivot) =>
+    barCount = ta.barssince(pivot)
+    minRange <= barCount and barCount <= maxRange
+
+VolumeDivergence(doCheck) =>
+    bull = false
+    bear = false
+    PH = false
+
+    if doCheck
+        PH := not na(ta.pivothigh(vol, divLookLeft, divLookRight))
+
+        range_ = _inRange(PH[1])
+
+        volHL    = volVal > ta.valuewhen(PH, volVal, 1) and range_
+        priceLL  = low[divLookRight] < ta.valuewhen(PH, low[divLookRight], 1)
+        bull := PH and volHL and priceLL
+
+        volLH    = volVal < ta.valuewhen(PH, volVal, 1) and range_
+        priceHH  = high[divLookRight] > ta.valuewhen(PH, high[divLookRight], 1)
+        bear := PH and volLH and priceHH
+
+    [PH, bull, bear, high[divLookRight], low[divLookRight]]
+
+
+[PH, isBullDiv, isBearDiv, highLevel, lowLevel] = VolumeDivergence(showDiv)
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Scale Level
+plot(sizeOffset, editable = false, color = color(na))
+
+// Volume Plot
+plotcandle(0, vol, 0, vol, title='Volume', color = volColor, wickcolor=volColor, bordercolor = volColor)
+
+// Bar Color
+barcolor(volColor, display = display.none)
+
+// Divergence Lines
+plot(PH ? volVal : na, offset = -divLookRight, title = 'Bullish Volume HL', color = isBullDiv ? BullColor : color(na), linewidth = 2)
+plot(PH ? volVal : na, offset = -divLookRight, title = 'Bearish Volume LH', color = isBearDiv ? BearColor : color(na), linewidth = 2)
+
+// Divergence Info Labels
+string volTXT     = (labelVolume ? "\n" + str.tostring(volume[divLookRight], format.volume) : "")
+string percentTXT = (labelPercent ? "\n" + str.tostring(vol[divLookRight], format.percent) : "")
+
+if isBullDiv
+    label.new(bar_index[divLookRight], volVal, "Bull" + volTXT + percentTXT, size = size.small, color = BullColor)
+if isBearDiv
+    label.new(bar_index[divLookRight], volVal, "Bear" + volTXT + percentTXT, size = size.small, color = BearColor)
+
+// Chart Labels
+plotshape(isBullDiv ? low[divLookRight] : na, offset = -divLookRight, title = 'Bullish Price LL Label', style = shape.labelup, text = 'Bull', color = BullColor, textcolor = chart.fg_color, force_overlay = true, location = location.absolute)
+plotshape(isBearDiv ? highLevel : na, offset = -divLookRight, title = 'Bearish Price HH Label', style = shape.labeldown, text = 'Bear', color = BearColor, textcolor = chart.fg_color, force_overlay = true, location = location.absolute)
+// }

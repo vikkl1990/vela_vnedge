@@ -1,0 +1,163 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Wolfe Waves [BigBeluga]", overlay = true, max_labels_count = 500, max_lines_count = 500)
+plot(na, editable = false)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+sensetivity = input.int(10)
+isbull = input.string("Bearish", "Wave", ["Bullish", "Bearish"]) == "Bullish"
+bearCol = input.color(color.orange)
+bullcol = input.color(color.lime)
+
+var int     index_low   = na
+var float   loww        = na
+var int     index_high  = na
+var float   highh       = na
+var bool    direction   = bool(na)
+var isPh = false 
+
+
+type pivot 
+    float val 
+    int indx
+    bool isPh
+var pivots = array.new<pivot>()
+
+
+var lastIndex = 0
+
+type wave 
+    array<label> lbls 
+    array<line> lines
+
+var draws = array.new<wave>()
+var duration = 0
+var isdetected = false
+var top = 0.
+
+atr = ta.atr(200)
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+len = sensetivity
+float highest = ta.highest(len)
+float lowest  = ta.lowest(len)
+
+if pivots.size() > 5
+    pivots.shift()
+
+
+stl1   = line.style_solid
+
+if high == highest
+    direction := true
+if low  == lowest
+    direction := false
+
+if low[1] == lowest[1] and low > lowest
+    index_low := bar_index[1]
+    loww      := low[1]
+
+if high[1] == highest[1] and high < highest
+    index_high := bar_index[1]
+    highh      := high[1]
+
+if direction != direction[1] and direction
+    pivots.push(pivot.new(loww, index_low, false))
+
+if direction != direction[1] and not direction
+    pivots.push(pivot.new(highh, index_high, true))
+
+
+if pivots.size() == 5
+
+    piv1 = pivots.get(0)
+    piv2 = pivots.get(1)
+    piv3 = pivots.get(2)
+    piv4 = pivots.get(3)
+    piv5 = pivots.get(4)
+
+    isBearWWave = piv1.val > piv2.val and piv2.val < piv3.val and piv3.val > piv1.val and piv4.val > piv2.val and piv4.val < piv1.val and piv5.val > piv3.val
+    isBullWWave = piv1.val < piv2.val and piv2.val > piv4.val and piv3.val < piv1.val and piv4.val > piv1.val and piv5.val < piv3.val
+
+    cond = isbull ? isBullWWave : isBearWWave
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+    if cond and not isdetected and (lastIndex != piv1.indx) and piv1.indx > lastIndex and barstate.isconfirmed
+
+        labels = array.new<label>()
+        lines = array.new<line>()
+
+        lastIndex := piv5.indx
+        for p in pivots 
+            index = str.tostring(pivots.indexof(p)+1)
+            labels.push(label.new(p.indx, p.val, style = p.isPh ? "ldn" : "lup", color = color(na), text = index == "5" ? (isbull ? "5\nBullish" : "Bearish\n5") : index))
+
+        color = isbull ? bullcol : bearCol 
+
+        l1 = line.new(piv1.indx, piv1.val, piv2.indx, piv2.val, color = color, width = 2)
+        l2 = line.new(piv2.indx, piv2.val, piv3.indx, piv3.val, color = color, width = 2)
+        l3 = line.new(piv3.indx, piv3.val, piv4.indx, piv4.val, color = color, width = 2)
+        l4 = line.new(piv4.indx, piv4.val, piv5.indx, piv5.val, color = color, width = 2)
+
+        bars1 = piv4.indx - piv1.indx
+        slope1 = (piv1.val-piv4.val)/bars1
+
+        bars2 = piv3.indx - piv1.indx
+        slope2 = (piv3.val-piv1.val)/bars2
+        b2 = piv5.indx - piv3.indx
+
+        bars3 = piv4.indx - piv2.indx
+        slope3 = (piv4.val-piv2.val)/bars3
+        b3 = piv5.indx - piv4.indx
+
+
+        l5 = line.new(piv1.indx, piv1.val, piv4.indx+bars1, piv4.val-slope1*bars1, width = 1, style = line.style_dashed, color = chart.fg_color)
+
+
+        l6 = line.new(piv1.indx, piv1.val, piv3.indx+b2, piv3.val+slope2*b2, width = 1, style = line.style_dotted, color = chart.fg_color)
+        l7 = line.new(piv2.indx, piv2.val, piv4.indx+b3, piv4.val+slope3*b3, width = 1, style = line.style_dotted, color = chart.fg_color)
+
+
+        lines.push(l1)
+        lines.push(l2)
+        lines.push(l3)
+        lines.push(l4)
+        lines.push(l5)
+
+        isdetected := true
+        duration := 0
+        top := piv5.val
+
+        draws.push(wave.new(labels, lines))
+
+if isdetected
+    duration += 1
+
+if duration == 50
+    isdetected := false
+
+
+crossUp = ta.crossunder(high, top)
+crossDn = ta.crossover(low, top)
+
+if duration < 15
+
+    cond = isbull ? crossUp : crossDn
+
+    if cond and top == top[1] and barstate.isconfirmed
+
+        d = draws.last()
+        for l in d.lines 
+            l.set_color(color.red)
+
+        for l in d.lbls
+            l.delete()
+// }

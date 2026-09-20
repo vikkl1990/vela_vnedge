@@ -1,0 +1,35 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha X © SUSHIBOI77
+
+//@version=5
+indicator("Liquidity Weighted Moving Averages [AlgoAlpha]", shorttitle = "AlgoAlpha - 𝓛𝓦𝓜𝓐", overlay = true, timeframe = "", timeframe_gaps = false)
+
+// Define liquidity based on volume and price movement
+priceMovementLiquidity = volume / math.abs(close - open)
+outlierThreshold = input.int(10, "Outlier Threshold Length")
+fastMovingAverageLength = input.int(50, "Fast MA length")
+slowMovingAverageLength = input.int(100, "Slow MA length")
+
+// Calculate the boundary for liquidity to identify outliers
+liquidityBoundary = ta.ema(priceMovementLiquidity, outlierThreshold) + ta.stdev(priceMovementLiquidity, outlierThreshold)
+
+// Initialize an array to store liquidity values when they cross the boundary
+var liquidityValues = array.new_float(5)
+
+// Check if the liquidity crosses above the boundary and update the array
+if ta.crossover(priceMovementLiquidity, liquidityBoundary)
+    array.insert(liquidityValues, 0, close)
+
+// Calculate the Exponential Moving Averages for the close price at the last liquidity crossover
+fastEMA = ta.ema(array.get(liquidityValues, 0), fastMovingAverageLength)
+slowEMA = ta.ema(array.get(liquidityValues, 0), slowMovingAverageLength)
+
+// Plot the EMAs with dynamic coloring based on their crossover status
+fastPlot = plot(fastEMA, color = fastEMA > slowEMA ? color.new(#00ffbb, 50) : color.new(#ff1100, 50))
+slowPlot = plot(slowEMA, color = fastEMA > slowEMA ? color.new(#00ffbb, 50) : color.new(#ff1100, 50))
+
+// Create a fill between the fast and slow EMA plots with appropriate color based on crossover
+fill(fastPlot, slowPlot, fastEMA, slowEMA, fastEMA > slowEMA ? color.new(#00ffbb, 50) : color.new(#ff1100, 50), color.new(chart.bg_color, 80))
+
+alertcondition(ta.crossover(fastEMA, slowEMA), "Up Trend", "🚨Bullish crossover!")
+alertcondition(ta.crossunder(fastEMA, slowEMA), "Down Trend", "🚨Bearish crossover!")

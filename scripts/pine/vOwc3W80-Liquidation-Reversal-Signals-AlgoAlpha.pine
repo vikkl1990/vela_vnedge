@@ -1,0 +1,112 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Liquidation Reversal Signals [AlgoAlpha]", "AlgoAlpha - Liquidation Reversal", true, max_lines_count = 500, behind_chart = false)
+import TradingView/ta/10 as tvta
+
+// ========================= Inputs =========================
+// Data
+lowerTF = input.timeframe("15", title = "Lower Timeframe", group = "Data", tooltip = "Lower timeframe used by the up/down volume request.")
+
+// Z-Score
+length = input.int(200, "Z Score Length", minval = 1, group = "Z-Score", tooltip = "Lookback length for mean and standard deviation when computing z-scores of up/down volume.")
+zThresh = input.float(3.0, "Z-Score Threshold", minval = 0.0, step = 0.1, group = "Z-Score", tooltip = "Minimum z-score required to register a liquidation spike.")
+
+// Detection
+timeoutBars = input.int(50, "Liquidation Timeout Bars (0 = none)", minval = 0, group = "Detection", tooltip = "Maximum bars between a qualifying liquidation and the Supertrend flip. Set 0 to disable the timeout.")
+
+// Appearance
+green = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color used for bullish visuals and positive sentiment texts.")
+red   = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color used for bearish visuals and negative sentiment texts.")
+
+// ========================= Calculations =========================
+[u, d, _] = tvta.requestUpAndDownVolume(lowerTF)
+d := -d
+
+meanU = ta.sma(u, length)
+stdevU = ta.stdev(u, length)
+zU = stdevU != 0 ? (u - meanU) / stdevU : na
+
+meanD = ta.sma(d, length)
+stdevD = ta.stdev(d, length)
+zD = stdevD != 0 ? (d - meanD) / stdevD : na
+
+[supertrend, direction] = ta.supertrend(2, 10)
+shortLiq = (direction < 0) and (zU > zThresh)
+longLiq = (direction > 0) and (zD > zThresh)
+
+var lastliqdir = 0
+var lastliqindex = 0
+var valid = 0
+
+var plottrnd = 0
+if ta.cross(direction, 0)
+    plottrnd := 0
+if ta.crossunder(direction, 0) and lastliqdir == 1 and valid == 1
+    if bar_index - lastliqindex < timeoutBars
+        plottrnd := 1
+    valid := 0
+if ta.crossover(direction, 0) and lastliqdir == -1 and valid == 1
+    if bar_index - lastliqindex < timeoutBars
+        plottrnd := -1
+    valid := 0
+
+if shortLiq
+    lastliqdir := -1
+    lastliqindex := bar_index
+    valid := 1
+if longLiq
+    lastliqdir := 1
+    lastliqindex := bar_index
+    valid := 1
+
+x = 7
+lw = ta.lowest(x)
+hg = ta.highest(x)
+newBullSt = plottrnd == -1 and plottrnd[1] != -1
+newBearSt = plottrnd == 1 and plottrnd[1] != 1
+
+vola = ta.atr(14)
+zMagShort = math.abs(zU)
+zMagLong = math.abs(zD)
+
+normShort = math.min(math.max((zMagShort - zThresh) / 5, 0), 1)
+normLong = math.min(math.max((zMagLong - zThresh) / 5, 0), 1)
+transpMax = 70
+transpMin = 30
+transpShort = math.round(transpMax - normShort * (transpMax - transpMin))
+transpLong = math.round(transpMax - normLong * (transpMax - transpMin))
+colShort = color.new(green, transpShort)
+colLong = color.new(red, transpLong)
+candleCol = plottrnd == -1 ? color.from_gradient(50, 0, 100, red, chart.bg_color) : plottrnd == 1 ? color.from_gradient(50, 0, 100, green, chart.bg_color) : color.new(green, 100)
+// ========================= Visuals =========================
+// Hidden midpoint between candle body
+midBody = math.avg(open, close)
+midPlot = plot(midBody, title = "Mid Body", display = display.none)
+
+stBull = plot(plottrnd == -1 ? supertrend : na, "Bullish Trend", red, style = plot.style_linebr)
+stBear = plot(plottrnd == 1 ? supertrend : na, "Bearish Trend", green, style = plot.style_linebr)
+
+fill(midPlot, stBull, color.new(red, 90), title = "Bullish Fill")
+fill(midPlot, stBear, color.new(green, 90), title = "Bearish Fill")
+plotshape(newBullSt, "Bullish ST Start", shape.labeldown, location.abovebar, color.new(red, 30), text = "▼", textcolor = chart.fg_color, size = size.tiny)
+plotshape(newBearSt, "Bearish ST Start", shape.labelup, location.belowbar, color.new(green, 30), text = "▲", textcolor = chart.fg_color, size = size.tiny)
+plotchar(shortLiq ? high+vola : na, "Short Liquidation", "●", location.absolute, colShort, size = size.tiny)
+plotchar(longLiq ? low-vola : na, "Long Liquidation", "●", location.absolute, colLong, size = size.tiny)
+plotcandle(open, high, low, close, "Candles", candleCol, candleCol, bordercolor = candleCol)
+
+// ========================= Alerts =========================
+alertcondition(newBullSt, title = "Bullish ST Start", message = "Bullish supertrend became visible after qualifying liquidation and confirmation.")
+alertcondition(newBearSt, title = "Bearish ST Start", message = "Bearish supertrend became visible after qualifying liquidation and confirmation.")
+alertcondition(shortLiq, title = "Short Liquidation Spike", message = "Short-side liquidation detected (zU > threshold).")
+alertcondition(longLiq, title = "Long Liquidation Spike", message = "Long-side liquidation detected (zD > threshold).")
+
+// ========================= Table Warning =========================
+var table warnTbl = table.new(position.middle_right, 1, 1)
+noVol = na(volume) or volume == 0 or (na(u) and na(d))
+table.cell(warnTbl, 0, 0,
+     noVol ? "No Volume" : "",
+     text_color = noVol ? color.white : color.new(chart.fg_color, 100),
+     bgcolor = noVol ? color.new(red, 0) : color.new(chart.bg_color, 100)
+ )

@@ -1,0 +1,115 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Three Step Future-Trend [BigBeluga]', overlay = true)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int period = input.int(25, 'Period')
+color color_up = input.color(color.lime, 'UP', inline = 'c')
+color color_dn = input.color(#d42583, 'DOWN', inline = 'c')
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+draw_boxes(period, color1, color2, color3) =>
+    float H = ta.highest(50)
+    float L = ta.lowest(50)
+    var boxes = array.new<box>()
+
+    if barstate.islast
+
+        for i = 0 to 2 by 1
+            int index1 = period * (i > 0 ? i + 1 : 1)
+            int index2 = period * i
+            color color = i == 0 ? color1 : i == 1 ? color2 : color3
+            box1 = box.new(bar_index - index1 + 1, H[index2], bar_index - period * i, L[index2], bgcolor = color.new(color, 90), border_color = color, border_width = 2, text = str.tostring(index1) + ' - ' + str.tostring(index2), text_size = size.large, text_color = chart.fg_color, text_halign = text.align_right, text_valign = color == color_up ? text.align_bottom : text.align_top)
+
+            boxes.push(box1)
+
+            if boxes.size() > 3
+                box.delete(boxes.shift())
+
+future_trend(period, src) =>
+    var color = color(na)
+    var delta1 = float(na)
+    var delta2 = float(na)
+    var delta3 = float(na)
+    var total1 = float(na)
+    var total2 = float(na)
+    var total3 = float(na)
+
+    array<float> values = array.new<float>(period + 1)
+    array<float> delta = array.new<float>(period + 1)
+
+    array<chart.point> future_trend = array.new<chart.point>(period + 1)
+
+    delta_vol = close > open ? volume : -volume
+
+    delta1 := math.sum(delta_vol, period)
+    delta2 := math.sum(delta_vol, period * 2) - delta1
+    delta3 := math.sum(delta_vol, period * 3) - delta1 - delta2
+
+    total1 := math.sum(volume, period)
+    total2 := math.sum(volume, period * 2) - total1
+    total3 := math.sum(volume, period * 3) - total1 - total2
+
+    color color1 = delta1 > 0 ? color_up : color_dn
+    color color2 = delta2 > 0 ? color_up : color_dn
+    color color3 = delta3 > 0 ? color_up : color_dn
+
+
+    if barstate.islast
+        for i = 0 to period by 1
+            values.set(i, math.avg(src[i], src[i + period], src[i + period * 2]))
+            delta.set(i, math.avg(delta_vol[i], delta_vol[i + period], delta_vol[i + period * 2]))
+
+
+        values.reverse()
+
+        series float diff = src - values.first()
+        series float vol_delta = delta.avg()
+
+        for i = 0 to period by 1
+            future_trend.set(i, chart.point.from_index(bar_index + i, diff + values.get(i)))
+
+        color := vol_delta > 0 ? color_up : color_dn
+
+        polyline.delete(polyline.new(future_trend, true, line_color = color, line_width = 2)[1])
+        label lb1 = label.new(future_trend.last(), style = label.style_label_left, color = color)
+
+        lb1.set_text(str.tostring(vol_delta, format.volume) + '\n' + str.tostring(lb1.get_y(), '#,###.##'))
+        label.delete(lb1[1])
+
+        table dash = table.new(position.bottom_right, 10, 10, frame_color = color, bgcolor = color.new(color, 90), frame_width = 2, border_color = color.new(chart.fg_color, 70), border_width = 1)
+        for i = 0 to 2 by 1
+            index1 = period * (i > 0 ? i + 1 : 1)
+            index2 = period * i
+            dash.cell(0, i + 2, str.tostring(index1) + ' - ' + str.tostring(index2), text_color = chart.fg_color)
+
+        dash.merge_cells(0, 0, 2, 0)
+        dash.cell(0, 0, 'Volume Data', text_color = color.new(chart.fg_color, 50))
+        dash.cell(1, 2, str.tostring(delta1, format.volume), text_color = color1)
+        dash.cell(1, 3, str.tostring(delta2, format.volume), text_color = color2)
+        dash.cell(1, 4, str.tostring(delta3, format.volume), text_color = color3)
+
+        dash.cell(2, 2, str.tostring(total1, format.volume), text_color = color.new(chart.fg_color, 20))
+        dash.cell(2, 3, str.tostring(total2, format.volume), text_color = color.new(chart.fg_color, 20))
+        dash.cell(2, 4, str.tostring(total3, format.volume), text_color = color.new(chart.fg_color, 20))
+        dash.cell(0, 1, 'Period', text_color = color.new(chart.fg_color, 0))
+        dash.cell(1, 1, 'Delta', text_color = color.new(chart.fg_color, 0))
+        dash.cell(2, 1, 'Total', text_color = color.new(chart.fg_color, 0))
+
+
+
+    draw_boxes(period, color1, color2, color3)
+    // }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+future_trend(period, close)
+// }

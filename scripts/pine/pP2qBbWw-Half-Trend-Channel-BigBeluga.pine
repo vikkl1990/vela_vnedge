@@ -1,0 +1,87 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Half-Trend Channel [BigBeluga]", overlay = true, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   len    = input.int(10, "Length")
+float bands  = input.float(2.0, "Bands", step = 0.1)
+int transp   = input.int(60, "Bands Transparency")
+
+color up_col = input.color(#1ce8b5, "", inline = "cc")
+color dn_col = input.color(#9a2ab9, "", inline = "cc")
+
+
+series float closeMA     = ta.sma(close, len) // Moving average of close prices
+series float highestHigh = ta.highest(len)   // Highest high over the period
+series float lowestLow   = ta.lowest(len)   // Lowest low over the period
+
+var hl_t = float(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Initialize half trend on the first bar
+if barstate.isfirst
+    hl_t := close
+
+// Update half trend value based on conditions
+switch 
+    closeMA < hl_t and highestHigh < hl_t => hl_t := highestHigh
+    closeMA > hl_t and lowestLow   > hl_t => hl_t := lowestLow
+    => hl_t := hl_t
+
+float s_hlt   = ta.hma(hl_t, len)
+float stdv    = ta.atr(100) * bands
+float stdv_p  = stdv * 1.5
+float upper   = s_hlt + stdv
+float upper_p = s_hlt + stdv_p
+float lower   = s_hlt - stdv
+float lower_p = s_hlt - stdv_p
+
+bool sig_up = ta.crossover(hl_t, hl_t[1])
+bool sig_dn = ta.crossunder(hl_t, hl_t[1])
+
+var trend_col = color(na) 
+
+if sig_up
+    trend_col := up_col
+else if sig_dn
+    trend_col := dn_col
+
+
+// Fake outs
+if high[2] < upper_p[2] and high[1] > upper_p[1] and high < upper_p
+    label.new(bar_index-1, high[1], "x", color = color.new(color.black, 100), textcolor = dn_col, style = label.style_label_down)
+
+if low[2] > lower_p[2] and low[1] < lower_p[1] and low > lower_p
+    label.new(bar_index-1, low[1], "x", color = color.new(color.black, 100), textcolor = up_col, style = label.style_label_up)
+    
+// Reversals
+if ta.crossunder(hl2, hl2[2]) and high > upper_p
+    label.new(bar_index-1, high[1], "▼", color = color.new(color.black, 100), textcolor = chart.fg_color)
+
+if ta.crossover(hl2, hl2[2]) and low < lower_p
+    label.new(bar_index-1, low[1], "▲", color = color.new(color.black, 100), textcolor = chart.fg_color, style = label.style_label_up)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+pu  = plot(upper, display = display.all, editable = false, color = dn_col)
+pu1 = plot(upper_p, display = display.all, editable = false, color = dn_col)
+
+plot(s_hlt, color = trend_col, linewidth = 1)
+plot(s_hlt, color = color.new(trend_col, 80), linewidth = 5)
+
+pl  = plot(lower, display = display.all, editable = false, color = up_col)
+pl1 = plot(lower_p, display = display.all, editable = false, color = up_col)
+
+fill(pu, pu1, color = color.new(dn_col, transp))
+fill(pl, pl1, color = color.new(up_col, transp))
+
+if barstate.islast
+    l = label.new(bar_index, s_hlt, trend_col == up_col ? "▲" : "▼", style = label.style_label_left, color = color.new(trend_col, 50))
+    label.delete(l[1])
+// }

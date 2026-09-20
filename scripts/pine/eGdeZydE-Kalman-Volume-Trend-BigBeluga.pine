@@ -1,0 +1,195 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Kalman Volume Trend [BigBeluga]", overlay = true, max_bars_back = 5000, max_labels_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+src = input.source(close, "Source", group = "Kalman Trend", 
+     tooltip = "The price data used for the Kalman Filter calculation. Usually 'Close' is preferred for trend analysis.")
+
+processNoise = input.float(0.0005, "Process Noise (Q)", step=0.0001, minval = 0.0001, group = "Kalman Trend", 
+     tooltip = "Represents how much the system state (price trend) is expected to change. Lower values result in a smoother, slower-reacting line, while higher values make it track price more closely.")
+
+measurementNoise = input.float(0.4, "Measurement Noise (R)", step=0.01, group = "Kalman Trend", 
+     tooltip = "Represents the uncertainty in the price data. Increasing this value makes the filter rely more on its internal prediction, leading to more smoothing and less 'jitter'.")
+
+multiplier = input.float(2.0, "Band multiplier", step=0.1, group = "Kalman Trend", 
+     tooltip = "Sets the width of the trend bands based on the ATR (Average True Range). A higher multiplier creates wider bands, requiring a stronger price move to trigger a trend reversal.")
+
+colUpTrend = input.color(color.rgb(26, 108, 202), "Up Trend Color", 
+     tooltip = "Color used for bullish trends and positive volume bars.")
+
+colDnTrend = input.color(color.rgb(202, 26, 173), "Down Trend Color", 
+     tooltip = "Color used for bearish trends and negative volume bars.")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+delta_sign  = close > open ? volume : -volume
+
+hi    = ta.highest(math.abs(delta_sign), 100)
+delta = delta_sign/hi * 2
+
+ATR  = ta.atr(200)
+atr  = ATR * multiplier
+atr1 = ATR
+
+var direction = false
+colorNA = color.new(color.black, 100)
+var start = 0
+
+kalman_filter(src, q, r) =>
+    // Persistent variables
+    var float x = na        // State estimate
+    var float p = na        // Estimate error covariance
+
+    // Initialization
+    if na(x)
+        x := src
+        p := 1.0
+
+    // Prediction step
+    p := p + q
+
+    // Kalman gain
+    k = p / (p + r)
+
+    // Update step
+    x := x + k * (src - x)
+    p := (1 - k) * p
+
+    x
+
+kf = kalman_filter(src, processNoise, measurementNoise)
+
+upKF = kf + atr 
+loKF = kf - atr 
+
+switch
+    close > upKF and close[1] < upKF => direction := true
+    close < loKF and close[1] > loKF => direction := false
+
+kfTrendLine = direction ? loKF : upKF
+
+
+Dcolor = color.new(delta > 0 ? colUpTrend : colDnTrend, 50)
+Dcolor1 = color.new(delta > 0 ? colUpTrend : colDnTrend, 0)
+
+Tcolor = direction ? colUpTrend : colDnTrend
+Tchange = direction != direction[1]
+
+if Tchange
+    start := bar_index
+// }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+
+// Volume Bars
+volumeBar = kfTrendLine + atr1 * math.abs(delta) * (direction ? 1 : -1)
+
+atr2 = ta.sma(high-low, 100)*0.1* (direction ? 1 : -1)
+
+plotcandle(kfTrendLine+atr2, kfTrendLine+atr2, kfTrendLine+atr2, volumeBar, "VolumeBars", color = Dcolor, wickcolor = Dcolor, bordercolor = Dcolor)
+plotcandle(volumeBar, volumeBar, volumeBar, volumeBar, "VolumeBars", color = Dcolor1, wickcolor = Dcolor1, bordercolor = Dcolor1)
+
+// Trend Bands
+pkf = plot(Tchange ? float(na) : kfTrendLine, "Kalman Filter", linewidth=3, color = Tcolor, style = plot.style_linebr)
+pp = plot(hl2, editable = false, color = colorNA)
+
+fill(pp, pkf, kfTrendLine, hl2, colorNA, color.new(Tcolor, 90))
+
+plotshape(Tchange[1] ? kfTrendLine : float(na), "", shape.circle, location = location.absolute, color = color.new(Tcolor, 50), size = size.tiny)
+
+// Volume Extremes 
+if (delta > 1.5 or delta < -1.5) and direction
+    label.new(bar_index, volumeBar, str.tostring(delta_sign, format.volume)
+            , style = label.style_label_down
+            , color = colorNA
+            , size = size.small
+            , textcolor = chart.fg_color
+            , tooltip = delta > 0 ? "+Volume" : "-Volume")
+
+    label.new(bar_index, high, "X"
+            , style = label.style_label_down
+            , color = colorNA
+            , size = size.small
+            , textcolor = chart.fg_color
+            )
+
+
+if (delta > 1.5 or delta < -1.5) and not direction
+    label.new(bar_index, volumeBar, str.tostring(delta_sign, format.volume)
+            , style = label.style_label_up
+            , color = colorNA
+            , size = size.small
+            , textcolor = chart.fg_color
+            , tooltip = delta > 0 ? "+Volume" : "-Volume")
+    label.new(bar_index, low, "x"
+            , style = label.style_label_up
+            , color = colorNA
+            , size = size.small
+            , textcolor = chart.fg_color
+            )
+
+var float buy = 0.
+var float sell = 0.
+var float Delta = 0.
+var float maxTrendVol = 0.1 // Prevent division by zero
+
+if Tchange
+    buy := 0.
+    sell := 0.
+    Delta := 0.
+    maxTrendVol := 0.1
+
+buy   += (delta_sign > 0 ? delta_sign : 0)
+sell  += (delta_sign < 0 ? math.abs(delta_sign) : 0)
+Delta += delta_sign
+maxTrendVol := math.max(buy, sell, math.abs(Delta))
+
+//  Update the table creation to 12 rows (10 for histogram, 1 for headers, 1 for total)
+var table histoTable = table.new(position.bottom_right, 5, 12, border_width = 0, border_color = color.new(chart.fg_color, 100), frame_width = 1, frame_color = color.new(chart.fg_color, 50))
+
+if barstate.islast
+    // Clear table for fresh update (extended to row 11)
+    table.clear(histoTable, 0, 0, 4, 11)
+
+
+    table.cell(histoTable, 0, 10, "BUY\n" + str.tostring(buy, format.volume),   text_color = color.white, bgcolor = colUpTrend, text_size = size.small, width = 3)
+    table.cell(histoTable, 1, 10, "",   text_color = color.white, bgcolor = chart.bg_color)
+    table.cell(histoTable, 2, 10, "SELL\n" + str.tostring(sell, format.volume),  text_color = color.white, bgcolor = colDnTrend, text_size = size.small, width = 3)
+    table.cell(histoTable, 3, 10, "",   text_color = color.white, bgcolor = chart.bg_color)
+    table.cell(histoTable, 4, 10, "DELTA\n" + str.tostring(Delta, format.volume), text_color = color.white, bgcolor = color.gray, text_size = size.small, width = 3)
+
+
+    int buyScore   = int(math.min(10, (buy / maxTrendVol) * 10))
+    int sellScore  = int(math.min(10, (sell / maxTrendVol) * 10))
+    int deltaScore = int(math.min(10, (math.abs(Delta) / maxTrendVol) * 10))
+    color deltaCol = Delta > 0 ? colUpTrend : colDnTrend
+
+    for i = 0 to 9
+        int rowIdx = 9 - i
+        if i < buyScore
+            table.cell(histoTable, 0, rowIdx, bgcolor = color.new(colUpTrend, 80-i*10))
+        if i < sellScore
+            table.cell(histoTable, 2, rowIdx, bgcolor = color.new(colDnTrend, 80-i*10))
+        if i < deltaScore
+            table.cell(histoTable, 4, rowIdx, bgcolor = color.new(deltaCol, 80-i*10))
+
+
+    float totalVol = buy + sell
+    // Merge row 11 across all 5 columns (0 to 4)
+    table.merge_cells(histoTable, 0, 11, 4, 11)
+    table.cell(histoTable, 0, 11, "TOTAL VOLUME: " + str.tostring(totalVol, format.volume), 
+               text_color = chart.fg_color, 
+               bgcolor = color.new(chart.fg_color, 90), 
+               text_size = size.small)
+// }

@@ -1,0 +1,124 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title="Peak & Valley Levels [AlgoAlpha]", shorttitle="AlgoAlpha - 𝓟𝓮𝓪𝓴𝓼 𝓪𝓷𝓭 𝓥𝓪𝓵𝓵𝓮𝔂𝓼", overlay = true)
+
+green = #00ffbb
+red = #ff1100
+
+// Calculating
+candledir = close > open ? 1 : -1
+candlelen = math.abs(close-open)
+
+valleyform = candlelen > candlelen[1] and candledir * candledir[1] == -1 and candledir == 1 and volume < volume[1]
+peakform = candlelen > candlelen[1] and candledir * candledir[1] == -1 and candledir == -1 and volume < volume[1]
+
+
+bullishrej(level) =>
+    low < level and close > level
+
+bearishrej(level) =>
+    high > level and close < level
+
+max_memory = 90
+
+type bar
+    float h = high
+    float l = low
+    float v = volume
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+
+var x = 1
+var hh = 0.0
+var ll = 0.0
+var aR = array.new_line()
+var aS = array.new_line()
+var aRb = array.new_line()
+var aSb = array.new_line()
+
+if peakform
+    aR.push(line.new(bar_index, open[1], bar_index+1, open[1], color = red))
+
+
+if valleyform
+    aS.push(line.new(bar_index, open[1], bar_index+1, open[1], color = green))
+
+
+
+if aR.size() > 0
+    qt = aR.size()
+
+    for ln = qt - 1 to 0
+        if ln < aR.size()
+            cL = aR.get(ln)
+            yL = cL.get_y1()
+
+            if close > yL
+                aR.remove(ln)
+                aRb.push(line.new(bar_index, yL, bar_index+1, yL, color = red, style = line.style_dashed))
+
+            else
+                cL.set_x2(b.i + 1)
+
+    if aR.size() > 500
+        aR.shift().delete()
+
+if aRb.size() > 0
+    qt = aRb.size()
+
+    for ln = qt - 1 to 0
+        if ln < aRb.size()
+            cL = aRb.get(ln)
+            yL = cL.get_y1()
+
+            if close < yL
+                aRb.remove(ln)
+
+            else
+                cL.set_x2(b.i + 1)
+
+    if aRb.size() > 500
+        aRb.shift().delete()
+
+if aS.size() > 0
+    qt = aS.size()
+
+    for ln = qt - 1 to 0
+        if ln < aS.size()
+            cL = aS.get(ln)
+            yL = cL.get_y1()
+
+            if close < yL
+                aS.remove(ln)
+                aSb.push(line.new(bar_index, yL, bar_index+1, yL, color = green, style = line.style_dashed))
+
+            else
+                cL.set_x2(b.i + 1)
+
+    if aS.size() > 500
+        aS.shift().delete()
+
+
+if aSb.size() > 0
+    qt = aSb.size()
+
+    for ln = qt - 1 to 0
+        if ln < aSb.size()
+            cL = aSb.get(ln)
+            yL = cL.get_y1()
+
+            if close > yL
+                aSb.remove(ln)
+
+            else
+                cL.set_x2(b.i + 1)
+
+    if aSb.size() > 500
+        aSb.shift().delete()

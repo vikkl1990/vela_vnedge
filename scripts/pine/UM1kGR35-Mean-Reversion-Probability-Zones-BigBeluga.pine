@@ -1,0 +1,88 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Mean Reversion Probability Zones [BigBeluga]")
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+oscillatorType = input.string("RSI", "Oscillator", ["RSI", "MFI", "Stochastic"])
+oscLength      = input.int(14, "Length")
+zoneUpper      = input.int(60, "Upper Zone", inline = "Upper")
+zoneUpColor    = input.color(#ff9800, "", inline = "Upper")
+zoneLower      = input.int(40, "Lower Zone", inline = "Lower")
+zoneDnColor    = input.color(#13e47f, "", inline = "Lower")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Stochastic RSI helper function
+stochRsi(srcLen) =>
+    rsiValue = ta.rsi(close, srcLen)
+    kLine    = ta.sma(ta.stoch(rsiValue, rsiValue, rsiValue, 14), 3)
+    kLine
+
+// Select oscillator
+float oscValue = switch oscillatorType
+    "RSI"        => ta.rsi(close, oscLength)
+    "MFI"        => ta.mfi(hlc3, oscLength)
+    "Stochastic" => stochRsi(oscLength)
+
+// Calculate differences and percentiles
+downMove        = oscValue[2] - oscValue
+downPercentile  = ta.percentile_nearest_rank(downMove, 200, 100)
+
+upMove          = oscValue - oscValue[2]
+upPercentile    = ta.percentile_nearest_rank(upMove, 200, 100)
+
+// Downward probability calculations
+probDownRaw   = oscValue > zoneUpper ? downMove / downPercentile : 0
+probDownRaw   := probDownRaw < 0 ? 0 : probDownRaw
+probDownFinal = ta.highest(probDownRaw, 10)  * oscValue
+probDownHighest = ta.highest(probDownFinal, 2000) 
+
+// Upward probability calculations
+probUpRaw     = oscValue < zoneLower ? upMove / upPercentile : 0
+probUpRaw     := probUpRaw < 0 ? 0 : probUpRaw
+probUpFinal   = ta.highest(probUpRaw, 10) * (100 - oscValue)
+probUpHighest = ta.highest(probUpFinal, 2000) 
+
+// Probability colors
+probDownFillColor   = color.from_gradient(probDownFinal, 0, 100, color.new(zoneUpColor, 90), zoneUpColor)
+probUpFillColor     = color.from_gradient(probUpFinal, 0, 100, color.new(zoneDnColor, 90), zoneDnColor)
+probDownBorderColor = color.from_gradient(probDownFinal, 0, 100, color.new(zoneUpColor, 50), zoneUpColor)
+probUpBorderColor   = color.from_gradient(probUpFinal, 0, 100, color.new(zoneDnColor, 50), zoneDnColor)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+upperOffset = 125
+lowerOffset = 25
+
+plotDownZone = plot(upperOffset - probDownFinal, "Mean Reversion Down", color = probDownBorderColor, style = plot.style_stepline)
+plotDownRef  = plot(zoneUpper, color = color(na), editable = false)
+plotUpZone   = plot(-lowerOffset + probUpFinal, "Mean Reversion Up", color = probUpBorderColor, style = plot.style_stepline)
+plotUpRef    = plot(zoneLower, color = color(na), editable = false)
+
+hline(zoneUpper, "Upper Threshold")
+plot (oscValue, "Oscillator", color = chart.fg_color, linewidth = 2)
+hline(zoneLower, "Lower Threshold")
+
+// Shapes
+upper = ta.highest(50)
+plotshape(probDownFinal > 0 ? upper : float(na), "Down Probability", shape.square, location.absolute, probDownFillColor, force_overlay = true, size = size.tiny)
+lower = ta.lowest(50)
+plotshape(probUpFinal > 0 ? lower : float(na), "Up Probability", shape.square, location.absolute, probUpFillColor, force_overlay = true, size = size.tiny)
+
+// Fills
+fill(plotDownZone, plotDownRef, upperOffset, zoneUpper, color.new(zoneUpColor, 90), color(na))
+fill(plotUpZone, plotUpRef, -lowerOffset, zoneLower, color.new(zoneDnColor, 90), color(na))
+
+var dash = table.new(position.bottom_right, 100, 100)
+// Labels and dash (last bar only)
+if barstate.islast
+    label.delete(label.new(bar_index, upperOffset - probDownFinal, str.tostring(probDownFinal, format.percent), style = label.style_label_left, color = probDownBorderColor, textcolor = chart.fg_color)[1])
+    label.delete(label.new(bar_index, -lowerOffset + probUpFinal, str.tostring(probUpFinal, format.percent), style = label.style_label_left, color = probUpBorderColor, textcolor = chart.fg_color)[1])
+    dash.cell(0, 0, "Recent MAX value ▼: " + str.tostring(probDownHighest, format.percent), text_color = zoneUpColor)
+    dash.cell(0, 1, "Recent MAX value ▲: " + str.tostring(probUpHighest, format.percent), text_color = zoneDnColor)
+// }

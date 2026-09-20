@@ -1,0 +1,99 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title="Volumetric Fair Value Gaps [AlgoAlpha]", shorttitle="AlgoAlpha - 📊VFVG", overlay = true)
+clr = input.bool(false, "Remove Mitigated FVGs From Chart")
+l = input.int(60, 'FVG Noise Reduction Length', minval = 1, tooltip = "Increase to widen lookback window for what constitutes a significant gap")
+t = input.int(3, 'Noise Reduction Factor', minval = 1, tooltip = "Increase to detect larger gaps") 
+green = input.color(#d1d4dc, "Bullish Color")
+red = input.color(#2962ff, "Bearish Color")
+
+
+// Calculating
+candledir = close > open ? 1 : -1
+candlelen = math.abs(close-open)
+gap = candlelen
+rgap = (gap/ta.sma(gap, l))[1]
+bullFVG =  low > high[2] and rgap > t
+bearFVG = high < low[2] and rgap > t
+voldata = volume[2]
+bullmit = 0
+bearmit = 0
+
+type bar
+    float h = high
+    float l = low
+    float v = volume
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+var x = 1
+var hh = 0.0
+var ll = 0.0
+var aR = array.new_box()
+var aS = array.new_box()
+
+if bearFVG
+    aR.push(box.new(bar_index-2,low[2],bar_index + 1, high, color.new(red, 90), 1, line.style_solid, extend.none, bgcolor = color.new(red, 70), text = str.tostring(voldata, format.volume), text_size = size.small, text_color = green, text_halign =  text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace))
+
+if bullFVG
+    aS.push(box.new(bar_index-2, low,bar_index + 1, high[2], color.new(green, 90), 1, line.style_solid, extend.none, bgcolor = color.new(green, 70), text = str.tostring(voldata, format.volume), text_size = size.small, text_color = green, text_halign =  text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace))
+
+
+if aR.size() > 0
+    qt = aR.size()
+
+    for ln = qt - 1 to 0
+        if ln < aR.size()
+            cL = aR.get(ln)
+            yL = cL.get_top()
+            xL = cL.get_left()
+
+            if high > yL
+                if clr
+                    aR.remove(ln).delete()
+                else
+                    aR.remove(ln)
+
+                bearmit := 1
+
+            else
+                cL.set_right(b.i + 1)
+
+
+    if aR.size() > 500
+        aR.shift().delete()
+
+if aS.size() > 0
+    qt = aS.size()
+
+    for ln = qt - 1 to 0
+        if ln < aS.size()
+            cL = aS.get(ln)
+            yL = cL.get_bottom()
+            xL = cL.get_left()
+
+            if low < yL
+                if clr
+                    aS.remove(ln).delete()
+                else
+                    aS.remove(ln)
+                bullmit := 1
+
+            else
+                cL.set_right(b.i + 1)
+    if aS.size() > 500
+        aS.shift().delete()
+
+
+//////Alerts
+alertcondition(bullFVG, "Bullish FVG formation")
+alertcondition(bearFVG, "Bearish FVG formation")
+
+alertcondition(bullmit == 1, "Bullish FVG Mitigated")
+alertcondition(bearmit == 1, "Bearish FVG Mitigated")

@@ -1,0 +1,307 @@
+//@version=6
+indicator("Breaker Blocks Signals [AlgoAlpha]", shorttitle = "AlgoAlpha - Breaker Blocks", overlay = true, behind_chart = false, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+import TradingView/ta/12
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+preventOverlap = input.bool(true, title = "Prevent Overlap", group = "Calculation", tooltip = "When enabled, new orderblocks will not be created if their price range overlaps any existing active orderblock.\n\nDisable this only if you intentionally want stacked/overlapping zones.")
+zLen = input.int(100, title = "Z-Score Window (bars)", minval = 1, group = "Calculation", tooltip = "Lookback window used to normalize the impulse distance into a z-score.\n\nHigher values = smoother/less reactive; lower values = faster/more signals.")
+maxAge = input.int(500, title = "Max Box Age (bars)", minval = 1, group = "Calculation", tooltip = "Maximum lifetime (in bars) of an orderblock that has not been mitigated.\n\nAfter this many bars the zone is removed to reduce clutter and object usage.")
+bullCol = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color used for bullish breaker zones and bullish signals.")
+bearCol = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color used for bearish breaker zones and bearish signals.")
+
+// ============================================================================
+// CALCULATIONS
+// ============================================================================
+var updist = 0.0
+var downdist = 0.0
+
+updist   := close > open ? nz(updist[1]) + (close - open) : 0.0
+downdist := close < open ? nz(downdist[1]) + (open - close) : 0.0
+
+upMean  = ta.sma(updist, zLen)
+upStdev = ta.stdev(updist, zLen)
+dnMean  = ta.sma(downdist, zLen)
+dnStdev = ta.stdev(downdist, zLen)
+
+zUp = (updist - upMean) / (upStdev == 0.0 ? na : upStdev)
+zDn = (downdist - dnMean) / (dnStdev == 0.0 ? na : dnStdev)
+
+bullish = ta.crossover(zUp, 4) and nz(zUp[1]) != 0
+bearish = ta.crossunder(-zDn, -4) and nz((-zDn)[1]) != 0
+
+var box[] bullBoxes = array.new<box>()
+var box[] bearBoxes = array.new<box>()
+var int[] bullStarts = array.new_int()
+var int[] bearStarts = array.new_int()
+var line[] bullMidLines = array.new<line>()
+var line[] bearMidLines = array.new<line>()
+var box[] breakerBullBoxes = array.new<box>()
+var box[] breakerBearBoxes = array.new<box>()
+var int[] breakerBullStarts = array.new_int()
+var int[] breakerBearStarts = array.new_int()
+var line[] breakerBullMidLines = array.new<line>()
+var line[] breakerBearMidLines = array.new<line>()
+breakerBullPlot = float(na)
+breakerBearPlot = float(na)
+rejectBullPlot = float(na)
+rejectBearPlot = float(na)
+
+f_can_create(float tNew, float bNew) =>
+    bool ok = true
+    if bullBoxes.size() > 0
+        for j = 0 to array.size(bullBoxes) - 1
+            exB = array.get(bullBoxes, j)
+            float exTop = box.get_top(exB)
+            float exBot = box.get_bottom(exB)
+            if (tNew > exBot) and (bNew < exTop)
+                ok := false
+                break
+    if ok and bearBoxes.size() > 0
+        for j = 0 to array.size(bearBoxes) - 1
+            exS = array.get(bearBoxes, j)
+            float exTop2 = box.get_top(exS)
+            float exBot2 = box.get_bottom(exS)
+            if (tNew > exBot2) and (bNew < exTop2)
+                ok := false
+                break
+    if ok and breakerBullBoxes.size() > 0
+        for j = 0 to array.size(breakerBullBoxes) - 1
+            exB = array.get(breakerBullBoxes, j)
+            float exTop = box.get_top(exB)
+            float exBot = box.get_bottom(exB)
+            if (tNew > exBot) and (bNew < exTop)
+                ok := false
+                break
+    if ok and breakerBearBoxes.size() > 0
+        for j = 0 to array.size(breakerBearBoxes) - 1
+            exS = array.get(breakerBearBoxes, j)
+            float exTop2 = box.get_top(exS)
+            float exBot2 = box.get_bottom(exS)
+            if (tNew > exBot2) and (bNew < exTop2)
+                ok := false
+                break
+    ok
+
+f_can_create_breaker(float tNew, float bNew) =>
+    f_can_create(tNew, bNew)
+
+lastDownIdx = ta.valuewhen(close < open, bar_index, 0)
+lastDownHigh = ta.valuewhen(close < open, high, 0)
+lastDownLow = ta.valuewhen(close < open, low, 0)
+breakerBullPlot := na
+breakerBearPlot := na
+rejectBullPlot := na
+rejectBearPlot := na
+if bullish and not na(lastDownIdx) and not na(lastDownHigh) and not na(lastDownLow)
+    if not preventOverlap or f_can_create(lastDownHigh, lastDownLow)
+        float midYB = (lastDownHigh + lastDownLow) / 2.0
+        bx = box.new(
+             lastDownIdx, lastDownHigh, lastDownIdx + 1, lastDownLow,
+             border_color = color.new(color.gray, 40),
+             bgcolor = color.new(color.gray, 85)
+        )
+        ln = line.new(
+             x1 = lastDownIdx, y1 = midYB, x2 = lastDownIdx + 1, y2 = midYB,
+             xloc = xloc.bar_index, extend = extend.none, color = color.new(color.gray, 40),
+             style = line.style_dashed, width = 1
+        )
+        array.unshift(bullBoxes, bx)
+        array.unshift(bullStarts, lastDownIdx)
+        array.unshift(bullMidLines, ln)
+
+lastUpIdx = ta.valuewhen(close > open, bar_index, 0)
+lastUpHigh = ta.valuewhen(close > open, high, 0)
+lastUpLow = ta.valuewhen(close > open, low, 0)
+if bearish and not na(lastUpIdx) and not na(lastUpHigh) and not na(lastUpLow)
+    if not preventOverlap or f_can_create(lastUpHigh, lastUpLow)
+        float midYS = (lastUpHigh + lastUpLow) / 2.0
+        bx2 = box.new(
+             lastUpIdx, lastUpHigh, lastUpIdx + 1, lastUpLow,
+             border_color = color.new(color.gray, 40),
+             bgcolor = color.new(color.gray, 85)
+        )
+        ln2 = line.new(
+             x1 = lastUpIdx, y1 = midYS, x2 = lastUpIdx + 1, y2 = midYS,
+             xloc = xloc.bar_index, extend = extend.none, color = color.new(color.gray, 40),
+             style = line.style_dashed, width = 1
+        )
+        array.unshift(bearBoxes, bx2)
+        array.unshift(bearStarts, lastUpIdx)
+        array.unshift(bearMidLines, ln2)
+
+if bullBoxes.size() > 0
+    for i = array.size(bullBoxes) - 1 to 0
+        if array.size(bullBoxes) <= i or array.size(bullStarts) <= i
+            continue
+        b = array.get(bullBoxes, i)
+        box.set_right(b, bar_index)
+        if array.size(bullMidLines) > i
+            ln = array.get(bullMidLines, i)
+            float topB = box.get_top(b)
+            float botB = box.get_bottom(b)
+            float midY = (topB + botB) / 2.0
+            int leftX = box.get_left(b)
+            line.set_x1(ln, leftX)
+            line.set_x2(ln, bar_index)
+            line.set_y1(ln, midY)
+            line.set_y2(ln, midY)
+
+        float topB = box.get_top(b)
+        float botB = box.get_bottom(b)
+        bool mitigatedB = close < botB and close[1] < botB
+        int startB = array.get(bullStarts, i)
+        bool expiredB = (bar_index - startB) >= maxAge
+        if mitigatedB or expiredB
+            bool makeBreaker = mitigatedB
+            array.remove(bullBoxes, i)
+            array.remove(bullStarts, i)
+            if array.size(bullMidLines) > i
+                array.remove(bullMidLines, i)
+            if makeBreaker and (not preventOverlap or f_can_create_breaker(topB, botB))
+                float midYB = (topB + botB) / 2.0
+                int leftX = bar_index
+                bxBr = box.new(
+                     leftX, topB, leftX + 1, botB,
+                     border_color = color.new(bearCol, 40),
+                     bgcolor = color.new(bearCol, 85)
+                )
+                lnBr = line.new(
+                     x1 = leftX, y1 = midYB, x2 = leftX + 1, y2 = midYB,
+                     xloc = xloc.bar_index, extend = extend.none, color = color.new(bearCol, 40),
+                     style = line.style_dashed, width = 1
+                )
+                array.unshift(breakerBearBoxes, bxBr)
+                array.unshift(breakerBearStarts, leftX)
+                array.unshift(breakerBearMidLines, lnBr)
+                breakerBearPlot := topB
+
+if bearBoxes.size() > 0
+    for i = array.size(bearBoxes) - 1 to 0
+        if array.size(bearBoxes) <= i or array.size(bearStarts) <= i
+            continue
+        b = array.get(bearBoxes, i)
+        box.set_right(b, bar_index)
+        if array.size(bearMidLines) > i
+            ln = array.get(bearMidLines, i)
+            float topS = box.get_top(b)
+            float botS = box.get_bottom(b)
+            float midY = (topS + botS) / 2.0
+            int leftX = box.get_left(b)
+            line.set_x1(ln, leftX)
+            line.set_x2(ln, bar_index)
+            line.set_y1(ln, midY)
+            line.set_y2(ln, midY)
+
+        float topS = box.get_top(b)
+        float botS = box.get_bottom(b)
+        bool mitigatedS = close > topS and close[1] > topS
+        int startS = array.get(bearStarts, i)
+        bool expiredS = (bar_index - startS) >= maxAge
+        if mitigatedS or expiredS
+            bool makeBreaker = mitigatedS
+            array.remove(bearBoxes, i)
+            array.remove(bearStarts, i)
+            if array.size(bearMidLines) > i
+                array.remove(bearMidLines, i)
+            if makeBreaker and (not preventOverlap or f_can_create_breaker(topS, botS))
+                float midYS = (topS + botS) / 2.0
+                int leftX = bar_index
+                bxBr = box.new(
+                     leftX, topS, leftX + 1, botS,
+                     border_color = color.new(bullCol, 40),
+                     bgcolor = color.new(bullCol, 85)
+                )
+                lnBr = line.new(
+                     x1 = leftX, y1 = midYS, x2 = leftX + 1, y2 = midYS,
+                     xloc = xloc.bar_index, extend = extend.none, color = color.new(bullCol, 40),
+                     style = line.style_dashed, width = 1
+                )
+                array.unshift(breakerBullBoxes, bxBr)
+                array.unshift(breakerBullStarts, leftX)
+                array.unshift(breakerBullMidLines, lnBr)
+                breakerBullPlot := botS
+
+if breakerBullBoxes.size() > 0
+    for i = array.size(breakerBullBoxes) - 1 to 0
+        if array.size(breakerBullBoxes) <= i or array.size(breakerBullStarts) <= i
+            continue
+        b = array.get(breakerBullBoxes, i)
+        box.set_right(b, bar_index)
+        if array.size(breakerBullMidLines) > i
+            ln = array.get(breakerBullMidLines, i)
+            float topB = box.get_top(b)
+            float botB = box.get_bottom(b)
+            float midY = (topB + botB) / 2.0
+            int leftX = box.get_left(b)
+            line.set_x1(ln, leftX)
+            line.set_x2(ln, bar_index)
+            line.set_y1(ln, midY)
+            line.set_y2(ln, midY)
+
+        float topB = box.get_top(b)
+        float botB = box.get_bottom(b)
+        bool mitigatedB = close < botB and close[1] < botB
+        int startB = array.get(breakerBullStarts, i)
+        bool expiredB = (bar_index - startB) >= maxAge
+        if not mitigatedB and not expiredB and high > botB and low < topB and close > topB
+            float pad = math.max(math.abs(topB - botB) * 0.1, syminfo.mintick * 2)
+            rejectBullPlot := botB - pad
+        if mitigatedB or expiredB
+            array.remove(breakerBullBoxes, i)
+            array.remove(breakerBullStarts, i)
+            if array.size(breakerBullMidLines) > i
+                array.remove(breakerBullMidLines, i)
+
+if breakerBearBoxes.size() > 0
+    for i = array.size(breakerBearBoxes) - 1 to 0
+        if array.size(breakerBearBoxes) <= i or array.size(breakerBearStarts) <= i
+            continue
+        b = array.get(breakerBearBoxes, i)
+        box.set_right(b, bar_index)
+        if array.size(breakerBearMidLines) > i
+            ln = array.get(breakerBearMidLines, i)
+            float topS = box.get_top(b)
+            float botS = box.get_bottom(b)
+            float midY = (topS + botS) / 2.0
+            int leftX = box.get_left(b)
+            line.set_x1(ln, leftX)
+            line.set_x2(ln, bar_index)
+            line.set_y1(ln, midY)
+            line.set_y2(ln, midY)
+
+        float topS = box.get_top(b)
+        float botS = box.get_bottom(b)
+        bool mitigatedS = close > topS and close[1] > topS
+        int startS = array.get(breakerBearStarts, i)
+        bool expiredS = (bar_index - startS) >= maxAge
+        if not mitigatedS and not expiredS and high > botS and low < topS and close < botS
+            float pad = math.max(math.abs(topS - botS) * 0.1, syminfo.mintick * 2)
+            rejectBearPlot := topS + pad
+        if mitigatedS or expiredS
+            array.remove(breakerBearBoxes, i)
+            array.remove(breakerBearStarts, i)
+            if array.size(breakerBearMidLines) > i
+                array.remove(breakerBearMidLines, i)
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+breakerBullFormed = not na(breakerBullPlot)
+breakerBearFormed = not na(breakerBearPlot)
+rejectBull = not na(rejectBullPlot)
+rejectBear = not na(rejectBearPlot)
+
+plotshape(breakerBullPlot, "Bullish Breaker", shape.labelup, location.absolute, bullCol, size = size.tiny, text = "▲", textcolor = chart.fg_color)
+plotshape(breakerBearPlot, "Bearish Breaker", shape.labeldown, location.absolute, bearCol, size = size.tiny, text = "▼", textcolor = chart.fg_color)
+plotchar(rejectBullPlot, title = "Bullish Rejection", char = "▲", location = location.absolute, color = bullCol, size = size.tiny)
+plotchar(rejectBearPlot, title = "Bearish Rejection", char = "▼", location = location.absolute, color = bearCol, size = size.tiny)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(breakerBullFormed, title = "Bullish Breaker Formed", message = "Bullish breaker block formed.")
+alertcondition(breakerBearFormed, title = "Bearish Breaker Formed", message = "Bearish breaker block formed.")
+alertcondition(rejectBull, title = "Bullish Breaker Rejection", message = "Bullish breaker rejection detected.")
+alertcondition(rejectBear, title = "Bearish Breaker Rejection", message = "Bearish breaker rejection detected.")

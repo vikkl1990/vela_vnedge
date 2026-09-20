@@ -1,0 +1,133 @@
+//@version=6
+indicator("Market Structure Confluence [AlgoAlpha]", shorttitle="AlgoAlpha - Market Structure", overlay=true, max_lines_count=500, max_labels_count=500, max_bars_back=5000)
+
+swingSize   = input.int(10,     "Time-Horizon",              minval=2, tooltip="Look-back bars for pivot detection", group="Market Structure")
+bosConfType = input.string("Candle Close", "BOS Confirmation", options=["Candle Close", "Wicks"], tooltip="Close vs. wick confirmation", group="Market Structure")
+bosStyleIn  = input.string("Solid", "BOS/CHoCH Line Style",  options=["Solid","Dashed","Dotted"], group="Market Structure")
+showCHoCH   = input.bool(true,  "Show CHoCH",  group="Market Structure")
+showSwing   = input.bool(true,  "Show Swing Labels", group="Market Structure")
+
+basisLength = input.int(100, "Basis Length", minval=1, tooltip="Length for the basis calculation (WMA)", group="Band Settings")
+atrLength   = input.int(14, "ATR Length", minval=1, tooltip="Length for the volatility (ATR) calculation", group="Band Settings")
+atrSmooth   = input.int(21, "ATR Smoothing", minval=1, tooltip="Length for smoothing the volatility", group="Band Settings")
+volMult     = input.float(2.0, "Volatility Multiplier", minval=0.1, step=0.1, tooltip="Multiplier for the bands", group="Band Settings")
+
+colBull     = input.color(#00FFBB, "Bull   Color", inline="msc", group="Appearance")
+colBear     = input.color(#FF1100, "Bear   Color", inline="msc", group="Appearance")
+
+waitClose   = input.bool(true, "Wait for Bar Close (alerts)", group="⚠️ Alerts")
+
+bosWidth   = 1
+colBull50  = color.new(colBull, 50)
+colBear50  = color.new(colBear, 50)
+colClear   = color.rgb(0,0,0,100)
+barConfirmed = not waitClose or barstate.isconfirmed
+
+lineStyle(string s)=>
+    s=="Solid"  ? line.style_solid : s=="Dashed" ? line.style_dashed : line.style_dotted
+
+var float  prevHigh       = na
+var float  prevLow        = na
+var int    prevHighIdx    = na
+var int    prevLowIdx     = na
+var bool   highActive     = false
+var bool   lowActive      = false
+var int    prevBreakDir   = 0
+var int    lastBreakDir   = 0
+enMS        = true
+
+pivHi = ta.pivothigh(high, swingSize, swingSize)
+pivLo = ta.pivotlow (low , swingSize, swingSize)
+
+bool hh = false, lh = false, hl = false, ll = false
+
+if enMS
+    if not na(pivHi)
+        hh := na(prevHigh) or pivHi >= prevHigh
+        lh := not hh
+        prevHigh      := pivHi
+        prevHighIdx   := bar_index - swingSize
+        highActive    := true
+    if not na(pivLo)
+        hl := na(prevLow) or pivLo >= prevLow
+        ll := not hl
+        prevLow       := pivLo
+        prevLowIdx    := bar_index - swingSize
+        lowActive     := true
+
+highSrc = bosConfType=="Candle Close" ? close : high
+lowSrc  = bosConfType=="Candle Close" ? close : low
+
+bool highBroken = false, lowBroken=false
+if enMS
+    if highActive and not na(prevHigh) and highSrc > prevHigh
+        highBroken := true
+        highActive := false
+    if lowActive and not na(prevLow) and lowSrc < prevLow
+        lowBroken  := true
+        lowActive  := false
+
+volatility = ta.atr(atrLength)
+svol = ta.sma(volatility, atrSmooth)
+
+basis = ta.wma(close, basisLength)
+upper = basis + volMult * svol
+lower = basis - volMult * svol
+
+plot(prevBreakDir == 1 ? lower : na, color = colBull, title="Lower Band", style = plot.style_linebr, linewidth = 3)
+plot(prevBreakDir == -1 ? upper : na, color = colBear, title="Upper Band", style = plot.style_linebr, linewidth = 3)
+
+bullishArrow = prevBreakDir == 1 and low < lower and high > lower
+bearishArrow = prevBreakDir == -1 and low < upper and high > upper
+
+arrowOffset = volatility * 1
+
+plotchar(bullishArrow ? lower - arrowOffset : na, "Bullish Signal", '▲', location.absolute, colBull, size = size.tiny)
+plotchar(bearishArrow ? upper + arrowOffset : na, "Bearish Signal", '▼', location.absolute, colBear, size = size.tiny)
+
+if enMS and showSwing
+    if hh
+        label.new(bar_index-swingSize, pivHi, "HH", style=label.style_label_down, textcolor=colBull50, color=colClear)
+    if lh
+        label.new(bar_index-swingSize, pivHi, "LH", style=label.style_label_down, textcolor=colBear50, color=colClear)
+    if hl
+        label.new(bar_index-swingSize, pivLo, "HL", style=label.style_label_up,   textcolor=colBull50, color=colClear)
+    if ll
+        label.new(bar_index-swingSize, pivLo, "LL", style=label.style_label_up,   textcolor=colBear50, color=colClear)
+
+bullishChange = false
+bearishChange = false
+
+if enMS and highBroken
+    line.new(prevHighIdx, prevHigh, bar_index, prevHigh, color=colBull, style=lineStyle(bosStyleIn), width=bosWidth)
+    mid   = math.floor(bar_index - (bar_index - prevHighIdx)/2)
+    label.new(mid, prevHigh, prevBreakDir==-1 and showCHoCH ? "CHoCH":"BOS", color=colClear, textcolor=colBull, size=size.tiny)
+    lastBreakDir := prevBreakDir
+    prevBreakDir := 1
+    bullishChange := lastBreakDir == -1 or lastBreakDir == 0
+
+if enMS and lowBroken
+    line.new(prevLowIdx, prevLow, bar_index, prevLow, color=colBear, style=lineStyle(bosStyleIn), width=bosWidth)
+    mid   = math.floor(bar_index - (bar_index - prevLowIdx)/2)
+    label.new(mid, prevLow, prevBreakDir==1 and showCHoCH ? "CHoCH":"BOS", style=label.style_label_up, color=colClear, textcolor=colBear, size=size.tiny)
+    lastBreakDir := prevBreakDir
+    prevBreakDir := -1
+    bearishChange := lastBreakDir == 1 or lastBreakDir == 0
+
+plotchar(bullishChange ? lower : na, "Trend Change Bullish", '◉', location.absolute, colBull, size = size.tiny)
+plotchar(bearishChange ? upper : na, "Trend Change Bearish", '◉', location.absolute, colBear, size = size.tiny)
+
+barcolor(enMS ? (prevBreakDir==-1 ? color.new(colBear, 30) : color.new(colBull, 30)) : na)
+
+alertcondition(highBroken and prevBreakDir==-1 and barConfirmed, "Bullish CHoCH")
+alertcondition(highBroken and prevBreakDir!= -1 and barConfirmed, "Bullish BOS")
+alertcondition(lowBroken  and prevBreakDir==1  and barConfirmed, "Bearish CHoCH")
+alertcondition(lowBroken  and prevBreakDir!= 1 and barConfirmed, "Bearish BOS")
+alertcondition(hh and barConfirmed, "HH Detected")
+alertcondition(lh and barConfirmed, "LH Detected")
+alertcondition(hl and barConfirmed, "HL Detected")
+alertcondition(ll and barConfirmed, "LL Detected")
+alertcondition(bullishArrow and barConfirmed, "Bullish Arrow Signal", "Bullish Rejection Signal")
+alertcondition(bearishArrow and barConfirmed, "Bearish Arrow Signal", "Bearish Rejection Signal")
+alertcondition(bullishChange and barConfirmed, "Bullish Trend Change", "Trend changed to bullish")
+alertcondition(bearishChange and barConfirmed, "Bearish Trend Change", "Trend changed to bearish")

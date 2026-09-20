@@ -1,0 +1,149 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Periodical Trend [BigBeluga]", max_labels_count = 500)
+
+// USER INPUTS --------------------------------------------------------------------------------------------------------{
+//@variable: period to use in calculations
+int period = input.int(17, minval = 17, inline = "m")
+//@variable: width of main line
+int width  = input.int(2, "Width", [1, 2], inline = "m")
+//@variable: mode for trend detection ("Normal" or "Sensitive ")
+string mode = input.string("Normal", "Mode:", ["Normal", "Sensitive "])
+//@variable: whether to show volatility bands on the chart
+bool show_bnd = input.bool(true, "Volatility Bands")
+//@variable: whether to show price deviation on the chart
+bool show_dev = input.bool(false, "Price Deviation")
+//@variable: whether to show regular mean reversion signals
+bool show_ws = input.bool(false, "Mean Reversion")
+//@variable: whether to show strong mean reversion signals
+bool show_ss = input.bool(false, "Strong Mean Reversion")
+
+//@variable: colors for trend direction (up and down)
+color up = input.color(#12fa8a, group = "Color", inline = "c")
+color dn = input.color(#1693f8, group = "Color", inline = "c")
+//}
+
+
+// CALCULATION --------------------------------------------------------------------------------------------------------{
+//@variable: HMA of hl2 (high+low)/2 as the source of trend analysis
+series float src = ta.hma(hl2, 25)
+//@variable: simple moving average of high-low as a volatility measure
+series float vlt = ta.sma(high - low, 100)
+
+//@variable: array to store the moving average values over the period
+var AVG = array.new<float>(period, float(na))
+
+// Condition to update the AVG array based on the selected mode
+if mode == "Normal" 
+         ? bar_index == 122 
+         : bar_index % period == 0
+    AVG.push(close)  // Add the close price to the AVG array
+
+// Update AVG array based on the period and price comparison
+if bar_index % period == 0
+    if close > AVG.last()  // If the current close is greater than the last stored value in AVG
+        AVG.push(low - vlt)  // Add the low price minus volatility to the array
+
+    if close < AVG.last()  // If the current close is lower than the last stored value in AVG
+        AVG.push(high + vlt)  // Add the high price plus volatility to the array
+
+//@variable: average of the last 10 values in AVG
+series float avg = math.sum(AVG.last(), 10) / 10
+
+//@variable: upper and lower volatility bands
+series float upper = avg + vlt
+series float lower = avg - vlt
+
+//@variable: trend color based on the relationship between the source and the average
+color trend_color = src > avg 
+                     ? (avg == avg[1] or avg < avg[1] ? color.new(up, 40) : up) 
+                     : (avg == avg[1] or avg > avg[1] ? color.new(dn, 40) : dn)
+
+//@variable: alternate trend color based on the source vs. average
+color trend_color1 = src > avg ? up : dn
+
+//@variable: oscillator showing the difference between the source and the average
+series float osc = src - avg 
+//@variable: normalized oscillator using standard deviation
+series float osc1 = (osc - 0) / ta.stdev(osc, 50)
+//}
+
+
+// PLOTTING -----------------------------------------------------------------------------------------------------------{
+
+// Plotting the moving average with trend color
+plot(avg, force_overlay = true, color = trend_color, linewidth = width)
+
+// Plotting the lower and upper volatility bands
+plot(show_bnd ? lower : na, force_overlay = true, color = bar_index % 2 == 0 ? color.new(trend_color1, 50) : na)
+plot(show_bnd ? upper : na, force_overlay = true, color = bar_index % 2 == 0 ? color.new(trend_color1, 50) : na)
+
+// Plotting the oscillator if show_dev is enabled
+plot(show_dev ? osc1 : na, 
+         color = color.from_gradient(osc1, -3, 3, up, dn), style = plot.style_area)
+// Plotting a zero line for the oscillator
+plot(show_dev ? 0 : na, color = chart.fg_color)
+
+// Setting the background color based on oscillator value
+bgcolor(color.from_gradient(osc1, -0.5, 0.5, 
+                 color.new(dn, show_dev ? 100 : 40), 
+                 color.new(up, show_dev ? 100 : 30))
+                 )
+
+// Plotting mean reversion up signals
+plotchar(ta.crossover(osc1, osc1[1]) and osc1 < -2 and show_ws, 
+         "Mean Reversion UP", "●",
+         location = location.belowbar, 
+         color = color.new(up, 50), 
+         force_overlay = true, 
+         size = size.tiny)
+// Plotting mean reversion down signals
+plotchar(ta.crossunder(osc1, osc1[1]) and osc1 > 2 and show_ws, 
+         "Mean Reversion DN", "●", 
+         location = location.abovebar,
+         color = color.new(dn, 50), 
+         force_overlay = true, 
+         size = size.tiny)
+
+// Plotting strong mean reversion up signals
+plotchar(ta.crossover(osc1, -4) and show_ss,
+         "Strong Mean Reversion UP", "•", 
+         location = location.belowbar, 
+         color = color.new(up, 0), 
+         force_overlay = true, 
+         size = size.small)
+// Plotting strong mean reversion down signals
+plotchar(ta.crossunder(osc1, 4) and show_ss, 
+         "Strong Mean Reversion DN", "•", 
+         location = location.abovebar, 
+         color = color.new(dn, 0), 
+         force_overlay = true, 
+         size = size.small)
+
+// Displaying a final label indicating the trend direction if not showing deviation
+if barstate.islast and not show_dev
+    label.delete(label.new(bar_index + 5, 0,
+                 close > avg ? "Trend Up" : "Trend Down",
+                 style = label.style_label_left, 
+                 color = color(na), 
+                 textcolor = chart.fg_color)[1]
+                 )
+
+// signals
+if ta.crossover(src, avg)
+    label.new(bar_index[1], lower[1], "▲",
+              style         = label.style_label_up, 
+              color         = color(na), 
+              force_overlay = true, 
+              textcolor     = up)
+
+if ta.crossunder(src, avg)
+    label.new(bar_index[1], upper[1], "▼",
+              style         = label.style_label_down, 
+              color         = color(na), 
+              force_overlay = true, 
+              textcolor     = dn)
+
+//}

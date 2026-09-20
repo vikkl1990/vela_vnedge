@@ -1,0 +1,252 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("HTF Candle Architecture [BigBeluga]", overlay = true, max_labels_count = 500, max_bars_back = 5000)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// tf: Higher timeframe used to build synthetic candles on the current chart.
+// offset: Number of bars to project OHLC levels into the future.
+tf = input.timeframe("D", "Timeframe") // HTF Candle timeframe input
+offset = input.int(15) // Levels offset
+
+// CandleStick 1 (RealTime CandleStick)
+group1 = "CandleStick 1"
+
+candle1_lvl = input.bool(true, "Candle 1", inline = "1", group = group1)
+
+H1 = input.bool(true, "H", inline = "11")
+style11 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "11")
+L1 = input.bool(true, "L", inline = "11")
+style12 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "11")
+
+C1 = input.bool(true, "C", inline = "13")
+style13 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "13")
+O1 = input.bool(true, "O", inline = "13")
+style14 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "13")
+
+bullCol1 = input.color(color.rgb(0, 207, 93), "", inline = "col1")
+bearCol1 = input.color(color.rgb(248, 83, 33), "", inline = "col1")
+
+// CandleStick 2
+group2 = "CandleStick 2"
+
+candle2_lvl = input.bool(false, "Candle 2", inline = "2", group = group2)
+
+H2 = input.bool(true, "H", inline = "21")
+style21 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "21")
+L2 = input.bool(true, "L", inline = "21")
+style22 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "21")
+
+C2 = input.bool(true, "C", inline = "23")
+style23 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "23")
+O2 = input.bool(true, "O", inline = "23")
+style24 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "23")
+
+bullCol2 = input.color(color.rgb(0, 207, 93), "", inline = "col2")
+bearCol2 = input.color(color.rgb(248, 83, 33), "", inline = "col2")
+
+
+// CandleStick 3
+group3 = "CandleStick 3"
+
+candle3_lvl = input.bool(false, "Candle 3", inline = "3", group = group3)
+
+H3 = input.bool(true, "H", inline = "31")
+style31 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "31")
+L3 = input.bool(true, "L", inline = "31")
+style32 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "31")
+
+C3 = input.bool(true, "C", inline = "33")
+style33 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "33")
+O3 = input.bool(true, "O", inline = "33")
+style34 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "33")
+
+bullCol3 = input.color(color.rgb(0, 207, 93), "", inline = "col3")
+bearCol3 = input.color(color.rgb(248, 83, 33), "", inline = "col3")
+
+
+// CandleStick 4
+group4 = "CandleStick 4"
+
+candle4_lvl = input.bool(true, "Candle 4", inline = "4", group = group4)
+
+H4 = input.bool(true, "H", inline = "41")
+style41 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "41")
+L4 = input.bool(true, "L", inline = "41")
+style42 = input.string("Dashed", "", ["Dashed", "Solid", "Dotted"], inline = "41")
+
+C4 = input.bool(true, "C", inline = "43")
+style43 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "43")
+O4 = input.bool(true, "O", inline = "43")
+style44 = input.string("Solid", "", ["Dashed", "Solid", "Dotted"], inline = "43")
+
+bullCol4 = input.color(color.rgb(0, 207, 93), "", inline = "col4")
+bearCol4 = input.color(color.rgb(248, 83, 33), "", inline = "col4")
+
+
+// Bull/Bear Candle Colors
+lbls = input.bool(true, "Labels", group = "Style")
+
+
+// Arrays store completed HTF candle OHLC values and their corresponding bar_index anchors.
+var O = array.new<float>()
+var C = array.new<float>()
+var H = array.new<float>()
+var L = array.new<float>()
+var candlIndex = array.new<int>()
+
+// These track the current (not-yet-closed) HTF candle as it forms.
+realTimeClose     = close 
+var realTimeHigh  = high
+var realTimeLow   = low
+var realTimeOpen  = open
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+//@function Converts a user string into a Pine line.style value.
+//@param style_ One of: "Dashed", "Solid", "Dotted".
+//@returns Corresponding line.style enum.
+styleLine(style_)=>
+    style_ == "Dashed" ? line.style_dashed 
+     : style_ == "Solid" ? line.style_solid 
+     : style_ == "Dotted" ? line.style_dotted 
+     : line.style_solid
+
+
+//@function Draws one synthetic HTF candle (wick + body) and optional OHLC projection levels.
+//@param h Candle high.
+//@param l Candle low.
+//@param c Candle close.
+//@param o Candle open.
+//@param index Bar index used as the candle anchor on the chart.
+//@param offset Horizontal projection distance.
+//@param levels Master toggle for this candle.
+//@param H Toggle high level.
+//@param L Toggle low level.
+//@param O Toggle open level.
+//@param C Toggle close level.
+//@returns Drawn HTF candleStick with levels.
+drawCandle(h, l, c, o, index, index1, int offset, levels, H, L, O, C, stl1, stl2, stl3, stl4, indx, bullCol, bearCol)=>
+
+    if levels
+        col = c > o ? bullCol : bearCol
+
+        line.delete(line.new(index1+offset, h, index1+offset, l, color = color.new(col,30), width = 3)[1])
+        box.delete(box.new(index1+offset-2, c, index1+offset+2, o, bgcolor = color.new(col,30), border_color = col)[1])
+
+        label.delete(label.new(index1+offset, h, str.tostring(indx), style = label.style_label_down, color = color.new(color.black,100), textcolor = chart.fg_color)[1])
+
+
+        if H
+            line.delete(line.new(index1+offset, h, index, h, style = styleLine(stl1), color = color.new(col,30))[1])
+            if lbls
+                label.delete(label.new(index, h, str.tostring(h) + "\nHigh "+ str.tostring(indx), style = label.style_label_down, color = color.new(color.black,100), textcolor = chart.fg_color)[1])
+            label.delete(label.new(index, h, style = label.style_circle, color = color.new(col,30), textcolor = chart.fg_color, size = size.tiny)[1])
+            
+        if L
+            line.delete(line.new(index1+offset, l, index, l, style = styleLine(stl2), color = color.new(col,30))[1])
+            if lbls
+                label.delete(label.new(index, l, "Low " + str.tostring(indx) + "\n" + str.tostring(l), style = label.style_label_up, color = color.new(color.black,100), textcolor = chart.fg_color)[1])
+            label.delete(label.new(index, l, style = label.style_circle, color = color.new(col,30), textcolor = chart.fg_color, size = size.tiny)[1])
+
+        if O
+            line.delete(line.new(index1+offset, o, index, o, style = styleLine(stl4), color = color.new(col,30))[1])
+            if lbls
+                label.delete(label.new(index-2, o, "Open "+ str.tostring(indx) + ": " + str.tostring(o), style = label.style_label_right, color = color.new(chart.bg_color, 90), textcolor = chart.fg_color)[1])
+            label.delete(label.new(index, o, style = label.style_circle, color = color.new(col,30), textcolor = chart.fg_color, size = size.tiny)[1])
+
+        if C 
+            line.delete(line.new(index1+offset, c, index, c, style = styleLine(stl3), color = color.new(col,30))[1])
+            if lbls
+                label.delete(label.new(index-2, c, "Close "+ str.tostring(indx) + ": " + str.tostring(c), style = label.style_label_right, color = color.new(chart.bg_color, 90), textcolor = chart.fg_color)[1])
+            label.delete(label.new(index, c, style = label.style_circle, color = color.new(col,30), textcolor = chart.fg_color, size = size.tiny)[1])
+
+
+//@function Converts timeframe input into a short readable label (e.g., 1H, 15M, 1D).
+//@param tf Timeframe string.
+//@returns A compact label for display.
+convert_tf(tf)=>
+
+    s = timeframe.in_seconds(tf)
+    m = timeframe.in_seconds(tf) / 60
+    h = timeframe.in_seconds(tf) / 60 / 60
+    d = timeframe.in_seconds(tf) / 60 / 60 / 24
+
+    h < 24 and h >= 1 ? str.tostring(h) + "H" :  m >= 1440 ? str.tostring(d) + "D" : m < 60 and m >= 1 ? str.tostring(m) + "M" : m < 1 ? str.tostring(s) + "S" : tf 
+
+
+
+// On each new HTF candle, store the just-closed candle’s OHLC values into arrays.
+if timeframe.change(tf)
+    realTimeHigh := high
+    realTimeLow := low
+    realTimeOpen := open
+
+    candlIndex.push(bar_index)
+
+    O.push(realTimeOpen[1])
+    C.push(close[1])
+
+    H.push(realTimeHigh[1])
+    L.push(realTimeLow[1])
+
+// Update the in-progress HTF candle’s extremes.
+realTimeHigh := math.max(realTimeHigh, high)
+realTimeLow  := math.min(realTimeLow, low)
+
+
+
+
+atr = ta.atr(200)
+// }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Marks HTF boundaries visually.
+bgcolor((timeframe.change(tf) ? color.new(chart.fg_color, 90) : color(na)))
+
+
+if barstate.islast
+
+    // Historical candles (older -> newer), then the current real-time HTF candle.
+    drawCandle(H.get(-3), L.get(-3), C.get(-3), O.get(-3), candlIndex.get(-4), bar_index + 10 
+                 , offset
+                 , candle4_lvl
+                 , H4, L4, O4, C4
+                 , style41, style42, style43, style44, 4, bullCol4, bearCol4)
+
+    drawCandle(H.get(-2), L.get(-2), C.get(-2), O.get(-2), candlIndex.get(-3), bar_index + 15
+                 , offset
+                 , candle3_lvl
+                 , H3, L3, O3, C3
+                 , style31, style32, style33, style34, 3, bullCol3, bearCol3)
+
+
+    drawCandle(H.get(-1), L.get(-1), C.get(-1), O.get(-1), candlIndex.get(-2), bar_index + 20
+                 , offset
+                 , candle2_lvl
+                 , H2, L2, O2, C2                 
+                 , style21, style22, style23, style24, 2, bullCol2, bearCol2)
+
+    //Real Time candle
+    drawCandle(realTimeHigh, realTimeLow, realTimeClose, realTimeOpen, candlIndex.get(-1), bar_index + 25
+                 , offset
+                 , candle1_lvl
+                 , H1, L1, O1, C1
+                 , style11, style12, style13, style14, 1, bullCol1, bearCol1)
+
+
+    // Displays the chosen HTF as a label above the highest recent HTF range.
+    label.delete(label.new(bar_index+offset, math.max(realTimeHigh, H.get(-1), H.get(-2), H.get(-3))+atr
+                         , "Timeframe: " + convert_tf(tf)
+                         , color = color.new(color.black, 100)
+                         , textcolor = chart.fg_color
+                         , size = size.large)[1])
+// }

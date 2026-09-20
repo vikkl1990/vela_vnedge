@@ -1,0 +1,122 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator(title="RSI Volatility Suppression Zones [BigBeluga]", shorttitle = "RSI Volatility SZ [BigBeluga]", max_boxes_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length     = input.int(14, minval=1)
+src        = input.source(close, "Source")
+vol_length = input.int(5, "Volatility", minval=1)
+rsi_col    = input.color(#d434f0, "RSI", inline = "colors")
+vol_up     = input.color(#00bbd44b, "▲", inline = "colors")
+vol_dn     = input.color(#9b27b04c, "▼", inline = "colors")
+sig_line   = input.bool(false, "RSI EMA", inline = "sig")
+sig_len    = input.int(15, "", inline = "sig")
+
+rsi  = ta.hma(ta.rsi(src, length), vol_length)
+size = ta.sma(high - low, 150)
+
+var count_volatility = 0
+var box_lv1 = box(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+Volatility(src)=>
+    hv = 100 * ta.stdev(math.log(src / src[1]), 5)
+    hv := hv / ta.stdev(hv, 200)
+    hv
+
+
+series float rsi_volat = Volatility(rsi)
+series float sma       = ta.sma(hl2, 5)
+
+
+if rsi_volat <= 2
+    count_volatility += 1
+
+if ta.crossover(rsi_volat, 2)
+    count_volatility := 0
+
+if ta.crossover(count_volatility, 10)
+    box_lv1 := box.new(bar_index-10, sma + size*2, bar_index, sma - size*2, border_color = color.new(color.black, 100), bgcolor = color.new(chart.fg_color, 80), force_overlay = true)
+    box_lv1.set_text("∿")
+    box_lv1.set_text_size(size.small)
+    box_lv1.set_text_valign(text.align_bottom)
+    box_lv1.set_text_color(chart.fg_color)
+
+
+box_lv1.set_right(bar_index)
+
+
+if ta.crossover(low, box_lv1.get_top())
+    box_lv1.set_bgcolor(vol_up)
+    box_lv1.set_right(bar_index)
+
+    box_lenght = box_lv1.get_right() - box_lv1.get_left() 
+
+    box_lv1.set_text(box_lenght < 18 ? "+▲" : "▲")
+    box_lv1.set_text_size(size.small)
+    box_lv1.set_text_valign(text.align_bottom)
+    box_lv1.set_text_halign(text.align_right)
+
+    box_lv1 := box(na)
+
+if ta.crossunder(high, box_lv1.get_bottom()) 
+
+    box_lv1.set_bgcolor(vol_dn)
+    box_lv1.set_right(bar_index)
+
+    box_lenght = box_lv1.get_right() - box_lv1.get_left() 
+
+    box_lv1.set_text(box_lenght < 18 ? "+▼" : "▼")
+    box_lv1.set_text_size(size.small)
+    box_lv1.set_text_valign(text.align_top)
+    box_lv1.set_text_halign(text.align_right)
+
+    box_lv1 := box(na)
+    
+box_lv1_p = box_lv1[1]
+
+if ta.crossover(count_volatility, 50) and na(box_lv1) and box_lv1_p.get_right() < box_lv1.get_left()
+    box_lv1 := box.new(bar_index-10, sma + size*2, bar_index, sma - size*2, border_color = color.new(color.white, 50), bgcolor = color.new(chart.fg_color, 80), force_overlay = true)
+    box_lv1.set_text("∿")
+    box_lv1.set_text_size(size.small)
+    box_lv1.set_text_valign(text.align_bottom)
+    box_lv1.set_text_color(chart.fg_color)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+low_volatility_col = color.from_gradient(count_volatility, 10, 100, na, #18629e)
+p1 = plot(15, color = low_volatility_col)
+p2 = plot(5, color = low_volatility_col)
+
+fill(p1, p2, low_volatility_col)
+
+if barstate.islast
+    label.delete(label.new(bar_index, 10, "Low Volatility RSI\nDetection", style = label.style_label_left, color = color.new(color.black, 100), textcolor = #18629e)[1])
+
+rsi_c = rsi >= 50 
+             ? color.from_gradient(rsi, 50, 75, color.new(rsi_col, 50), rsi_col) 
+             : color.from_gradient(rsi, 15, 50, rsi_col, color.new(rsi_col, 50))
+             
+
+rsiUpperBand = hline(70, "RSI Upper Band", color=#2d3141, linestyle = hline.style_dotted)
+midline = hline(50, "0", color = color.new(chart.fg_color, 50), linestyle = hline.style_dotted)
+rsiLowerBand = hline(30, "RSI Lower Band", color=#2d3141, linestyle = hline.style_dotted)
+
+fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126, 87, 194, 90), title="RSI Background Fill")
+
+plot(rsi, "RSI" 
+     , color     = rsi_c
+     , linewidth = 1
+     )
+
+plot(sig_line ? ta.ema(rsi, sig_len) : na
+     , "Signal Line"
+     , color.yellow)
+
+// }

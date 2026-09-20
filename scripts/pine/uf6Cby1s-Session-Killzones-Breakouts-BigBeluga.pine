@@ -1,0 +1,464 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Session Killzones & Breakouts [BigBeluga]', overlay = true
+         , max_boxes_count = 500
+         , max_lines_count = 500
+         , max_polylines_count = 100
+         , max_labels_count = 500
+         , calc_bars_count = 3000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+grp_asia = 'Asia Session'
+asia_on = input.bool(true, 'Show Asia Session', group = grp_asia, tooltip = 'Toggle the visibility of the Asia session zone and its associated signals.')
+asia_ses = input.session('0000-0800', 'Asia Time (UTC 0)', group = grp_asia, tooltip = 'Set the start and end times for the session. Note: Times must be in UTC format (e.g., 0000-0800).')
+asia_col = input.color(color.new(#e91e63, 0), 'Session Color', group = grp_asia, tooltip = 'Choose the primary color theme for the Asia session box, volume profile, and breakout signals.')
+asia_vp_on = input.bool(true, 'Show Volume Profile', group = grp_asia, tooltip = 'Display the stepped polyline outlining the volume distribution inside the session box.')
+asia_poc_on = input.bool(true, 'Show POC Line', group = grp_asia, tooltip = 'Display the Point of Control (highest volume node) box and its extension line.')
+asia_dev1 = input.float(0.5, 'Dev 1 Multiplier', step = 0.1, group = grp_asia, tooltip = 'Multiplier for the first target.')
+asia_dev2 = input.float(1, 'Dev 2 Multiplier', step = 0.1, group = grp_asia, tooltip = 'Multiplier for the second target.')
+asia_dev3 = input.float(1.5, 'Dev 3 Multiplier', step = 0.1, group = grp_asia, tooltip = 'Multiplier for the third target.')
+
+grp_lon = 'London Session'
+lon_on = input.bool(true, 'Show London Session', group = grp_lon, tooltip = 'Toggle the visibility of the London session zone and its associated signals.')
+lon_ses = input.session('0800-1500', 'London Time (UTC 0)', group = grp_lon, tooltip = 'Set the start and end times for the session. Note: Times must be in UTC format (e.g., 0800-1500).')
+lon_col = input.color(color.new(#00bcd4, 0), 'Session Color', group = grp_lon, tooltip = 'Choose the primary color theme for the London session box, volume profile, and breakout signals.')
+lon_vp_on = input.bool(true, 'Show Volume Profile', group = grp_lon, tooltip = 'Display the stepped polyline outlining the volume distribution inside the session box.')
+lon_poc_on = input.bool(true, 'Show POC Line', group = grp_lon, tooltip = 'Display the Point of Control (highest volume node) box and its extension line.')
+lon_dev1 = input.float(0.5, 'Dev 1 Multiplier', step = 0.1, group = grp_lon, tooltip = 'Multiplier for the first target.')
+lon_dev2 = input.float(1.5, 'Dev 2 Multiplier', step = 0.1, group = grp_lon, tooltip = 'Multiplier for the second target.')
+lon_dev3 = input.float(2.0, 'Dev 3 Multiplier', step = 0.1, group = grp_lon, tooltip = 'Multiplier for the third target.')
+
+grp_ny = 'New York Session'
+ny_on = input.bool(true, 'Show New York Session', group = grp_ny, tooltip = 'Toggle the visibility of the New York session zone and its associated signals.')
+ny_ses = input.session('1300-2000', 'NY Time (UTC 0)', group = grp_ny, tooltip = 'Set the start and end times for the session. Note: Times must be in UTC format (e.g., 1300-2000).')
+ny_col = input.color(color.new(#ff9800, 0), 'Session Color', group = grp_ny, tooltip = 'Choose the primary color theme for the NY session box, volume profile, and breakout signals.')
+ny_vp_on = input.bool(true, 'Show Volume Profile', group = grp_ny, tooltip = 'Display the stepped polyline outlining the volume distribution inside the session box.')
+ny_poc_on = input.bool(true, 'Show POC Line', group = grp_ny, tooltip = 'Display the Point of Control (highest volume node) box and its extension line.')
+ny_dev1 = input.float(0.5, 'Dev 1 Multiplier', step = 0.1, group = grp_ny, tooltip = 'Multiplier for the first target.')
+ny_dev2 = input.float(1.5, 'Dev 2 Multiplier', step = 0.1, group = grp_ny, tooltip = 'Multiplier for the second target.')
+ny_dev3 = input.float(2.0, 'Dev 3 Multiplier', step = 0.1, group = grp_ny, tooltip = 'Multiplier for the third target.')
+
+grp_vp = 'Volume Profile Details'
+vp_rows = input.int(24, 'Profile Rows (Resolution)', minval = 10, maxval = 100, group = grp_vp, tooltip = 'Determines how many slices/bins the volume profile is divided into.')
+poc_col = input.color(color.new(#ff1744, 20), 'POC Color', group = grp_vp, tooltip = 'The color for the Point of Control (POC) extension line and box.')
+
+grp_bo = 'Breakout Signals & Dashboard'
+bo_on = input.bool(true, 'Show Session Breakouts', group = grp_bo, tooltip = 'Toggle the display of breakout triangles and tether lines.')
+dev_on = input.bool(true, 'Show Deviation Targets', group = grp_bo, tooltip = 'Toggle the dynamically expanding take-profit target lines.')
+dash_on = input.bool(true, 'Show Statistics Dashboard', group = grp_bo, tooltip = 'Toggle the performance table.')
+dash_pos = input.string('Top Right', 'Dashboard Position', options=['Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'], group = grp_bo)
+dash_size = input.string(size.normal, 'Dashboard Size', options=[size.tiny, size.small, size.normal, size.large], group = grp_bo)
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+fn_draw_session(session_str, session_col, is_active, show_vp, show_poc, dev1_m, dev2_m, dev3_m) =>
+    var array<float> session_h = array.new_float(0)
+    var array<float> session_l = array.new_float(0)
+    var array<float> session_v = array.new_float(0)
+    var int start_bar = na
+    var int end_bar = na 
+
+    var box session_box = na
+    var float current_h = na
+    var float current_l = na
+    var box poc_box_rt = na
+    var line poc_line_rt = na
+    var label poc_label_rt = na
+
+    var float prev_max_h = na
+    var float prev_min_l = na
+    var bool has_broken_out = true
+
+    var line dev1_line = na
+    var line dev2_line = na
+    var line dev3_line = na
+    var label dev1_lbl = na
+    var label dev2_lbl = na
+    var label dev3_lbl = na
+    var float dev1_lvl = na
+    var float dev2_lvl = na
+    var float dev3_lvl = na
+    var bool dev1_hit = false
+    var bool dev2_hit = false
+    var bool dev3_hit = false
+    var int bo_dir = 0
+
+    // Event Triggers for Dashboard
+    bool trig_up = false
+    bool trig_dn = false
+    bool trig_d1 = false
+    bool trig_d2 = false
+    bool trig_d3 = false
+
+    in_session = not na(time(timeframe.period, session_str, 'UTC'))
+    is_new_session = in_session and not in_session[1]
+    is_session_end = not in_session and in_session[1]
+
+    if is_new_session and is_active
+        if not dev1_hit and not na(dev1_line)
+            line.delete(dev1_line)
+            label.delete(dev1_lbl)
+        if not dev2_hit and not na(dev2_line)
+            line.delete(dev2_line)
+            label.delete(dev2_lbl)
+        if not dev3_hit and not na(dev3_line)
+            line.delete(dev3_line)
+            label.delete(dev3_lbl)
+            
+        array.clear(session_h)
+        array.clear(session_l)
+        array.clear(session_v)
+        start_bar := bar_index
+        has_broken_out := false
+        current_h := high
+        current_l := low
+        session_box := box.new(left = start_bar, top = current_h, right = bar_index, bottom = current_l, border_color = session_col, bgcolor = color.new(session_col, 95), border_width = 1, border_style = line.style_dotted)
+
+        dev1_line := na
+        dev2_line := na
+        dev3_line := na
+        dev1_lbl := na
+        dev2_lbl := na
+        dev3_lbl := na
+        dev1_hit := false
+        dev2_hit := false
+        dev3_hit := false
+        bo_dir := 0
+        
+        poc_box_rt := na
+        poc_line_rt := na
+        poc_label_rt := na
+    var poc_right = 0
+
+    if in_session and is_active
+        array.push(session_h, high)
+        array.push(session_l, low)
+        array.push(session_v, volume)
+        
+        current_h := math.max(current_h, high)
+        current_l := math.min(current_l, low)
+        
+        if not na(session_box)
+            box.set_top(session_box, current_h)
+            box.set_bottom(session_box, current_l)
+            box.set_right(session_box, bar_index)
+        if show_poc and current_h > current_l
+            
+            float rt_row_size = (current_h - current_l) / vp_rows
+            array<float> rt_vol_array = array.new_float(vp_rows, 0.0)
+
+            for i = 0 to array.size(session_h) - 1 by 1
+                float bar_h = array.get(session_h, i)
+                float bar_l = array.get(session_l, i)
+                float bar_v = array.get(session_v, i)
+                float bar_range = bar_h - bar_l
+
+                for j = 0 to vp_rows - 1 by 1
+                    float bin_bottom = current_l + j * rt_row_size
+                    float bin_top = bin_bottom + rt_row_size
+
+                    if bar_range > 0
+                        float overlap = math.max(0, math.min(bar_h, bin_top) - math.max(bar_l, bin_bottom))
+                        float vol_fraction = overlap / bar_range * bar_v
+                        if vol_fraction > 0
+                            array.set(rt_vol_array, j, array.get(rt_vol_array, j) + vol_fraction)
+        
+                    
+
+            float max_vol = array.max(rt_vol_array)
+            int poc_row = array.indexof(rt_vol_array, max_vol)
+            float poc_price = current_l + poc_row * rt_row_size + rt_row_size / 2
+
+            int rt_session_len = bar_index - start_bar
+            int max_width = math.max(int(rt_session_len * 0.4), 1)
+            int bin_width = max_width
+            
+            float bin_bottom = current_l + poc_row * rt_row_size
+            float bin_top = bin_bottom + rt_row_size
+            string bin_txt = str.tostring(max_vol, format.volume)
+
+            for j = 0 to vp_rows - 1 by 1
+                if rt_vol_array.get(j) == max_vol
+                    poc_right := bin_width
+
+                
+            if na(poc_box_rt)
+                poc_box_rt := box.new(left = start_bar, top = bin_top, right = start_bar + bin_width, bottom = bin_bottom, bgcolor = poc_col, border_color = na, text = bin_txt, text_color = chart.fg_color)
+                poc_line_rt := line.new(x1 = start_bar + bin_width, y1 = poc_price, x2 = bar_index + 15, y2 = poc_price, color = poc_col, width = 2, style = line.style_solid)
+                poc_label_rt := label.new(x = bar_index + 15, y = poc_price, text = 'POC', style = label.style_label_left, color = color.new(color.white, 100), textcolor = poc_col, size = size.small)
+            else
+                box.set_top(poc_box_rt, bin_top)
+                box.set_bottom(poc_box_rt, bin_bottom)
+                box.set_right(poc_box_rt, start_bar + bin_width)
+                box.set_text(poc_box_rt, bin_txt)
+                line.set_y1(poc_line_rt, poc_price)
+                line.set_y2(poc_line_rt, poc_price)
+                line.set_x2(poc_line_rt, start_bar + bin_width)
+                line.set_x1(poc_line_rt, bar_index + 15)
+                label.set_xy(poc_label_rt, bar_index + 15, poc_price)
+
+    if is_session_end and is_active and array.size(session_h) > 0
+        float max_h = array.max(session_h)
+        float min_l = array.min(session_l)
+        prev_max_h := max_h
+        prev_min_l := min_l
+        end_bar := bar_index - 1
+        
+        if not na(session_box)
+            box.set_right(session_box, end_bar)
+            
+        if not na(poc_box_rt)
+            box.delete(poc_box_rt)
+            line.delete(poc_line_rt)
+            label.delete(poc_label_rt)
+
+        if show_vp or show_poc
+            float row_size = (max_h - min_l) / vp_rows
+            array<float> vol_array = array.new_float(vp_rows, 0.0)
+
+            for i = 0 to array.size(session_h) - 1 by 1
+                float bar_h = array.get(session_h, i)
+                float bar_l = array.get(session_l, i)
+                float bar_v = array.get(session_v, i)
+                float bar_range = bar_h - bar_l
+
+                for j = 0 to vp_rows - 1 by 1
+                    float bin_bottom = min_l + j * row_size
+                    float bin_top = bin_bottom + row_size
+
+                    if bar_range > 0
+                        float overlap = math.max(0, math.min(bar_h, bin_top) - math.max(bar_l, bin_bottom))
+                        float vol_fraction = overlap / bar_range * bar_v
+                        if vol_fraction > 0
+                            array.set(vol_array, j, array.get(vol_array, j) + vol_fraction)
+                    else
+                        if bar_h >= bin_bottom and bar_h <= bin_top
+                            array.set(vol_array, j, array.get(vol_array, j) + bar_v)
+
+            float max_vol = array.max(vol_array)
+            int poc_row = array.indexof(vol_array, max_vol)
+            float poc_price = min_l + poc_row * row_size + row_size / 2
+
+            if show_vp
+                int session_len = end_bar - start_bar
+                int max_width = math.max(int(session_len * 0.4), 1)
+                
+                array<chart.point> vp_points = array.new<chart.point>()
+                array.push(vp_points, chart.point.from_index(start_bar, min_l))
+
+                for j = 0 to vp_rows - 1 by 1
+                    float bin_vol = array.get(vol_array, j)
+                    int bin_width = 0
+                    if bin_vol > 0
+                        bin_width := math.max(int(bin_vol / max_vol * max_width), 1)
+                        
+                    float bin_bottom = min_l + j * row_size
+                    float bin_top = bin_bottom + row_size
+
+                    array.push(vp_points, chart.point.from_index(start_bar + bin_width, bin_bottom))
+                    array.push(vp_points, chart.point.from_index(start_bar + bin_width, bin_top))
+
+                    if j == poc_row
+                        string bin_txt = str.tostring(bin_vol, format.volume)
+                        box.new(left = start_bar, top = bin_top, right = start_bar + bin_width, bottom = bin_bottom, bgcolor = poc_col, border_color = na, text = bin_txt, text_color = chart.fg_color)
+
+                array.push(vp_points, chart.point.from_index(start_bar, max_h))
+                polyline.new(vp_points, line_color = color.new(session_col, 0), line_width = 2)
+
+            if show_poc
+                line.new(x1 = start_bar+poc_right, y1 = poc_price, x2 = bar_index + 15, y2 = poc_price, color = poc_col, width = 2, style = line.style_solid)
+                label.new(bar_index + 15, poc_price, 'POC', style = label.style_label_left, color = color.new(color.white, 100), textcolor = poc_col, size = size.small)
+
+    color bull_col_out = na
+    color bear_col_out = na
+    color solid_col = color.rgb(color.r(session_col), color.g(session_col), color.b(session_col), 0)
+
+    if is_active and not in_session and not has_broken_out and not na(prev_max_h)
+        float session_range = prev_max_h - prev_min_l
+        
+        if close > prev_max_h and close[1] <= prev_max_h
+            bull_col_out := solid_col
+            has_broken_out := true
+            bo_dir := 1
+            trig_up := true
+            if bo_on
+                line.new(x1 = end_bar, y1 = prev_max_h, x2 = bar_index, y2 = prev_max_h, color = color.new(solid_col, 40), style = line.style_dashed, width = 1)
+            if dev_on
+                dev1_lvl := prev_max_h + (session_range * dev1_m)
+                dev2_lvl := prev_max_h + (session_range * dev2_m)
+                dev3_lvl := prev_max_h + (session_range * dev3_m)
+                dev1_line := line.new(bar_index, dev1_lvl, bar_index, dev1_lvl, color=color.new(solid_col, 0), style=line.style_dotted, width=1)
+                dev2_line := line.new(bar_index, dev2_lvl, bar_index, dev2_lvl, color=color.new(solid_col, 20), style=line.style_dotted, width=1)
+                dev3_line := line.new(bar_index, dev3_lvl, bar_index, dev3_lvl, color=color.new(solid_col, 40), style=line.style_dotted, width=1)
+                
+                dev1_lbl := label.new(bar_index, dev1_lvl, text='|', style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.new(solid_col, 0), size=size.small)
+                dev2_lbl := label.new(bar_index, dev2_lvl, text='||', style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.new(solid_col, 20), size=size.small)
+                dev3_lbl := label.new(bar_index, dev3_lvl, text='|||', style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.new(solid_col, 40), size=size.small)
+
+        else if close < prev_min_l and close[1] >= prev_min_l
+            bear_col_out := solid_col
+            has_broken_out := true
+            bo_dir := -1
+            trig_dn := true
+            if bo_on
+                line.new(x1 = end_bar, y1 = prev_min_l, x2 = bar_index, y2 = prev_min_l, color = color.new(solid_col, 40), style = line.style_dashed, width = 1)
+            if dev_on
+                dev1_lvl := prev_min_l - (session_range * dev1_m)
+                dev2_lvl := prev_min_l - (session_range * dev2_m)
+                dev3_lvl := prev_min_l - (session_range * dev3_m)
+                dev1_line := line.new(bar_index, dev1_lvl, bar_index, dev1_lvl, color=color.new(solid_col, 0), style=line.style_dotted, width=1)
+                dev2_line := line.new(bar_index, dev2_lvl, bar_index, dev2_lvl, color=color.new(solid_col, 20), style=line.style_dotted, width=1)
+                dev3_line := line.new(bar_index, dev3_lvl, bar_index, dev3_lvl, color=color.new(solid_col, 40), style=line.style_dotted, width=1)
+
+                dev1_lbl := label.new(bar_index, dev1_lvl, text='|', style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.new(solid_col, 0), size=size.small)
+                dev2_lbl := label.new(bar_index, dev2_lvl, text='||', style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.new(solid_col, 20), size=size.small)
+                dev3_lbl := label.new(bar_index, dev3_lvl, text='|||', style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.new(solid_col, 40), size=size.small)
+
+    if is_active and bo_dir != 0
+        if dev_on
+            if not dev1_hit and not na(dev1_line)
+                line.set_x2(dev1_line, bar_index)
+                label.set_x(dev1_lbl, bar_index+1)
+            if not dev2_hit and not na(dev2_line)
+                line.set_x2(dev2_line, bar_index)
+                label.set_x(dev2_lbl, bar_index+1)
+            if not dev3_hit and not na(dev3_line)
+                line.set_x2(dev3_line, bar_index)
+                label.set_x(dev3_lbl, bar_index+1)
+                
+        if bo_dir == 1
+            if high >= dev1_lvl and not dev1_hit
+                dev1_hit := true
+                trig_d1 := true
+            if high >= dev2_lvl and not dev2_hit
+                dev2_hit := true
+                trig_d2 := true
+            if high >= dev3_lvl and not dev3_hit
+                dev3_hit := true
+                trig_d3 := true
+        else if bo_dir == -1
+            if low <= dev1_lvl and not dev1_hit
+                dev1_hit := true
+                trig_d1 := true
+            if low <= dev2_lvl and not dev2_hit
+                dev2_hit := true
+                trig_d2 := true
+            if low <= dev3_lvl and not dev3_hit
+                dev3_hit := true
+                trig_d3 := true
+
+    [bull_col_out, bear_col_out, trig_up, trig_dn, trig_d1, trig_d2, trig_d3]
+
+// --- Global Stat Trackers ---
+var int a_up = 0, var int a_dn = 0, var int a_d1 = 0, var int a_d2 = 0, var int a_d3 = 0
+var int l_up = 0, var int l_dn = 0, var int l_d1 = 0, var int l_d2 = 0, var int l_d3 = 0
+var int n_up = 0, var int n_dn = 0, var int n_d1 = 0, var int n_d2 = 0, var int n_d3 = 0
+
+// Execution
+[asia_bull_col, asia_bear_col, t_a_up, t_a_dn, t_a_d1, t_a_d2, t_a_d3] = fn_draw_session(asia_ses, asia_col, asia_on, asia_vp_on, asia_poc_on, asia_dev1, asia_dev2, asia_dev3)
+[lon_bull_col, lon_bear_col, t_l_up, t_l_dn, t_l_d1, t_l_d2, t_l_d3]   = fn_draw_session(lon_ses, lon_col, lon_on, lon_vp_on, lon_poc_on, lon_dev1, lon_dev2, lon_dev3)
+[ny_bull_col, ny_bear_col, t_n_up, t_n_dn, t_n_d1, t_n_d2, t_n_d3]     = fn_draw_session(ny_ses, ny_col, ny_on, ny_vp_on, ny_poc_on, ny_dev1, ny_dev2, ny_dev3)
+
+// Tally Stats
+if t_a_up
+    a_up += 1
+if t_a_dn
+    a_dn += 1
+if t_a_d1
+    a_d1 += 1
+if t_a_d2
+    a_d2 += 1
+if t_a_d3
+    a_d3 += 1
+
+if t_l_up
+    l_up += 1
+if t_l_dn
+    l_dn += 1
+if t_l_d1
+    l_d1 += 1
+if t_l_d2
+    l_d2 += 1
+if t_l_d3
+    l_d3 += 1
+
+if t_n_up
+    n_up += 1
+if t_n_dn
+    n_dn += 1
+if t_n_d1
+    n_d1 += 1
+if t_n_d2
+    n_d2 += 1
+if t_n_d3
+    n_d3 += 1
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Asia Breakouts
+plotshape(bo_on and not na(asia_bull_col) ? low : na, 'Asia Bull Breakout', shape.triangleup, location.belowbar, asia_bull_col, size = size.tiny, text = "Asia\n Break", textcolor = chart.fg_color)
+plotshape(bo_on and not na(asia_bear_col) ? high : na, 'Asia Bear Breakout', shape.triangledown, location.abovebar, asia_bear_col, size = size.tiny, text = "Asia\n Break", textcolor = chart.fg_color)
+
+// London Breakouts
+plotshape(bo_on and not na(lon_bull_col) ? low : na, 'London Bull Breakout', shape.triangleup, location.belowbar, lon_bull_col, size = size.tiny, text = "London\n Break", textcolor = chart.fg_color)
+plotshape(bo_on and not na(lon_bear_col) ? high : na, 'London Bear Breakout', shape.triangledown, location.abovebar, lon_bear_col, size = size.tiny, text = "London\n Break", textcolor = chart.fg_color)
+
+// New York Breakouts
+plotshape(bo_on and not na(ny_bull_col) ? low : na, 'NY Bull Breakout', shape.triangleup, location.belowbar, ny_bull_col, size = size.tiny, text = "NY\n Break", textcolor = chart.fg_color)
+plotshape(bo_on and not na(ny_bear_col) ? high : na, 'NY Bear Breakout', shape.triangledown, location.abovebar, ny_bear_col, size = size.tiny, text = "NY\n Break", textcolor = chart.fg_color)
+
+// --- Dashboard Drawing ---
+if barstate.islast and dash_on
+    string pos_str = dash_pos == 'Top Right' ? position.top_right : dash_pos == 'Top Left' ? position.top_left : dash_pos == 'Bottom Right' ? position.bottom_right : position.bottom_left
+    var table db = table.new(pos_str, 6, 4, border_width = 1, border_color = color.new(color.gray, 80))
+    
+    // Header
+    color hdr_bg = color.new(color.gray, 90)
+    table.cell(db, 0, 0, "Session", bgcolor = hdr_bg, text_color = chart.fg_color, text_size = dash_size)
+    table.cell(db, 1, 0, "Break ▲", bgcolor = hdr_bg, text_color = color.new(#00e676, 0), text_size = dash_size)
+    table.cell(db, 2, 0, "Break ▼", bgcolor = hdr_bg, text_color = color.new(#ff5252, 0), text_size = dash_size)
+    table.cell(db, 3, 0, "Hit |",   bgcolor = hdr_bg, text_color = chart.fg_color, text_size =dash_size)
+    table.cell(db, 4, 0, "Hit ||",  bgcolor = hdr_bg, text_color = chart.fg_color, text_size = dash_size)
+    table.cell(db, 5, 0, "Hit |||", bgcolor = hdr_bg, text_color = chart.fg_color, text_size = dash_size)
+
+    // Solid colors for the text
+    color a_txt = color.rgb(color.r(asia_col), color.g(asia_col), color.b(asia_col), 0)
+    color l_txt = color.rgb(color.r(lon_col), color.g(lon_col), color.b(lon_col), 0)
+    color n_txt = color.rgb(color.r(ny_col), color.g(ny_col), color.b(ny_col), 0)
+
+    // Asia Row
+    if asia_on 
+        table.cell(db, 0, 1, "Asia", text_color = a_txt, text_size = dash_size)
+        table.cell(db, 1, 1, str.tostring(a_up), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 2, 1, str.tostring(a_dn), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 3, 1, str.tostring(a_d1), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 4, 1, str.tostring(a_d2), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 5, 1, str.tostring(a_d3), text_color = chart.fg_color, text_size = dash_size)
+
+    // London Row
+    if lon_on
+        table.cell(db, 0, 2, "London", text_color = l_txt, text_size = dash_size)
+        table.cell(db, 1, 2, str.tostring(l_up), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 2, 2, str.tostring(l_dn), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 3, 2, str.tostring(l_d1), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 4, 2, str.tostring(l_d2), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 5, 2, str.tostring(l_d3), text_color = chart.fg_color, text_size = dash_size)
+
+    // New York Row
+    if ny_on
+        table.cell(db, 0, 3, "New York", text_color = n_txt, text_size = dash_size)
+        table.cell(db, 1, 3, str.tostring(n_up), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 2, 3, str.tostring(n_dn), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 3, 3, str.tostring(n_d1), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 4, 3, str.tostring(n_d2), text_color = chart.fg_color, text_size = dash_size)
+        table.cell(db, 5, 3, str.tostring(n_d3), text_color = chart.fg_color, text_size = dash_size)
+
+// }

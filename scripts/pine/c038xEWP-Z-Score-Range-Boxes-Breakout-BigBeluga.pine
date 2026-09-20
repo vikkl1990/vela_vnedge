@@ -1,0 +1,163 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Z-Score Range Boxes Breakout [BigBeluga]", overlay=false, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length       = input.int(20, "Z-Score Length", group="Z-Score Settings", tooltip="Number of bars used to calculate the standard deviation and mean for the Z-Score.")
+zSource      = input.source(close, "Z-Score Source", group="Z-Score Settings", tooltip="Price source data used for the Z-Score calculation.")
+smoothLen    = input.int(5, "Smoothing Line Length", group="Z-Score Settings", tooltip="Period length for smoothing the final Z-Score line.")
+
+osThreshold  = input.float(-2.0, "Oversold Trigger Level (-3 or -4)", step = 0.1, group="Thresholds", tooltip="Z-Score level that triggers an oversold (bullish) range box setup.")
+obThreshold  = input.float(2.0, "Overbought Trigger Level (3 or 4)", step = 0.1, group="Thresholds", tooltip="Z-Score level that triggers an overbought (bearish) range box setup.")
+
+boxBars      = input.int(10, "Box Period Length (Bars)", group="Box Settings", tooltip="Number of bars the developing box tracks before finalizing the range boundaries.")
+
+// Color Inputs
+osColorInput = input.color(color.aqua, "Oversold / Bullish Color", group="Color Settings", tooltip="Color theme applied to oversold boxes, extended lines, and breakout markers.")
+obColorInput = input.color(color.rgb(255, 131, 82), "Overbought / Bearish Color", group="Color Settings", tooltip="Color theme applied to overbought boxes, extended lines, and breakout markers.")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+//  Z-Score Calculation 
+stDev  = ta.stdev(zSource, length)
+mean   = ta.sma(zSource, length)
+zScore = stDev != 0 ? (zSource - mean) / stDev : 0
+zSmooth = ta.sma(zScore, length == 0 ? 1 : smoothLen)
+
+//  Box Management Logic 
+var box activeOsBox = na
+var int osStartBar = na
+
+var box activeObBox = na
+var int obStartBar = na
+
+//  Triggers (Only fire if no active box is currently building) 
+isOversold   = ta.crossunder(zSmooth, osThreshold) and na(activeOsBox) and na(activeObBox)
+isOverbought = ta.crossover(zSmooth, obThreshold) and na(activeOsBox) and na(activeObBox)
+
+// Active extended lines tracking
+var line topExtLine = na
+var line midExtLine = na
+var line botExtLine = na
+
+// Store active range boundaries for breakout checks
+var float currentRangeTop = na
+var float currentRangeBot = na
+
+// 1. Oversold Box Handling
+if isOversold
+    currentRangeTop := na
+    currentRangeBot := na
+
+    osStartBar := bar_index
+    string zText = "Z: " + str.tostring(zSmooth, "#.##")
+    activeOsBox := box.new(left=bar_index, top=high, right=bar_index + boxBars, bottom=low, 
+                           border_color=osColorInput, bgcolor=color.new(osColorInput, 85), 
+                           text=zText, text_color=chart.fg_color, text_size=size.small, 
+                           text_valign=text.align_top, text_halign=text.align_left, 
+                           extend=extend.none, force_overlay = true)
+
+if not na(activeOsBox)
+    int barsElapsed = bar_index - osStartBar
+    if barsElapsed <= boxBars
+        float currentTop = box.get_top(activeOsBox)
+        float currentBot = box.get_bottom(activeOsBox)
+        box.set_top(activeOsBox, math.max(currentTop, high))
+        box.set_bottom(activeOsBox, math.min(currentBot, low))
+        box.set_right(activeOsBox, osStartBar + boxBars)
+        
+        if barsElapsed == boxBars
+            float fTop = box.get_top(activeOsBox)
+            float fBot = box.get_bottom(activeOsBox)
+            float fMid = (fTop + fBot) / 2
+            
+            currentRangeTop := fTop
+            currentRangeBot := fBot
+            
+            topExtLine := line.new(osStartBar, fTop, bar_index, fTop, color=color.new(osColorInput, 20), width=1, force_overlay=true)
+            midExtLine := line.new(osStartBar, fMid, bar_index, fMid, color=color.new(osColorInput, 20), style=line.style_dashed, width=1, force_overlay=true)
+            botExtLine := line.new(osStartBar, fBot, bar_index, fBot, color=color.new(osColorInput, 20), width=1, force_overlay=true)
+    else
+        activeOsBox := na
+
+// 2. Overbought Box Handling
+if isOverbought
+    currentRangeTop := na
+    currentRangeBot := na
+
+    obStartBar := bar_index
+    string zText = "Z: " + str.tostring(zSmooth, "#.##")
+    activeObBox := box.new(left=bar_index, top=high, right=bar_index + boxBars, bottom=low, 
+                           border_color=obColorInput, bgcolor=color.new(obColorInput, 85), 
+                           text=zText, text_color=chart.fg_color, text_size=size.small, 
+                           text_valign=text.align_bottom, text_halign=text.align_right, 
+                           extend=extend.none, force_overlay = true)
+
+if not na(activeObBox)
+    int barsElapsed = bar_index - obStartBar
+    if barsElapsed <= boxBars
+        float currentTop = box.get_top(activeObBox)
+        float currentBot = box.get_bottom(activeObBox)
+        box.set_top(activeObBox, math.max(currentTop, high))
+        box.set_bottom(activeObBox, math.min(currentBot, low))
+        box.set_right(activeObBox, obStartBar + boxBars)
+        
+        if barsElapsed == boxBars
+            float fTop = box.get_top(activeObBox)
+            float fBot = box.get_bottom(activeObBox)
+            float fMid = (fTop + fBot) / 2
+            
+            currentRangeTop := fTop
+            currentRangeBot := fBot
+            
+            topExtLine := line.new(obStartBar, fTop, bar_index, fTop, color=color.new(obColorInput, 20), width=1, force_overlay=true)
+            midExtLine := line.new(obStartBar, fMid, bar_index, fMid, color=color.new(obColorInput, 20), style=line.style_dashed, width=1, force_overlay=true)
+            botExtLine := line.new(obStartBar, fBot, bar_index, fBot, color=color.new(obColorInput, 20), width=1, force_overlay=true)
+    else
+        activeObBox := na
+
+//  Breakout Detection & Line Clearing 
+bool bullishBreakout = ta.crossover(close, currentRangeTop) and not na(currentRangeTop) 
+bool bearishBreakout = ta.crossunder(close, currentRangeBot) and not na(currentRangeBot)
+
+if bullishBreakout
+    topExtLine := na
+    midExtLine := na
+    currentRangeTop := na
+    // botExtLine and currentRangeBot are intentionally kept active to continue extending
+    label.new(x=bar_index, y=low, text="", color=osColorInput, textcolor=color(na), 
+              style=label.style_label_up, size=size.tiny, force_overlay=true)
+
+if bearishBreakout
+    botExtLine := na
+    midExtLine := na
+    currentRangeBot := na
+    // topExtLine and currentRangeTop are intentionally kept active to continue extending
+    label.new(x=bar_index, y=high, text="", color=obColorInput, textcolor=color(na), 
+              style=label.style_label_down, size=size.tiny, force_overlay=true)
+// Continue extending active lines bar-by-bar until the next trigger or breakout
+if not na(topExtLine) and na(activeOsBox) and na(activeObBox) and not isOversold and not isOverbought
+    line.set_x2(topExtLine, bar_index)
+    if not na(midExtLine)
+        line.set_x2(midExtLine, bar_index)
+
+if not na(botExtLine) and na(activeOsBox) and na(activeObBox) and not isOversold and not isOverbought
+
+    if not na(botExtLine)
+        line.set_x2(botExtLine, bar_index)
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+color oscColor = color.from_gradient(zSmooth, -3.0, 3.0, osColorInput, obColorInput)
+
+pZ       = plot(zSmooth, title="Smoothed Z-Score Gradient", color=oscColor, linewidth=2)
+pMid     = plot(0.0, title="Zero Midline", color=color.new(chart.fg_color, 50), linewidth=1, style=plot.style_line)
+pObLine  = plot(obThreshold, title="OB Line", color=obColorInput, linewidth=1, linestyle=plot.linestyle_dashed)
+pOsLine  = plot(osThreshold, title="OS Line", color=osColorInput, linewidth=1, linestyle=plot.linestyle_dashed)
+
+fill(pZ, pObLine, 4, obThreshold, zSmooth > obThreshold ? color.new(obColorInput, 30) : color(na), zSmooth > obThreshold ? color.new(obColorInput, 90) : color(na))
+fill(pZ, pOsLine, -4, osThreshold, zSmooth < osThreshold ? color.new(osColorInput, 30) : color(na), zSmooth < osThreshold ? color.new(osColorInput, 90) : color(na))
+// }

@@ -1,0 +1,400 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Open Intrest / Volume / Liquidations (Suite) [BigBeluga]", "Open Intrest / Volume / Liquidations [BigBeluga]", overlay = false)
+
+visiOI = input.bool(false, "Visible Range", inline = "0", group = "Open Intrest")
+chanOI = input.bool(false, "Reset OI", "Reset OI on timeframe change", "z", group = "Open Intrest")
+tfchOI = input.timeframe("D", "", inline = "z", group = "Open Intrest")
+dispOI = input.bool (true, "Display", "Display Open Intrest Style", inline = "1", group = "Open Intrest")
+modeOI = input.string("OI", "", ["OI", "OI ▲ - OI ▼", "OI ▲", "OI ▼", "OI RSI", "DELTA"], inline = "1", group = "Open Intrest")
+stylOI = input.string("Candle", "", ["Candle", "Line"], inline = "1", group = "Open Intrest")
+
+nLcss = input.color(#70ccbd, "Longs   ►  ", inline = "2", group = "Open Intrest")
+lLcss = input.color(#089981, " ● ", inline = "2", group = "Open Intrest")
+nScss = input.color(#faa1a4, "Short   ►  ", inline = "3", group = "Open Intrest")
+lScss = input.color(#f23645, " ● ", inline = "3", group = "Open Intrest")
+duocs = input.color(#388e3c, "Delta   ►  ", inline = "4", group = "Open Intrest")
+dnocs = input.color(#b22833, " ● ", inline = "4", group = "Open Intrest")
+loics = input.color(#ffffff, " ● ", inline = "4", group = "Open Intrest")
+
+rsioi = input.int(14, "RSI     ►  ", inline = "5", group = "Open Intrest", minval = 2)
+rsisc = input.string("Close", "", ["Close", "Open", "High", "Low"], inline = "5", group = "Open Intrest")
+rsima = input.int(14, "RSI MA  ►  ", inline = "6", group = "Open Intrest", minval = 2)
+masrc = input.string("EMA", "", ["EMA", "SMA", "WMA", "VWMA", "RMA"], inline = "6", group = "Open Intrest")
+usema = input.bool(false, "", inline = "6", group = "Open Intrest")
+
+binanceUSDT = input.bool(true, 'Binance USDT', inline = 'a1', group = "Open Intrest")
+binanceUSD  = input.bool(true, 'Binance USD' , inline = 'a1', group = "Open Intrest")
+binanceBUSD = input.bool(true, 'Binance BUSD', inline = 'b1', group = "Open Intrest")
+krakenUSD   = input.bool(true, 'Kraken USD'  , inline = 'b1', group = "Open Intrest")
+bitmexUSDT  = input.bool(true, 'BitMEX USDT ', inline = 'c1', group = "Open Intrest")
+bitmexUSD   = input.bool(true, 'BitMEX USD'  , inline = 'c1', group = "Open Intrest")
+
+dispVOL = input.bool(false, "Display", inline = "1", group = "INTRADAY VOLUME")
+modeVOL = input.string("▲δ - ▼δ", "", ["▲δ - ▼δ", "▲δ", "▼δ", "DELTA", "CVD"], inline = "1", group = "INTRADAY VOLUME")
+ltfVOL  = input.timeframe("1", "", inline = "1", group = "INTRADAY VOLUME")
+cssupv  = input.color(#d1d4dc, "", inline = "1", group = "INTRADAY VOLUME")
+cssdnv  = input.color(#787b86, "", inline = "1", group = "INTRADAY VOLUME")
+smlVOL  = input.bool(true, "     >", inline = "2", group = "INTRADAY VOLUME")
+thrsml  = input.float(1.5, "", inline = "2", group = "INTRADAY VOLUME", minval = 1)
+smlupc  = input.color(#70ccbd, " ● ", inline = "2", group = "INTRADAY VOLUME")
+smldnc  = input.color(#faa1a4, "", inline = "2", group = "INTRADAY VOLUME")
+medVOL  = input.bool(true, "     >", inline = "3", group = "INTRADAY VOLUME")
+medsml  = input.float(2.5, "", inline = "3", group = "INTRADAY VOLUME", minval = 1)
+medupc  = input.color(#42bda8, " ● ", inline = "3", group = "INTRADAY VOLUME")
+meddnc  = input.color(#f77c80, "", inline = "3", group = "INTRADAY VOLUME")
+higVOL  = input.bool(true, "     >", inline = "4", group = "INTRADAY VOLUME")
+higsml  = input.float(3.5, "", inline = "4", group = "INTRADAY VOLUME", minval = 1)
+higupc  = input.color(#056656, " ● ", inline = "4", group = "INTRADAY VOLUME")
+higdnc  = input.color(#b22833, "", inline = "4", group = "INTRADAY VOLUME")
+
+normVOL = input.bool(false, "Normalize Volume       ", inline = "q", group = "LIQUIDATIONS")
+normLEN = input.int(14, "", inline = "q", group = "LIQUIDATIONS", minval = 1)
+dispLIQ = input.bool(false, "Display", inline = "1", group = "LIQUIDATIONS")
+modeLIQ = input.string("Total Liquidations", "", ["Total Liquidations", "Long Liquidations", "Short Liquidations", "Cumulative Liquidations"], inline = "1", group = "LIQUIDATIONS")
+ltfLIQ  = input.timeframe("", "", inline = "1", group = "LIQUIDATIONS")
+lLIQcss = input.color(#22ab94, "Longs        ►  ", inline = "2", group = "LIQUIDATIONS")
+sLIQcss = input.color(#f7525f, "Shorts        ►  ", inline = "3", group = "LIQUIDATIONS")
+cLIQcss = input.color(#b2b5be, "Cumulative   ►  ", inline = "4", group = "LIQUIDATIONS")
+
+
+type oirsi
+    float rsi
+    float sma
+    float o
+    float h
+    float l
+    float c
+
+type intrest
+    float diff
+    float o
+    float h
+    float l
+    float c
+
+type oipositions
+    float longs
+    float shorts
+    float delta
+
+type oisuite
+    intrest     aggregated
+    oipositions position
+
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+    float v = volume
+    int   n = bar_index
+    int   t = time
+
+bar b = bar.new()
+
+// Liquidations
+
+type cauge
+    float uV = 0
+    float dV = 0
+
+dynamic_normalization(_x,_l,_m) =>
+    n = _x+(_x*(_m-ta.sma(_x,_l))/ta.sma(_x,_l))
+
+
+getLIQ() =>
+
+    v = normVOL ? dynamic_normalization(b.v, normLEN, 1) : b.v
+
+    uW = ((b.h - math.max(b.o, b.c)) / (b.h - b.l)) * 100
+    dW = ((math.min(b.o, b.c) - b.l) / (b.h - b.l)) * 100
+
+    cauge.new(v * (uW / 100), v * (dW / 100))
+
+request() =>
+    cauge out = 
+         request.security(
+               syminfo.tickerid
+             , ltfLIQ
+             , getLIQ()
+             )
+    na(out) ? cauge.new(0, 0) : out
+
+
+plot(dispLIQ and (modeLIQ == "Total Liquidations" or modeLIQ == "Long Liquidations" ) ?                                                     request().dV  : na, "Longs Liquidations" , lLIQcss, 1, plot.style_columns)
+plot(dispLIQ and (modeLIQ == "Total Liquidations" or modeLIQ == "Short Liquidations") ? (modeLIQ == "Shorts Liquidations" ? request().uV : -request().uV) : na, "Shorts Liquidations", sLIQcss, 1, plot.style_columns)
+plot(dispLIQ and  modeLIQ == "Cumulative Liquidations" ? (request().uV.abs() + request().dV.abs()).abs() : na, "Cumulative Liquidations", cLIQcss, 1, plot.style_columns)
+
+// Open Intrest
+
+getOI(simple string prefix, simple string base, simple string p) =>
+
+    intrest oi = request.security(
+         prefix 
+         + ":" 
+         + base 
+         + p
+         , timeframe.period
+         , intrest.new(
+               b.c - b.c[1]
+             , b.o
+             , b.h
+             , b.l
+             , b.c
+             )
+         , ignore_invalid_symbol = true
+         )
+
+    na(oi) ? intrest.new(0, 0, 0, 0, 0) : oi
+
+
+intrest oi1 = getOI("BINANCE", syminfo.basecurrency                                         , "USDT.P_OI")
+intrest oi2 = getOI("BINANCE", syminfo.basecurrency                                         , "USD.P_OI" )
+intrest oi3 = getOI("BINANCE", syminfo.basecurrency                                         , "BUSD.P_OI")
+intrest oi4 = getOI("KRAKEN" , syminfo.basecurrency                                         , "USD.P_OI" )
+intrest oi5 = getOI("BITMEX" , syminfo.basecurrency == "BTC" ? "XBT" : syminfo.basecurrency , "USDT.P_OI")
+intrest oi6 = getOI("BITMEX" , syminfo.basecurrency == "BTC" ? "XBT" : syminfo.basecurrency , "USD.P_OI ")
+
+
+method darkcss(color css) =>
+
+    factor = 0.50
+
+    _blue  = color.b(css) * (1 - factor)
+    _red   = color.r(css) * (1 - factor)
+    _green = color.g(css) * (1 - factor)
+
+    color.rgb(_red, _green, _blue, 0)
+
+method abs(float src) =>
+    math.abs(src)
+
+
+method cCH(float src, simple string tf) =>
+    pass   = timeframe.change(tf)
+    value  = request.security(
+               syminfo.tickerid
+             , ""
+             , src
+             , lookahead = barmerge.lookahead_on
+             )
+    start  = ta.valuewhen(pass, value, 0)
+    change = (value - start) / start * 100
+    pass ? na : change
+
+getDeltaOI() =>
+    deltaOI = 
+           (binanceUSDT ? oi1.diff       : 0) 
+         + (binanceUSD  ? oi2.diff / b.c : 0) 
+         + (binanceBUSD ? oi3.diff       : 0) 
+         + (krakenUSD   ? oi4.diff / b.c : 0) 
+         + (bitmexUSDT  ? oi5.diff / b.c : 0) 
+         + (bitmexUSD   ? oi6.diff / b.c : 0)
+
+    intrest type = visiOI ? (time >= chart.left_visible_bar_time ? intrest.new(deltaOI, 0, 0, 0, 0) : intrest.new(0, 0, 0, 0, 0)) : intrest.new(deltaOI, 0, 0, 0, 0)
+    na(type) or type.diff == 0 ? intrest.new(0, 0, 0, 0, 0) : type
+
+getAggregatedOI() =>
+
+    c = 
+       (binanceUSDT ? oi1.c       : 0) 
+     + (binanceUSD  ? oi2.c / b.c : 0) 
+     + (binanceBUSD ? oi3.c       : 0) 
+     + (krakenUSD   ? oi4.c / b.c : 0) 
+     + (bitmexUSDT  ? oi5.c / b.c : 0) 
+     + (bitmexUSD   ? oi6.c / b.c : 0)
+
+    o = 
+       (binanceUSDT ? oi1.o       : 0) 
+     + (binanceUSD  ? oi2.o / b.c : 0) 
+     + (binanceBUSD ? oi3.o       : 0) 
+     + (krakenUSD   ? oi4.o / b.c : 0) 
+     + (bitmexUSDT  ? oi5.o / b.c : 0) 
+     + (bitmexUSD   ? oi6.o / b.c : 0)
+
+    h = 
+       (binanceUSDT ? oi1.h       : 0) 
+     + (binanceUSD  ? oi2.h / b.c : 0) 
+     + (binanceBUSD ? oi3.h       : 0) 
+     + (krakenUSD   ? oi4.h / b.c : 0) 
+     + (bitmexUSDT  ? oi5.h / b.c : 0) 
+     + (bitmexUSD   ? oi6.h / b.c : 0)
+
+    l = 
+       (binanceUSDT ? oi1.l       : 0) 
+     + (binanceUSD  ? oi2.l / b.c : 0) 
+     + (binanceBUSD ? oi3.l       : 0) 
+     + (krakenUSD   ? oi4.l / b.c : 0) 
+     + (bitmexUSDT  ? oi5.l / b.c : 0) 
+     + (bitmexUSD   ? oi6.l / b.c : 0)
+
+    intrest type = visiOI ? (time >= chart.left_visible_bar_time ? intrest.new(0, o, h, l, c) : intrest.new(0, 0, 0, 0, 0)) : intrest.new(0, o, h, l, c)
+    dispOI ? (na(type) or type.c == 0 ? intrest.new(0, 0, 0, 0, 0) : type) : intrest.new(0, 0, 0, 0, 0)
+
+getNetOI() =>
+
+    intrest deltaOI = getDeltaOI()
+
+    nL = deltaOI.diff > 0 and b.c > b.o
+    nS = deltaOI.diff > 0 and b.c < b.o
+
+    lL = deltaOI.diff < 0 and b.c < b.o
+    lS = deltaOI.diff < 0 and b.c > b.o
+
+    eL = ta.cum(nL ? deltaOI.diff : 0)
+    eS = ta.cum(nS ? deltaOI.diff : 0)
+
+    xL = ta.cum(lL ? deltaOI.diff : 0)
+    xS = ta.cum(lS ? deltaOI.diff : 0)
+
+    cL = (eL - xL.abs())
+    cS = (eS - xS.abs())
+
+    gU = (cL - cL[1]).abs()
+    gD = (cS - cS[1]).abs()
+
+    dT = gU > gD ? gU : -gD
+
+    oipositions type = visiOI ? (time >= chart.left_visible_bar_time ? oipositions.new(cL, cS, dT) : oipositions.new(0, 0, 0)) : oipositions.new(cL, cS, dT)
+    dispOI ? (na(type) or type.longs == 0 ? oipositions.new(0, 0, 0) : type) : oipositions.new(0, 0, 0)
+
+getMA(simple string mode, float src, simple int len) =>
+
+    ma = switch mode
+        "SMA"  => ta.sma (src, len)
+        "EMA"  => ta.ema (src, len)
+        "WMA"  => ta.wma (src, len)
+        "VWMA" => ta.vwma(src, len)
+        "RMA"  => ta.rma (src, len)
+
+getRsiOI(intrest oi) =>
+
+    src = switch rsisc
+        "Close" => oi.c
+        "Open"  => oi.o
+        "High"  => oi.h
+        "Low"   => oi.l
+ 
+    rsi = ta.rsi(src, rsioi)
+    sma = getMA(masrc, rsi, rsima)
+
+    oirsi type = visiOI ? (time >= chart.left_visible_bar_time ? oirsi.new(rsi, sma, ta.rsi(oi.o, rsioi), ta.rsi(oi.h, rsioi), ta.rsi(oi.l, rsioi), ta.rsi(oi.c, rsioi)) : oirsi.new(0, 0, 0, 0, 0, 0)) : oirsi.new(rsi, sma, ta.rsi(oi.o, rsioi), ta.rsi(oi.h, rsioi), ta.rsi(oi.l, rsioi), ta.rsi(oi.c, rsioi))
+    na(type) or type.rsi == 0 ? oirsi.new(0, 0, 0, 0, 0, 0) : type
+
+
+oisuite     oibin = oisuite.new(getAggregatedOI(), getNetOI())
+intrest     oi    = oibin.aggregated
+oipositions oicum = oibin.position
+oirsi       rsi   = getRsiOI(oi)
+
+if chanOI
+
+    oi.diff      := oi.diff     .cCH(tfchOI)
+    oi.c         := oi.c        .cCH(tfchOI)
+    oicum.longs  := oicum.longs .cCH(tfchOI)
+    oicum.shorts := oicum.shorts.cCH(tfchOI)
+    stylOI       := "Line"
+
+color oicss  =  modeOI == "OI"                               ? (oi.c == 0        ? na : (oi.c         > oi.o            ? duocs : dnocs)) : na
+color oiLcss = (modeOI == "OI ▲ - OI ▼" or modeOI == "OI ▲") ? (oicum.delta == 0 ? na : (oicum.longs  > oicum.longs [1] ? nLcss : lLcss)) : na
+color oiScss = (modeOI == "OI ▲ - OI ▼" or modeOI == "OI ▼") ? (oicum.delta == 0 ? na : (oicum.shorts > oicum.shorts[1] ? nScss : lScss)) : na
+color dltCSS =  modeOI == "DELTA"                            ? (oicum.delta == 0 ? na : (oicum.delta  > 0               ? lLcss : lScss)) : na
+color rsiLVL =  modeOI == "OI RSI"                           ? (oi.c == 0        ? na :                                                             loics.darkcss())   : na
+color rsiCSS =  modeOI == "OI RSI"                           ? (oi.c == 0        ? na : (stylOI == "Line" ? loics : (rsi.rsi > rsi.rsi[1] ? loics : loics.darkcss()))) : na
+
+
+plot(modeOI == "OI RSI" and stylOI == "Line" and dispOI ? rsi.rsi : na, "OI RSI", rsiCSS, 1)
+plot(modeOI == "OI RSI"                      and dispOI ?   70    : na, "RSI 70", rsiLVL, 2)
+plot(modeOI == "OI RSI"                      and dispOI ?   30    : na, "RSI 30", rsiLVL, 1)
+plot(modeOI == "OI RSI" and usema            and dispOI ? rsi.sma : na, "RSI MA", rsiLVL, 1)
+
+switch modeOI
+    "OI"          => oicum := oipositions.new(na, na, na)                                                               , rsi := oirsi.new(na, na, na, na, na, na)
+    "OI ▲ - OI ▼" => oi    := intrest    .new(na, na, na, na)                                                           , rsi := oirsi.new(na, na, na, na, na, na)
+    "OI ▲"        => oicum := oipositions.new(oicum.longs, na, na )                  , oi := intrest.new(na, na, na, na), rsi := oirsi.new(na, na, na, na, na, na)
+    "OI ▼"        => oicum := oipositions.new(na, oicum.shorts, na)                  , oi := intrest.new(na, na, na, na), rsi := oirsi.new(na, na, na, na, na, na)
+    "OI RSI"      => oicum := oipositions.new(na, na, na)                            , oi := intrest.new(na, na, na, na)
+    "DELTA"       => oicum := oipositions.new(na, na, oicum.delta)                   , oi := intrest.new(na, na, na, na), rsi := oirsi.new(na, na, na, na, na, na)
+
+
+
+plot(stylOI == "Line" and modeOI == "OI"           and oi.c         != 0 and dispOI ? oi.c         : na, "OI Line"       , loics , 1, plot.style_linebr)
+plot(stylOI == "Line" and modeOI == "OI ▲"         and oicum.longs  != 0 and dispOI ? oicum.longs  : na, "OI Longs Line" , oiLcss, 1, plot.style_linebr)
+plot(stylOI == "Line" and modeOI == "OI ▼"         and oicum.shorts != 0 and dispOI ? oicum.shorts : na, "OI Shorts Line", oiScss, 1, plot.style_linebr)
+plot(stylOI == "Line" and modeOI == "OI ▲ - OI ▼"  and oicum.longs  != 0 and dispOI ? oicum.longs  : na, "OI Longs Line" , oiLcss, 1, plot.style_linebr)
+plot(stylOI == "Line" and modeOI == "OI ▲ - OI ▼"  and oicum.shorts != 0 and dispOI ? oicum.shorts : na, "OI Shorts Line", oiScss, 1, plot.style_linebr)
+plot(                     modeOI == "DELTA"        and oicum.delta  != 0 and dispOI ? oicum.delta  : na, "OI Delta"      , dltCSS, 1, plot.style_columns)
+
+
+switch stylOI
+    "Line" => oicum := oipositions.new(na, na, na), oi := intrest.new(na, na, na, na), rsi := oirsi.new(na, na, na, na, na, na)
+    => na
+
+switch dispOI
+    false =>
+        rsi.o   := na
+        rsi.h   := na 
+        rsi.l   := na
+        rsi.c   := na
+        rsi.rsi := na
+
+
+plotcandle(oi.o, oi.h, oi.l, oi.c, "Open Interest", oicss, oicss, bordercolor = oicss, editable = true)
+plotcandle(oicum.longs [1], oicum.longs , oicum.longs , oicum.longs , "Longs" , oiLcss, oiLcss, bordercolor = oiLcss, editable = true)
+plotcandle(oicum.shorts[1], oicum.shorts, oicum.shorts, oicum.shorts, "Shorts", oiScss, oiScss, bordercolor = oiScss, editable = true)
+plotcandle(rsi.o, rsi.h, rsi.l, rsi.rsi, "OI RSI", rsiCSS, rsiCSS, bordercolor = rsiCSS, editable = true)
+
+bgcolor(timeframe.change(tfchOI) and chanOI and modeOI != "OI RSI" and modeOI != "DELTA" ? color.new(chart.fg_color, 95) : na)
+
+// Intraday Volume
+
+type ltfvolume
+    float upvol
+    float dnvol
+    float delta
+    float cvd
+    float upavg
+    float dnavg
+
+[buyv, sellv] = request.security_lower_tf(syminfo.tickerid, ltfVOL, [b.c > b.o ? b.v : 0, b.c < b.o ? b.v : 0], true, ignore_invalid_timeframe = true)
+
+getLTF() =>
+
+    var float[] up = array.new<float>()
+    var float[] dn = array.new<float>() 
+
+    buy   = buyv .sum()
+    sell  = sellv.sum()
+    delta = buy - sell
+    cvd   = ta.cum(delta)
+    
+    up.unshift( buy )
+    dn.unshift(-sell)
+
+    ltfvolume.new(buy, -sell, delta, cvd, up.avg(), dn.avg())
+
+
+ltfvolume ltfvol = getLTF()
+
+
+color smlup = switch
+    higVOL and ltfvol.upvol >= (ltfvol.upavg * higsml) => higupc
+    medVOL and ltfvol.upvol >= (ltfvol.upavg * medsml) => medupc
+    smlVOL and ltfvol.upvol >= (ltfvol.upavg * thrsml) => smlupc
+    => cssupv
+
+color smldn = switch
+    higVOL and ltfvol.dnvol <= (ltfvol.dnavg * higsml) => higdnc
+    medVOL and ltfvol.dnvol <= (ltfvol.dnavg * medsml) => meddnc
+    smlVOL and ltfvol.dnvol <= (ltfvol.dnavg * thrsml) => smldnc
+    => cssdnv
+
+plot((modeVOL == "▲δ - ▼δ" or modeVOL == "▲δ") and dispVOL ? (modeVOL == "▲δ" ? ltfvol.upvol.abs() : ltfvol.upvol) : na, "Bullish Volume", smlup, 1, plot.style_columns)
+plot((modeVOL == "▲δ - ▼δ" or modeVOL == "▼δ") and dispVOL ? (modeVOL == "▼δ" ? ltfvol.dnvol.abs() : ltfvol.dnvol) : na, "Bearish Volume", smldn, 1, plot.style_columns)
+plot( modeVOL == "CVD"                         and dispVOL ?                                          ltfvol.cvd   : na, "CVD"           , chart.fg_color, 1, plot.style_linebr)
+plot( modeVOL == "DELTA" and dispVOL                       ?                                          ltfvol.delta : na, "Delta Volume"  , ltfvol.delta > 0 ? cssupv : cssdnv, 1, plot.style_columns)
+

@@ -1,0 +1,190 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=6
+indicator("Dynamic Liquidity HeatMap Profile [BigBeluga]", overlay = true, max_lines_count = 500, max_bars_back = 2000, max_boxes_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+lookBack = input.int(300, "Calculated Bars")
+displPf  = input.bool(true, "Profile", group = "Profile")
+bins     = input.int(50, "Resolution", group = "Profile")
+resolution = 100
+
+color sellColor = input.color(color.blue, "Sell Liquidity")
+color buyColor  = input.color(color.lime, "Buy  Liquidity")
+bool  poc       = input.bool(true, "", inline = "maxp")
+color maxColor  = input.color(color.orange, "Max Point Liquidity", inline = "maxp")
+
+
+var boxes       = array.new<box>()
+var labels      = array.new<label>()
+var lines       = array.new<line>()
+
+var volume_bins = array.new<float>(bins, 0.)
+h_l         = array.new<float>()
+
+
+type pivot 
+    float value 
+    int   index
+    float volume_
+    float vol
+    bool isLower
+    
+var pivots = array.new<pivot>()
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+h = ta.highest(2)
+l = ta.lowest(2)
+
+volumeArr = array.new_float(lookBack)
+
+vol  = math.sum(volume, 10)
+
+for i = 0 to lookBack-1
+    volumeArr.set(i, vol[i])
+
+nVol   = vol / volumeArr.max() * 100
+atr    = ta.atr(5) / 50
+offset = ta.highest(atr * nVol, lookBack)
+
+for i = 0 to lookBack-1
+
+    h_l.push(high[i]+offset[i])
+    h_l.push(low[i]-offset[i])
+
+
+if last_bar_index - bar_index < lookBack
+
+    top = h_l.max()
+    bot = h_l.min()
+
+
+    step = (top-bot)/resolution
+
+    level1 = high + atr * nVol
+    level2 = low  - atr * nVol
+
+
+    if h == high 
+        for i = 0 to resolution - 1
+            lower = bot + step * i
+            mid   = lower + step/2
+
+            if math.abs(level1 - mid) <= step
+                pivots.push(pivot.new(mid, bar_index, nVol, vol, false))
+
+    if l == low 
+        for i = 0 to resolution - 1
+            lower = bot + step * i
+            mid   = lower + step/2
+
+            if math.abs(level2 - mid) <= step
+                pivots.push(pivot.new(mid  - atr * nVol, bar_index, nVol, vol, true))
+
+
+    if pivots.size() > 0
+        for p in pivots 
+
+            y = p.value
+            x = p.index
+            isLow = p.isLower
+
+            if isLow and low < y 
+                pivots.remove(pivots.indexof(p))
+
+            if not isLow and high > y 
+                pivots.remove(pivots.indexof(p))
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if barstate.islast
+
+    if lines.size() > 0
+        for ln in lines 
+            ln.delete()
+
+
+    for b in boxes
+        b.delete()
+    boxes.clear()
+    
+    for lbl in labels
+        lbl.delete()
+    labels.clear()
+
+    step = (h_l.max() - h_l.min()) / bins 
+    
+
+    for j = 0 to bins-1
+        volume_bins.set(j, 0)
+   
+    if pivots.size() > 0
+        for i = 0 to pivots.size() - 1
+            lvl     = pivots.get(i)
+            vol_    = lvl.vol
+            line_y  = lvl.value
+            
+            for j = 0 to bins-1
+                lower = h_l.min() + step * j
+                mid   = lower + step/2
+                upper = lower + step
+
+                if math.abs(line_y-mid) < step
+                    volume_bins.set(j, volume_bins.get(j) + vol_)
+
+        for j = 0 to bins-1
+            lower    = h_l.min() + step * j
+            upper    = lower + step
+            mid      = lower + step/2
+            voll     = volume_bins.get(j)
+            valueVol = voll / volume_bins.max() * 50
+            col      = close > mid ? buyColor : sellColor
+            m_col    = color.from_gradient(voll, volume_bins.min(), volume_bins.max(), color.new(col, 80), color.new(col, 0))
+            m_col1   = color.from_gradient(voll, volume_bins.min(), volume_bins.max(), color.new(col, 50), color.new(col, 0))
+            if not (close < upper and close > lower)
+
+                if displPf and (valueVol != 0)
+
+                    boxes.push(
+                                     box.new(bar_index+20, upper, bar_index+20+int(valueVol), lower
+                                     , bgcolor      = voll == volume_bins.max() and poc ? maxColor : m_col
+                                     , border_color = chart.bg_color
+                                     , text         = voll > volume_bins.avg() ? str.tostring(voll, format.volume) : ""
+                                     , text_halign  = text.align_left)
+                                     )
+                    
+                    boxes.push(
+                                     box.new(bar_index+20, upper, bar_index+5, lower
+                                     , text = str.tostring(valueVol*2, format.percent)
+                                     , bgcolor = color(na)
+                                     , border_color = color(na)
+                                     , text_color = voll == volume_bins.max() ? maxColor : m_col1)
+                                     )
+
+
+                var start = 0
+                isLower = close > mid
+
+                for i = 0 to lookBack - 1
+                    if isLower 
+                        if low[i] < mid 
+                            start := bar_index - i
+                            break
+                        if i == lookBack - 1
+                            start := bar_index - i
+                            break
+                    else
+                        if high[i] > mid 
+                            start := bar_index - i
+                            break
+                        if i == lookBack - 1
+                            start := bar_index - i
+                            break
+
+                color = voll == volume_bins.max() and poc ? maxColor : color.from_gradient(valueVol, 0, 50, color(na), isLower ? color.new(buyColor, 30) : color.new(sellColor, 30))
+
+                lines.push(line.new(start+3, mid, bar_index+5, mid, width = int(valueVol/5), color = color))
+// }

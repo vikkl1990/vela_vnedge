@@ -1,0 +1,30 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Â© HunterAlgos
+
+//@version=5
+strategy('MA 10/20 Crossover', overlay=true)
+
+ma10 = ta.sma(close, 10)
+ma20 = ta.sma(close, 20)
+
+long = ta.cross(ma10, ma20) and ma10 > ma20
+short = ta.cross(ma10, ma20) and ma10 < ma20
+
+plot(ma10, title='10', color=color.new(color.yellow, 0), linewidth=2)
+plot(ma20, title='20', color=color.new(color.red, 0), linewidth=2)
+
+testStartYear = input(2016, 'Backtest Start Year')
+testStartMonth = input(4, 'Backtest Start Month')
+testStartDay = input(1, 'Backtest Start Day')
+testPeriodStart = timestamp(testStartYear, testStartMonth, testStartDay, 0, 0)
+
+testStopYear = input(2018, 'BackTest Stop Year')
+testStopMonth = input(10, 'Backtest Stop Month')
+testStopDay = input(15, 'Backtest Stop Day')
+testPeriodStop = timestamp(testStopYear, testStopMonth, testStopDay, 0, 0)
+
+if time >= testPeriodStart
+    if time <= testPeriodStop
+        strategy.entry('Long', strategy.long, 1.0, when=long)
+        strategy.entry('Short', strategy.short, 1.0, when=short)
+

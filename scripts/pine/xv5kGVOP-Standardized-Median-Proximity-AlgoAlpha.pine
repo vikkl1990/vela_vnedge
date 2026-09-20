@@ -1,0 +1,63 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Standardized Median Proximity [AlgoAlpha]", "AlgoAlpha - 𝓢𝓽𝓪𝓷𝓭𝓪𝓻𝓭𝓲𝔃𝓮𝓭 𝓜𝓮𝓭𝓲𝓪𝓷 𝓟𝓻𝓸𝔁𝓲𝓶𝓲𝓽𝔂", overlay = false, timeframe = "", timeframe_gaps = false)
+
+// Inputs
+priceSource = input.source(close, "Source")
+lookbackLength = input.int(21, minval = 1, title = "Lookback Length")
+emaLookbackLength = input.int(20, minval = 1, title = "HMA Lookback Length")
+stdDevMultiplier = input.float(1, title = "Standard Deviation Multiplier")
+upperval = input.float(2, title = "Upper Boundary of Deviation Bands")
+lowerval = input.float(1.5, title = "Lower Boundary of Deviation Bands")
+bcol = input.bool(true, "Colored Bars?")
+neut = input.bool(true, "Show Neutral Trend?")
+colorUp = input.color(#00ffbb, title = "Up Color")
+colorDown = input.color(#ff1100, title = "Down Color")
+
+// Calculations
+medianValue = ta.median(priceSource, lookbackLength)
+priceDeviation = (priceSource - medianValue)
+standardDeviation = ta.stdev(priceDeviation, 45)
+normalizedValue = priceDeviation / (standardDeviation + standardDeviation)
+
+positiveValues = normalizedValue > 0 ? normalizedValue : 0
+negativeValues = normalizedValue < 0 ? normalizedValue : 0
+
+upperBoundary = ta.ema(positiveValues, lookbackLength) + ta.stdev(positiveValues, lookbackLength) * stdDevMultiplier
+lowerBoundary = ta.ema(negativeValues, lookbackLength) - ta.stdev(negativeValues, lookbackLength) * stdDevMultiplier
+emaValue = ta.hma(normalizedValue, emaLookbackLength)
+
+// Color Conditions
+plotColor = normalizedValue > upperBoundary ? colorUp : 
+      normalizedValue < lowerBoundary ? colorDown : 
+      (normalizedValue < 0 and normalizedValue < upperBoundary and emaValue > lowerBoundary and normalizedValue > emaValue and neut) or (normalizedValue > 0 and normalizedValue > lowerBoundary and emaValue < upperBoundary and normalizedValue < emaValue and neut) ? color.gray:
+      normalizedValue > 0 ? color.new(colorUp, 50) :
+      color.new(colorDown, 50)
+
+// Plots
+plot(normalizedValue, color = plotColor, style = plot.style_columns)
+plot(upperBoundary, color = colorDown, title = "Upper Boundary")
+plot(lowerBoundary, color = colorUp, title = "Lower Boundary")
+hmaPlot = plot(emaValue, color = color.new(color.white, 50), title = "Hull MA")
+zeroLine = plot(0, color = plotColor, title = "Zero Line")
+barcolor(plotColor, display = bcol ? display.all : display.none)
+
+// Hidden Levels
+maxLevelPlot = plot(upperval, display = display.none)
+minLevelPlot = plot(-upperval, display = display.none)
+upperMidLevelPlot = plot(lowerval, display = display.none)
+lowerMidLevelPlot = plot(-lowerval, display = display.none)
+
+// Fills
+fill(maxLevelPlot, upperMidLevelPlot, top_value = upperval, bottom_value = lowerval, top_color = color.rgb(255, 17, 0, 50), bottom_color = color.rgb(255, 17, 0, 90))
+fill(minLevelPlot, lowerMidLevelPlot, top_value = -lowerval, bottom_value = -upperval, top_color = color.rgb(0, 255, 187, 90), bottom_color = color.rgb(0, 255, 187, 50))
+
+// Alerts
+alertcondition(ta.crossover(normalizedValue, 0), "Bullish Trend Shift", "Median Proximity Crossover Zero Line")
+alertcondition(ta.crossunder(normalizedValue, 0), "Bearish Trend Shift", "Median Proximity Crossunder Zero Line")
+alertcondition(ta.crossover(normalizedValue, upperBoundary), "Bullish Impulse", "Median Proximity Bullish Impulse")
+alertcondition(ta.crossunder(normalizedValue, lowerBoundary), "Bearish Impulse", "Median Proximity Bearish Impulse")
+alertcondition(ta.crossover(normalizedValue, 1.5), "Overbought", "Median Proximity Overbought")
+alertcondition(ta.crossunder(normalizedValue, -1.5), "Oversold", "Median Proximity Oversold")

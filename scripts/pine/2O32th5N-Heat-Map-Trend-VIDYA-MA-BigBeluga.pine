@@ -1,0 +1,144 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Heat Map Trend (VIDYA MA) [BigBeluga]", overlay = false, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ --------------------------------------------------------------------------------------------------------{
+// @variable: Length for the VIDYA moving average
+int vidyaLen = input.int(10, "Length")
+// @variable: Length for the momentum calculation (CMO)
+int cmoLen = input.int(10, "Momentum", tooltip = "Volume Momentum")
+// @variable: Timeframes for multiple timeframes analysis
+string tf1 = input.timeframe("60", "Time Frame 1", group = "TimeFrame\n_______________________")
+string tf2 = input.timeframe("120", "Time Frame 2", group = "TimeFrame\n_______________________")
+string tf3 = input.timeframe("180", "Time Frame 3", group = "TimeFrame\n_______________________")
+string tf4 = input.timeframe("240", "Time Frame 4", group = "TimeFrame\n_______________________")
+string tf5 = input.timeframe("360", "Time Frame 5", group = "TimeFrame\n_______________________")
+
+// COLORS --------------------------------------------------------------------------------------------------------------
+// Define gradient colors for the trend
+color colorUp      = input.color(#236bd8, "up", group = "color")    // Uptrend color
+color colorDown    = input.color(#d82923, "down", group = "color")    // Downtrend color
+color neutralColor = input.color(#d87423, "neutral", group = "color")    // Neutral color
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ----------------------------------------------------------------------------------------------{
+// @function: Creates a gradient based on the value input for the trend
+method calcGradient(float value)=>
+    value > 0 ? color.from_gradient(value, 0, 2, neutralColor, colorUp) 
+              : color.from_gradient(value, -2, 0, colorDown, neutralColor)
+
+// VIDYA CALCULATION ---------------------------------------------------------------------------------------------------
+// ATR (Average True Range) and volume calculation
+bool  volume_check = ta.cum(volume) <= 0
+float atrVal = ta.atr(1)
+float volVal = volume_check ? atrVal : volume  // Use ATR if volume is not available
+
+// @function: Calculate the VIDYA (Volumetric Variable Index Dynamic Average)
+vidya(src, len, cmoLen) =>
+    float cmoVal = ta.sma(ta.cmo(volVal, cmoLen), 10)  // Calculate the CMO and smooth it with an SMA
+    float absCmo = math.abs(cmoVal)                   // Absolute value of CMO
+    float alpha = 2 / (len + 1)                      // Alpha factor for smoothing
+    var float vidyaVal = 0.0                        // Initialize VIDYA
+    vidyaVal := alpha * absCmo / 100 * src + (1 - alpha * absCmo / 100) * nz(vidyaVal[1])  // VIDYA formula
+
+// REQUEST MULTI-TIMEFRAME DATA ----------------------------------------------------------------------------------------
+// Calculate VIDYA on different timeframes
+float vidyaVal = vidya(close, vidyaLen, cmoLen)
+float vidyaTf1 = request.security("", tf1, vidyaVal[1], lookahead = barmerge.lookahead_on)
+float vidyaTf2 = request.security("", tf2, vidyaVal[1], lookahead = barmerge.lookahead_on)
+float vidyaTf3 = request.security("", tf3, vidyaVal[1], lookahead = barmerge.lookahead_on)
+float vidyaTf4 = request.security("", tf4, vidyaVal[1], lookahead = barmerge.lookahead_on)
+float vidyaTf5 = request.security("", tf5, vidyaVal[1], lookahead = barmerge.lookahead_on)
+
+// STANDARD DEVIATION AND TREND CALCULATIONS ---------------------------------------------------------------------------
+// Calculate standard deviation for each timeframe
+float valTf1 = (hl2 - vidyaTf1) / ta.stdev((hl2 - vidyaTf1), 200)
+float valTf2 = (hl2 - vidyaTf2) / ta.stdev((hl2 - vidyaTf2), 200)
+float valTf3 = (hl2 - vidyaTf3) / ta.stdev((hl2 - vidyaTf3), 200)
+float valTf4 = (hl2 - vidyaTf4) / ta.stdev((hl2 - vidyaTf4), 200)
+float valTf5 = (hl2 - vidyaTf5) / ta.stdev((hl2 - vidyaTf5), 200)
+
+float avgVal = math.avg(valTf1, valTf2, valTf3, valTf4, valTf5)  // Average of all timeframes
+color trend  = avgVal.calcGradient()  // Calculate gradient based on the average value
+
+// Individual gradients for each timeframe
+color trendTf1 = valTf1.calcGradient()
+color trendTf2 = valTf2.calcGradient()
+color trendTf3 = valTf3.calcGradient()
+color trendTf4 = valTf4.calcGradient()
+color trendTf5 = valTf5.calcGradient()
+
+// }
+// ＰＬＯＴ-------------------------------------------------------------------------------------------------------------{
+// PLOTTING AND FILLING -----------------------------------------------------------------------------------------------
+// Plot and fill for each timeframe's trend
+fill(plot(1, color = trendTf1, editable = false), plot(0, color = trendTf1, editable = false), color = trendTf1)
+fill(plot(1, color = trendTf2, editable = false), plot(2, color = trendTf2, editable = false), color = trendTf2)
+fill(plot(3, color = trendTf3, editable = false), plot(2, color = trendTf3, editable = false), color = trendTf3)
+fill(plot(3, color = trendTf4, editable = false), plot(4, color = trendTf4, editable = false), color = trendTf4)
+fill(plot(4, color = trendTf5, editable = false), plot(5, color = trendTf5, editable = false), color = trendTf5)
+
+plot(5.5, color = trend)
+plot(-0.5, color = trend)
+
+
+// PLOT TREND ----------------------------------------------------------------------------------------------------------
+
+// Plot candles based on the trend with color-coded wicks and borders
+plotcandle(open, high, low, close, 
+             title          = "VIDYA Trend", 
+             color          = trend, 
+             wickcolor      = trend, 
+             bordercolor    = trend, 
+             force_overlay  = true)
+
+// LABELS FOR TREND DIRECTION ------------------------------------------------------------------------------------------
+var bool trendCheck = na
+
+// Add labels based on crossovers
+if ta.crossover(avgVal, 0.5) and not trendCheck and barstate.isconfirmed
+    trendCheck := true
+    label.new(bar_index, low, "⦿\nUP", 
+                 force_overlay = true, 
+                 style         = label.style_label_up, 
+                 textcolor     = colorUp, 
+                 color         = color(na))
+
+if ta.crossunder(avgVal, -0.5) and trendCheck and barstate.isconfirmed
+    trendCheck := false
+    label.new(bar_index, high, "DOWN\n⦿", 
+                 force_overlay = true,
+                 style         = label.style_label_down, 
+                 textcolor     = colorDown, 
+                 color         = color(na))
+
+// DASHBOARD TABLE TO DISPLAY MULTI-TIMEFRAME TREND --------------------------------------------------------------------
+var table trendDashboard = table.new(position.top_right, 10, 10, force_overlay = false)
+
+// @function: Display trend value in the dashboard
+method displayTrend(float val, string tf, int row, color color, bool first = false) =>
+    if first
+        // Header for the dashboard
+        trendDashboard.cell(0, 0, "TimeFrame", text_color=chart.fg_color)
+        trendDashboard.cell(1, 0, "Trend", text_color=chart.fg_color)
+        
+    // Display timeframe and trend direction
+    trendDashboard.cell(0, row, tf, text_color=chart.fg_color)
+    trendDashboard.cell(1, row, val > 0 ? "UP|" : "DOWN|",
+                         text_color     = color.from_gradient(val, -1, 1, colorDown, colorUp), 
+                         text_halign    = text.align_right)
+
+// Display the multi-timeframe trend values in the dashboard
+if barstate.islast
+    valTf5.displayTrend(tf5, 1, trendTf5, true)
+    valTf4.displayTrend(tf4, 2, trendTf4)
+    valTf3.displayTrend(tf3, 3, trendTf3)
+    valTf2.displayTrend(tf2, 4, trendTf2)
+    valTf1.displayTrend(tf1, 5, trendTf1)
+    
+    // Show additional information if volume data is unavailable
+    table.merge_cells(trendDashboard, 0, 6, 1, 6)
+    table.cell(trendDashboard, 0, 6, volume_check ? "No Volume Data provided\n Volatility used" : "")
+// }

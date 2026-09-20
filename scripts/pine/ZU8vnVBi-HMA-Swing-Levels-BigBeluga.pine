@@ -1,0 +1,103 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("HMA Swing Levels [BigBeluga]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+len1 = input.int(5, "Trend Change")
+len2 = input.int(50, "Swing Levels")
+
+col1 = input.color(#1ae382, "", inline = "col")
+col2 = input.color(#238be0, "", inline = "col")
+
+h = ta.highest(len2)
+l = ta.lowest(len2)
+mid = math.avg(h, l)
+
+hma = ta.hma(close, 50)
+
+change = ta.change(hma, len1)
+
+var trail = float(na)
+var color = color(na)
+
+
+type lines 
+    line  l 
+    label lbl 
+    bool  direction
+
+var data = array.new<lines>()
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if last_bar_index - bar_index < 4000
+    if h[1] == high[1] and high < h and change > 0
+        label.new(bar_index[1], high[1], "▇", style = label.style_label_center, color = color(na), textcolor = col2, size = size.tiny)
+
+        lbl = label.new(bar_index[1], high[1], str.tostring(high[1]), style = label.style_label_left, color = color(na), textcolor = col2, size = size.normal)
+        l1   = line.new(bar_index[1], high[1], bar_index, high[1], color = col2)
+
+        gg = lines.new(l1, lbl, false)
+        data.push(gg)
+
+    if l[1] == low[1] and low > l and change < 0
+        label.new(bar_index[1], low[1], "▇", style = label.style_label_center, color = color(na), textcolor = col1, size = size.tiny)
+
+        lbl = label.new(bar_index[1], low[1], str.tostring(low[1]), style = label.style_label_left, color = color(na), textcolor = col1, size = size.normal)
+        l2   = line.new(bar_index[1], low[1], bar_index, low[1], color = col1)
+    
+        gg = lines.new(l2, lbl, true)
+        data.push(gg)
+
+
+if data.size() > 0 
+    for gg in data
+
+        l_ = gg.l
+        lbl = gg.lbl
+
+        l_.set_x2(bar_index)
+        lbl.set_x(bar_index)
+
+        if l_.get_x2() - l_.get_x1() > 250
+            l_.set_width(2)
+
+        if l_.get_x2() - l_.get_x1() > 500
+            l_.set_width(3)
+
+        if l_.get_x2() - l_.get_x1() > 750
+            l_.set_width(4)
+        if gg.direction
+            if low < l_.get_y1()
+                l_.set_width(1)
+
+                label.delete(lbl)
+                l_.set_style(line.style_dashed)
+                ss = lines.new(line(na), label(na))
+                data.set(data.indexof(gg), ss)
+        else
+            if high > l_.get_y1()
+                l_.set_width(1)
+
+                label.delete(lbl)
+                l_.set_style(line.style_dashed)
+                ss = lines.new(line(na), label(na))
+                data.set(data.indexof(gg), ss)
+
+if change > 0 
+    trail := hma
+    color := color.lime
+if change < 0 
+    trail := hma
+    color := color.blue
+
+
+pt = plot(trail, color = color, style = plot.style_stepline, linewidth = 2)
+plot(trail, color = color.new(color, 60), style = plot.style_stepline, linewidth = 6)
+
+// }

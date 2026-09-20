@@ -1,0 +1,197 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=6
+indicator("Dynamic Liquidity Depth [BigBeluga]", overlay = true, max_boxes_count = 500, max_bars_back = 5000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length = input(500, "Lookback")
+bins   = input.int(30, "Resolution")
+offset = input.int(25, "Offset")
+
+
+max_sell = array.new<float>()
+min_buy = array.new<float>()
+var bins_val = array.new<float>(bins)
+var bins_val1 = array.new<float>(bins)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+atr = ta.atr(50) * 2
+
+// SELL SIDE PROFILE
+base_sell_side = high + atr
+
+if barstate.islast
+    for i = 0 to bins - 1
+        bins_val.set(i, 0)
+
+    for i = 0 to length 
+        max_sell.push(high[i]+atr*2)
+        min_buy.push(low[i]-atr*2)
+
+    for i = 0 to bins - 1
+        bin_size = (max_sell.max()-base_sell_side) / bins
+
+        lower = base_sell_side + bin_size * i
+        upper = lower + bin_size
+        mid = math.avg(upper, lower)
+    
+        for k = 0 to length-1 
+
+            c = close[k]
+            o = open[k]
+
+            h = high[k] + atr
+            l = low[k] + atr
+
+            if c < o
+                if h > mid and l < mid //or c > lower and c < upper
+                    bins_val.set(i, bins_val.get(i) + volume[k])
+
+
+var boxes_sell = array.new<box>()
+var labels_sell = array.new<label>()
+check = bool(na)
+
+if barstate.islast
+    check := false
+    // Delete previous boxes
+    for b in boxes_sell
+        box.delete(b)
+    array.clear(boxes_sell)
+    // Delete previous labels
+    for b in labels_sell
+        label.delete(b)
+    array.clear(labels_sell)
+
+    for i = 0 to bins - 1
+
+        bin_size    = (max_sell.max()-base_sell_side) / bins
+        lower       = base_sell_side + bin_size * i
+        upper       = lower + bin_size
+
+        bin_volume  = int(bins_val.get(i) / bins_val.sum() * 200)
+        sell_col    = color.from_gradient(bins_val.get(i), bins_val.min(), bins_val.max(), color.new(color.yellow, 70), color.red)
+
+        if bin_volume > 0 
+            boxes_sell.push(box.new(bar_index+offset, upper, bar_index+offset-bin_volume, lower, bgcolor = sell_col, border_color = na))
+
+            if bins_val.get(i) == bins_val.max() and not check
+                labels_sell.push(
+                                 label.new(bar_index+offset, math.avg(lower,upper)
+                                             , str.tostring(bins_val.get(i), format.volume)
+                                             , style = label.style_label_left
+                                             , color = color.new(color.red, 80)
+                                             , textcolor = chart.fg_color
+                                             )
+                                             )
+                check := true
+                boxes_sell.push(
+                                 box.new(bar_index-length, upper, bar_index+offset-bin_volume
+                                 , lower
+                                 , bgcolor = color.new(color.red, 60)
+                                 , border_color = na
+                                 )
+                                 )
+    if bins_val.sum() > 0
+        label.delete(
+                     label.new(bar_index+offset+10, base_sell_side + (max_sell.max()-base_sell_side) / 2
+                                 , "Total Sell Liquidity: " + str.tostring(bins_val.sum(), format.volume)
+                                 , style = label.style_label_left
+                                 , color = color(na)
+                                 , textcolor = chart.fg_color
+                                 )[1]
+                                 )
+
+
+// --------------------------------------------------------------
+
+// BUY SIDE PROFILE
+base_buy_side = low - atr
+
+if barstate.islast
+    for i = 0 to bins - 1
+        bins_val1.set(i, 0)
+
+    for i = 0 to bins - 1
+        bin_size = (base_buy_side-min_buy.min()) / bins
+
+        lower = min_buy.min() + bin_size * i
+        upper = lower + bin_size
+        mid = math.avg(upper, lower)
+    
+        for k = 0 to length-1 
+
+            c = close[k]
+            o = open[k]
+
+            h = high[k] + atr
+            l = low[k] + atr
+
+            if c > o
+                if h > mid and l < mid or c > lower and c < upper
+                    bins_val1.set(i, bins_val1.get(i) + volume[k])
+
+var boxes_buy = array.new<box>()
+var labels_buy = array.new<label>()
+check1 = bool(na)
+
+if barstate.islast
+    check1 := false
+    // Delete previous boxes
+    for b in boxes_buy
+        box.delete(b)
+    array.clear(boxes_buy)
+
+    // Delete previous lables
+    for b in labels_buy
+        label.delete(b)
+    array.clear(labels_buy)
+
+    for i = 0 to bins - 1
+
+        bin_size    = (base_buy_side-min_buy.min()) / bins
+        lower       = min_buy.min() + bin_size * i
+        upper       = lower + bin_size
+
+        bin_volume  = int(bins_val1.get(i) / bins_val1.sum() * 200)
+        buy_col     = color.from_gradient(bins_val1.get(i), bins_val1.min(), bins_val1.max(), color.new(color.aqua, 70), color.lime)
+
+        if bin_volume > 0
+            boxes_buy.push(box.new(bar_index+offset, upper, bar_index+offset-bin_volume, lower, bgcolor = buy_col, border_color = na))
+
+            if bins_val1.get(i) == bins_val1.max() and not check1
+                labels_buy.push(
+                                 label.new(bar_index+offset, math.avg(lower,upper)
+                                 , str.tostring(bins_val1.get(i), format.volume)
+                                 , style = label.style_label_left
+                                 , color = color.new(color.lime, 80)
+                                 , textcolor = chart.fg_color
+                                 )
+                                 )
+                check1 := true
+
+                boxes_buy.push(
+                                 box.new(bar_index-length, upper, bar_index+offset-bin_volume
+                                 , lower
+                                 , bgcolor = color.new(color.lime, 60)
+                                 , border_color = na
+                                 )
+                                 )
+    if bins_val1.sum() > 0
+        label.delete(
+                     label.new(bar_index+offset+10, min_buy.min() + (base_buy_side-min_buy.min()) / 2
+                                 , "Total Buy Liquidity: " + str.tostring(bins_val1.sum(), format.volume)
+                                 , style = label.style_label_left
+                                 , color = color(na)
+                                 , textcolor = chart.fg_color
+                                 )[1]
+                                 )
+
+// }
+
+
+// plot(high + atr, color = color.red)
+// plot(low - atr, color = color.lime)

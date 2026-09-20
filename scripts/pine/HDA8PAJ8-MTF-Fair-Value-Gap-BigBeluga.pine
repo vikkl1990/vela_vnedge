@@ -1,0 +1,185 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © HunterAlgos
+
+//@version=5
+indicator("MTF Fair Value Gap [HunterAlgos]", shorttitle = "MTF Fair Value Gap [1.0.0]", overlay = true, max_bars_back = 500, max_boxes_count = 500, max_lines_count = 500)
+
+auto = input.bool(true, "Auto threshold"  , inline = "1", group = "FILTER")
+tt   = input.int (0   , "Manual threshold", inline = "2", group = "FILTER")
+
+num        = input.int   (10        , "Fair value gab number"                                 , group = "SETTINGS")
+mitigation = input.string("Low/High", "Mitigation source"    , options = ["Low/High", "Close"], group = "SETTINGS")
+formed     = input.string("Low/High", "Mitigation point"     , options = ["Low/High", "Avg"]  , group = "SETTINGS")
+
+display = input.string("Current", "Displat MTF FVG", options = ["Current", "MTF", "Current + MTF"], group = "Multi timeframe")
+
+tf = input.timeframe("" , "Current timeframe FVG", group = "Multi timeframe")
+mtf = input.timeframe("", "Multi timeframe FVG", group = "Multi timeframe")
+
+
+css_up = input.color(color.aqua, "Bullish FVG", group = "COLORS")
+css_dn = input.color(color.red , "Bearish FVG", group = "COLORS")
+
+mtf_up = input.color(color.blue  , "MTF Bullish FVG", group = "COLORS")
+mtf_dn = input.color(color.orange, "MTF Bearish FVG", group = "COLORS")
+
+pos    = input.string("right"      , "Text position", options = ["right", "center", "left"]                         , group = "TEXT")
+size   = input.string("small"      , "Text size"    , options = ["tiny", "small", "normal", "large", "huge", "auto"], group = "TEXT")
+txtcss = input.color (color.white, "Text color"                                                                   , group = "TEXT")
+
+
+pos() =>
+    out = switch pos
+        "center"  => text.align_center
+        "left"   => text.align_left
+        "right"  => text.align_right
+    out
+
+size() =>
+    out = switch size
+        "tiny"   => size.tiny
+        "small"  => size.small
+        "normal" => size.normal
+        "large"  => size.large
+        "huge"   => size.huge
+        "auto"   => size.auto
+    out
+
+type bar
+    float o
+    float h
+    float l 
+    float c
+
+type bb
+    box [] up
+    box [] dn
+    line[] lup
+    line[] ldn
+
+var bx = bb.new(
+   array.new< box >(1)
+ , array.new< box >(1)
+ , array.new< line>(1)
+ , array.new< line>(1)
+ )
+
+bar b = bar.new(open, high, low, close)
+
+nacol = color.new(color.white, 100)
+
+
+trigger() =>
+    threshold = auto ? ta.cum((b.h - b.l) / b.l) / bar_index : tt / 100
+
+    a = b.l > b.h[2] and b.c[1] > b.h[2] and (b.l - b.h[2]) / b.h[2] > threshold
+    b = b.h < b.l[2] and b.c[1] < b.l[2] and (b.l[2] - b.h) / b.h > threshold
+
+    [a, b]
+
+
+drawBox(left, top, right, bottom, color css, string txt) =>
+    var box id = na
+    var line l = na
+    id := box.new(na, na, na, na, border_color = nacol, border_width = 0, xloc = xloc.bar_time, bgcolor = color.new(css, 50))
+    id.set_left       (left  )
+    id.set_top        (top   )
+    id.set_right      (right )
+    id.set_bottom     (bottom)
+    id.set_text       (txt   )
+    id.set_text_halign(pos() )
+    id.set_text_size  (size())
+    id.set_text_color (txtcss)
+
+    avg = math.avg(top, bottom)
+
+    l := line.new(na, na, na, na, xloc = xloc.bar_time, color = color.white, style = line.style_solid, width = 1)
+    l.set_x1(left )
+    l.set_x2(right)
+    l.set_y1(avg  )
+    l.set_y2(avg  )
+
+    [id, l]
+
+method puts(bool mode, array<box> ab, box b, line l, array<line> al, bool bull) =>
+    if bull == true
+        float src   = na
+        float point = na
+        switch mitigation
+            "Low/High" => src := low
+            "Close"    => src := close
+            => na
+
+        if mode == true
+            if ab.size() >= num
+                box.delete (ab.shift())
+                line.delete(al.shift())
+            ab.push(b)
+            al.push(l)
+        if mode == false
+            for j = ab.size() - 1 to 0 by 1
+                x = box.get_right (ab.get(j))
+                z = box.get_bottom(ab.get(j))
+                y = box.get_top   (ab.get(j))
+
+                avg = math.avg(z,y)
+                switch formed
+                    "Low/High" => point := z
+                    "Avg"      => point := avg 
+                if time - (time - time[1]) == x and not (src < point)
+                    box.set_right(ab.get(j), time)
+                    line.set_x2  (al.get(j), time)
+    if bull == false
+        float src    = na
+        float point  = na
+        switch mitigation
+            "Low/High" => src := high
+            "Close"    => src := close
+            => na
+
+        if mode == true
+            if ab.size() >= num
+                box.delete (ab.shift())
+                line.delete(al.shift())
+            ab.push(b)
+            al.push(l)
+        if mode == false
+            for j = ab.size() - 1 to 0 by 1
+                x = box.get_right (ab.get(j))
+                z = box.get_bottom(ab.get(j))
+                y = box.get_top   (ab.get(j))
+
+                avg = math.avg(z,y)
+                switch formed
+                    "Low/High" => point := z
+                    "Avg"      => point := avg 
+                if time - (time - time[1]) == x and not (src > point)
+                    box.set_right(ab.get(j), time)
+                    line.set_x2  (al.get(j), time)
+
+
+draw(tf, up, dn) =>
+    [a, b] = request.security("", tf, trigger())
+    if a
+        box b = na
+        line l = na
+        [_box, _line] = drawBox(time - (time - time[1]) * 2, low, time, high[2], up, str.tostring(tf)) 
+        b := _box
+        l := _line
+        true.puts(bx.up, b, l, bx.lup, true)
+    if b
+        box b = na
+        line l = na
+        [_box, _line] = drawBox(time - (time - time[1]) * 2, high, time, low[2], dn, str.tostring(tf)) 
+        b := _box
+        l := _line
+        true.puts(bx.dn, b, l, bx.ldn, false)
+
+switch display
+    "Current"       => draw(tf, css_up, css_dn)
+    "MTF"           => draw(mtf, mtf_up, mtf_dn)
+    "Current + MTF" => draw(tf, css_up, css_dn), draw(mtf, mtf_up, mtf_dn)
+    => na
+
+false.puts(bx.up, na, na, bx.lup, true)
+false.puts(bx.dn, na, na, bx.ldn, false)

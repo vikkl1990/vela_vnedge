@@ -1,0 +1,236 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+//@version=6
+//────────────────────────────────────────────────────────────────────── Inputs
+indicator("Fair Value Gap Profiles [AlgoAlpha]",
+          shorttitle = "AlgoAlpha – FVG Profiles",
+          overlay    = true,
+          max_boxes_count = 5000)
+//────────────────────────────────────────────────────────────────────── FVG Detection Inputs
+volaLen    = input.int(defval=50, title="Volatility Length", minval=1, tooltip="Length of ATR used to calculate fair value gap threshold", group="FVG  Detection")
+volaMult   = input.float(defval=1.5, title="Minimum Gap Width Multiplier", minval=0.1, step=0.1, tooltip="Minimum gap width multiplier in ATR units, smaller values will cause the indicator to detect smaller gaps", group="FVG  Detection")
+maxBoxAge      = input.int(defval=1000, title="Zone Expiration Date", tooltip="Upper limit (in bars) for how long an unfinished gap will keep stretching to the right before being deleted", group="FVG  Detection")
+preventOverlap = input.bool(defval=true, title="Prevent Overlap", tooltip="When enabled, gaps whose price range overlaps an existing unfinished gap are discarded", group="FVG  Detection")
+showBull       = input.bool(defval=true, title="Show Bullish FVGs", tooltip="Enable detection and rendering of bullish (price-up) fair-value gaps", group="FVG  Detection")
+showBear       = input.bool(defval=true, title="Show Bearish FVGs", tooltip="Enable detection and rendering of bearish (price-down) fair-value gaps", group="FVG  Detection")
+ltf       = input.timeframe(defval="1", title="Lower Timeframe", tooltip="Timeframe from which secondary price/volume series are sampled to build the intra-gap profile", group="Profile")
+bincount  = input.int(defval=7, title="Profile Bin Count", minval=1, tooltip="How many horizontal slices the volume profile is divided into when analysing each gap", group="Profile")
+lvWindow  = input.int(defval=2, title="Low-Volume Window Size", minval=1, tooltip="Number of consecutive profile bins evaluated together when searching for the lowest-volume zone inside the gap", group="Profile")
+profileScale = 0.5
+bullCol     = input.color(defval=#00ffbb, title="Bullish box colour", tooltip="Stroke/fill colour applied to bullish gap elements", group="Appearance")
+bearCol     = input.color(defval=#ff1100, title="Bearish box colour", tooltip="Stroke/fill colour applied to bearish gap elements", group="Appearance")
+showProfile    = input.bool(defval=true, title="Show Volume Profile", tooltip="Draw the mini volume-profile built from lower-timeframe data inside each gap", group="Appearance")
+showLowVolZone = input.bool(defval=true, title="Show Low Volume Zone", tooltip="Highlight the sub-range with the smallest aggregated volume as determined by the sliding window", group="Appearance")
+showGapZone    = input.bool(defval=true, title="Show Main Gap Zone", tooltip="Render the main coloured rectangle that represents the full price gap", group="Appearance")
+profgrad       = input.bool(defval=false, title="Profile Gradient Coloring", tooltip="Enable/Disable color gradients on the profile", group="Appearance")
+needVolProfile = showProfile or showLowVolZone
+//────────────────────────────────────────────────────────────────────── FVG Detection Logic
+var gapdist = array.new_float()
+basicbullfvg = low  > high[2]
+basicbearfvg = high <  low[2]
+if basicbullfvg or basicbearfvg
+    gapdist.unshift(basicbullfvg ? (low  - high[2]) : (low[2] -  high))
+while gapdist.size() > volaLen
+    gapdist.pop()
+vola = gapdist.avg()
+bullFVG = showBull and low  > high[2] and (low  - high[2]) > vola * volaMult
+bearFVG = showBear and high <  low[2] and (low[2] -  high) > vola * volaMult
+volumes = request.security_lower_tf(syminfo.tickerid, ltf, volume)
+prices = request.security_lower_tf(syminfo.tickerid, ltf, close)
+prevVolumes = array.new_float()
+prevPrices = array.new_float()
+if needVolProfile
+    if prices.size()[1] > 0 and not na(prices[1])
+        for i = 0 to prices.size()[1]-1
+            prevPrices.push(array.get(prices[1] , i))
+    if volumes.size()[1] > 0 and not na(volumes[1])
+        for i = 0 to volumes.size()[1]-1
+            prevVolumes.push(array.get(volumes[1] , i))
+//────────────────────────────────────────────────────────────────────── Data Structures
+var box[]   gapBoxes = array.new<box>()
+var int[]   gapLefts = array.new<int>()
+var float[] gapTops  = array.new<float>()
+var float[] gapBots  = array.new<float>()
+var color[] gapCols  = array.new<color>()
+var int[]   gapTypes = array.new<int>()
+var int[]   gapFilled= array.new<int>()
+var matrix<float> fvgVols  = matrix.new<float>(0, bincount)
+var matrix<box>   fvgBins  = matrix.new<box>(0, bincount)
+var box[]   lowVolBoxes = array.new<box>()
+var int[]   lowVolIdxs  = array.new<int>()
+bool bullMit = false
+bool bearMit = false
+//────────────────────────────────────────────────────────────────────── Overlap Check Function
+f_can_create(float tNew, float bNew) =>
+    bool ok = true
+    if gapBoxes.size() > 0
+        for j = 0 to array.size(gapBoxes) - 1
+            if na(array.get(gapFilled, j))
+                if (tNew > array.get(gapBots, j)) and (bNew < array.get(gapTops, j))
+                    ok := false
+                    break
+    ok
+//────────────────────────────────────────────────────────────────────── New Gap Creation Function
+f_new(bool isBull) =>
+    l  = bar_index - 1
+    r  = bar_index
+    t  = isBull ? low     : low[2]
+    b  = isBull ? high[2] : high
+    c  = chart.fg_color
+    bgTransp = showGapZone ? 90 : 100
+    brdTransp = showGapZone ? 90 : 100
+    big = box.new(l, t, r, b,
+         bgcolor      = color.new(c, bgTransp), 
+         border_color = color.new(c, brdTransp),
+         extend       = extend.none, text = na(prevVolumes.sum()) ? "" : str.tostring(prevVolumes.sum(), format.volume), text_size = size.tiny, text_color = chart.fg_color, text_halign = text.align_right, text_valign = text.align_bottom)
+    array.unshift(gapBoxes , big)
+    array.unshift(gapLefts , l)
+    array.unshift(gapTops  , t)
+    array.unshift(gapBots  , b)
+    array.unshift(gapCols  , c)
+    array.unshift(gapTypes , isBull ? 1 : -1)
+    array.unshift(gapFilled, na)
+    array.unshift(lowVolBoxes, na)
+    array.unshift(lowVolIdxs , na)
+    if needVolProfile
+        range_  = t - b
+        seg     = range_ / bincount
+        bounds  = array.new_float()
+        vols    = array.new_float()
+        for i = 0 to bincount
+            bounds.push(b + i * seg)
+        for i = 0 to bincount-1
+            total_vol = 0.0
+            if prevPrices.size() == prevVolumes.size() and prevVolumes.size() > 0
+                for j = 0 to prevPrices.size()-1
+                    if prevPrices.get(j) > bounds.get(i) and prevPrices.get(j) < bounds.get(i+1)
+                        total_vol += prevVolumes.get(j)
+            vols.push(total_vol)
+        longest  = vols.max()
+        maximum  = 30
+        float[] volRow = array.new_float(bincount, 0.0)
+        box[]   boxRow = array.new<box>()
+        seg_len = seg
+        for idx = 0 to bincount-1
+            volVal = vols.get(idx)
+            array.set(volRow, idx, volVal)
+            if showProfile and vols.sum() > 0 and longest > 0
+                binBot = bounds.get(idx)
+                binTop = bounds.get(idx + 1)
+                rBin   = l + int(maximum * profileScale * (volVal / longest))
+                bBox   = box.new(l, binTop, rBin, binBot, color.new(chart.fg_color, 90), bgcolor = color.new(chart.fg_color, profgrad ? (90*(1-0.7*((volVal / longest)))) : 50))
+                array.push(boxRow, bBox)
+            else
+                array.push(boxRow, na)
+        matrix.add_row(fvgVols, 0, volRow)
+        matrix.add_row(fvgBins, 0, boxRow)
+        winSize = math.min(lvWindow, bincount)
+        float minSum = 1e10
+        int   minIdx = 0
+        for win = 0 to (bincount - winSize)
+            curSum = 0.0
+            for k = 0 to winSize - 1
+                curSum += vols.get(win + k)
+            if curSum < minSum
+                minSum := curSum
+                minIdx := win
+        lvBot   = bounds.get(minIdx)
+        lvTop   = bounds.get(minIdx + winSize)
+        lvColBase = isBull ? bullCol : bearCol
+        lvColBg   = color.new(lvColBase, 85)
+        lvColBrd  = color.new(lvColBase, 100)
+        if showLowVolZone
+            lvBox = box.new(l, lvTop, r, lvBot, bgcolor = lvColBg, border_color = lvColBrd)
+            array.set(lowVolBoxes, 0, lvBox)
+            array.set(lowVolIdxs , 0, minIdx)
+    else
+        matrix.add_row(fvgVols, 0, array.new_float(bincount, 0.0))
+        matrix.add_row(fvgBins, 0, array.new<box>(bincount))
+//────────────────────────────────────────────────────────────────────── Gap Management and Rendering
+if array.size(gapBoxes) > 0
+    for i = array.size(gapBoxes) - 1 to 0
+        l   = array.get(gapLefts , i)
+        t   = array.get(gapTops  , i)
+        b   = array.get(gapBots  , i)
+        typ = array.get(gapTypes , i)
+        fill= array.get(gapFilled, i)
+        age = bar_index - l
+        if na(fill)
+            done = typ == 1 ? (low <= b) : (high >= t)
+            if done
+                array.set(gapFilled, i, bar_index)
+                fill := bar_index
+                if typ == 1
+                    bullMit := true
+                else
+                    bearMit := true
+        if age > maxBoxAge
+            if array.size(lowVolBoxes) > i
+                if not na(array.get(lowVolBoxes, i))
+                    array.get(lowVolBoxes, i).delete()
+                array.remove(lowVolBoxes, i)
+                array.remove(lowVolIdxs , i)
+            if matrix.rows(fvgBins) > i
+                // Delete individual bin boxes only when they exist (are not na)
+                for j = 0 to bincount-1
+                    binDel = matrix.get(fvgBins, i, j)
+                    if not na(binDel)
+                        binDel.delete()
+                matrix.remove_row(fvgBins, i)
+                matrix.remove_row(fvgVols, i)
+            array.get(gapBoxes, i).delete()
+            array.remove(gapBoxes, i), array.remove(gapLefts, i),
+              array.remove(gapTops, i), array.remove(gapBots, i),
+              array.remove(gapCols, i), array.remove(gapTypes, i),
+              array.remove(gapFilled, i)
+            continue
+        rEdge = na(fill) ? bar_index : fill
+        array.get(gapBoxes, i).set_right(rEdge)
+        if showLowVolZone and array.size(lowVolBoxes) > i and not na(array.get(lowVolBoxes, i))
+            lvBox_upd = array.get(lowVolBoxes, i)
+            lvBox_upd.set_right(rEdge)
+            idxWin = array.get(lowVolIdxs, i)
+            if not na(idxWin)
+                baseBot = b + idxWin * ((t - b) / bincount)
+                baseTop = baseBot + lvWindow * ((t - b) / bincount)
+                lvBox_upd.set_top(baseTop)
+                lvBox_upd.set_bottom(baseBot)
+        if showProfile and matrix.rows(fvgBins) > i
+            width = rEdge - l
+            if width < 1
+                width := 1
+            longVol = 0.0
+            for j = 0 to bincount-1
+                longVol := math.max(longVol, matrix.get(fvgVols, i, j))
+            if longVol > 0
+                seg_len = (t - b) / bincount
+                for j = 0 to bincount-1
+                    volVal  = matrix.get(fvgVols, i, j)
+                    rightPx = l + int(width * profileScale * (volVal / longVol))
+                    binBox  = matrix.get(fvgBins, i, j)
+                    if not na(binBox)
+                        binBox.set_left(l)
+                        binBox.set_right(rightPx)
+                        binBox.set_top(  b + (j + 1) * seg_len )
+                        binBox.set_bottom(b + j * seg_len       )
+//────────────────────────────────────────────────────────────────────── New Gap Detection
+if bullFVG
+    tProp = low
+    bProp = high[2]
+    if not preventOverlap or f_can_create(tProp, bProp)
+        f_new(true)
+if bearFVG
+    tProp = low[2]
+    bProp = high
+    if not preventOverlap or f_can_create(tProp, bProp)
+        f_new(false)
+//────────────────────────────────────────────────────────────────────── Alerts
+alertcondition(bullFVG, "Bullish FVG", "Bullish fair-value gap detected")
+alertcondition(bearFVG, "Bearish FVG", "Bearish fair-value gap detected")
+alertcondition(bullMit, "Bullish FVG Mitigated", "Bullish fair-value gap mitigated")
+alertcondition(bearMit, "Bearish FVG Mitigated", "Bearish fair-value gap mitigated")
+//────────────────────────────────────────────────────────────────────── Volume Check & Warning Table
+volumeAvailable = not na(volume)
+if not volumeAvailable
+    var volWarnTable = table.new(position = position.top_right, columns = 1, rows = 1, bgcolor = bearCol, border_width = 1, border_color = chart.fg_color, frame_color = chart.fg_color, frame_width = 1)
+    table.cell(volWarnTable, 0, 0, "Volume not available\nIndicator might not work as expected", text_color = chart.fg_color, text_halign = text.align_center, text_size = size.small)

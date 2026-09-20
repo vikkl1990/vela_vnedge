@@ -1,0 +1,109 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © HunterAlgos
+
+//@version=5
+indicator("Realized Profit & Loss [HunterAlgos]", shorttitle = "Realized Profit & Loss [1.0.0]", overlay = false)
+
+//----------------------------------------}
+//Type
+//----------------------------------------{
+
+type bar
+    float o = open
+    float c = close
+    float h = high
+    float l = low
+
+bar b = bar.new()
+
+
+
+
+//----------------------------------------}
+//Inputs
+//----------------------------------------{
+
+calc       = input.string("Loss", "Calculation",    group = "Settings",  options = ["Loss", "Profit"])
+
+zlen       = input.int   (7,     "Z-Score Lenght",       group = "Settings",  minval = 2, tooltip = "Avg. Lenght of the Losses / Profit")
+thresh     = input.float (2,     "Threshold",            group = "Settings",  minval = 2, tooltip = "Filter out value over a tot. threshold", step = 0.1)
+width      = input.int   (4,     "Histogram Width",      group = "Settings",  minval = 1)
+show_css   = input.bool  (false, "Show candle coloring", group = "Settings")
+
+
+css_low     = input.color(color.green,  "Low Loss / Profit",    group = "Colors")
+css_normal  = input.color(color.yellow, "Normal Loss / Profit", group = "Colors")
+css_medium  = input.color(color.orange, "Medium Loss / Profit", group = "Colors")
+css_high    = input.color(color.red,    "High Loss / Profit",   group = "Colors")
+
+
+
+lvl_low    = input.float(2, "Low Level",    minval = 1, step = 0.1, group = "Levels")
+lvl_normal = input.float(3, "Normal Level", minval = 1, step = 0.1, group = "Levels")
+lvl_medium = input.float(4, "Medium Level", minval = 1, step = 0.1, group = "Levels")
+lvl_high   = input.float(5, "High Level",   minval = 1, step = 0.1, group = "Levels")
+
+lvl_css     = input.color(color.rgb(255, 255, 255, 80), "Levels Colors",        group = "Levels")
+
+
+
+
+//----------------------------------------}
+//Functions
+//----------------------------------------{
+
+//calculate loss/profit
+method loss(string calc, int zlen) =>
+
+    float out = na
+
+    ticker = syminfo.basecurrency + "_LOSSESADDRESSES"
+    id     =       request.security(ticker, "1D", b.c)
+    b      =            (id / b.c)  / ta.cum(id / b.c)
+    
+    out := switch calc
+        "Profit" =>           ta.sma((b - b[1]), zlen)
+        "Loss"   =>      ta.sma((b - b[1]), zlen) * -1
+
+    out > 0 ? 0 : out
+
+
+//calculate colors
+method css(float ratio, color css1, color css2, color css3, color css4, float lvl1, float lvl2, float lvl3, float lvl4) =>
+    color col = na
+    col := ratio >= lvl4 ? css4 : ratio >= lvl3 ? css3 : ratio >= lvl2 ? css2 : ratio >= lvl1 ? css1 : col
+
+    col
+
+
+//calculate z-score based on a moving window
+windows(int zlen, float thresh) =>
+    var float[] id = array.new<float>(zlen)
+    id.shift()
+    id.push(calc.loss(zlen))
+    ratio = (0 - id.avg() / id.stdev()) < thresh ? na : (0 - id.avg() / id.stdev())
+
+    ratio
+
+
+
+
+//----------------------------------------}
+//Plotting
+//----------------------------------------{
+
+out = windows(zlen, thresh)
+css = out.css(css_low, css_normal, css_medium, css_high, lvl_low, lvl_normal, lvl_medium, lvl_high)
+
+
+hline(lvl_low,    color = lvl_css , linestyle = hline.style_solid)
+hline(lvl_normal, color = lvl_css , linestyle = hline.style_solid)
+hline(lvl_medium, color = lvl_css , linestyle = hline.style_solid)
+hline(lvl_high,   color = lvl_css , linestyle = hline.style_solid)
+
+plot(out, "Realized Loss & Profit", color = css, linewidth = width, style = plot.style_histogram)
+
+barcolor(show_css ? css : na, title = "Bar coloring")
+
+
+

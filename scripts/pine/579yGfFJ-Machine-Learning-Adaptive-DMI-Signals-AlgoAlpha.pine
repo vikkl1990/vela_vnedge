@@ -1,0 +1,306 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Machine Learning Adaptive DMI Signals [AlgoAlpha]", "AlgoAlpha - ML DMI", false, max_bars_back = 5000)
+
+// Inputs
+sweepFrom = input.int(5, "From", minval = 1, inline = "Sweep", group = "Expert Sweep")
+sweepTo = input.int(40, "To", minval = 1, inline = "Sweep", group = "Expert Sweep", tooltip = "Range of DMI lengths to test. From is the fastest length. To is the slowest length. Wider ranges give the model more choices but use more calculation.")
+sweepInterval = input.int(5, "Step", minval = 1, group = "Expert Sweep", tooltip = "Gap between tested lengths. Smaller steps test more lengths and make learning smoother, but use more calculation.")
+memorySize = input.int(500, "Memory", minval = 20, maxval = 3000, group = "Machine Learning", tooltip = "How many finished DMI flips the script remembers. Higher memory is steadier. Lower memory reacts faster to recent behavior.")
+rewardMetric = input.string("Balanced", "How To Score", options = ["Balanced", "% Return", "Clean Move", "Win Rate"], group = "Machine Learning", tooltip = "Balanced uses return, best move, and pullback. % Return only cares about final gain. Clean Move punishes pullbacks. Win Rate only cares if the flip ended right or wrong.")
+recencyDecay = input.float(0.985, "Forget Old Trades", minval = 0.8, maxval = 0.999, step = 0.001, group = "Machine Learning", tooltip = "How fast old flips lose power. Lower values forget faster and adapt faster. Higher values remember longer and change slower.")
+softmaxSharpness = input.float(1.5, "Favor Winners", minval = 0.1, maxval = 10.0, step = 0.1, group = "Machine Learning", tooltip = "How strongly the best scoring lengths take over. Higher values make the Optimal length jump harder toward winners. Lower values blend lengths more evenly.")
+mfeWeight = input.float(0.25, "Reward Big Moves", minval = 0.0, maxval = 2.0, step = 0.05, group = "Machine Learning", tooltip = "Extra reward for a flip that offered a big move before it ended. Higher values favor lengths that catch large runs.")
+maeWeight = input.float(0.50, "Punish Pullbacks", minval = 0.0, maxval = 2.0, step = 0.05, group = "Machine Learning", tooltip = "Penalty for price moving against the DMI flip. Higher values favor cleaner moves with smaller pullbacks.")
+minBars = input.int(3, "Too Fast If Under", minval = 1, maxval = 50, group = "Machine Learning", tooltip = "If a DMI flip lasts fewer than this many bars, it is treated as too fast. Higher values punish short flips more often.")
+whipsawPenalty = input.float(0.25, "Fast Flip Penalty", minval = 0.0, maxval = 5.0, step = 0.05, group = "Machine Learning", tooltip = "Penalty added to flips that end too quickly. Higher values make the model avoid noisy fast lengths.")
+adxSmoothing = input.int(14, "ADX Smoothing", minval = 1, group = "DMI", tooltip = "Smoothing used for the final ADX line. Lower values make ADX move faster. Higher values make ADX smoother.")
+oscillatorMode = input.bool(true, "Oscillator Mode", group = "Appearance", tooltip = "On shows the +DI minus -DI difference as a zero-centered oscillator. Off shows the separate +DI and -DI lines.")
+bullColor = input.color(#00ffbb, "Bullish", inline = "Color", group = "Visuals")
+bearColor = input.color(#ff1100, "Bearish", inline = "Color", group = "Visuals")
+adxColor = input.color(#f50057, "ADX", inline = "Color", group = "Visuals", tooltip = "Colors for bullish +DI, bearish -DI, and ADX strength squares. Higher ADX makes the pink squares stronger. Lower ADX makes them fade.")
+normalizeAdx = input.bool(true, "Boost ADX Contrast", group = "Visuals", tooltip = "Makes ADX squares compare against their recent high and low. On makes weak and strong ADX easier to see. Off uses the raw ADX value.")
+showTable = input.bool(true, "Show Table", group = "Table", tooltip = "Turns the table on or off. This only changes the chart display, not the DMI calculation.")
+tableTextSize = input.string("Small", "Table Size", options = ["Tiny", "Small", "Medium", "Large"], group = "Table", tooltip = "Controls the table text size. Larger sizes are easier to read but take more chart space.")
+tablePlace = input.string("Top Right", "Table Place", options = ["Bottom Center", "Bottom Left", "Bottom Right", "Middle Center", "Middle Left", "Middle Right", "Top Center", "Top Left", "Top Right"], group = "Table", tooltip = "Moves the table to a different chart corner or side. This only changes where the table appears.")
+
+// Storage
+var lengths = array.new_int()
+var plusSmooths = array.new_float()
+var minusSmooths = array.new_float()
+var trSmooths = array.new_float()
+var adxSmooths = array.new_float()
+var directions = array.new_int()
+var entryPrices = array.new_float()
+var entryAtrs = array.new_float()
+var barsHeld = array.new_int()
+var maxFavorables = array.new_float()
+var maxAdverses = array.new_float()
+var memoryLengths = array.new_int()
+var memoryRewards = array.new_float()
+var memoryBars = array.new_int()
+var table dataTable = na
+var string dataTableLastPlace = ""
+var string dataTableLastSize = ""
+
+// Functions
+safeDiv(float x, float y) =>
+    y == 0.0 or na(y) ? 0.0 : x / y
+
+phaseReward(string metric, float finalMove, float maxFavorable, float maxAdverse, float atrAtEntry, int heldBars) =>
+    normReturn = safeDiv(finalMove, atrAtEntry)
+    normMfe = safeDiv(maxFavorable, atrAtEntry)
+    normMae = safeDiv(maxAdverse, atrAtEntry)
+    duration = math.sqrt(math.max(1, heldBars))
+    raw = switch metric
+        "% Return" => normReturn
+        "Clean Move" => normReturn - normMae
+        "Win Rate" => normReturn > 0 ? 1.0 : -1.0
+        => normReturn + mfeWeight * normMfe - maeWeight * normMae
+    adjusted = safeDiv(raw, duration)
+    heldBars < minBars ? adjusted - whipsawPenalty : adjusted
+
+storeReward(int expertLength, float reward, int heldBars) =>
+    array.unshift(memoryLengths, expertLength)
+    array.unshift(memoryRewards, reward)
+    array.unshift(memoryBars, heldBars)
+    while array.size(memoryRewards) > memorySize
+        array.pop(memoryLengths)
+        array.pop(memoryRewards)
+        array.pop(memoryBars)
+
+scoreForLength(int expertLength) =>
+    weightedScore = 0.0
+    totalWeight = 0.0
+    memCount = array.size(memoryRewards)
+    if memCount > 0
+        for j = 0 to memCount - 1
+            if array.get(memoryLengths, j) == expertLength
+                ageWeight = math.pow(recencyDecay, j)
+                weightedScore += array.get(memoryRewards, j) * ageWeight
+                totalWeight += ageWeight
+    totalWeight > 0.0 ? weightedScore / totalWeight : 0.0
+
+tableSize(string sizeName) =>
+    switch sizeName
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Medium" => size.normal
+        "Large" => size.large
+
+tablePosition(string placeName) =>
+    switch placeName
+        "Bottom Center" => position.bottom_center
+        "Bottom Left" => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Middle Center" => position.middle_center
+        "Middle Left" => position.middle_left
+        "Middle Right" => position.middle_right
+        "Top Center" => position.top_center
+        "Top Left" => position.top_left
+        "Top Right" => position.top_right
+
+// Sweep setup
+if barstate.isfirst
+    startLen = math.min(sweepFrom, sweepTo)
+    endLen = math.max(sweepFrom, sweepTo)
+    stepLen = math.max(1, sweepInterval)
+    nextLen = startLen
+    while nextLen <= endLen and array.size(lengths) < 40
+        array.push(lengths, nextLen)
+        array.push(plusSmooths, na)
+        array.push(minusSmooths, na)
+        array.push(trSmooths, na)
+        array.push(adxSmooths, na)
+        array.push(directions, 0)
+        array.push(entryPrices, na)
+        array.push(entryAtrs, na)
+        array.push(barsHeld, 0)
+        array.push(maxFavorables, 0.0)
+        array.push(maxAdverses, 0.0)
+        nextLen += stepLen
+
+// Base values
+upMove = high - high[1]
+downMove = low[1] - low
+plusDmRaw = upMove > downMove and upMove > 0 ? upMove : 0.0
+minusDmRaw = downMove > upMove and downMove > 0 ? downMove : 0.0
+trueRange = ta.tr(true)
+atr = ta.atr(14)
+expertCount = array.size(lengths)
+
+if barstate.isfirst and expertCount == 0
+    runtime.error("No DMI lengths were created. Check From, To, and Step.")
+
+// Expert updates
+if expertCount > 0
+    for i = 0 to expertCount - 1
+        expertLength = array.get(lengths, i)
+        alpha = 1.0 / expertLength
+        adxAlpha = 1.0 / adxSmoothing
+
+        prevPlus = array.get(plusSmooths, i)
+        prevMinus = array.get(minusSmooths, i)
+        prevTr = array.get(trSmooths, i)
+        prevAdx = array.get(adxSmooths, i)
+
+        plusSmoothed = na(prevPlus) ? plusDmRaw : prevPlus + alpha * (plusDmRaw - prevPlus)
+        minusSmoothed = na(prevMinus) ? minusDmRaw : prevMinus + alpha * (minusDmRaw - prevMinus)
+        trSmoothed = na(prevTr) ? trueRange : prevTr + alpha * (trueRange - prevTr)
+        plusDi = 100.0 * safeDiv(plusSmoothed, trSmoothed)
+        minusDi = 100.0 * safeDiv(minusSmoothed, trSmoothed)
+        dx = 100.0 * safeDiv(math.abs(plusDi - minusDi), plusDi + minusDi)
+        adxSmoothed = na(prevAdx) ? dx : prevAdx + adxAlpha * (dx - prevAdx)
+
+        array.set(plusSmooths, i, plusSmoothed)
+        array.set(minusSmooths, i, minusSmoothed)
+        array.set(trSmooths, i, trSmoothed)
+        array.set(adxSmooths, i, adxSmoothed)
+
+        oldDirection = array.get(directions, i)
+        newDirection = plusDi > minusDi ? 1 : minusDi > plusDi ? -1 : oldDirection
+
+        if oldDirection == 0 and newDirection != 0
+            array.set(directions, i, newDirection)
+            array.set(entryPrices, i, close)
+            array.set(entryAtrs, i, atr)
+            array.set(barsHeld, i, 0)
+            array.set(maxFavorables, i, 0.0)
+            array.set(maxAdverses, i, 0.0)
+        else if oldDirection != 0
+            held = array.get(barsHeld, i) + 1
+            entryPrice = array.get(entryPrices, i)
+            favorable = oldDirection == 1 ? high - entryPrice : entryPrice - low
+            adverse = oldDirection == 1 ? entryPrice - low : high - entryPrice
+            array.set(barsHeld, i, held)
+            array.set(maxFavorables, i, math.max(array.get(maxFavorables, i), favorable))
+            array.set(maxAdverses, i, math.max(array.get(maxAdverses, i), adverse))
+
+            if newDirection != oldDirection and newDirection != 0
+                finalMove = oldDirection == 1 ? close - entryPrice : entryPrice - close
+                reward = phaseReward(rewardMetric, finalMove, array.get(maxFavorables, i), array.get(maxAdverses, i), array.get(entryAtrs, i), held)
+                storeReward(expertLength, reward, held)
+                array.set(directions, i, newDirection)
+                array.set(entryPrices, i, close)
+                array.set(entryAtrs, i, atr)
+                array.set(barsHeld, i, 0)
+                array.set(maxFavorables, i, 0.0)
+                array.set(maxAdverses, i, 0.0)
+
+// Expert weighting
+weightedLength = 0.0
+weightTotal = 0.0
+
+if expertCount > 0
+    for i = 0 to expertCount - 1
+        expertLength = array.get(lengths, i)
+        expertScore = scoreForLength(expertLength)
+        rawWeight = math.exp(math.max(-50.0, math.min(50.0, expertScore * softmaxSharpness)))
+        weightedLength += expertLength * rawWeight
+        weightTotal += rawWeight
+
+adaptiveLength = weightTotal > 0.0 ? weightedLength / weightTotal : 14.0
+adaptiveLength := math.max(math.min(adaptiveLength, math.max(sweepFrom, sweepTo)), math.min(sweepFrom, sweepTo))
+adaptiveIntLength = int(math.round(adaptiveLength))
+adaptiveIntLength := math.max(math.min(adaptiveIntLength, math.max(sweepFrom, sweepTo)), math.min(sweepFrom, sweepTo))
+
+// Adaptive DMI
+adaptiveAlpha = 1.0 / adaptiveIntLength
+var float adaptivePlusDm = na
+var float adaptiveMinusDm = na
+var float adaptiveTr = na
+var float adaptiveAdx = na
+
+adaptivePlusDm := na(adaptivePlusDm[1]) ? plusDmRaw : adaptivePlusDm[1] + adaptiveAlpha * (plusDmRaw - adaptivePlusDm[1])
+adaptiveMinusDm := na(adaptiveMinusDm[1]) ? minusDmRaw : adaptiveMinusDm[1] + adaptiveAlpha * (minusDmRaw - adaptiveMinusDm[1])
+adaptiveTr := na(adaptiveTr[1]) ? trueRange : adaptiveTr[1] + adaptiveAlpha * (trueRange - adaptiveTr[1])
+
+adaptivePlusDi = 100.0 * safeDiv(adaptivePlusDm, adaptiveTr)
+adaptiveMinusDi = 100.0 * safeDiv(adaptiveMinusDm, adaptiveTr)
+adaptiveDx = 100.0 * safeDiv(math.abs(adaptivePlusDi - adaptiveMinusDi), adaptivePlusDi + adaptiveMinusDi)
+adaptiveAdx := na(adaptiveAdx[1]) ? adaptiveDx : adaptiveAdx[1] + (1.0 / adxSmoothing) * (adaptiveDx - adaptiveAdx[1])
+
+// Plots
+diMiddle = math.avg(adaptivePlusDi, adaptiveMinusDi)
+diColor = adaptivePlusDi > adaptiveMinusDi ? bullColor : bearColor
+diOsc = adaptivePlusDi - adaptiveMinusDi
+oscAbs = math.min(math.abs(diOsc), 40.0)
+oscFade = int(math.max(0.0, math.min(95.0, 95.0 - oscAbs / 40.0 * 95.0)))
+oscColor = diOsc >= 0 ? color.new(bullColor, oscFade) : color.new(bearColor, oscFade)
+adxLowest = ta.lowest(adaptiveAdx, 100)
+adxHighest = ta.highest(adaptiveAdx, 100)
+adxForFade = normalizeAdx ? 100.0 * safeDiv(adaptiveAdx - adxLowest, adxHighest - adxLowest) : adaptiveAdx
+adxFade = int(math.max(0.0, math.min(95.0, 95.0 - adxForFade * 0.95)))
+bullFlip = ta.crossover(adaptivePlusDi, adaptiveMinusDi)
+bearFlip = ta.crossunder(adaptivePlusDi, adaptiveMinusDi)
+oscBullReturn = ta.crossover(diOsc, -30.0)
+oscBearReturn = ta.crossunder(diOsc, 30.0)
+bullSignalPrice = ta.lowest(low, 3)
+bearSignalPrice = ta.highest(high, 3)
+crossPoint = math.avg(adaptivePlusDi, adaptiveMinusDi, adaptivePlusDi[1], adaptiveMinusDi[1])
+
+oscTop40 = plot(oscillatorMode ? 30.0 : na, "Upper Zone 40", display = display.none)
+oscTop50 = plot(oscillatorMode ? 40.0 : na, "Upper Zone 50", display = display.none)
+oscTop60 = plot(oscillatorMode ? 50.0 : na, "Upper Zone 60", display = display.none)
+oscBot40 = plot(oscillatorMode ? -30.0 : na, "Lower Zone 40", display = display.none)
+oscBot50 = plot(oscillatorMode ? -40.0 : na, "Lower Zone 50", display = display.none)
+oscBot60 = plot(oscillatorMode ? -50.0 : na, "Lower Zone 60", display = display.none)
+plot(oscillatorMode ? diOsc : na, "DMI Oscillator", oscColor, style = plot.style_columns)
+plot(oscillatorMode ? 2.0 : na, "ADX Center", color.new(adxColor, adxFade), linewidth = 4, histbase = -2.0, style = plot.style_columns)
+plotshape(not oscillatorMode and not na(adaptiveAdx), "ADX Strength", shape.square, location.bottom, color.new(adxColor, adxFade), size = size.small)
+plot(oscillatorMode ? na : adaptivePlusDi, color = bullColor, title = "Adaptive +DI")
+plusCloud = plot(oscillatorMode ? na : adaptivePlusDi, linewidth = 7, color = color.new(bullColor, 70), title = "+DI Cloud")
+plot(oscillatorMode ? na : adaptiveMinusDi, color = bearColor, title = "Adaptive -DI")
+minusCloud = plot(oscillatorMode ? na : adaptiveMinusDi, linewidth = 7, color = color.new(bearColor, 70), title = "-DI Cloud")
+midPlot = plot(diMiddle, display = display.none, title = "DI Midpoint")
+
+fill(plusCloud, midPlot, adaptivePlusDi, diMiddle, color.new(diColor, 95), color.new(diColor, 50))
+fill(midPlot, minusCloud, adaptiveMinusDi, diMiddle, color.new(diColor, 95), color.new(diColor, 50))
+fill(oscTop40, oscTop60, color.new(bearColor, 80))
+fill(oscTop50, oscTop60, color.new(bearColor, 80))
+fill(oscBot40, oscBot60, color.new(bullColor, 80))
+fill(oscBot50, oscBot60, color.new(bullColor, 80))
+plotchar(not oscillatorMode and (bullFlip or bearFlip) ? crossPoint : na, "DMI Cross", "◉", location.absolute, diColor, size = size.tiny)
+plotchar(oscillatorMode and oscBearReturn ? 55.0 : na, "Bearish Oscillator Return", "▼", location.absolute, bearColor, size = size.small)
+plotchar(oscillatorMode and oscBullReturn ? -55.0 : na, "Bullish Oscillator Return", "▲", location.absolute, bullColor, size = size.small)
+plotshape(bullFlip ? bullSignalPrice : na, "Bullish Signal", shape.labelup, location.absolute, bullColor, size = size.small, text = "▲", textcolor = chart.fg_color, force_overlay = true)
+plotshape(bearFlip ? bearSignalPrice : na, "Bearish Signal", shape.labeldown, location.absolute, bearColor, size = size.small, text = "▼", textcolor = chart.fg_color, force_overlay = true)
+
+// Table
+if barstate.islast
+    int tableCols = 2
+    int tableRows = 5
+    if showTable
+        bool needNewTable = na(dataTable) or dataTableLastPlace != tablePlace or dataTableLastSize != tableTextSize
+        if needNewTable
+            if not na(dataTable)
+                table.delete(dataTable)
+            dataTable := table.new(position = tablePosition(tablePlace), columns = tableCols, rows = tableRows, bgcolor = chart.bg_color, frame_color = chart.fg_color, frame_width = 2, border_width = 1, border_color = chart.fg_color, force_overlay = true)
+            dataTableLastPlace := tablePlace
+            dataTableLastSize := tableTextSize
+
+        table.clear(dataTable, 0, 0, tableCols - 1, tableRows - 1)
+        cellSize = tableSize(tableTextSize)
+        table.cell(dataTable, 0, 0, "Metric", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 1, 0, "Value", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 0, 1, "Optimal length", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 1, 1, str.tostring(adaptiveLength, "#.##") + " (" + str.tostring(adaptiveIntLength) + ")", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 0, 2, "Memory", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 1, 2, str.tostring(array.size(memoryRewards)), text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 0, 3, "Goal", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 1, 3, rewardMetric, text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 0, 4, "Trend", text_color = chart.fg_color, text_size = cellSize)
+        table.cell(dataTable, 1, 4, adaptivePlusDi > adaptiveMinusDi ? "Bullish" : "Bearish", text_color = chart.fg_color, text_size = cellSize, bgcolor = adaptivePlusDi > adaptiveMinusDi ? color.new(bullColor, 75) : color.new(bearColor, 75))
+    else if not na(dataTable)
+        table.delete(dataTable)
+        dataTable := na
+        dataTableLastPlace := ""
+        dataTableLastSize := ""
+
+// Alerts
+alertcondition(bullFlip, "Bullish DMI Flip", "Adaptive +DI crossed above Adaptive -DI")
+alertcondition(bearFlip, "Bearish DMI Flip", "Adaptive -DI crossed above Adaptive +DI")
+alertcondition(oscBullReturn, "Bullish Oscillator Return", "DMI oscillator crossed back above -40")
+alertcondition(oscBearReturn, "Bearish Oscillator Return", "DMI oscillator crossed back below 40")

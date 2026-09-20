@@ -1,0 +1,78 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Higher Timeframe TrendMap [BigBeluga]", "HTF TrendMap [BigBeluga]", overlay = true)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+tf = input.timeframe("D")
+color_up = input.color(color.rgb(229, 148, 27), "", inline = "color")
+color_dn = input.color(color.rgb(30, 142, 234), "", inline = "color")
+
+var array_vals = array.new<float>()
+var count = 0
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+convert_tf(tf)=>
+    time_in = timeframe.in_seconds(tf) / 60 / 60
+    time_in >= 24 ? tf : time_in >= 1 ? str.tostring(time_in) + "h" : tf + "m"
+
+current_tf_min = timeframe.in_seconds("")/60
+user_tf_min    = timeframe.in_seconds(tf)/60
+bars_amount    = int(user_tf_min / current_tf_min)
+
+tf_change = timeframe.change(tf)
+
+
+if tf_change
+    label.new(bar_index, array_vals.max(), str.tostring(array_vals.max(), "#,###.###"), style = label.style_label_left, color = color(na), textcolor = chart.fg_color)
+    label.new(bar_index, array_vals.min(), str.tostring(array_vals.min(), "#,###.###"), style = label.style_label_left, color = color(na), textcolor = chart.fg_color)
+
+    array_vals.clear()
+    count := 0
+
+if not tf_change
+    count +=1
+    array_vals.push(high)
+    array_vals.push(low)
+
+max = array_vals.max()
+min = array_vals.min()
+
+tf_trend = array_vals.avg()
+
+color tf_col     = tf_trend > tf_trend[1] ? color_up : color_dn
+color time_color = color.from_gradient(count, 0, bars_amount, color.new(tf_col, 0), color.new(tf_col, 100))
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plotshape(tf_change[1] ? tf_trend : na, "", shape.circle, location.absolute, color.new(chart.fg_color, 30), size = size.tiny)
+
+plot(tf_trend, "HTF Trend", color = tf_change ? color(na) : tf_col, style = plot.style_linebr, linewidth = 1)
+plot(tf_trend, "HTF Trend", color = tf_change ? color(na) : time_color, style = plot.style_linebr, linewidth = 5)
+
+plot(max != max[1] ? na : max, "High Level", color = bar_index % 2 == 0 ? chart.fg_color : color(na), style = plot.style_steplinebr)
+plot(min != min[1] ? na : min, "Low Level", color = bar_index % 2 == 0 ? chart.fg_color : color(na), style = plot.style_steplinebr)
+
+
+bgcolor(tf_change ? color.new(chart.fg_color, 85) : na)
+
+if barstate.islast
+    
+    l1 = label.new(bar_index, array_vals.max(), str.tostring(array_vals.max(), "#,###.###"), style = label.style_label_left, color = color(na), textcolor = chart.fg_color)
+    l2 = label.new(bar_index, array_vals.min(), str.tostring(array_vals.min(), "#,###.###"), style = label.style_label_left, color = color(na), textcolor = chart.fg_color)
+
+    label.delete(l1[1])
+    label.delete(l2[1])
+
+    dash = table.new(position.top_right, 10, 10)
+
+    dash.cell(0, 0, "Timeframe: ", text_color = chart.fg_color)
+    dash.cell(1,0, convert_tf(tf), text_color = chart.fg_color)
+    dash.cell(0, 1, "Trend: ", text_color = chart.fg_color)
+    dash.cell(1, 1, tf_trend > tf_trend[1] ? "🢁" : "🢃", text_color = tf_col)
+// }

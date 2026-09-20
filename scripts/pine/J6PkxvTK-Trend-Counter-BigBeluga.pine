@@ -1,0 +1,164 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=5
+indicator("Trend Counter [BigBeluga]", overlay = false, max_labels_count = 500)
+
+//▁▂▃▄▅▆▇▉
+
+// =====================================================================================================================}
+// ＩＮＰＵＴＳ
+// ====================================================================================================================={
+
+int length  = input(20, "Trend Counter Length", group = "Settings")
+int smooth  = input.int(5, "Trend Counter Smooth", minval = 1, maxval = 10, group = "Settings")
+int level   = input(10, "Signals Level Value", group = "Settings")
+int top_len = input(200, "Potential Top Length", group = "Settings")
+
+
+bool bar_col = input.bool(false, "Trend Bar Color", group = "Plot")
+
+color up     = input.color(#00ffdd, "Main Color", group = "Plot")
+color dn     = input.color(color.white, "Secondary Color", group = "Plot")
+var color color  = na
+var color color1 = na
+var color color2 = na
+
+var counter     = 0.0
+var count       = array.new<float>()
+
+
+// =====================================================================================================================}
+// ＣＡＬＣＵＬＡＴＩＯＮＳ
+// ====================================================================================================================={
+
+// Count bars over length period above highest and lowest avg with offset loop
+float mid = math.avg(ta.highest(length), ta.lowest(length))
+
+for offset = 0 to length -1
+    switch
+        hl2 > mid[offset] => counter += 1.0
+        => counter := 0.0
+// Smooth Count and Round
+counter := math.round(ta.ema(counter > 400 ? 400 : counter, smooth))
+
+// Count Avg
+count.push(counter)
+avg = math.round(count.avg())
+
+
+// =====================================================================================================================}
+// ＰＬＯＴ
+// ====================================================================================================================={
+// Colors
+color  := color.from_gradient(counter, level, 600, color.new(up, 99), color.new(up, 50))
+color1 := color.from_gradient(counter, level, 400, color.new(up, 95), color.new(up, 10))
+color2 := color.from_gradient(counter, level, 400, color.new(up, 80), color.new(up, 0))
+
+// Plot Trend Counter
+plot(counter, "Trend Counter", style = plot.style_columns, color = color1)
+
+bgcolor(color, force_overlay = true)
+
+// Trend Conditions based on counter bars
+cond1 = ta.crossover(counter, level)
+cond2 = ta.crossunder(counter, level)
+
+if cond1
+    label.new(chart.point.from_index(bar_index, low), 
+             text           = "▲", 
+              style          = label.style_label_up,
+               color          = color(na), 
+                 textcolor     = up,
+                  force_overlay = true
+                     )
+if cond2
+    label.new(chart.point.from_index(bar_index, high), 
+             text           = "⛛", 
+              style          = label.style_label_down,
+               color          = color(na), 
+                 textcolor     = dn,
+                  force_overlay = true
+                     )
+
+// Level and Level Size Label
+label.delete(label.new(chart.point.from_index(bar_index, level), 
+             text       = "Level: " + str.tostring(level), 
+              style      = label.style_label_left, 
+               color      = color.new(up, 50), 
+                 textcolor = dn
+                   )[1])
+                  
+plot(level, "Level",color = color.new(up, 50))
+
+// Avg Line plot
+plot(count.avg(), "AVG", color = color.new(dn, 80), style = plot.style_circles)
+
+label.delete(label.new(chart.point.from_index(bar_index, avg), 
+             text       = "AVG: " + str.tostring(avg), 
+              style      = label.style_label_left, 
+               color      = color.new(up, 95), 
+                 textcolor = dn
+                   )[1])
+
+
+// Potential Tops Plot
+highest = ta.highest(counter, top_len) * 0.99
+plotchar(ta.crossunder(counter, highest) ? counter[1] : na, "Top Marker", 
+         char      = "⛒", 
+          location  = location.absolute, 
+           size      = size.tiny, 
+             offset   = -1, 
+              color    = dn
+               )
+plotchar(ta.crossunder(counter, highest) ? counter[1] : na, "Top Marker", 
+         char            = "⛒", 
+          text            = "Potential Top",
+           location        = location.abovebar, 
+             size           = size.tiny, 
+              offset         = -1, 
+               color          = dn, 
+                 force_overlay = true, 
+                  textcolor = dn
+                   )
+
+var top_ = 0.
+if ta.crossunder(counter, highest) 
+    top_ := high[1]
+
+plot(ta.change(top_ != top_[1]) ? na : top_, 
+       color      = color2, 
+       style       = plot.style_steplinebr, 
+       linewidth    = 2, 
+       force_overlay = true
+       )
+plot(highest, 
+       color   = color2, 
+       style    = plot.style_steplinebr, 
+       linewidth = 1
+       )
+
+
+// Trend Counter Value Plot
+var tabl = table.new(position = position.middle_right, columns = 10, rows = 10)
+tabl.cell(0, 0, "Counter:",
+             text_color = dn, text_size = counter > avg ? size.large : size.normal)
+tabl.cell(0, 1, str.tostring(counter) + (counter > counter[1] ? " ↑" : "↓"),
+             text_color = counter > avg ? up : color.new(up, 50), 
+              text_size = counter > avg ? size.large : size.normal)
+
+
+// Range Fill BGcolor
+p1 = plot(0,   "Range High", color = dn,                linewidth = 2)
+p2 = plot(420, "Range Low",  color = color.new(dn, 50), linewidth = 1)
+fill(p1, p2, 1000, 0, color.new(up, 50), na)
+
+
+// Trend Bar Color
+barcolor(bar_col ? (counter > level ? up : dn) : na)
+
+// =====================================================================================================================}
+
+

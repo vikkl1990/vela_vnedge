@@ -1,0 +1,62 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Top G indicator [BigBeluga]", overlay = true, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   length   = input.int(150)
+color main_col = input.color(#CD7F32, "Main Color")
+color col_na   = color.new(color.black, 100)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
+
+lowest_highest(length)=>
+    series float lowest_src  = ta.lowest(length)
+    series float highest_src = ta.highest(length)
+    series float mid         = ta.hma(math.avg(lowest_src, highest_src), 15)
+    [lowest_src, highest_src, mid]
+
+
+signals(lowest_src, highest_src)=>
+    float roc = ta.roc(close, 8)
+    roc := roc / ta.stdev(roc, 200)
+
+    bool top = high < highest_src and high[1] == highest_src[1] and roc[2] > 2 and lowest_src == lowest_src[5] and barstate.isconfirmed
+    bool G   = low[1] == lowest_src[1] and low > lowest_src and low[2] == lowest_src[2] and roc[2] < -2 and barstate.isconfirmed
+
+    bool simple_g = low[1] == lowest_src[1] and low > lowest_src and not G and barstate.isconfirmed
+    bool simple_top = high < highest_src and high[1] == highest_src[1] and not top and barstate.isconfirmed
+
+    [top, G, simple_g, simple_top]
+
+
+draw_labels(top, G, highest_src, lowest_src, simple_g, simple_top)=>
+    if top 
+        label.new(time, highest_src, "Top", xloc = xloc.bar_time, color = col_na, textcolor = chart.fg_color)
+    if G 
+        label.new(time, lowest_src, "𝔾", xloc = xloc.bar_time, color = col_na, textcolor = main_col, style = label.style_label_up, size = size.large)
+        
+    if simple_g
+        label.new(time, lowest_src, "^", xloc = xloc.bar_time, color = col_na, textcolor = color.new(main_col, 30), style = label.style_label_up, size = size.huge)
+    if simple_top
+        label.new(time, highest_src, "˅", xloc = xloc.bar_time, color = col_na, textcolor = color.new(main_col, 30), size = size.large)
+
+
+[lowest_src, highest_src, mid] = lowest_highest(length)
+[top, G, simple_g, simple_top] = signals(lowest_src, highest_src)
+draw_labels(top, G, highest_src, lowest_src, simple_g, simple_top)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+ph = plot(highest_src, color = bar_index % 2 == 0 ? main_col : na)
+plot(mid, "", color.new(chart.fg_color, 50))
+pl = plot(lowest_src, color = main_col, linewidth = 1)
+plot(lowest_src, color = color.new(main_col, 80), linewidth = 5)
+
+fill(pl, ph, highest_src, lowest_src, na, color.new(main_col, 90))
+// }

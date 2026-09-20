@@ -1,0 +1,98 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title="Swing Failure Zones and Signals [AlgoAlpha]", shorttitle="AlgoAlpha - 🚫Swing Failure", overlay = true)
+clr = input.bool(false, "Remove Mitigated Zones From Chart")
+lkbk = input.int(14, "Range High/Low Lookback Period")
+green = input.color(#00ffbb, "Bullish Color")
+red = input.color(#ff1100, "Bearish Color")
+
+
+// Calculating
+candledir = close > open ? 1 : -1
+candlelen = math.abs(close-open)
+bull =  low < low[1] and close > high[1] and low == ta.lowest(lkbk)
+bear = high > high[1] and close < low[1] and high == ta.highest(lkbk)
+bullmit = 0
+bearmit = 0
+
+type bar
+    float h = high
+    float l = low
+    float v = volume
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+var x = 1
+var hh = 0.0
+var ll = 0.0
+var aR = array.new_box()
+var aS = array.new_box()
+
+if aR.size() > 0
+    qt = aR.size()
+
+    for ln = qt - 1 to 0
+        if ln < aR.size()
+            cL = aR.get(ln)
+            yL = cL.get_top()
+            zL = cL.get_bottom()
+            xL = cL.get_left()
+
+            if high > zL//high > math.avg(yL, zL)
+                if clr
+                    aR.remove(ln).delete()
+                else
+                    aR.remove(ln)
+
+                bearmit := 1
+
+            else
+                cL.set_right(b.i + 1)
+
+
+    if aR.size() > 500
+        aR.shift().delete()
+
+if aS.size() > 0
+    qt = aS.size()
+
+    for ln = qt - 1 to 0
+        if ln < aS.size()
+            cL = aS.get(ln)
+            yL = cL.get_bottom()
+            zL = cL.get_top()
+            xL = cL.get_left()
+
+            if low < zL//low < math.avg(yL, zL)
+                if clr
+                    aS.remove(ln).delete()
+                else
+                    aS.remove(ln)
+                bullmit := 1
+
+            else
+                cL.set_right(b.i + 1)
+    if aS.size() > 500
+        aS.shift().delete()
+
+if bear
+    aR.push(box.new(bar_index-1,low[1],bar_index + 1, high, color.new(red, 90), 1, line.style_solid, extend.none, bgcolor = color.new(red, 93), text_size = size.small, text_color = red, text_halign =  text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace))
+
+if bull
+    aS.push(box.new(bar_index-1, low,bar_index + 1, high[1], color.new(green, 90), 1, line.style_solid, extend.none, bgcolor = color.new(green, 93), text_size = size.small, text_color = green, text_halign =  text.align_center, text_valign = text.align_center, text_font_family = font.family_monospace))
+
+plotchar(bear, "Bearish Signal", "▼", location.abovebar, red, size = size.small)
+plotchar(bull, "Bullish Signal", "▲", location.belowbar, green, size = size.small)
+
+//////Alerts
+alertcondition(bull, "Bullish Swing Failure")
+alertcondition(bear, "Bearish Swing Failure")
+
+alertcondition(bullmit == 1, "Bullish Swing Failure")
+alertcondition(bearmit == 1, "Bearish Swing Failure")

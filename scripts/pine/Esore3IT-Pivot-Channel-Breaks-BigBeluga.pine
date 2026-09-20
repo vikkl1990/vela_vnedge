@@ -1,0 +1,210 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Pivot Channel Breaks [BigBeluga]", overlay = true, max_lines_count = 20)
+
+//#region ———————————————————— Inputs
+// @variable Right pivot lookback period
+int   pivot_right = input(10)
+// @variable Left pivot lookback period
+int   pivot_left  = input(40)
+// @variable Channel width multiplier
+float dev_len     = input.float(1., "Channel Withd", step = 0.1)
+// @variable Toggle for support & resistance signals
+bool  show_sig    = input.bool(false, "Support & Resistance Signals")
+// @variable Toggle for bar coloring
+bool  bar_col     = input.bool(false, "Bar Color")
+
+// Color definitions
+var color up = #3acdd8
+var color dn = #d63c7c
+
+var color trend_up = color.new(up, 40)
+var color trend_dn = color.new(dn, 40)
+
+// Initialize variables for pivot points and channel lines
+var float point_l = 0.
+var float point_h = 0.
+
+var bool break_up = na
+var bool break_dn = na
+
+bool resist       = na
+bool support      = na
+
+var bool  check     = na
+var color trend_col = na
+
+var line1 = line(na)
+var line2 = line(na)
+//#endregion
+
+//#region ———————————————————— Calculations
+// Detect pivot points
+p_h = not na(ta.pivothigh(pivot_left, pivot_right))
+p_l = not na(ta.pivotlow(pivot_left, pivot_right))
+
+// Calculate channel bands
+basis      = ta.sma(close, 10)
+uppper_dev = basis + ta.rma(high - low, 10) * dev_len
+lower_dev  = basis - ta.rma(high - low, 10) * dev_len
+
+// Set channel points based on pivot highs and lows
+if p_h
+    point_l := lower_dev
+    point_h := high[pivot_right]
+if p_l
+    point_l := low[pivot_right]
+    point_h := uppper_dev
+
+// Detect breakouts
+break_up := ta.crossover(low, point_h)
+break_dn := ta.crossunder(high, point_l)
+//#endregion
+
+//#region ———————————————————— Plotting
+// Set trend color based on breakouts
+if break_up
+    check := true
+    trend_col := trend_up
+
+if break_dn
+    check := false
+    trend_col := trend_dn
+
+// Draw channel lines and labels
+if p_h or p_l
+    line1 := line.new(bar_index-pivot_right, point_h, bar_index, point_h, 
+             color = up, 
+             width = 1
+             )
+
+    line2 := line.new(bar_index-pivot_right, point_l, bar_index, point_l, 
+             color = dn, 
+             width = 1
+             )
+
+// Update channel lines and labels on the last bar
+if barstate.islast
+    cp_l1 = chart.point.from_index(bar_index, point_l)
+    cp_h1 = chart.point.from_index(bar_index, point_h)
+
+    cp_l2 = chart.point.from_index(bar_index-pivot_right, point_l)
+    cp_h2 = chart.point.from_index(bar_index-pivot_right, point_h)
+
+    line.delete(line.new(cp_h1, cp_h2, color = up)[1])
+    line.delete(line.new(cp_l1, cp_l2, color = dn)[1])
+
+    label.delete(
+                 label.new(cp_l1, 
+                             text      = "◀  Lower Channel", 
+                             style     = label.style_label_left, 
+                             color     = color(na), 
+                             textcolor = chart.fg_color)[1]
+                 )
+    label.delete(
+                 label.new(cp_h1, 
+                             text       = "◀  Upper Channel", 
+                             style      = label.style_label_left, 
+                             color      = color(na), 
+                             textcolor  = chart.fg_color)[1]
+                 )
+
+// Plot breakout signals
+plotshape(break_up  ? line1.get_y2() : na,
+         title      =  "Break Up", 
+         style      = shape.xcross, 
+         location   = location.absolute, 
+         color      = up, 
+         size       = size.small,
+         offset     = -1
+         )
+plotshape(break_dn  ? line2.get_y2() : na,
+         title      = "Break Dn", 
+         style      = shape.xcross, 
+         location   = location.absolute, 
+         color      = dn, 
+         size       = size.small,
+         offset     = -1
+         )
+
+// Plot pivot high and low points
+plotshape(p_h ? high[pivot_right] : na, 
+         title      = "High", 
+         style      = shape.triangledown, 
+         text       = "H", 
+         location   = location.abovebar, 
+         color      = color.new(up, 50), 
+         textcolor  = chart.fg_color,
+         size       = size.tiny, 
+         offset     = -pivot_right
+         )
+plotshape(p_l ? low[pivot_right] : na, 
+         title = "Low",
+         style = shape.triangleup, 
+         text = "L", 
+         location = location.belowbar, 
+         color = color.new(dn, 50), 
+         textcolor = chart.fg_color, 
+         size = size.tiny, 
+         offset = -pivot_right
+         )
+
+// Plot channel points
+plotshape(p_l ? point_h : na, 
+         title      = "", 
+         style      = shape.circle, 
+         location   = location.absolute, 
+         color      = color.new(up, 50),
+         size       = size.tiny, 
+         offset     = -pivot_right
+         )
+
+plotshape(p_h ? point_l : na, 
+         title      = "", 
+         style      = shape.circle, 
+         location   = location.absolute, 
+         color      = color.new(dn, 50),
+         size       = size.tiny, 
+         offset     = -pivot_right
+         )
+
+// Detect and plot support and resistance signals
+resist  := ta.crossunder(high, line1.get_y1()) and not break_dn and not p_h and show_sig
+support := ta.crossover(low, line2.get_y1()) and not break_up and not p_l  and show_sig
+
+plotshape(resist, 
+         title      = "", 
+         style      = shape.labeldown, 
+         location   = location.abovebar, 
+         color      = color.new(dn, 60),
+         size       = size.tiny, 
+         offset     = -1
+         )
+
+plotshape(support, 
+         title      = "", 
+         style      = shape.labelup, 
+         location   = location.belowbar, 
+         color      = color.new(up, 60),
+         size       = size.tiny, 
+         offset     = -1
+         )
+
+// Color bars based on trend
+barcolor(bar_col ? trend_col : na)
+
+// Update channel lines
+line1.set_x2(bar_index)
+line2.set_x2(bar_index)
+
+if break_up
+    line1.set_style(line.style_dashed)
+    line1 := na
+
+if break_dn
+    line2.set_style(line.style_dashed)
+    line2 := na
+    
+//#endregion

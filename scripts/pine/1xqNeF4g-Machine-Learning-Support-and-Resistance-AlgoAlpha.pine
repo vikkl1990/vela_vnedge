@@ -1,0 +1,199 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Machine Learning Dynamic Support and Resistance [AlgoAlpha]", "AlgoAlpha - 🎢Support and Resistance",  overlay = true, max_lines_count = 500)
+clear = input.int(5000, "Remove Levels After x Bars", group = "Main Settings", tooltip = "How many bars after the fixed levels are considered irrelevant")
+len = input.int(200, "Clustering Training Length", group = "Main Settings", tooltip = "The lookback window for the maching learning algorithm")
+len1 = input.int(50, "Confirmation Length for Fixed Levels ", group = "Main Settings", tooltip = "The confirmation length for fixed levels")
+shw = input.bool(true, "Show Trailing Levels", group = "Appearance")
+shw1 = input.bool(true, "Show Fixed Levels", group = "Appearance")
+collvls = input.bool(false, "Color Fixed Levels", group = "Appearance", tooltip = "Colors fixed levels based on whether price is above or below the level. This is computationally intensive so turn off this setting if the indicator is unable to load.")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance")
+
+k_means_optimize_centroids(value, lookback, init_centroid_1, init_centroid_2, init_centroid_3) =>
+    size_a = 0
+    size_b = 0
+    size_c = 0
+    hv = array.new_float()
+    mv = array.new_float()
+    lv = array.new_float()
+    amean = array.new_float(1,init_centroid_1)
+    bmean = array.new_float(1,init_centroid_2)
+    cmean = array.new_float(1,init_centroid_3)
+    iterations = 0
+
+    if nz(value) > 0 and bar_index >= lookback-1
+
+        while ((amean.size() == 1 ? true : (amean.first() != amean.get(1))) or (bmean.size() == 1 ? true : (bmean.first() != bmean.get(1))) or (cmean.size() == 1 ? true : (cmean.first() != cmean.get(1))))
+            hv.clear()
+            mv.clear()
+            lv.clear()
+            for i = lookback-1 to 0
+                if math.abs(value[i] - amean.first()) < math.abs(value[i] - bmean.first()) and math.abs(value[i] - amean.first()) < math.abs(value[i] - cmean.first())
+                    hv.unshift(value[i])
+
+                if math.abs(value[i] - bmean.first()) < math.abs(value[i] - amean.first()) and math.abs(value[i] - bmean.first()) < math.abs(value[i] - cmean.first())
+                    mv.unshift(value[i])
+
+                if math.abs(value[i] - cmean.first()) < math.abs(value[i] - amean.first()) and math.abs(value[i] - cmean.first()) < math.abs(value[i] - bmean.first())
+                    lv.unshift(value[i])
+            
+            amean.unshift(hv.avg())
+            bmean.unshift(mv.avg())
+            cmean.unshift(lv.avg())
+            size_a := hv.size()
+            size_b := mv.size()
+            size_c := lv.size()
+            iterations := iterations + 1
+
+    hv_new = amean.first()
+    mv_new = bmean.first()
+    lv_new = cmean.first()
+    [hv_new, mv_new, lv_new]
+
+[up,middle,down] = k_means_optimize_centroids(close, len, ta.highest(len), math.avg(ta.highest(len), ta.lowest(len)), ta.lowest(len))
+
+type store
+    line lvl
+    float src
+
+var store[] aR = array.new<store>()
+var store[] aM = array.new<store>()
+var store[] aS = array.new<store>()
+
+up_cluster = 0
+middle_cluster = 0
+down_cluster = 0
+
+volatility = ta.atr(14)
+anti_cluster_mult = 1
+
+if aR.size() > 0
+    for i = 0 to aR.size()-1
+        price = aR.get(i).src
+        if up > price - volatility*anti_cluster_mult and up < price + volatility*anti_cluster_mult
+            up_cluster := 1
+            break
+        if middle > price - volatility*anti_cluster_mult and middle < price + volatility*anti_cluster_mult
+            middle_cluster := 1
+            break
+        if down > price - volatility*anti_cluster_mult and down < price + volatility*anti_cluster_mult
+            down_cluster := 1
+            break
+
+if aM.size() > 0
+    for i = 0 to aM.size()-1
+        price = aM.get(i).src
+        if up > price - volatility*anti_cluster_mult and up < price + volatility*anti_cluster_mult
+            up_cluster := 1
+            break
+        if middle > price - volatility*anti_cluster_mult and middle < price + volatility*anti_cluster_mult
+            middle_cluster := 1
+            break
+        if down > price - volatility*anti_cluster_mult and down < price + volatility*anti_cluster_mult
+            down_cluster := 1
+            break
+
+if aS.size() > 0
+    for i = 0 to aS.size()-1
+        price = aS.get(i).src
+        if up > price - volatility*anti_cluster_mult and up < price + volatility*anti_cluster_mult
+            up_cluster := 1
+            break
+        if middle > price - volatility*anti_cluster_mult and middle < price + volatility*anti_cluster_mult
+            middle_cluster := 1
+            break
+        if down > price - volatility*anti_cluster_mult and down < price + volatility*anti_cluster_mult
+            down_cluster := 1
+            break
+
+if up == up[len1] and up_cluster != 1 and shw1
+    aR.push(store.new(line.new(bar_index, up, bar_index+1, up, color = chart.fg_color, extend = extend.right, width = 3), up))
+
+if middle == middle[len1] and middle_cluster != 1 and shw1
+    aM.push(store.new(line.new(bar_index, middle, bar_index+1, middle, color = chart.fg_color, extend = extend.right, width = 3), middle))
+
+if down == down[len1] and down_cluster != 1 and shw1
+    aS.push(store.new(line.new(bar_index, down, bar_index+1, down, color = chart.fg_color, extend = extend.right, width = 3), down))
+
+
+
+if aR.size() > 0
+    qt = aR.size()
+
+    for ln = qt - 1 to 0
+        if ln < aR.size()
+            cL = aR.get(ln)
+            yL = cL.lvl.get_x1()
+            vert = cL.lvl.get_y1()
+
+            if bar_index-yL > clear
+                aR.shift().lvl.delete()
+
+            else
+                cL.lvl.set_x2(bar_index + 1)
+
+            if close > vert and collvls
+                cL.lvl.set_color(green)
+            else if collvls
+                cL.lvl.set_color(red)
+
+    while aR.size() > 500
+        aR.shift().lvl.delete()
+
+if aM.size() > 0
+    qt = aM.size()
+
+    for ln = qt - 1 to 0
+        if ln < aM.size()
+            cL = aM.get(ln)
+            yL = cL.lvl.get_x1()
+            vert = cL.lvl.get_y1()
+
+            if bar_index-yL > clear
+                aM.shift().lvl.delete()
+
+            else
+                cL.lvl.set_x2(bar_index + 1)
+
+            if close > vert and collvls
+                cL.lvl.set_color(green)
+            else if collvls
+                cL.lvl.set_color(red)
+
+
+    while aM.size() > 500
+        aM.shift().lvl.delete()
+
+if aS.size() > 0
+    qt = aS.size()
+
+    for ln = qt - 1 to 0
+        if ln < aS.size()
+            cL = aS.get(ln)
+            yL = cL.lvl.get_x1()
+            vert = cL.lvl.get_y1()
+
+            if bar_index-yL > clear
+                aS.shift().lvl.delete()
+
+            else
+                cL.lvl.set_x2(bar_index + 1)
+
+            if close > vert and collvls
+                cL.lvl.set_color(green)
+            else if collvls
+                cL.lvl.set_color(red)
+
+    while aS.size() > 500
+        aS.shift().lvl.delete()
+
+u= plot(up, "Upper", color.new(green,50), display = shw ? display.all : display.none)
+m= plot(middle, "Middle", color.new(color.blue,50), display = shw ? display.all : display.none)
+l= plot(down, "Lower", color.new(red,50), display = shw ? display.all : display.none)
+
+fill(u, m, up, middle, color.new(green, 90), color.new(color.blue, 90), display = shw ? display.all : display.none)
+fill(l, m, middle, down, color.new(color.blue, 90), color.new(red, 90), display = shw ? display.all : display.none)
+

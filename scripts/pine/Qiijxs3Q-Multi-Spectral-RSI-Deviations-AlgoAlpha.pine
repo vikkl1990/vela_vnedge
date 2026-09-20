@@ -1,0 +1,99 @@
+//@version=5
+indicator("Multi-Spectral RSI Deviations [AlgoAlpha]", "AlgoAlpha - 🌌MS-RSI", explicit_plot_zorder = true)
+upColor = input(#00ffbb, "Up Colour")
+downColor = input(#ff1100, "Down Colour")
+len = input.int(7, "RSI Length 1", minval = 1)
+len1 = input.int(14, "RSI Length 2", minval = 1)
+len2 = input.int(35, "RSI Length 3", minval = 1)
+slen = input.int(20, "Smoothing Length", minval = 1)
+maTypeInput = input.string("SMA", title="MA Type", options=["SMA", "HMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group="MA Settings", display = display.data_window)
+maLengthInput = input.int(14, title="MA Length", group="MA Settings", display = display.data_window)
+plotBullish = input(title="Plot Bullish Divergences", defval=true, group = "Divergence Settings")
+plotBear = input(title="Plot Bearish Divergences", defval=true, group = "Divergence Settings")
+lbL = input(title="Divergence Pivot Detection Length", defval=10, group = "Divergence Settings", tooltip = "The larger this number, the less sensitive the divergence detecion is. A smaller number will detect smaller and/or shorter term divergences", display = display.data_window)
+lbR = input(title="Divergence Pivot Confirmation Length", defval=1, group = "Divergence Settings", tooltip = "This number is how many bars the indicator will wait for confirmation to plot the divergences. The higher the number, the longer the delay of the signal, but the lesser the number of false signals. Set this to 0 if you do not want any delay at all", display = display.data_window)
+
+ma(source, length, type) =>
+    switch type
+        "SMA" => ta.sma(source, length)
+        "HMA" => ta.hma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+
+v1 = ta.rsi(close, len)
+
+v2 = ta.rsi(close, len1)
+
+v3 = ta.rsi(close, len2)
+
+x = v1-v2
+x1 = v2-v3
+
+f = ta.hma(math.avg(x, x1), slen)
+
+f2 = ta.ema((v3-50)/2, slen)
+
+col = f > f[1] ? upColor : downColor
+
+mid = plot(0, color = color.gray)
+mioplot = plot(f2, color = f2 > 0 ? upColor : downColor)
+fill(mid, mioplot, f2, 0, f2 > 0 ? color.new(upColor, 20) : color.new(downColor, 20), color.new(chart.bg_color, 100)) 
+plot(ma(f, maLengthInput, maTypeInput), color = color.new(#4421f3, 60))
+o1=plot(f, color = col)
+o2=plot(f[1], color = col, display = display.none)
+
+plotchar(ta.crossover(f,f[1]) ? f[1] : na, "MS-RSI Bullish Trend Shift", "●", location.absolute, upColor)
+plotchar(ta.crossunder(f,f[1]) ? f[1] : na, "MS-RSI Bearish Trend Shift", "●", location.absolute, downColor)
+plotchar(ta.crossover(f,f[1]) and f[1] < -10 ? -22 : na, "MS-RSI Bullish Reversal", "▲", location.absolute, upColor, size = size.tiny)
+plotchar(ta.crossunder(f,f[1]) and f[1] > 10 ? 22 : na, "MS-RSI Bearish Reversal", "▼", location.absolute, downColor, size = size.tiny)
+
+fill(o1, o2, f>f[1] ? color.new(upColor, 90) : color.new(downColor, 90), "MS-RSI Fill")
+
+obupper = plot(20, color = color.new(downColor, 0), display = display.none)
+oblower = plot(10, color = color.new(downColor, 0), display = display.none)
+obmid = plot(17, display = display.none)
+osupper = plot(-10, color = color.new(upColor, 30), display = display.none)
+oslower = plot(-20, color = color.new(upColor, 30), display = display.none)
+osmid = plot(-17, color = color.new(upColor, 70), display = display.none)
+
+fill(obupper, oblower, color.new(downColor, 95))
+fill (oblower, obmid, color.new(downColor, 93))
+fill(osupper, oslower, color.new(upColor, 95))
+fill(osupper, osmid, color.new(upColor, 93))
+
+// Divergences Section
+wideDisplayCond = display.all
+
+bullColor = upColor
+bearColor = downColor
+hiddenBullColor = color.new(upColor, 80)
+hiddenBearColor = color.new(downColor, 80)
+textColor = color.white
+noneColor = color.new(color.white, 100)
+plFound = na(ta.pivotlow(f, lbL, lbR)) ? false : true
+phFound = na(ta.pivothigh(f, lbL, lbR)) ? false : true
+_inRange(cond) =>
+	bars = ta.barssince(cond == true)
+	-80 <= bars and bars <= 80
+
+// Regular Bullish
+oscHL = f[lbR] > ta.valuewhen(plFound, f[lbR], 1) and _inRange(plFound[1])
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+bullCond = plotBullish and priceLL and oscHL and plFound
+plot(plFound ? f[lbR] : na, offset=-lbR, title="Regular Bullish", linewidth=2, color=(bullCond ? bullColor : noneColor), display = wideDisplayCond)
+// Regular Bearish
+oscLH = f[lbR] < ta.valuewhen(phFound, f[lbR], 1) and _inRange(phFound[1])
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+bearCond = plotBear and priceHH and oscLH and phFound
+plot(phFound ? f[lbR] : na, offset=-lbR, title="Regular Bearish", linewidth=2, color=(bearCond ? bearColor : noneColor), display = wideDisplayCond)
+
+///////////////////////////Alerts
+alertcondition(ta.crossover(f,f[1]), "MS-RSI Bullish Trend Shift")
+alertcondition(ta.crossunder(f,f[1]), "MS-RSI Bearish Trend Shift")
+alertcondition(ta.crossover(f,f[1]) and f[1] < -10, "MS-RSI Bullish Reversal")
+alertcondition(ta.crossunder(f,f[1]) and f[1] > 10, "MS-RSI Bearish Reversal")
+alertcondition(plFound, "MS-RSI Bullish Divergence")
+alertcondition(phFound, "MS-RSI Bearish Divergence")

@@ -1,0 +1,184 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Keltner Channel Trend + SMC Liquidity Sweep [BigBeluga]', "KC Trend + SMC LSweep [BigBeluga]", overlay = true, max_boxes_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Keltner Channel Inputs
+kcLength = input.int(20, title = 'KC Length', minval = 1, group = 'Keltner Channel', tooltip = 'The period length used to calculate the Keltner Channel Basis (EMA) and ATR offset.')
+kcMult   = input.float(2.0, title = 'KC Multiplier', step = 0.1, group = 'Keltner Channel', tooltip = 'The multiplier applied to the ATR to set the distance of the outer Keltner Channel bands.')
+
+// SMC Liquidity Inputs
+leftBars  = input.int(5, title = 'Swing Left Bars', minval = 1, group = 'SMC Liquidity (Pivot Points)', tooltip = 'Number of bars required to the left of a high/low point to confirm a structural swing pivot.')
+rightBars = input.int(2, title = 'Swing Right Bars', minval = 1, group = 'SMC Liquidity (Pivot Points)', tooltip = 'Number of bars required to the right of a high/low point to confirm a structural swing pivot.')
+
+// Style & Color Inputs
+upCol = color.rgb(13, 141, 180)
+dnCol = color.rgb(209, 125, 28)
+
+c_bsl_border = input.color(color.new(upCol, 30), title = "BSL Border Color", group = "Color Customization", tooltip = "Border color for active Buyside Liquidity zones.")
+c_bsl_bg     = input.color(color.new(upCol, 85), title = "BSL Fill Color", group = "Color Customization", tooltip = "Background fill color for active Buyside Liquidity zones.")
+c_bsl_text   = input.color(color.white, title = "BSL Text Color", group = "Color Customization", tooltip = "Color of the text label inside the active Buyside Liquidity zone.")
+
+c_ssl_border = input.color(color.new(dnCol, 30), title = "SSL Border Color", group = "Color Customization", tooltip = "Border color for active Sellside Liquidity zones.")
+c_ssl_bg     = input.color(color.new(dnCol, 85), title = "SSL Fill Color", group = "Color Customization", tooltip = "Background fill color for active Sellside Liquidity zones.")
+c_ssl_text   = input.color(color.white, title = "SSL Text Color", group = "Color Customization", tooltip = "Color of the text label inside the active Sellside Liquidity zone.")
+
+// Midline Trend Color Inputs
+c_trend_up   = input.color(upCol, title = "Midline Trend Up Color", group = "Color Customization", tooltip = "Color of the Keltner Channel midline when the trend is bullish (rising basis).")
+c_trend_down = input.color(dnCol, title = "Midline Trend Down Color", group = "Color Customization", tooltip = "Color of the Keltner Channel midline when the trend is bearish (falling basis).")
+
+// Sweep Label Color Inputs
+c_buy_label_bg   = input.color(upCol, title = "Buy Label BG Color", group = "Signal Customization", tooltip = "Background color of the bullish SSL Sweep signal labels.")
+c_buy_label_txt  = input.color(color.white, title = "Buy Label Text Color", group = "Signal Customization", tooltip = "Text color of the bullish SSL Sweep signal labels.")
+
+c_sell_label_bg  = input.color(dnCol, title = "Sell Label BG Color", group = "Signal Customization", tooltip = "Background color of the bearish BSL Sweep signal labels.")
+c_sell_label_txt = input.color(color.white, title = "Sell Label Text Color", group = "Signal Customization", tooltip = "Text color of the bearish BSL Sweep signal labels.")
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// 1. Keltner Channel
+basis   = ta.ema(close, kcLength)
+rangeMA = ta.atr(kcLength)
+upperKC = basis + rangeMA * kcMult
+lowerKC = basis - rangeMA * kcMult
+
+// Midline Trend Detection (Color transitions based on slope)
+color c_basis_trend = basis > basis[1] ? c_trend_up : c_trend_down
+
+// 2. Identify Pivots
+swingHigh = ta.pivothigh(high, leftBars, rightBars)
+swingLow  = ta.pivotlow(low, leftBars, rightBars)
+
+// 3. Dynamic Box Drawing Logic
+var box bslBox = na
+var box sslBox = na
+
+var float bslPrice = na
+var float sslPrice = na
+
+// Define box vertical thickness in percentage of ATR to keep it scaled nicely
+boxHeightOffset = ta.atr(14) * 0.15
+
+// Draw/Update Buyside Liquidity Box (BSL = Above Highs)
+if not na(swingHigh) and high > upperKC
+    // Delete previous untargeted BSL box
+    if not na(bslBox)
+        bslBox.delete()
+
+    bslPrice := swingHigh
+    
+    // Create new BSL Box with text inside
+    bslBox := box.new(
+         left = bar_index - rightBars,
+         top = bslPrice + boxHeightOffset,
+         right = bar_index+15,
+         bottom = bslPrice - boxHeightOffset,
+         border_color = c_bsl_border,
+         border_width = 1,
+         bgcolor = c_bsl_bg,
+         text = "BSL",
+         text_color = c_bsl_text,
+         text_size = size.small,
+         text_valign = text.align_center,
+         text_halign = text.align_center,
+         extend = extend.right
+         )
+else if not na(bslBox)
+    // Continuously extend the current box to the current bar
+    bslBox.set_right(bar_index+15)
+
+// Draw/Update Sellside Liquidity Box (SSL = Below Lows)
+if not na(swingLow) and low < lowerKC
+    // Delete previous untargeted SSL box
+    if not na(sslBox)
+        sslBox.delete()
+
+    sslPrice := swingLow
+    
+    // Create new SSL Box with text inside
+    sslBox := box.new(
+         left = bar_index - rightBars,
+         top = sslPrice + boxHeightOffset,
+         right = bar_index+15,
+         bottom = sslPrice - boxHeightOffset,
+         border_color = c_ssl_border,
+         border_width = 1,
+         bgcolor = c_ssl_bg,
+         text = "SSL",
+         text_color = c_ssl_text,
+         text_size = size.small,
+         text_valign = text.align_center,
+         text_halign = text.align_center,
+         extend = extend.right
+         )
+else if not na(sslBox)
+    // Continuously extend the current box to the current bar
+    sslBox.set_right(bar_index+15)
+
+// 4. SMC Sweep & Break Logic
+bool triggerBuy  = false
+bool triggerSell = false
+
+// Handle BSL (Above Highs)
+if not na(bslPrice) and barstate.isconfirmed
+    // Case A: Bearish Sweep (High sweeps BSL, close fails to break it, happens outside Upper KC)
+    if high > bslPrice and close < bslPrice and high > upperKC
+        triggerSell := true
+        bslBox.set_extend(extend.none)
+        bslBox.set_right(bar_index)
+        bslBox := na
+        bslPrice := na
+    
+    // Case B: Structural Break (Candle closes cleanly above BSL level)
+    else if close > bslPrice
+        bslBox.set_extend(extend.none)
+        bslBox.set_right(bar_index)
+        // Style change to show it was broken/mitigated (dashed border, transparent fill, grey text)
+        bslBox.set_border_style(line.style_dashed)
+        bslBox.set_border_color(color.new(color.gray, 30))
+        bslBox.set_bgcolor(color.new(color.gray, 80))
+        bslBox.set_text_color(color.new(color.gray, 30))
+        bslBox := na
+        bslPrice := na
+
+// Handle SSL (Below Lows)
+if not na(sslPrice) and barstate.isconfirmed
+    // Case A: Bullish Sweep (Low sweeps SSL, close fails to break it, happens outside Lower KC)
+    if low < sslPrice and close > sslPrice and low < lowerKC
+        triggerBuy := true
+        sslBox.set_extend(extend.none)
+        sslBox.set_right(bar_index)
+        sslBox := na
+        sslPrice := na
+    
+    // Case B: Structural Break (Candle closes cleanly below SSL level)
+    else if close < sslPrice
+        sslBox.set_extend(extend.none)
+        sslBox.set_right(bar_index)
+        // Style change to show it was broken/mitigated (dashed border, transparent fill, grey text)
+        sslBox.set_border_style(line.style_dashed)
+        sslBox.set_border_color(color.new(color.gray, 30))
+        sslBox.set_bgcolor(color.new(color.gray, 80))
+        sslBox.set_text_color(color.new(color.gray, 30))
+        sslBox := na
+        sslPrice := na
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Plot Keltner Channels
+plot(basis, color = c_basis_trend, linewidth = 3, title = 'KC Basis Midline')
+pUpper = plot(upperKC, color = color.new(c_basis_trend, 100), title = 'KC Upper Band')
+pLower = plot(lowerKC, color = color.new(c_basis_trend, 100), title = 'KC Lower Band')
+fill(pUpper, pLower, color = color.new(chart.fg_color, 90), title = 'Channel Fill')
+
+// Plot Buy & Sell Signals with customizable dynamic colors
+plotshape(triggerBuy,  title = 'SMC Buy Sweep',  style = shape.labelup,   location = location.belowbar, color = c_buy_label_bg,  text = 'SSL\nsweep',  textcolor = c_buy_label_txt,  size = size.tiny)
+plotshape(triggerSell, title = 'SMC Sell Sweep', style = shape.labeldown, location = location.abovebar, color = c_sell_label_bg, text = 'sweep\nBSL', textcolor = c_sell_label_txt, size = size.tiny)
+
+// }

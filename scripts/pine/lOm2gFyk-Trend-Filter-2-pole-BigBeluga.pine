@@ -1,0 +1,84 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Trend Filter (2-pole) [BigBeluga]", overlay = true)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int length = input.int(20, "Length")
+float damping = input.float(0.9, "Damping", minval = 0.1, maxval = 1.0, step = 0.01)
+int ris_fal = input.int(5, "Rising and Falling")
+float bands = input.float(1.0, "Bands", step = 0.1, minval = 0.5)
+
+color up_col = input.color(color.lime, "↑", inline = "color")
+color dn_col = input.color(color.red, "↓", inline = "color")
+color __col = input.color(color.yellow, "〜", inline = "color")
+
+bool bar_col = input.bool(false, "BarColor", inline = "Features")
+bool signals = input.bool(false, "Signals", inline = "Features")
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+atr = ta.atr(200) * bands
+
+//@function Two-pole filter
+//@param src (series float) Source data (e.g., price)
+//@param length (float) Length of the filter (higher value means smoother output)
+//@param damping (float) Damping factor for the filter
+//@returns (series float) Filtered value
+method two_pole_filter(float src, int length, float damping) =>
+    // Calculate filter coefficients
+    float omega = 2.0 * math.pi / length
+    float alpha = damping * omega
+    float beta = math.pow(omega, 2)
+    
+    // Initialize the filter variables
+    var float f1 = na
+    var float f2 = na
+
+    // Update the filter
+    f1 := nz(f1[1]) + alpha * (src - nz(f1[1]))
+    f2 := nz(f2[1]) + beta * (f1 - nz(f2[1]))
+    
+    f2
+
+
+tp_f = close.two_pole_filter(length, damping)
+
+var rising = 0
+var falling = 0
+
+up = tp_f > tp_f[2]
+dn = tp_f < tp_f[2]
+
+if up
+    rising += 1
+    falling := 0
+
+if dn
+    rising := 0
+    falling += 1
+
+color = up ? color.from_gradient(rising, 0, 15, __col, up_col) : dn ? color.from_gradient(falling, 0, 15, __col, dn_col) : __col
+// }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plot(tp_f, "Two-Pole Filter", color = color, linewidth = 3)
+
+plotshape(falling >= ris_fal ? tp_f + atr : na, "Falling", shape.circle, location.absolute, color = color)
+plotshape(rising >= ris_fal  ? tp_f - atr : na, "Rising", shape.circle, location.absolute, color = color)
+
+bool sig_up = ta.crossover(rising, ris_fal) and barstate.isconfirmed and signals
+bool sig_dn = ta.crossover(falling, ris_fal) and barstate.isconfirmed and signals
+
+plotshape(sig_dn ? tp_f[1] + atr : na, "Falling", shape.triangledown, location.absolute, color = color, size = size.tiny, offset = -1)
+plotshape(sig_up ? tp_f[1] - atr : na, "Rising", shape.triangleup, location.absolute, color = color, size = size.tiny, offset = -1)
+
+
+barcolor(bar_col ? color : na)
+// }

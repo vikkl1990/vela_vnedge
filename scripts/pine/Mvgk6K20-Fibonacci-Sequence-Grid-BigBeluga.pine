@@ -1,0 +1,158 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Fibonacci Sequence Grid [BigBeluga]", overlay = true, max_lines_count = 500, max_bars_back = 5000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length    = input.int(100, "LookBack", group = "Main Settings", inline = "m")
+
+display_grid = input.bool(true, "Display", inline = "pi", group = "Fibonacci Grid")
+upper_col = input.color(color.red, "", group = "Fibonacci Grid", inline = "pi")
+lower_col = input.color(color.lime, "", group = "Fibonacci Grid", inline = "pi")
+angle       = input.float(4, "Angle", group = "Fibonacci Grid", inline = "", step = 0.1)
+
+display_fibb = input.bool(false, "Display", inline = "fl", group = "Fibonacci levels")
+upper_col1 = input.color(color.red, "", group = "Fibonacci levels", inline = "fl")
+lower_col1 = input.color(color.lime, "", group = "Fibonacci levels", inline = "fl")
+
+
+val = array.new<float>()
+var min = float(na)
+var max = float(na)
+var trend = bool(na)
+var i_max = int(na)
+var i_min = int(na)
+var step        = float(na)
+
+var ph_grid     = array.new<line>()
+var pl_grid     = array.new<line>()
+var grid        = array.new<line>()
+var grid_lbl    = array.new<label>()
+// Array to store the sequence
+var fib_array = array.new<int>()
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+h = ta.highest(length)
+l = ta.lowest(length)
+
+if high == h
+    trend := true
+if low == l
+    trend := false
+
+if trend != trend[1]
+    for i = 0 to length - 1
+        val.push(high[i])
+        val.push(low[i])
+
+    min := val.min()
+    max := val.max()
+
+    for i = 0 to length -1
+        if high[i] == max 
+            i_max := bar_index - i
+        if low[i] == min 
+            i_min := bar_index - i
+
+    step := (max - min) / angle
+
+
+atr1 = step * 0.25
+
+// Initialize on first bar
+if bar_index == 0
+    array.push(fib_array, 0)
+    array.push(fib_array, 1)
+
+    for i = 2 to 200 - 1
+        f1 = array.get(fib_array, i - 1)
+        f2 = array.get(fib_array, i - 2)
+        array.push(fib_array, f1 + f2)
+
+// Fibonacci Grid
+if display_grid
+    if barstate.islast
+
+        for i = 0 to length -1
+            if high[i] >= max 
+                max := high[i]
+            if low[i] <= min 
+                min := low[i]
+
+        l = label.new(trend ? i_min : i_max,  trend ? min : max , str.tostring(trend ? min : max), style = not trend ? label.style_label_down : label.style_label_up, color = not trend ? upper_col : lower_col)
+        label.delete(l[1])
+        
+        if ph_grid.size() > 0
+            for j = 0 to ph_grid.size() - 1
+
+                line.delete(ph_grid.get(j))
+        if pl_grid.size() > 0
+            for j = 0 to pl_grid.size() - 1
+
+                line.delete(pl_grid.get(j))
+
+        // Lower Grid
+        for i = 0 to fib_array.size()-1
+
+            f       = fib_array.get(i)
+            start   = trend ? i_min : i_max   
+            end     = start + 40 - f
+            h       = trend ? max : min
+
+            end_h   = trend ? h - atr1 * f : h + atr1 * f
+            m_col = color.new(trend ? upper_col : lower_col, 50-i*i) 
+
+            if end >= start
+                ph_grid.push(line.new(start, h, end, end_h, extend = extend.right, color = m_col))
+
+        // Upper Grid
+        for i = 0 to fib_array.size()-1 
+
+            f       = fib_array.get(i)
+            start   = trend ? i_min : i_max  
+            end     = start + 40 - f
+            h       = trend ? min : max
+            end_h   = trend ? h + atr1 * f : h - atr1 * f
+            m_col   = color.new(trend ? lower_col : upper_col, 50-i*i) 
+
+            if end >= start
+                pl_grid.push(line.new(start, h, start+50, end_h, extend = extend.right, color = m_col))
+
+
+
+// Fibonacci Levels
+if display_fibb  and barstate.islast
+
+    for i = 0 to length -1
+        if high[i] >= max 
+            max := high[i]
+        if low[i] <= min 
+            min := low[i]
+
+
+    if grid.size() > 0 
+        for j = 0 to grid.size() - 1
+            line.delete(grid.get(j))
+        for j = 0 to grid_lbl.size() - 1
+            label.delete(grid_lbl.get(j))
+                
+    for i = 0 to 10
+        f           = fib_array.get(i)
+
+        end         = bar_index +50
+        start       = trend ? i_min : i_max   
+     
+        step_ = (max - min) / 55
+
+        h_           = trend ? min + step_ * f : max - step_ * f
+
+        m_col       = color.new(not trend ? upper_col1 : lower_col1, 100-i*i-10) 
+
+        grid.push(line.new(start, h_, end, h_, extend = extend.none, color = m_col))
+        grid_lbl.push(label.new(start, h_, str.tostring(f), style = label.style_label_right, size = size.tiny, color = m_col))
+// }

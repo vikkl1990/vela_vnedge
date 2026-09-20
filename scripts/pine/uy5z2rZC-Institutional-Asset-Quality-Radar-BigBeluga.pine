@@ -1,0 +1,358 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+
+//@version=6
+indicator("Institutional Asset Quality Radar [BigBeluga]", overlay=true, max_polylines_count = 100, max_labels_count = 500, scale = scale.none)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+show_s1 = input.bool(true, "", group = "Assets", inline = "v1", tooltip = "Toggle Asset 1 visibility on the radar and dashboard")
+s1      = input.symbol("BTCUSD", "Asset 1", group = "Assets", inline = "v1")
+c1_col  = input.color(#ff007f, "", group = "Assets", inline = "v1", tooltip = "Asset 1 Color")
+
+show_s2 = input.bool(true, "", group = "Assets", inline = "v2", tooltip = "Toggle Asset 2 visibility on the radar and dashboard")
+s2      = input.symbol("ETHUSD", "Asset 2", group = "Assets", inline = "v2")
+c2_col  = input.color(#ffcc00, "", group = "Assets", inline = "v2", tooltip = "Asset 2 Color")
+
+show_s3 = input.bool(true, "", group = "Assets", inline = "v3", tooltip = "Toggle Asset 3 visibility on the radar and dashboard")
+s3      = input.symbol("SOLUSD", "Asset 3", group = "Assets", inline = "v3")
+c3_col  = input.color(#00f2ff, "", group = "Assets", inline = "v3", tooltip = "Asset 3 Color")
+
+show_s4 = input.bool(true, "", group = "Assets", inline = "v4", tooltip = "Toggle Asset 4 visibility on the radar and dashboard")
+s4      = input.symbol("XRPUSD", "Asset 4", group = "Assets", inline = "v4")
+c4_col  = input.color(#00e676, "", group = "Assets", inline = "v4", tooltip = "Asset 4 Color")
+
+show_s5 = input.bool(true, "", group = "Assets", inline = "v5", tooltip = "Toggle Asset 5 visibility on the radar and dashboard")
+s5      = input.symbol("XAUUSD", "Asset 5", group = "Assets", inline = "v5")
+c5_col  = input.color(#aa00ff, "", group = "Assets", inline = "v5", tooltip = "Asset 5 Color")
+
+radar_size      = input.int(50,    "Radar Size (Bars)",         minval = 10,  maxval = 200,  group = "Visual", tooltip = "Controls how many bars wide the radar chart spans on the chart.")
+h_offset        = input.int(125,   "Horizontal Offset (Bars)",    minval = -500, maxval = 1000, group = "Visual", tooltip = "Shifts the entire radar left or right. Increase to push further right into the future, decrease to pull left.")
+y_stretch       = input.float(1, "Vertical Stretch",            step = 0.1,                    group = "Visual", tooltip = "Scales the vertical height of the radar.")
+x_stretch       = input.float(1, "Horizontal Stretch",            step = 0.1,                    group = "Visual", tooltip = "Scales the Horizontal width of the radar.")
+show_labels     = input.bool(true, "Show Axis Labels",            group = "Visual", tooltip = "Show or hide the five axis name labels around the outer edge of the radar.")
+show_sym_labels = input.bool(true, "Show Symbol Labels on Fills", group = "Visual", tooltip = "Show or hide the ticker name label drawn at the center of each asset polygon fill.")
+show_best       = input.bool(true, "Show Best-in-Axis Labels",    group = "Visual", tooltip = "Show or hide the winner label near each axis tip.")
+lbl_size        = input.string(size.small, "Label Size", options = [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group = "Visual", tooltip = "Controls the size of all chart labels.")
+table_pos       = input.string("Top Right", "Dashboard Position", options = ["Top Right", "Bottom Right", "Top Left", "Bottom Left", "Middle Right", "Middle Left"], group = "Visual", tooltip = "Controls where the dashboard table is positioned on the chart.")
+table_size      = input.string(size.small, "Dashboard Size", options = [size.auto, size.tiny, size.small, size.normal, size.large, size.huge], group = "Visual", tooltip = "Controls the text size of the dashboard table.")
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+f_sharpe(src, lookback) =>
+    ret = ta.change(src) / src[1]
+    std = ta.stdev(ret, lookback)
+    avg = ta.sma(ret, lookback)
+    std != 0 ? (avg / std) * math.sqrt(252) : 0
+
+f_norm(val, min_v, max_v) =>
+    math.max(0, math.min(100, (val - min_v) / (max_v - min_v) * 100))
+
+get_asset_data(sym) =>
+    c = close
+    h = high
+    ret_365 = (c - c[365]) / c[365] * 100
+    vol_30  = ta.stdev(ta.change(c) / c[1], 30) * math.sqrt(252) * 100
+    shrp    = f_sharpe(c, 90)
+    vol_1y  = ta.stdev(ta.change(c) / c[1], 252) * math.sqrt(252) * 100
+    mdd     = ((c - ta.highest(h, 252)) / ta.highest(h, 252)) * 100
+    s_a = f_norm(ret_365, -50, 150)
+    s_b = 100 - f_norm(vol_30, 20, 120)
+    s_c = f_norm(shrp, -2, 5)
+    s_d = 100 - f_norm(vol_1y, 30, 150)
+    s_e = 100 - math.abs(f_norm(mdd, -80, 0))
+    [s_a, s_b, s_c, s_d, s_e, ret_365, vol_30, shrp, vol_1y, mdd]
+
+[s1a, s1b, s1c, s1d, s1e, s1ra, s1rb, s1rc, s1rd, s1re] = request.security(s1, "D", get_asset_data(s1))
+[s2a, s2b, s2c, s2d, s2e, s2ra, s2rb, s2rc, s2rd, s2re] = request.security(s2, "D", get_asset_data(s2))
+[s3a, s3b, s3c, s3d, s3e, s3ra, s3rb, s3rc, s3rd, s3re] = request.security(s3, "D", get_asset_data(s3))
+[s4a, s4b, s4c, s4d, s4e, s4ra, s4rb, s4rc, s4rd, s4re] = request.security(s4, "D", get_asset_data(s4))
+[s5a, s5b, s5c, s5d, s5e, s5ra, s5rb, s5rc, s5rd, s5re] = request.security(s5, "D", get_asset_data(s5))
+
+// RADAR GEOMETRY
+center_x   = bar_index - math.round(radar_size * 0.8)
+price_unit = ta.atr(100) * (radar_size / 20) * 3 *  y_stretch
+
+get_pt(score, angle_deg) =>
+    angle_rad = angle_deg * math.pi / 180
+    r = (score / 100) * radar_size
+    x = center_x + math.round(r* x_stretch * math.cos(angle_rad))
+    y = (r * math.sin(angle_rad)) * price_unit
+    chart.point.from_index(x + h_offset, y)
+
+angles = array.from(90, 162, 234, 306, 18)
+
+pts1 = array.new<chart.point>(5, na)
+pts2 = array.new<chart.point>(5, na)
+pts3 = array.new<chart.point>(5, na)
+pts4 = array.new<chart.point>(5, na)
+pts5 = array.new<chart.point>(5, na)
+
+// Storage arrays for drawings — cleared and redrawn on every new bar
+var drawn_polylines = array.new<polyline>()
+var drawn_labels    = array.new<label>()
+
+f_centroid(pts) =>
+    sum_x = 0
+    sum_y = 0.0
+    for i = 0 to 4
+        p = array.get(pts, i)
+        sum_x += p.index
+        sum_y += p.price
+    chart.point.from_index(math.round(sum_x / 5), sum_y / 5)
+
+f_best_ticker(v1, v2, v3, v4, v5) =>
+    best_val = -999999.0
+    best_sym = ""
+    if show_s1 and v1 > best_val
+        best_val := v1
+        best_sym := syminfo.ticker(s1)
+    if show_s2 and v2 > best_val
+        best_val := v2
+        best_sym := syminfo.ticker(s2)
+    if show_s3 and v3 > best_val
+        best_val := v3
+        best_sym := syminfo.ticker(s3)
+    if show_s4 and v4 > best_val
+        best_val := v4
+        best_sym := syminfo.ticker(s4)
+    if show_s5 and v5 > best_val
+        best_val := v5
+        best_sym := syminfo.ticker(s5)
+    [best_sym, best_val]
+
+f_breakdown(axisName, suffix,
+     sc1, sc2, sc3, sc4, sc5,
+     rv1, rv2, rv3, rv4, rv5) =>
+    syms  = array.new<string>()
+    norms = array.new<float>()
+    raws  = array.new<float>()
+    if show_s1
+        syms.push(syminfo.ticker(s1))
+        norms.push(sc1)
+        raws.push(rv1)
+    if show_s2
+        syms.push(syminfo.ticker(s2))
+        norms.push(sc2)
+        raws.push(rv2)
+    if show_s3
+        syms.push(syminfo.ticker(s3))
+        norms.push(sc3)
+        raws.push(rv3)
+    if show_s4
+        syms.push(syminfo.ticker(s4))
+        norms.push(sc4)
+        raws.push(rv4)
+    if show_s5
+        syms.push(syminfo.ticker(s5))
+        norms.push(sc5)
+        raws.push(rv5)
+    n = syms.size()
+    if n > 1
+        for i = 0 to n - 2
+            for j = 0 to n - 2 - i
+                if norms.get(j) < norms.get(j + 1)
+                    tmpN = norms.get(j)
+                    tmpR = raws.get(j)
+                    tmpS = syms.get(j)
+                    norms.set(j,    norms.get(j + 1))
+                    raws.set(j,      raws.get(j + 1))
+                    syms.set(j,      syms.get(j + 1))
+                    norms.set(j + 1, tmpN)
+                    raws.set(j + 1,  tmpR)
+                    syms.set(j + 1,  tmpS)
+    result = axisName + ":\n"
+    for i = 0 to n - 1
+        rank   = i == 0 ? "1. " : i == 1 ? "2. " : i == 2 ? "3. " : i == 3 ? "4. " : "5. "
+        rawStr = str.tostring(raws.get(i), "#.##") + suffix
+        result += rank + syms.get(i) + "  " + rawStr
+        if i < n - 1
+            result += "\n"
+    result
+
+// PLOT
+f_get_position(pos_str) =>
+    switch pos_str
+        "Top Right"    => position.top_right
+        "Bottom Right" => position.bottom_right
+        "Top Left"     => position.top_left
+        "Bottom Left"  => position.bottom_left
+        "Middle Right" => position.middle_right
+        "Middle Left"  => position.middle_left
+        => position.top_right
+
+var tb = table.new(f_get_position(table_pos), 7, 6,
+     color.new(color.black, 20), color.new(color.gray, 60), 1, chart.bg_color, 2)
+
+f_draw_row(r, sym, sa, sb, sc, sd, se, raw_a, raw_b, raw_c, raw_d, raw_e, col) =>
+    avg    = (sa + sb + sc + sd + se) / 5
+    rating = avg > 75 ? "PREMIUM" : avg > 45 ? "STABLE" : "SPECULATIVE"
+    table.cell(tb, 0, r, sym,
+         text_color = color.white, bgcolor = col, text_size = table_size)
+    table.cell(tb, 1, r, str.tostring(math.round(avg)) + "% | " + rating,
+         text_color = color.white, text_size = table_size)
+    table.cell(tb, 2, r, str.tostring(raw_a, "#.#") + "%",
+         text_color = raw_a >= 0 ? #22c55e : #ef4444, text_size = table_size)
+    table.cell(tb, 3, r, str.tostring(raw_b, "#.#") + "%",
+         text_color = color.orange, text_size = table_size)
+    table.cell(tb, 4, r, str.tostring(raw_c, "#.##") + "x",
+         text_color = raw_c >= 0 ? #22c55e : #ef4444, text_size = table_size)
+    table.cell(tb, 5, r, str.tostring(raw_d, "#.#") + "%",
+         text_color = color.orange, text_size = table_size)
+    table.cell(tb, 6, r, str.tostring(raw_e, "#.#") + "%",
+         text_color = raw_e >= -20 ? #22c55e : #ef4444, text_size = table_size)
+
+f_polyline(pts, col) =>
+    pl = polyline.new(pts, closed = true, line_color = col, fill_color = color.new(col, 80), line_width = 2)
+    drawn_polylines.push(pl)
+
+f_label(pt, txt, bg, tc, sty, sz) =>
+    lb = label.new(pt, txt, color = bg, textcolor = tc, style = sty, size = sz)
+    drawn_labels.push(lb)
+
+f_label_tt(pt, txt, bg, tc, sty, tt, sz) =>
+    lb = label.new(pt, txt, color = bg, textcolor = tc, style = sty, tooltip = tt, size = sz)
+    drawn_labels.push(lb)
+// }
+
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+if barstate.islast
+    table.set_position(tb, f_get_position(table_pos))
+
+    for pl in drawn_polylines
+        pl.delete()
+    drawn_polylines.clear()
+    for lb in drawn_labels
+        lb.delete()
+    drawn_labels.clear()
+
+    for i = 0 to 4
+        ang    = array.get(angles, i)
+        s1_val = i == 0 ? s1a : i == 1 ? s1b : i == 2 ? s1c : i == 3 ? s1d : s1e
+        s2_val = i == 0 ? s2a : i == 1 ? s2b : i == 2 ? s2c : i == 3 ? s2d : s2e
+        s3_val = i == 0 ? s3a : i == 1 ? s3b : i == 2 ? s3c : i == 3 ? s3d : s3e
+        s4_val = i == 0 ? s4a : i == 1 ? s4b : i == 2 ? s4c : i == 3 ? s4d : s4e
+        s5_val = i == 0 ? s5a : i == 1 ? s5b : i == 2 ? s5c : i == 3 ? s5d : s5e
+        array.set(pts1, i, get_pt(s1_val, ang))
+        array.set(pts2, i, get_pt(s2_val, ang))
+        array.set(pts3, i, get_pt(s3_val, ang))
+        array.set(pts4, i, get_pt(s4_val, ang))
+        array.set(pts5, i, get_pt(s5_val, ang))
+
+    if show_s1
+        f_polyline(pts1, c1_col)
+    if show_s2
+        f_polyline(pts2, c2_col)
+    if show_s3
+        f_polyline(pts3, c3_col)
+    if show_s4
+        f_polyline(pts4, c4_col)
+    if show_s5
+        f_polyline(pts5, c5_col)
+
+    if show_sym_labels
+        if show_s1
+            c1 = f_centroid(pts1)
+            f_label(c1, syminfo.ticker(s1), color.new(c1_col, 30), color.white, label.style_label_center, lbl_size)
+        if show_s2
+            c2 = f_centroid(pts2)
+            f_label(c2, syminfo.ticker(s2), color.new(c2_col, 30), color.black, label.style_label_center, lbl_size)
+        if show_s3
+            c3 = f_centroid(pts3)
+            f_label(c3, syminfo.ticker(s3), color.new(c3_col, 30), color.black, label.style_label_center, lbl_size)
+        if show_s4
+            c4 = f_centroid(pts4)
+            f_label(c4, syminfo.ticker(s4), color.new(c4_col, 30), color.black, label.style_label_center, lbl_size)
+        if show_s5
+            c5 = f_centroid(pts5)
+            f_label(c5, syminfo.ticker(s5), color.new(c5_col, 30), color.white, label.style_label_center, lbl_size)
+
+    if show_best
+        [bestA, valA] = f_best_ticker(s1a, s2a, s3a, s4a, s5a)
+        f_label(get_pt(108, 90), bestA + "\n" + str.tostring(math.round(valA)) + "%",
+             color.new(color.black, 30), color.yellow, label.style_label_center, lbl_size)
+
+        [bestB, valB] = f_best_ticker(s1b, s2b, s3b, s4b, s5b)
+        f_label(get_pt(111, 162), bestB + "\n" + str.tostring(math.round(valB)) + "%",
+             color.new(color.black, 30), color.yellow, label.style_label_center, lbl_size)
+
+        [bestC, valC] = f_best_ticker(s1c, s2c, s3c, s4c, s5c)
+        f_label(get_pt(108, 234), bestC + "\n" + str.tostring(math.round(valC)) + "%",
+             color.new(color.black, 30), color.yellow, label.style_label_center, lbl_size)
+
+        [bestD, valD] = f_best_ticker(s1d, s2d, s3d, s4d, s5d)
+        f_label(get_pt(108, 306), bestD + "\n" + str.tostring(math.round(valD)) + "%",
+             color.new(color.black, 30), color.yellow, label.style_label_center, lbl_size)
+
+        [bestE, valE] = f_best_ticker(s1e, s2e, s3e, s4e, s5e)
+        f_label(get_pt(110, 17), bestE + "\n" + str.tostring(math.round(valE)) + "%",
+             color.new(color.black, 30), color.yellow, label.style_label_center, lbl_size)
+
+    for level = 20 to 100 by 20
+        grid_pts = array.new<chart.point>()
+        for i = 0 to 4
+            array.push(grid_pts, get_pt(level, array.get(angles, i)))
+        pl = polyline.new(grid_pts, closed = true, line_color = color.new(#9da5bd, 26), line_style = line.style_dotted)
+        drawn_polylines.push(pl)
+
+    if show_labels
+        ttA = f_breakdown("Annual Return (%)", "%",
+             s1a, s2a, s3a, s4a, s5a, s1ra, s2ra, s3ra, s4ra, s5ra)
+        f_label_tt(get_pt(115, 90), "Annual\nReturn",
+             color.new(color.white, 100), chart.fg_color, label.style_label_down, ttA, lbl_size)
+
+        ttB = f_breakdown("30D Volatility (%)", "%",
+             s1b, s2b, s3b, s4b, s5b, s1rb, s2rb, s3rb, s4rb, s5rb)
+        f_label_tt(get_pt(115, 162), "30D\nStability",
+             color.new(color.white, 100), chart.fg_color, label.style_label_right, ttB, lbl_size)
+
+        ttC = f_breakdown("Sharpe Ratio", "x",
+             s1c, s2c, s3c, s4c, s5c, s1rc, s2rc, s3rc, s4rc, s5rc)
+        f_label_tt(get_pt(115, 234), "Sharpe\nRatio",
+             color.new(color.white, 100), chart.fg_color, label.style_label_right, ttC, lbl_size)
+
+        ttD = f_breakdown("1Y Volatility (%)", "%",
+             s1d, s2d, s3d, s4d, s5d, s1rd, s2rd, s3rd, s4rd, s5rd)
+        f_label_tt(get_pt(115, 306), "1Y\nStability",
+             color.new(color.white, 100), chart.fg_color, label.style_label_left, ttD, lbl_size)
+
+        ttE = f_breakdown("Max Drawdown (%)", "%",
+             s1e, s2e, s3e, s4e, s5e, s1re, s2re, s3re, s4re, s5re)
+        f_label_tt(get_pt(115, 18), "Max\nDrawdown",
+             color.new(color.white, 100), chart.fg_color, label.style_label_left, ttE, lbl_size)
+
+    table.cell(tb, 0, 0, "Asset",      bgcolor = color.black, text_color = color.white, text_size = table_size)
+    table.cell(tb, 1, 0, "Score/Rank",  bgcolor = color.black, text_color = color.white, text_size = table_size)
+    table.cell(tb, 2, 0, "Ann. Return", bgcolor = color.black, text_color = color.white, text_size = table_size)
+    table.cell(tb, 3, 0, "30d Vol",     bgcolor = color.black, text_color = color.white, text_size = table_size)
+    table.cell(tb, 4, 0, "Sharpe",      bgcolor = color.black, text_color = color.white, text_size = table_size)
+    table.cell(tb, 5, 0, "1Y Vol",      bgcolor = color.black, text_color = color.white, text_size = table_size)
+    table.cell(tb, 6, 0, "Max DD",      bgcolor = color.black, text_color = color.white, text_size = table_size)
+
+    row = 1
+    if show_s1
+        f_draw_row(row, syminfo.ticker(s1), s1a, s1b, s1c, s1d, s1e, s1ra, s1rb, s1rc, s1rd, s1re, color.new(c1_col, 20))
+        row += 1
+    if show_s2
+        f_draw_row(row, syminfo.ticker(s2), s2a, s2b, s2c, s2d, s2e, s2ra, s2rb, s2rc, s2rd, s2re, color.new(c2_col, 40))
+        row += 1
+    if show_s3
+        f_draw_row(row, syminfo.ticker(s3), s3a, s3b, s3c, s3d, s3e, s3ra, s3rb, s3rc, s3rd, s3re, color.new(c3_col, 40))
+        row += 1
+    if show_s4
+        f_draw_row(row, syminfo.ticker(s4), s4a, s4b, s4c, s4d, s4e, s4ra, s4rb, s4rc, s4rd, s4re, color.new(c4_col, 40))
+        row += 1
+    if show_s5
+        f_draw_row(row, syminfo.ticker(s5), s5a, s5b, s5c, s5d, s5e, s5ra, s5rb, s5rc, s5rd, s5re, color.new(c5_col, 40))
+
+atr = ta.atr(200)
+plot(atr * 1000, color = na, display = display.all, editable = false)
+// }

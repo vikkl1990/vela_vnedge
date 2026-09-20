@@ -1,0 +1,75 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Liquidity Sweep Hunter [BigBeluga]', overlay = true, max_labels_count = 500, calc_bars_count = 1000, max_lines_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int len = input.int(5, 'Length', inline = 'levels')
+float filter = input.float(0.5, 'Filter', step = 0.1, minval = 0, maxval = 100, inline = 'levels', tooltip = 'Filter levels based on volume strength')
+bool sweep = input.bool(true, 'Liquidity sweep', tooltip = 'Display check marks where liquidity was swept.')
+
+color col_up = input.color(color.blue, '⤓', inline = 'color', group = 'Color')
+color col_dn = input.color(color.orange, '⤒', inline = 'color', group = 'Color')
+
+int max_width = input.int(4, 'Max Line Width', minval = 1, maxval = 5, group = 'Dynamic Intensity')
+int min_transp = input.int(0, 'Min Transparency (Intense)', minval = 0, maxval = 100, group = 'Dynamic Intensity')
+int max_transp = input.int(60, 'Max Transparency (Faded)', minval = 0, maxval = 100, group = 'Dynamic Intensity')
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float volume_ = (volume - volume[1]) / volume * 100
+bool ph = not na(ta.pivotlow(len, len)) and volume_[len] > filter
+bool pl = not na(ta.pivothigh(len, len)) and volume_[len] > filter
+
+type level
+    line ln
+    label lb
+    bool is_ph // true if pivot low (supports), false if pivot high (resistances)
+
+var level[] levels = array.new<level>()
+
+update_levels() =>
+    if array.size(levels) > 0
+        for i = array.size(levels) - 1 to 0 by 1
+            level lv = array.get(levels, i)
+            float price = lv.ln.get_y2()
+            
+            lv.ln.set_x2(bar_index + 25)
+            
+            lv.lb.set_x(bar_index + 25)
+            
+            // Sweep Logic
+            bool low_sweep = lv.is_ph and low < price and close > price
+            bool high_sweep = not lv.is_ph and high > price and close < price
+            
+            if sweep and (low_sweep or high_sweep) and barstate.isconfirmed
+                label.new(bar_index, low_sweep ? low : high, '✔', style = low_sweep ? label.style_label_up : label.style_label_down, color = color(na), textcolor = low_sweep ? col_up : col_dn, tooltip = "Liquidity Sweep")
+
+            // Break Logic
+            bool line_break = high > price and low < price and barstate.isconfirmed
+            if line_break
+                lv.ln.set_extend(extend.none)
+                lv.ln.set_x2(bar_index)
+                lv.ln.set_style(line.style_dotted)
+                if not na(lv.lb)
+                    lv.lb.delete()
+                array.remove(levels, i)
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if last_bar_index - bar_index < 2000
+    float vol_factor = math.max(0.0, math.min(1.0, volume_[len] / 100.0))
+    int dynamic_width  = math.round(1 + (max_width - 1) * vol_factor)
+    int dynamic_transp = math.round(max_transp + (min_transp - max_transp) * vol_factor)
+
+    if ph or pl
+        float price = ph ? low[len] : high[len]
+        color c = ph ? col_up : col_dn
+        
+        line ln = line.new(bar_index - len, price, bar_index + 5, price, color = color.new(c, dynamic_transp), width = dynamic_width)
+        label lb = label.new(bar_index, price, str.tostring(math.round(price, 1)), style = label.style_label_lower_left, color = c, textcolor = color.white, size = size.small)
+        
+        array.push(levels, level.new(ln, lb, ph))
+
+    update_levels()

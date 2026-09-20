@@ -1,0 +1,63 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title='Efficiency Weighted Orderflow [AlgoAlpha]', shorttitle = "AlgoAlpha - 𝑬𝒇𝒇𝒊𝒄𝒊𝒆𝒏𝒄𝒚 𝑾𝒆𝒊𝒈𝒉𝒕𝒆𝒅 𝑶𝒓𝒅𝒆𝒓𝒇𝒍𝒐𝒘", precision = 3, overlay=false, explicit_plot_zorder = true)
+
+// Input parameters
+useSmoothing = input.bool(true, "Smooth OrderFlow?", group = "Calculation Parameters")
+orderFlowWindow = input.int(12, minval=1, title='Order Flow Period', group = "Calculation Parameters")
+smoothingLength = input.int(10, minval=1, title='Order Flow HMA Smoothing Length', group = "Calculation Parameters")
+
+// Colors
+upColor = input(#00ffbb, "Up Colour")
+downColor = input(#ff1100, "Down Colour")
+
+// Order Flow Calculation
+efficiency = math.abs(close-open)/volume
+orderFlow = math.sum((close > close[1] ? volume : (close < close[1] ? -volume : 0)) * efficiency, orderFlowWindow) / math.sum(efficiency, orderFlowWindow)
+orderFlow := useSmoothing ? ta.hma(orderFlow, smoothingLength) : orderFlow
+pine_vwrma(x, y) =>
+    ta.rma(x * volume, y) / ta.rma(volume, y)
+// Standard Deviation Calculation
+stdDev = ta.stdev(orderFlow, 45) * 1
+normalizedOrderFlow = orderFlow/(stdDev + stdDev)
+
+// Plotting Order Flow Columns
+gap = 0.4
+midu = plot(gap,     "Basis", color = color.blue, display = display.none)
+mmm = plot(0,     "Basis", color = color.new(close > 0 ? upColor : downColor, 3), display = display.all)
+midl = plot(-gap,     "Basis", color = color.blue, display = display.none)
+upu = plot(1.5+gap,     "upper", color = color.blue, display = display.none)
+uuu = plot(1.5,     "upper", color = color.blue, display = display.none)
+upl = plot(1.5-gap,     "upper", color = color.blue, display = display.none)
+lpu = plot(-1.5+gap,     "lower", color = color.blue, display = display.none)
+lll = plot(-1.5,     "lower", color = color.blue, display = display.none)
+lpl = plot(-1.5-gap,     "lower", color = color.blue, display = display.none)
+plot(math.avg(gap, 1.5-gap), "Upper Inter Range", color.new(chart.fg_color, 80), 1, plot.style_circles)
+plot(math.avg(-gap, -1.5+gap), "Lower Inter Range", color.new(chart.fg_color, 80), 1, plot.style_circles)
+fill(upu, uuu, 1.5+gap, 1.5, color.new(downColor, normalizedOrderFlow > 0 ? 20 : 60), color.new(downColor, normalizedOrderFlow > 0 ? 50 : 80), "Upper Cloud")
+fill(upl, uuu, 1.52, 1.5-gap, color.new(downColor, 80), color.new(downColor, 99), "Upper Cloud")
+fill(lpl, lll, -1.5, -1.5-gap, color.new(upColor, normalizedOrderFlow < 0 ? 50 : 80), color.new(upColor, normalizedOrderFlow < 0 ? 20 : 60), "lower Cloud")
+fill(lpu, lll, -1.5+gap, -1.5, color.new(upColor, 99),color.new(upColor, 80), "lower Cloud")
+
+transparencyControl1 = 30
+chg1 = normalizedOrderFlow * 0.80
+chg2 = normalizedOrderFlow * 0.60
+chg3 = normalizedOrderFlow * 0.40
+chg4 = normalizedOrderFlow * 0.20
+plot(normalizedOrderFlow, color = color.new(normalizedOrderFlow > 0 ? upColor : downColor, transparencyControl1+60), style = plot.style_columns, linewidth = 4)
+plot(chg1, color = color.new(normalizedOrderFlow > 0 ? upColor : downColor, transparencyControl1+55), style = plot.style_columns, linewidth = 4)
+plot(chg2, color = color.new(normalizedOrderFlow > 0 ? upColor : downColor, transparencyControl1+40), style = plot.style_columns, linewidth = 4)
+plot(chg3, color = color.new(normalizedOrderFlow > 0 ? upColor : downColor, transparencyControl1+30), style = plot.style_columns, linewidth = 4)
+plot(chg4, color = color.new(normalizedOrderFlow > 0 ? upColor : downColor, transparencyControl1+25), style = plot.style_columns, linewidth = 4)
+plot(normalizedOrderFlow, color = color.new(normalizedOrderFlow > 0 ? upColor : downColor, transparencyControl1))
+plotchar(ta.crossunder(normalizedOrderFlow, 1.5) ? 2.1 : na, "Bearish Reversal", "▼", location.absolute, downColor, size = size.tiny)
+plotchar(ta.crossover(normalizedOrderFlow, -1.5) ? -2.1 : na, "Bullish Reversal", "▲", location.absolute, upColor, size = size.tiny)
+
+//Alerts
+alertcondition(ta.cross(normalizedOrderFlow, 0), "OrderFlow is Changing Trend")
+alertcondition(ta.cross(normalizedOrderFlow, math.avg(gap, 1.5-gap)), "OrderFlow is Increasing in Bullish Trend")
+alertcondition(ta.cross(normalizedOrderFlow, math.avg(-gap, -1.5+gap)), "OrderFlow is Increasing in Bearish Trend")
+alertcondition(ta.crossunder(normalizedOrderFlow, 1.5), "Bearish Reversal")
+alertcondition(ta.crossover(normalizedOrderFlow, -1.5), "Bullish Reversal")

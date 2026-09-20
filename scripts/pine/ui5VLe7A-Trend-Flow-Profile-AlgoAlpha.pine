@@ -1,0 +1,27 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha X © Sushiboi77
+
+//@version=5
+indicator('Trend Flow Profile [AlgoAlpha]', 'AlgoAlpha - 📈 Trend Flow Profile ', false, timeframe = "", timeframe_gaps = false)
+
+// Inputs
+flowPeriod = input.int(12, 'Trend Flow Period', minval=1)
+showEMA = input.bool(true, "Show EMA band?")
+emaLength = input(8, "EMA Length")
+upColor = input.color(#00ffbb, "Up Color")
+downColor = input.color(#ff1100, "Down Color")
+rocLength = input(14, "ROC Length")
+
+// Calculations
+volFlow = math.sum(close > close[1] ? volume : close < close[1] ? -volume : 0, flowPeriod) / 1000
+priceROC = ta.roc(close, rocLength)
+tfIndicator = (priceROC + volFlow) / 2
+emaTrend = ta.ema(tfIndicator, emaLength)
+
+// Color Logic
+indicatorColor = tfIndicator > 0 ? tfIndicator > tfIndicator[1] ? color.new(upColor, 20) : color.new(upColor, 50) : tfIndicator < tfIndicator[1] ? color.new(downColor, 20) : color.new(downColor, 50)
+
+// Plots
+plot(tfIndicator, 'Trend Flow', indicatorColor, 2, plot.style_columns)
+plot(volFlow, 'Volume Flow', volFlow > 0 ? color.new(upColor, 80) : color.new(downColor, 80), 1, plot.style_columns)
+plot(showEMA ? emaTrend : na, 'EMA Trend Line', color.rgb(126, 126, 126))

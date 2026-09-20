@@ -1,0 +1,158 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Jurik MA Trend Breakouts [BigBeluga]", overlay = true, max_labels_count = 500, max_lines_count = 500)
+import TradingView/ta/11
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+len      = input.int(9, "MA Length")
+phase    = input.float(0.15, "MA Phase", step = 0.01)
+pivotLen = input.int(4, "Pivot Length")
+colorUp  = input.color(color.rgb(26, 255, 64), "", inline = "c")
+colorDn  = input.color(color.rgb(35, 156, 255), "", inline = "c")
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+JurikMA(float src, float length, float phase) =>
+    float beta = 0.45 * (length - 1) / (0.45 * (length - 1) + 2)
+    float alpha = math.pow(beta, phase)
+    var float jma = src
+    jma := (1 - alpha) * src + alpha * nz(jma[1])
+    jma
+
+
+jSmooth = JurikMA(close, len, phase)
+
+trend = jSmooth >= jSmooth[3] and barstate.isconfirmed
+
+trendColor = trend ? colorUp : not trend and barstate.isconfirmed ? colorDn : color.new(chart.bg_color, 100)
+
+
+ph  = ta.pivothigh(pivotLen, pivotLen)
+pl  = ta.pivotlow(pivotLen, pivotLen)
+atr = ta.atr(200)
+
+var H = float(na)
+var Hi = 0
+var BreakUp = 0
+
+
+var L = float(na)
+var Li = 0
+var BreakDn = 0
+
+
+type phs 
+    label lbl1 
+    label lbl2
+    line l1
+    line l2
+
+
+var upper = phs.new(l1 = line(na))
+var lower = phs.new(l1 = line(na))
+
+
+if trend and upper.l1 == line(na)
+
+    if not na(ph) and Hi > BreakUp
+        if math.abs(ph - H) < atr 
+
+            l1 = line.new(bar_index-pivotLen, high[pivotLen], bar_index-pivotLen, high[pivotLen], color = colorUp)
+            l2 = line.new(Hi, H, bar_index-pivotLen, high[pivotLen], color = colorUp)
+
+            lbl1 = label.new(Hi, H, "✓", color = color.new(color.black, 100), textcolor = colorUp, tooltip = "Pivot High 1")
+            lbl2 = label.new(bar_index-pivotLen, ph, "✓", color = color.new(color.black, 100), textcolor = colorUp, tooltip = "Pivot High 2")
+
+            upper := phs.new(lbl1, lbl2, l1, l2)
+
+if trend
+    if not na(ph)
+    
+        H := ph
+        Hi := bar_index-pivotLen
+
+upper.l1.set_x2(bar_index)
+upper.l1.set_style(line.style_dashed)
+upper.l2.set_style(line.style_dashed)
+
+
+if trend != trend[1] 
+    upper.l1.delete()
+    upper.l2.delete()
+    
+    upper.lbl1.delete()
+    upper.lbl2.delete()
+    
+    upper.l1 := line(na)
+    upper.lbl1 := label(na)
+    upper.lbl2 := label(na)
+
+if close > upper.l1.get_y2() and upper.l1 != line(na) and barstate.isconfirmed
+
+    label.new(bar_index, low, "↑", color = color.new(color.black, 100), textcolor = colorUp, style = "lup", tooltip = "Break Up", size = size.large)
+    upper.l1 := line(na)
+    upper.l2 := line(na)
+    
+    upper.lbl1 := label(na)
+    upper.lbl2 := label(na)
+
+    BreakUp := bar_index
+
+if not trend and lower.l1 == line(na)
+
+    if not na(pl) and Li > BreakDn
+        if math.abs(pl - L) < atr 
+
+            l1 = line.new(bar_index-pivotLen, low[pivotLen], bar_index-pivotLen, low[pivotLen], color = colorDn)
+            l2 = line.new(Li, L, bar_index-pivotLen, low[pivotLen], color = colorDn)
+
+            lbl1 = label.new(Li, L, "✓", color = color.new(color.black, 100), textcolor = colorDn, style = label.style_label_up, tooltip = "Pivot Low 1")
+            lbl2 = label.new(bar_index-pivotLen, pl, "✓", color = color.new(color.black, 100), textcolor = colorDn, style = label.style_label_up, tooltip = "Pivot Low 2")
+
+            lower := phs.new(lbl1, lbl2, l1, l2)
+
+
+if not trend
+    if not na(pl)
+        L := pl
+        Li := bar_index-pivotLen
+
+lower.l1.set_x2(bar_index)
+lower.l1.set_style(line.style_dashed)
+lower.l2.set_style(line.style_dashed)
+
+
+if trend != trend[1] 
+    lower.l1.delete()
+    lower.l2.delete()
+    
+    lower.lbl1.delete()
+    lower.lbl2.delete()
+    
+    lower.l1 := line(na)
+    lower.lbl1 := label(na)
+    lower.lbl2 := label(na)
+
+if close < lower.l1.get_y2() and lower.l1 != line(na) and barstate.isconfirmed
+
+    label.new(bar_index, high, "↓", color = color.new(color.black, 100), textcolor = colorDn, style = "ldn", tooltip = "Break Down", size = size.large)
+    lower.l1 := line(na)
+    lower.l2 := line(na)
+    
+    lower.lbl1 := label(na)
+    lower.lbl2 := label(na)
+
+    BreakDn := bar_index
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plot(jSmooth, "JurikMA", color = trendColor, linewidth = 3)
+plot(jSmooth, "JurikMA Glow", color = color.new(trendColor, 60), linewidth = 8)
+// }

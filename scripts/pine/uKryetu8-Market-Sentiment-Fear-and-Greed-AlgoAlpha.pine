@@ -1,0 +1,115 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Market Sentiment Fear and Greed [AlgoAlpha]")
+
+len = input.int(10, "Lookback Window")
+mult = input.float(2.5, "Trend Breakout Threshold")
+tc = input.int(10, "Gauge Resolution")
+mode = input.string("Sentiment True", "Indicator Mode", ["Sentiment True", "Sentiment Normalized"])
+tpos = input.string("Middle Right", "Gauge Position", ["Middle Right", "Middle Center", "Middle Left", "Bottom Center", "Bottom Left", "Bottom Right", "Top Center", "Top Left", "Top Right"])
+colorUp = input.color(#00ffbb, title="Bullish Color")
+colorDown = input.color(#ff1100, title="Bearish Color")
+
+pos(type) =>
+    switch type
+        "Middle Right" => position.middle_right
+        "Middle Center" => position.middle_center
+        "Middle Left" => position.middle_left
+        "Bottom Center" => position.bottom_center
+        "Bottom Left" => position.bottom_left
+        "Bottom Right" => position.bottom_right
+        "Top Center" => position.top_center
+        "Top Left" => position.top_left
+        "Top Right" => position.top_right
+
+t = table.new(pos(tpos), 3, tc+3, force_overlay = true),
+printTable(txt, col, row, color, txt1, txt2, sent) =>  
+    table.cell(t, col, row, txt, bgcolor = color),
+    table.cell(t, col, sent, ">", bgcolor = chart.bg_color, text_color = color.white)
+    table.cell(t, 1, tc+1, txt1, bgcolor = chart.bg_color, text_color = chart.fg_color)
+    table.cell(t, 1, 0, txt2, bgcolor = chart.bg_color, text_color = chart.fg_color)
+
+sentiment = ta.sma(volume, len) * ta.sma(close, len)
+
+sell = close < open ? volume * close : 0
+buy = close > open ? volume * close : 0
+
+sellers = math.sum(sell, len)
+buyers = math.sum(buy, len)
+
+true_sentiment = sellers < buyers? sentiment : -sentiment
+n_true_sentiment = (true_sentiment) / (ta.ema(ta.highest(true_sentiment, len*2) - ta.lowest(true_sentiment, len*2), len))
+n_true_sentiment := n_true_sentiment > 0 ? math.min(n_true_sentiment, 1) : math.max(n_true_sentiment, -1)
+tsv = ta.stdev(sentiment, len*2)*mult
+upper = tsv
+lower = -tsv
+n_sent = true_sentiment < 0 ? true_sentiment : 0
+p_sent = true_sentiment > 0 ? true_sentiment : 0
+p_impulse = ta.hma(p_sent, math.round(len/1))
+n_impulse = ta.hma(n_sent, math.round(len/1))
+var p_imp = 0
+var n_imp = 0
+c = math.abs(true_sentiment) > tsv ? (true_sentiment > 0 ? colorUp : colorDown) : chart.fg_color
+
+if true_sentiment > tsv and p_impulse > tsv
+    p_imp := 1
+
+if ta.crossunder(p_impulse, tsv)
+    p_imp := 0
+
+if true_sentiment < -tsv and n_impulse < -tsv
+    n_imp := 1
+
+if ta.crossover(n_impulse, -tsv)
+    n_imp := 0
+
+transparencyControl1 = 30
+chg1 = p_imp != 0 ? p_impulse * 0.80: na 
+chg2 = p_imp != 0 ? p_impulse * 0.60: na 
+chg3 = p_imp != 0 ? p_impulse * 0.40: na 
+chg4 = p_imp != 0 ? p_impulse * 0.20: na 
+
+chg1a = n_imp != 0 ? n_impulse * 0.80: na 
+chg2a = n_imp != 0 ? n_impulse * 0.60: na 
+chg3a = n_imp != 0 ? n_impulse * 0.40: na 
+chg4a = n_imp != 0 ? n_impulse * 0.20: na
+
+plot(p_imp != 0 ? p_impulse : na, color = color.new(colorUp, transparencyControl1+60), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg1, color = color.new(colorUp, transparencyControl1+55), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg2, color = color.new(colorUp, transparencyControl1+40), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg3, color = color.new(colorUp, transparencyControl1+30), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg4, color = color.new(colorUp, transparencyControl1+25), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(p_imp != 0 ? p_impulse : na, color = color.new(colorUp, transparencyControl1), style = plot.style_linebr, display = (mode == "Sentiment True" ? display.all : display.none))
+ 
+plot(n_imp != 0 ? n_impulse : na, color = color.new(colorDown, transparencyControl1+60), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg1a, color = color.new(colorDown, transparencyControl1+55), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg2a, color = color.new(colorDown, transparencyControl1+40), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg3a, color = color.new(colorDown, transparencyControl1+30), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(chg4a, color = color.new(colorDown, transparencyControl1+25), style = plot.style_columns, linewidth = 4, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(n_imp != 0 ? n_impulse : na, color = color.new(colorDown, transparencyControl1), style = plot.style_linebr, display = (mode == "Sentiment True" ? display.all : display.none))
+
+plot(true_sentiment, style = plot.style_circles, color = c, display = (mode == "Sentiment True" ? display.all : display.none))
+mid = plot(0, color = c, display = (mode == "Sentiment True" ? display.all : display.none))
+plot(upper, color = color.new(chart.fg_color, 80), display = (mode == "Sentiment True" ? display.all : display.none))
+plot(lower, color = color.new(chart.fg_color, 80), display = (mode == "Sentiment True" ? display.all : display.none))
+
+plot(n_true_sentiment, "Normalized Sentiment Index", color.new(n_true_sentiment > 0 ? colorUp : colorDown, 100 - 100*math.abs(n_true_sentiment)), display = (mode == "Sentiment Normalized" ? display.all : display.none), style = plot.style_columns)
+plot(1, color = color.new(colorDown, 100 - 100*math.abs(n_true_sentiment)), display = (mode == "Sentiment Normalized" ? display.all : display.none))
+plot(-1, color = color.new(colorUp, 100 - 100*math.abs(n_true_sentiment)), display = (mode == "Sentiment Normalized" ? display.all : display.none))
+
+for i = 1 to tc
+    color_ = colorUp
+    color = color.from_gradient(i, 1, tc, colorDown, color_)
+    printTable("", 1, i, color, "𝙁𝙀𝘼𝙍", "𝙂𝙍𝙀𝙀𝘿", math.round(tc * ((-n_true_sentiment+1)/2)))
+
+///////////////////////////ALERTS
+alertcondition(p_imp == 1 and p_imp[1] == 0, "Bullish Trend Imuplse")
+alertcondition(n_imp == 1 and n_imp[1] == 0, "Bearish Trend Imuplse")
+alertcondition(p_imp == 0 and p_imp[1] == 1, "End of Bullish Trend Imuplse")
+alertcondition(n_imp == 0 and n_imp[1] == 1, "End of Bearish Trend Imuplse")
+alertcondition(ta.crossover(n_true_sentiment, 0), "Sentiment Flipped Bullish")
+alertcondition(ta.crossunder(n_true_sentiment, 0), "Sentiment Flipped Bearish")
+alertcondition(n_true_sentiment == 1, "Sentiment is at Extreme Greed")
+alertcondition(n_true_sentiment == -1, "Sentiment is at Extreme Fear")

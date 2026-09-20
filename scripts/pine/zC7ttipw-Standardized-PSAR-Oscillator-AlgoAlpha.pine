@@ -1,0 +1,176 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(
+     title="Standardized PSAR Oscillator [AlgoAlpha]", 
+     shorttitle="AlgoAlpha - 🪝 PSAR Oscillator", 
+     overlay=false, 
+     timeframe="", 
+     timeframe_gaps=true)
+
+// Inputs with tooltips and groups
+start = input(0.02, "Start", tooltip="The initial value for the PSAR calculation.", group="PSAR Settings")
+increment = input(0.0005, "Increment", tooltip="The step value by which the PSAR accelerates.", group="PSAR Settings")
+maximum = input(0.2, "Max Value", tooltip="The maximum value the PSAR can reach during its calculation.", group="PSAR Settings")
+
+slow = input.int(21, "Standardization Length", tooltip="Length used to calculate the EMA for standardization.", group="Oscillator Settings")
+MAlen = input.int(40, "WMA Length", tooltip="Length of the Weighted Moving Average (WMA) applied to the standardized PSAR oscillator.", group="Oscillator Settings")
+MAlag = input.int(3, "WMA Lag Length", tooltip="Lag length for comparison of the WMA with its past values.", group="Oscillator Settings")
+lbL = input(title="Divergence Pivot Detection Length", defval=15, group="Oscillator Settings", tooltip="The larger this number, the less sensitive the divergence detection is. A smaller number will detect smaller and/or shorter term divergences", display=display.data_window)
+lbR = input(title="Divergence Pivot Confirmation Length", defval=1, group="Oscillator Settings", tooltip="This number is how many bars the indicator will wait for confirmation to plot the divergences. The higher the number, the longer the delay of the signal, but the lesser the number of false signals. Set this to 0 if you do not want any delay at all", display=display.data_window)
+
+green = input.color(#00ffbb, "Bullish Color", group="Appearance", tooltip="Color used when the PSAR oscillator is in bullish conditions.")
+red = input.color(#ff1100, "Bearish Color", group="Appearance", tooltip="Color used when the PSAR oscillator is in bearish conditions.")
+plotBullish = input(title="Plot Bullish Divergences", defval=true, group="Appearance")
+plotBear = input(title="Plot Bearish Divergences", defval=true, group="Appearance")
+
+
+// PSAR Calculation
+out = ta.sar(
+     start, 
+     increment, 
+     maximum)
+
+PSARoscillator = 
+     close - out
+
+stand_PSARoscillator = 
+     PSARoscillator / 
+     (ta.ema(high - low, slow)) * 
+     100
+
+MA = 
+     ta.wma(stand_PSARoscillator, MAlen)
+
+// Color logic
+UPcol = 
+     color.from_gradient(
+          stand_PSARoscillator, 
+          0, 
+          800, 
+          color.new(green, 70), 
+          green)
+
+DOWNcol = 
+     color.from_gradient(
+          stand_PSARoscillator, 
+          -800, 
+          0, 
+          red, 
+          color.new(red, 70))
+
+FINALcol = 
+     stand_PSARoscillator > 0 ? 
+     UPcol : 
+     DOWNcol
+
+MODcol = 
+     (MA > MA[MAlag] and 
+     stand_PSARoscillator > 0) or 
+     (MA < MA[MAlag] and 
+     stand_PSARoscillator < 0) ? 
+     FINALcol : 
+     color.new(
+          chart.fg_color, 
+          (1 - math.abs(stand_PSARoscillator) / 
+          800) * 100)
+
+// Hidden Levels
+maxLevelPlot = 
+     plot(
+          800, 
+          display=display.none)
+
+minLevelPlot = 
+     plot(
+          -800, 
+          display=display.none)
+
+upperMidLevelPlot = 
+     plot(
+          600, 
+          display=display.none)
+
+lowerMidLevelPlot = 
+     plot(
+          -600, 
+          display=display.none)
+
+// Fills
+fill(
+     maxLevelPlot, 
+     upperMidLevelPlot, 
+     top_value=800, 
+     bottom_value=600, 
+     top_color=color.new(red, 50), 
+     bottom_color=color.new(chart.bg_color, 90))
+
+fill(
+     minLevelPlot, 
+     lowerMidLevelPlot, 
+     top_value=-600, 
+     bottom_value=-800, 
+     top_color=color.new(chart.bg_color, 90), 
+     bottom_color=color.new(green, 50))
+
+// Plots
+plot(
+     stand_PSARoscillator, 
+     "ParabolicSAR", 
+     color=MODcol, 
+     style=plot.style_columns)
+
+plot(
+     MA, 
+     "MA", 
+     color=MA > MA[MAlag] ? 
+     green : 
+     red, 
+     linewidth=2)
+
+plotchar(ta.crossunder(stand_PSARoscillator, 600) ? 900 : na, "Bearish Reversal", "▼", location.absolute, red, size = size.tiny)
+plotchar(ta.crossover(stand_PSARoscillator, -600) ? -900 : na, "Bullish Reversal", "▲", location.absolute, green, size = size.tiny)
+
+bullColor = green
+bearColor = red
+hiddenBullColor = color.new(green, 80)
+hiddenBearColor = color.new(red, 80)
+textColor = color.white
+noneColor = color.new(color.white, 100)
+plFound = na(ta.pivotlow(stand_PSARoscillator, lbL, lbR)) ? false : true
+phFound = na(ta.pivothigh(stand_PSARoscillator, lbL, lbR)) ? false : true
+_inRange(cond) =>
+    bars = ta.barssince(cond == true)
+    -80 <= bars and bars <= 80
+// Regular Bullish
+oscHL = stand_PSARoscillator[lbR] > ta.valuewhen(plFound, stand_PSARoscillator[lbR], 1) and _inRange(plFound[1])
+priceLL = low[lbR] < ta.valuewhen(plFound, low[lbR], 1)
+bullCond = plotBullish and priceLL and oscHL and plFound
+plot(plFound  ? stand_PSARoscillator[lbR] : na, offset=-lbR, title="Regular Bullish", linewidth=2, color=(bullCond ? bullColor : noneColor))
+// Regular Bearish
+oscLH = stand_PSARoscillator[lbR] < ta.valuewhen(phFound, stand_PSARoscillator[lbR], 1) and _inRange(phFound[1])
+priceHH = high[lbR] > ta.valuewhen(phFound, high[lbR], 1)
+bearCond = plotBear and priceHH and oscLH and phFound
+plot(phFound  ? stand_PSARoscillator[lbR] : na, offset=-lbR, title="Regular Bearish", linewidth=2, color=(bearCond ? bearColor : noneColor))
+
+/////////////////////////ALERTS
+// Alerts for Oscillator crossing the zero line
+alertcondition(
+     ta.crossover(stand_PSARoscillator, 0), 
+     "Bullish: Oscillator crossed above zero line")
+
+alertcondition(
+     ta.crossunder(stand_PSARoscillator, 0), 
+     "Bearish: Oscillator crossed below zero line")
+
+// Alerts for weakening strength
+// Bullish weakening: Oscillator above zero but WMA trending down
+alertcondition(
+     stand_PSARoscillator > 0 and MA < MA[MAlag], 
+     "Bullish Weakening: Oscillator above zero but WMA trending down")
+
+// Bearish weakening: Oscillator below zero but WMA trending up
+alertcondition(
+     stand_PSARoscillator < 0 and MA > MA[MAlag], 
+     "Bearish Weakening: Oscillator below zero but WMA trending up")

@@ -1,0 +1,186 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Fibonacci Bands [BigBeluga]", overlay=true, max_lines_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   period    = input.int(20, title="Period")
+float width     = input.float(1, title="Width", step = 0.1, minval = 0.5, maxval =3)
+float price     = input.source(close, title="Source")
+bool  hide_ch   = input.bool(false, "Hide Fibonacci Lines", group = "Fibonacci")
+float fibRatio1 = input.float(1.618, title="Fibonacci Ratio 1", step = 0.001)
+float fibRatio2 = input.float(2.618, title="Fibonacci Ratio 2", step = 0.001)
+float fibRatio3 = input.float(4.236, title="Fibonacci Ratio 3", step = 0.001)
+int   extend    = input.int(30, "Extend Bands", step = 10, minval = 10, maxval = 350)
+bool liq_sweep  = input.bool(true, "Liquidity Sweep")
+
+color col_top   = input.color(#e60060, "top", inline = "c", group = "Color")
+color col_bot   = input.color(color.lime, "bottom", inline = "c", group = "Color")
+
+
+var l1 = line(na)
+var l2 = line(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+draw_label(n, y, txt1, txt2)=>
+    lbl = label.new(n, y, str.tostring(txt1, format.percent) + str.tostring(txt2, "  (#.##)"), 
+                     color      = color(na),
+                     style      = label.style_label_left,
+                     textcolor  = color.new(chart.fg_color, 10), 
+                     text_font_family = font.family_monospace)
+    label.delete(lbl[1])
+
+
+smma(src, length) =>
+    var float smma_value = na
+    series float sma = ta.sma(src, length)
+    if na(smma_value[1])
+        smma_value := sma  // Start with SMA for the initial value
+    else
+        smma_value := (smma_value[1] * (length - 1) + src) / length  // Smooth the value iteratively
+    smma_value
+
+series float ATR  = smma(ta.atr(200), 100)
+series float smma = smma(price, period)
+
+// Calculate Fibonacci Levels
+series float r1 = ATR * fibRatio1 * width
+series float r2 = ATR * fibRatio2 * width
+series float r3 = ATR * fibRatio3 * width
+
+// Calculate Fibonacci Bands
+series float fibTop1  = smma + r1
+series float fibTop2  = smma + r2
+series float fibTop3  = smma + r3
+series float fibBott1 = smma - r1
+series float fibBott2 = smma - r2
+series float fibBott3 = smma - r3
+
+int          slop_i   = math.round(extend/10)
+series float slope    = (smma-smma[slop_i]) / slop_i
+
+series bool mid_trend = smma > smma[1]
+
+sig_dn = mid_trend and ta.pivothigh(4, 1) and high > fibTop3 and ta.crossunder(high, high[1]) and barstate.isconfirmed
+sig_up = not mid_trend and ta.pivotlow(4, 1) and low < fibBott3 and ta.crossover(low, low[1]) and barstate.isconfirmed
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+color mid_color= mid_trend ? chart.fg_color : (bar_index % 2 == 0 ? chart.fg_color : na)
+color top3_col = color.new(col_top, 50)
+color top2_col = color.new(col_top, 50)
+color top1_col = color.new(col_top, 80)
+color bot3_col = color.new(col_bot, 50)
+color bot2_col = color.new(col_bot, 50)
+color bot1_col = color.new(col_bot, 80)
+
+display = hide_ch ? display.none : display.all
+
+pt3 = plot(fibTop3, title="Fib Top 3", color=top3_col, linewidth=1, display = display)
+pt2 = plot(fibTop2, title="Fib Top 2", color=top2_col, linewidth=1, display = display),
+      plot(fibTop1, title="Fib Top 1", color=top1_col, linewidth=1, display = display),
+
+      plot(smma, title="Middle SMMA", color=mid_color, linewidth=1),
+
+      plot(fibBott1, title="Fib Bottom 1", color=bot1_col, linewidth=1, display = display)
+pb2 = plot(fibBott2, title="Fib Bottom 2", color=bot2_col, linewidth=1, display = display)
+pb3 = plot(fibBott3, title="Fib Bottom 3", color=bot3_col, linewidth=1, display = display)
+
+fill(pt2, pt3, color.new(col_top, 90))
+fill(pb2, pb3, color.new(col_bot, 90))
+
+if barstate.islast
+    int n1 = bar_index
+    int n2 = bar_index + extend
+
+    float ym1 = smma 
+    float ym2 = ym1 + slope * extend
+
+    float y11 = fibTop1
+    float y22  = y11 + slope * extend
+    float y111  = fibTop2
+    float y222   = y111 + slope * extend
+    float y1111   = fibTop3
+    float y2222    = y1111 + slope * extend
+
+    float y_11 = fibBott1
+    float y_22  = y_11 + slope * extend
+    float y_111  = fibBott2
+    float y_222   = y_111 + slope * extend
+    float y_1111   = fibBott3
+    float y_2222    = y_1111 + slope * extend
+
+    // -------------------
+    line l_t3 = line.new(n1, y1111, n2, y2222, color = hide_ch ? na : top3_col)
+    line l_t2 = line.new(n1, y111, n2, y222, color = hide_ch ? na : top2_col)
+    line l_t1 = line.new(n1, y11, n2, y22, color = hide_ch ? na : top1_col)
+
+    line l_m = line.new(n1, ym1, n2, ym2, color = chart.fg_color, style = mid_trend ? line.style_solid : line.style_dashed)
+
+    line l_b3 = line.new(n1, y_1111, n2, y_2222, color = hide_ch ? na : bot3_col)
+    line l_b2 = line.new(n1, y_111, n2, y_222, color = hide_ch ? na : bot2_col)
+    line l_b1 = line.new(n1, y_11, n2, y_22, color = hide_ch ? na : bot1_col)
+
+    linefill.new(l_t3, l_t2, color.new(col_top, 90))
+    linefill.new(l_b3, l_b2, color.new(col_bot, 90))
+
+    // -------------------
+    style_lbl = label.style_label_left
+   
+    label.delete(label.new(n2, ym2, str.tostring(ym2, "#.##"), color = color(na), style = style_lbl, textcolor = color.new(chart.fg_color, 40))[1])
+
+    if not hide_ch
+        draw_label(n2, y2222, 100, y2222)
+        draw_label(n2, y222, 61.80, y222)
+        draw_label(n2, y22, 38.2, y22)
+
+        draw_label(n2, y_22, 38.2, y_22)
+        draw_label(n2, y_222, 61.80, y_222)
+        draw_label(n2, y_2222, 100, y_2222)
+
+    // --------------------
+
+    // -->
+    line.delete(l_t3[1])
+    line.delete(l_t2[1])
+    line.delete(l_t1[1])
+
+    line.delete(l_m[1])
+
+    line.delete(l_b3[1])
+    line.delete(l_b2[1])
+    line.delete(l_b1[1])
+
+if liq_sweep
+    if sig_dn
+        l1 := line.new(bar_index-1, high[1], bar_index-1, high[1])
+
+    if close < open ? high > l1.get_y2() and open < l1.get_y2() : high > l1.get_y2() and close < l1.get_y2()
+        l1.set_x2(bar_index)
+        l1.set_color(chart.fg_color)
+        l1 := line(na)
+
+    if ta.crossover(close, l1.get_y2())
+        l1 := line(na)
+
+    // ----------
+
+    if sig_up
+        l2 := line.new(bar_index-1, low[1], bar_index-1, low[1])
+
+    if close < open ? low < l2.get_y2() and close > l2.get_y2() : low < l2.get_y2() and open > l2.get_y2()
+        l2.set_x2(bar_index)
+        l2.set_color(chart.fg_color)
+        l2 := line(na)
+
+    if ta.crossunder(close, l2.get_y2())
+        l2 := line(na)
+
+plotchar(sig_dn, "Signal Down", "∘", location.abovebar, col_top, size = size.tiny)
+plotchar(sig_up, "Signal Up", "•", location.belowbar, col_bot, size = size.small)
+// }

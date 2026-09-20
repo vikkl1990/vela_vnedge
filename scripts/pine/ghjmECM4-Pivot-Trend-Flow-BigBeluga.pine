@@ -1,0 +1,83 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Pivot Trend Flow [BigBeluga]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   length            = input.int(2, "Pivot Length")
+int   avgWindow         = input.int(5, "Avg Window (pivots)", minval = 2, tooltip = "How many recent pivot highs/lows to average")
+
+color up_trend_color    = input(#0bd6a3, '▲', group = 'Color', inline = 'c') 
+color down_trend_color  = input(#dd326b, '▼', group = 'Color', inline = 'c') 
+bool  fillColor         = input.bool(true, "Fill Color")
+
+
+var upper = 0.
+var lower = 0.
+
+var phArray = array.new<float>()
+var plArray = array.new<float>()
+
+var phLine = line(na)
+var plLine = line(na)
+
+var color colorDirection = na 
+var bool  trend          = bool(na) 
+var float mainBand       = na 
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float ph  = ta.pivothigh(length, length)
+float pl  = ta.pivotlow (length, length)
+
+if not na(ph)
+    phArray.push(ph)
+    phLine := line.new(bar_index[length], ph, bar_index[length], ph, color = up_trend_color)
+
+if not na(pl)
+    plArray.push(pl)
+    plLine := line.new(bar_index[length], pl, bar_index[length], pl, color = down_trend_color)
+
+if phArray.size() > avgWindow
+    upper := phArray.avg()
+    phArray.shift()
+
+if plArray.size() > avgWindow
+    lower := plArray.avg()
+    plArray.shift()
+
+if ta.crossover(close, upper)
+    colorDirection := up_trend_color
+    trend := true
+if ta.crossunder(close, lower)
+    colorDirection := down_trend_color
+    trend := false
+
+mainBand := trend != trend[1] ? float(na) : (trend ? lower : upper)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+bool crossUp = ta.crossover(high, phLine.get_y1())
+bool crossDn = ta.crossunder(low, plLine.get_y1())
+
+if trend 
+    if crossUp
+        phLine.set_x2(bar_index)
+        phLine := line(na)
+        label.new(bar_index, low, "▲", color = color(na), textcolor = up_trend_color, style = label.style_label_up)
+else 
+    if crossDn
+        plLine.set_x2(bar_index)
+        plLine := line(na)
+        label.new(bar_index, high, "▼", color = color(na), textcolor = down_trend_color, style = label.style_label_down)
+
+pm = plot(mainBand, "Trend Band", color = colorDirection, linewidth = 2, style = plot.style_linebr)
+pp = plot(hl2, color = color(na), editable = false)
+
+fill(pm, pp, hl2, mainBand, color(na), color.new(colorDirection, fillColor ? 70 : 100), display = fillColor ? display.all : display.none, editable = false)
+// }

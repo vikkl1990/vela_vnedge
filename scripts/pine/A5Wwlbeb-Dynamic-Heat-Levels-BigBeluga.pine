@@ -1,0 +1,110 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Dynamic Heat Levels [BigBeluga]", overlay = true, max_bars_back = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+length = input.int(100, "Length")
+levels = input.int(10, minval= 3, maxval = 15, tooltip = "Amount of Levels (3-15)")-1
+width = input.int(1, "Width")
+heat_ther = input.int(10, "Heat Threshold")
+cold_col = input.color(#3299ed, "", inline = "c")
+hot_col = input.color(#ed3232, "", inline = "c")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Define highest and lowest bands
+highest = ta.hma(ta.highest(int(length/2)), 50)
+lowest  = ta.hma(ta.lowest(int(length/2)), 50)
+
+
+//Level spacing
+size = (highest - lowest) / levels
+levels_arr = array.new<float>(100, float(na))
+
+// Set Levels Values
+for i = 0 to levels
+    lvl = lowest + size * i 
+    levels_arr.set(i, lvl)
+
+l1 = levels_arr.get(0)
+l2 = levels_arr.get(1)
+l3 = levels_arr.get(2)
+l4 = levels_arr.get(3)
+l5 = levels_arr.get(4)
+l6 = levels_arr.get(5)
+l7 = levels_arr.get(6)
+l8 = levels_arr.get(7)
+l9 = levels_arr.get(8)
+l10 = levels_arr.get(9)
+l11 = levels_arr.get(10)
+l12 = levels_arr.get(11)
+l13 = levels_arr.get(12)
+l14 = levels_arr.get(13)
+l15 = levels_arr.get(15)
+
+plot_label(count, level, color)=>
+
+    if not na(level) and barstate.islast
+        label.delete(label.new(bar_index, level, str.tostring(count), color = color, style = label.style_label_left, size = size.small)[1])
+
+color_strength(level)=>
+
+    count = 0
+
+    if last_bar_index - bar_index < length
+        for i = 0 to length
+            lvl = level[i]
+            hi = high[i]
+            lo = low[i]
+
+            if hi >= lvl and lo <= lvl
+                count += 1
+                
+    col = color.from_gradient(count, heat_ther, heat_ther+10, color.new(cold_col, 80-count), hot_col)
+
+    plot_label(count, level, col)
+
+    col
+
+col1 = color_strength(lowest)
+col2 = color_strength(l2)
+col3 = color_strength(l3)
+col4 = color_strength(l4)
+col5 = color_strength(l5)
+col6 = color_strength(l6)
+col7 = color_strength(l7)
+col8 = color_strength(l8)
+col9 = color_strength(l9)
+col10 = color_strength(l10)
+col11 = color_strength(l11)
+col12 = color_strength(l12)
+col13 = color_strength(l13)
+col14 = color_strength(l14)
+col15 = color_strength(highest)
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+plot(lowest, show_last = length, color = col1, linewidth = width, editable = false)
+plot(l2, show_last = length, color = col2, linewidth = width, editable = false)
+plot(l3, show_last = length, color = col3, linewidth = width, editable = false)
+plot(l4, show_last = length, color = col4, linewidth = width, editable = false)
+plot(l5, show_last = length, color = col5, linewidth = width, editable = false)
+plot(l6, show_last = length, color = col6, linewidth = width, editable = false)
+plot(l7, show_last = length, color = col7, linewidth = width, editable = false)
+plot(l8, show_last = length, color = col8, linewidth = width, editable = false)
+plot(l9, show_last = length, color = col9, linewidth = width, editable = false)
+plot(l10, show_last = length, color = col10, linewidth = width, editable = false)
+plot(l11, show_last = length, color = col11, linewidth = width, editable = false)
+plot(l12, show_last = length, color = col12, linewidth = width, editable = false)
+plot(l13, show_last = length, color = col13, linewidth = width, editable = false)
+plot(l14, show_last = length, color = col14, linewidth = width, editable = false)
+plot(highest, show_last = length, color = col15, linewidth = width, editable = false)
+
+// }

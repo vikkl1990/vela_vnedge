@@ -1,0 +1,259 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Heatmap Liquidity Zones [BigBeluga]", overlay = true
+            , max_boxes_count = 500
+            , calc_bars_count = 4000
+            , max_lines_count = 500
+            , max_bars_back = 5000
+            , max_labels_count = 500)
+
+
+// Inputs 
+// Inputs 
+tf = input.timeframe(
+     "W",
+     "Higher Timeframe",
+     tooltip = "Select the higher timeframe used to build volume heatmap ranges.\nEach new HTF candle resets the accumulation range."
+)
+
+atrLen = 100
+
+atrMult = input.float(
+     0.25,
+     "Bin Size Multiplier",
+     step = 0.05,
+     minval = 0.0001,
+     tooltip = "Multiplier applied to ATR to define vertical bin size.\nLower values create more detailed heatmap resolution.\nHigher values create broader liquidity zones."
+)
+
+maxBins = input.int(
+     40,
+     "Max Bins",
+     minval = 10,
+     maxval = 100,
+     tooltip = "Maximum number of price bins inside each HTF range.\nHigher values increase precision but use more resources."
+)
+
+liquidityFilter = input.float(
+     0,
+     "Liquidity Filter %",
+     minval = 0,
+     maxval = 100,
+     tooltip = "Minimum relative volume (percentage of peak bin volume) required to mark a liquidity level.\nHigher values filter weaker zones."
+)
+liquidityWidth = input.int(
+     5,
+     "Liquidity Level Width",
+     minval = 1,
+     maxval = 10,
+     tooltip = "Controls the thickness of drawn liquidity levels.\nHigher values make key zones more visually prominent."
+)
+liquidityExtend = input.int(
+     25,
+     "Liquidity Level Extend",
+     minval = 0,
+
+     tooltip = "Controls how far the levels are extended into the future from last bar."
+)
+heatColor2 = input.color(
+     color.rgb(64, 17, 151, 90),
+     "Low Density (0%–25%)",
+     tooltip = "Color used for low volume density areas."
+)
+
+heatColor1 = input.color(
+     color.rgb(27, 183, 255, 90),
+     "Mid Density (25%–75%)",
+     tooltip = "Color used for medium volume density areas."
+)
+
+heatColor3 = input.color(
+     color.rgb(255, 235, 59, 50),
+     "High Density (75%–100%)",
+     tooltip = "Color used for highest liquidity zones."
+)
+tfChange  = timeframe.change(tf)
+
+var max = 0.
+var min = low
+var start = 0
+
+
+type level 
+    int start 
+    float lvl
+    bool isRes
+    float vol
+    color color1
+var Levels = array.new<level>()
+
+
+atrValue = ta.atr(atrLen)
+binSize  = atrValue * atrMult
+
+if not tfChange
+    max := math.max(max, high)
+    min := math.min(min, low)
+
+range_ = max - min
+
+// Safe bin count (int) + guards
+rawBins    = math.min(maxBins, int(math.floor(range_[1] / binSize)))
+binSize1   = range_ / rawBins
+volumeBins = array.new<float>(rawBins, 0.)
+
+
+// Historical 
+if tfChange
+    for i = 0 to rawBins - 1
+        ll = min[1] + binSize1[1] * i 
+        mid = ll + binSize1[1]/2
+
+        hh = ll + binSize1[1]
+
+        for k = 0 to bar_index - start
+            if math.abs(close[k]-mid) <= binSize1[1]
+                volumeBins.set(i, volumeBins.get(i) + volume[k])
+
+    for i = 0 to rawBins - 1
+        ll = min[1] + binSize1[1] * i 
+       
+        hh  = ll + binSize1[1]
+        vol = volumeBins.get(i) / volumeBins.max()
+        
+        col = vol <= 0.5 ? color.from_gradient(vol, 0, 0.5, heatColor2, heatColor1)
+             : color.from_gradient(vol, 0.5, 1, heatColor1, heatColor3)
+
+        col1 = vol <= 0.5 ? color.from_gradient(vol, 0, 0.5, color.new(heatColor2, 95), color.new(heatColor1, 95))
+             : color.from_gradient(vol, 0.5, 1, color.new(heatColor1, 95), color.new(heatColor3, 95))
+
+        box.new(start, hh, bar_index, ll
+             , bgcolor = col
+             , border_color = col1)
+
+        if vol >= liquidityFilter/100
+            mid = math.avg(hh, ll)
+            Levels.push(level.new(bar_index, mid, low < mid, vol, col))
+
+
+
+for s in Levels 
+
+    if s.isRes
+        if high > s.lvl 
+            Levels.remove(Levels.indexof(s))
+    else 
+        if low < s.lvl 
+            Levels.remove(Levels.indexof(s))
+
+
+if not tfChange and barstate.islast
+
+    var boxes = array.new<box>()
+    var lines = array.new<line>()
+    var labels = array.new<label>()
+
+    for b in boxes 
+        b.delete()
+    boxes.clear()
+
+    for b in lines 
+        b.delete()
+    lines.clear()
+
+    for b in labels 
+        b.delete()
+    labels.clear()
+
+    for i = 0 to volumeBins.size() - 1
+        ll  = min[1] + binSize1[1] * i 
+        mid = ll + binSize1[1]/2
+        hh  = ll + binSize1[1]
+
+        for k = 0 to bar_index - start
+            if math.abs(close[k]-mid) <= binSize1[1]
+                volumeBins.set(i, volumeBins.get(i) + volume[k])
+
+    for i = 0 to volumeBins.size() - 1
+        ll  = min[1] + binSize1[1] * i 
+        hh  = ll + binSize1[1]
+        vol = volumeBins.get(i) / volumeBins.max()
+
+        col = vol <= 0.5 ? color.from_gradient(vol, 0, 0.5, heatColor2, heatColor1)
+             : color.from_gradient(vol, 0.5, 1, heatColor1, heatColor3)
+
+        col1 = vol <= 0.5 ? color.from_gradient(vol, 0, 0.5, color.new(heatColor2, 95), color.new(heatColor1, 95))
+             : color.from_gradient(vol, 0.5, 1, color.new(heatColor1, 95), color.new(heatColor3, 95))
+
+        b = box.new(start, hh, bar_index, ll
+             , bgcolor = col
+             , border_color = col1)
+
+        boxes.push(b)
+
+
+
+    for s in Levels 
+
+        labelSize =
+             s.vol < 0.30 ? size.tiny  :
+             s.vol < 0.55 ? size.small :
+             s.vol < 0.80 ? size.normal :
+                             size.large
+
+        if s.start >= bar_index-2000
+            lines.push(
+                line.new(s.start, s.lvl, bar_index+liquidityExtend, s.lvl, color = s.color1, width = liquidityWidth)
+            )
+
+            labels.push(label.new(bar_index+liquidityExtend, s.lvl, "", style = label.style_circle, size = labelSize, color = s.color1))
+
+
+            if s.vol >= 0.5
+                labels.push(label.new(bar_index+liquidityExtend, s.lvl, str.tostring(s.vol*100, format.percent), style = label.style_label_left, size = labelSize, color = color.new(chart.bg_color, 100), textcolor = s.color1))
+
+
+var length = 2
+
+length += 1
+
+
+if tfChange
+    max := high
+    min := low
+    start := bar_index
+    length := 2
+
+
+
+
+// Smoothing MA inputs
+GRP = "Moving Average"
+maTypeInput = input.string("None", "Type", options = ["None", "SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group = GRP, display = display.none)
+maLengthInput = input.int(25, "Length", group = GRP, display = display.none, inline = "len")
+autoLength = input.bool(false, "Auto", group = GRP, display = display.none, inline = "len")
+src = input(close, title="Source", group = GRP)
+
+pine_ema(src, length) =>
+    alpha = 2 / (length + 1)
+    sum = 0.0
+    sum := na(sum[1]) ? src : alpha * src + (1 - alpha) * nz(sum[1])
+
+pine_rma(src, length) =>
+    alpha = 1/length
+    sum = 0.0
+    sum := na(sum[1]) ? ta.sma(src, length) : alpha * src + (1 - alpha) * nz(sum[1])
+
+// Smoothing MA Calculation
+ma(source, length, MAtype) =>
+    switch MAtype
+        "SMA"                   => ta.sma(source, length)
+        "EMA"                   => pine_ema(source, length)
+        "SMMA (RMA)"            => pine_rma(source, length)
+        "WMA"                   => ta.wma(source, length)
+        "VWMA"                  => ta.vwma(source, length)
+
+plot(tfChange ? float(na) : ma(src, autoLength ? length : maLengthInput, maTypeInput), color=color.yellow, title="MA", show_last = 5000, style = plot.style_linebr)

@@ -1,0 +1,57 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Crypto Realized Profits/Losses Extremes [AlgoAlpha]", shorttitle = "AlgoAlpha - 💰Realized Profits/Losses", explicit_plot_zorder = true)
+
+len = input.int(7, "Period")
+nlen = input.int(70, "Normalization Period")
+mult = input.float(1.8, "Lower Deviation Threshold ")
+mult1 = input.float(2.3, "Upper Deviation Threshold ")
+shwcirc = input.bool(true, "Show Extreme Profits/Losses Overlay")
+shwbc = input.bool(false, "Enable Bar Coloring")
+upColor = input.color(#00ffbb, "Up Color")
+upColor1 = input.color(color.blue, "Secondary Up Color")
+downColor = input.color(#ff1100, "Down Color")
+downColor1 = input.color(color.orange, "Secondary Down Color")
+
+src = request.security(syminfo.basecurrency + "_PROFITADDRESSES", timeframe.isintraday ? "D" : timeframe.period, barstate.isconfirmed ? close : close[1])
+
+rsi = ta.rsi(src, 7)
+rsi := rsi-50
+
+float area = 0
+if ta.change(math.sign(rsi))
+    area := rsi
+else
+    area := area[1] + rsi
+
+narea = area / (ta.highest(area, nlen) - ta.lowest(area, nlen)) * 100
+
+deviation = math.sqrt(ta.sma(math.pow(narea,2), nlen))
+
+col = narea > 0 ? color.from_gradient(narea, 0, deviation*mult1, color.new(upColor, 85), color.new(upColor, 0)) : color.from_gradient(narea, -deviation*mult1, 0, color.new(downColor, 0), color.new(downColor, 85))
+
+ul = plot(deviation*mult, display = display.none)
+lu = plot(-deviation*mult, display = display.none)
+uu = plot(deviation*mult1, color = color.new(chart.fg_color, 40))
+ll = plot(-deviation*mult1, color = color.new(chart.fg_color, 40))
+
+fill(uu, ul, color.new(chart.fg_color, 80), "Upper Band")
+fill(lu, ll, color.new(chart.fg_color, 80), "Upper Band")
+
+plot(narea , color = col, style = plot.style_columns, title = "Main Oscillator")
+
+plotchar((narea < -deviation*mult) or (narea < -deviation*mult1) ? low : na, "Extreme Losses", "●", location.belowbar, narea < -deviation*mult1 ? color.new(upColor, 30) : color.new(upColor1, 30), force_overlay = true, size = size.small, display = shwcirc ? display.all : display.none)
+plotchar((narea > deviation*mult) or (narea > deviation*mult1) ? low : na, "Extreme Profits", "●", location.abovebar, narea > deviation*mult1 ? color.new(downColor, 30) : color.new(downColor1, 30), force_overlay = true, size = size.small, display = shwcirc ? display.all : display.none)
+
+barcolor(col, display = shwbc ? display.all : display.none)
+
+/////////////ALERTS
+alertcondition(ta.crossover(narea, deviation*mult), "High Profits")
+alertcondition(ta.crossover(narea, deviation*mult1), "Extreme Profits")
+alertcondition(ta.crossunder(narea, -deviation*mult), "High Losses")
+alertcondition(ta.crossunder(narea, -deviation*mult1), "Extreme Losses")
+
+alertcondition(ta.crossover(narea, 0), "Investors in Profit (Uptrend)")
+alertcondition(ta.crossunder(narea, 0), "Investors in Losses (Downtrend)")

@@ -1,0 +1,88 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Dynamic Median Momentum Oscillator [AlgoAlpha]")
+
+// Inputs
+len = input.int(21, "Basis Length", group = "Parameters", tooltip = "Lookback used to calculate the median basis.")
+smooth = input.int(21, "Smoothing Length", group = "Parameters", tooltip = "EMA length applied to the raw oscillator.")
+sigLen = input.int(14, "Signal Length", group = "Parameters", tooltip = "EMA length used for the signal line.")
+stand = input.bool(true, "Standardize", group = "Parameters", tooltip = "Normalizes the oscillator by average candle range so values can use fixed OB/OS zones.")
+mode = input.string("All", "Oscillator Display Mode", ["All", "Fast", "Slow", "Super Slow"], group = "Display", tooltip = "Chooses which oscillator components are visible.")
+green = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color used for bullish lines, fills, and positive histogram bars.")
+red = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color used for bearish lines, fills, and negative histogram bars.")
+
+// Calculations
+basis = ta.median(hlc3, len)
+
+rangeBasis = ta.ema(high - low, len)
+raw_mcd = close - basis
+mcd = stand and rangeBasis != 0 ? raw_mcd / rangeBasis * 100 : raw_mcd
+smooth_mcd = ta.ema(mcd, smooth)
+
+sig = ta.ema(smooth_mcd, sigLen)
+
+hist = smooth_mcd-sig
+
+// Levels
+os3 = hline(-300, "Extreme Oversold", display = display.none)
+os2 = hline(-250, "Oversold Strong", display = display.none)
+os1 = hline(-200, "Oversold", display = display.none)
+ob1 = hline(200, "Overbought", display = display.none)
+ob2 = hline(250, "Overbought Strong", display = display.none)
+ob3 = hline(300, "Extreme Overbought", display = display.none)
+
+// Display
+showFast = mode == "All" or mode == "Fast"
+showSlow = mode == "All" or mode == "Slow"
+showSuperSlow = mode == "Super Slow"
+showReversionMarks = stand and mode != "Fast"
+
+superSlowStrong = smooth_mcd >= 0 ? smooth_mcd > sig : smooth_mcd < sig
+superSlowColor = smooth_mcd >= 0 ? color.new(green, superSlowStrong ? 0 : 50) : color.new(red, superSlowStrong ? 0 : 50)
+superSlowFillColor = smooth_mcd >= 0 ? color.new(green, superSlowStrong ? 85 : 92) : color.new(red, superSlowStrong ? 85 : 92)
+
+p1 = plot(showSlow ? smooth_mcd : na, "Smooth MCD", color = color.white)
+p2 = plot(showSlow ? sig : na, "Signal", color = color.orange)
+zeroPlot = plot(showSuperSlow ? 0 : na, "Zero", color = color.new(chart.fg_color, 100))
+superSlowPlot = plot(showSuperSlow ? smooth_mcd : na, "Super Slow MCD", color = superSlowColor, linewidth = 2)
+
+fill(os3, os2, stand ? color.new(green, 50) : na, "Extreme OS Band")
+fill(os2, os1, stand ? color.new(green, 80) : na, "OS Band")
+fill(ob1, ob2, stand ? color.new(red, 80) : na, "OB Band")
+fill(ob2, ob3, stand ? color.new(red, 50) : na, "Extreme OB Band")
+fill(p1, p2, color.new(smooth_mcd > sig ? color.white: color.orange, 95), "Slow Trend Fill")
+fill(superSlowPlot, zeroPlot, superSlowFillColor, "Super Slow Fill")
+
+plot(showFast ? hist : na, "DMM Histogram", hist > 0 ? (hist < hist[1] ? color.new(green, 50) : green) : (hist > hist[1] ? color.new(red, 50) : red), style = plot.style_columns)
+
+// Signals
+slowBullCross = ta.crossover(smooth_mcd, sig)
+slowBearCross = ta.crossunder(smooth_mcd, sig)
+obReversionStrong = ta.crossunder(smooth_mcd, 250)
+osReversionStrong = ta.crossover(smooth_mcd, -250)
+obReversion = ta.crossunder(smooth_mcd, 300)
+osReversion = ta.crossover(smooth_mcd, -300)
+
+slowBullSignal = showSlow and slowBullCross
+slowBearSignal = showSlow and slowBearCross
+obReversionStrongSignal = showReversionMarks and obReversionStrong
+osReversionStrongSignal = showReversionMarks and osReversionStrong
+obReversionSignal = showReversionMarks and obReversion
+osReversionSignal = showReversionMarks and osReversion
+
+plotchar(slowBullSignal ? sig[1] : na, "Slow Bullish Cross", "●", location.absolute, color.white, size = size.tiny)
+plotchar(slowBearSignal ? sig[1] : na, "Slow Bearish Cross", "●", location.absolute, color.orange, size = size.tiny)
+plotchar(obReversionStrongSignal ? 320 : na, "OB Reversion Strong", "▽", location.absolute, red, size = size.tiny)
+plotchar(osReversionStrongSignal ? -320 : na, "OS Reversion Strong", "△", location.absolute, green, size = size.tiny)
+plotchar(obReversionSignal ? 320 : na, "OB Reversion", "▼", location.absolute, red, size = size.tiny)
+plotchar(osReversionSignal ? -320 : na, "OS Reversion", "▲", location.absolute, green, size = size.tiny)
+
+// Alerts
+alertcondition(slowBullSignal, "Slow Bullish Cross", "Smooth MCD crossed above the signal line.")
+alertcondition(slowBearSignal, "Slow Bearish Cross", "Smooth MCD crossed below the signal line.")
+alertcondition(obReversionStrongSignal, "OB Reversion Strong", "Smooth MCD crossed back below 250 toward center.")
+alertcondition(osReversionStrongSignal, "OS Reversion Strong", "Smooth MCD crossed back above -250 toward center.")
+alertcondition(obReversionSignal, "OB Reversion", "Smooth MCD crossed back below 300 toward center.")
+alertcondition(osReversionSignal, "OS Reversion", "Smooth MCD crossed back above -300 toward center.")

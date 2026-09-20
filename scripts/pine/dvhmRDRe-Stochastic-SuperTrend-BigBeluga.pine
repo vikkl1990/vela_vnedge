@@ -1,0 +1,73 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Stochastic SuperTrend [BigBeluga]", overlay=false)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+lengthRsi = input.int(14, "RSI")
+periodK   = input.int(14, "K")
+smoothK   = input.int(3, "Smooth")
+
+display_st = input.bool(true, "Supertrend", group = "SuperTrend")
+factor     = input.int(10, "Multiplier", group = "SuperTrend")
+
+col_up = input.color(#14c79a, "")
+col_dn = input.color(#e42c69, "")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+stochRsi() =>
+    rsi = ta.rsi(close, lengthRsi)
+    k = ta.sma(ta.stoch(rsi, rsi, rsi, periodK), smoothK)
+    k
+
+k = stochRsi()
+
+
+upperBand = k + factor
+lowerBand = k - factor
+
+prevUpper = nz(upperBand[1])
+prevLower = nz(lowerBand[1])
+
+upperBand := upperBand < prevUpper or k[1] > prevUpper ? upperBand : prevUpper
+lowerBand := lowerBand > prevLower or k[1] < prevLower ? lowerBand : prevLower
+
+var float trend = na
+var int   dir   = na
+
+if bar_index == 1
+    dir := 1
+else if nz(trend[1]) == prevUpper
+    dir := k > upperBand ? -1 : 1
+else
+    dir := k < lowerBand ? 1 : -1
+
+trend := dir == -1 ? lowerBand : upperBand
+
+stoch_col = dir == -1 ? col_up : col_dn, linewidth=2
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plotshape(dir != dir[1] and dir == -1 and k < 50 ? trend : na, "", shape.labelup, text= "🢁", textcolor = stoch_col, color = color(na), location = location.absolute)
+plotshape(dir != dir[1] and dir == 1 and k > 50 ? trend : na, "", shape.labeldown, text= "🢃", textcolor = stoch_col, color = color(na), location = location.absolute)
+
+
+p5 = plot(50, color = color.gray)
+p1 = plot(100, display = display.none, editable = false)
+p0 = plot(0, display = display.none, editable = false)
+
+fill(p0, p5, 50, 0, na, color.new(col_up, 80))
+fill(p1, p5, 100, 50, color.new(col_dn, 80), na)
+
+pk  = plot(k, title="Stoch RSI", color=chart.fg_color, linewidth = 2)
+pst = plot(display_st ? trend : na, title="Supertrend on Stoch RSI", color = dir != dir[1] ? na : stoch_col, editable = display_st)
+
+fill(pk, pst, dir != dir[1] ? na : color.new(stoch_col, 80))
+// }

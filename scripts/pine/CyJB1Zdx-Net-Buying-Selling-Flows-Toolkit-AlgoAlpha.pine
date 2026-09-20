@@ -1,0 +1,70 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Net Buying/Selling Flows Toolkit [AlgoAlpha]", shorttitle = "AlgoAlpha - 𝓝𝓮𝓽 𝓕𝓵𝓸𝔀𝓼 ", explicit_plot_zorder = true, precision = 3)
+mode = input.string("Flow Comparison", "Display Mode", ["Flow Comparison", "Net Flow", "Sum of Flows"])
+denom = input.string("1 Million", "Units", ["1 Billion", "1 Million", "1 Thousand", "None"], tooltip = "Units of measurement for the displayed values, to reduce the number of digits. (for example: displayed value is 1.5 and selected units is '1 Billion' so the value is 1.5 Billion)")
+len = input.int(30, "Sum Lookback", tooltip = "Only applicable if the Display Mode is 'Sum of Flows'")
+mult = input.float(2, "Lower Deviation Threshold ")
+mult1 = input.float(3, "Upper Deviation Threshold ")
+lowerTimeframeInput = input.timeframe("5", "Lower Timeframe", tooltip = "Make sure this number is lesser than the chart's timeframe")
+enble = input.bool(true, "Enable Reversal Signals for Net Flow Divergences")
+bands = input.bool(true, "Enable Deviation Bands for Flow Comparison")
+diff = input.bool(true, "Show Differences in Sum of Flows Instead")
+colorUp = input.color(#00ffbb, title="Up Color")
+colorDown = input.color(#ff1100, title="Down Color")
+
+[c,o,v] = request.security_lower_tf(syminfo.tickerid, lowerTimeframeInput, [close,open,volume])
+sell = array.new_float()
+buy = array.new_float()
+
+if c.size() > 0
+    for i = 0 to c.size() - 1
+        dir = c.get(i) > o.get(i) ? 1 : -1
+
+        if dir == 1 
+            buy.push(v.get(i) * c.get(i))
+            sell.push(0)
+        if dir == -1 
+            sell.push(v.get(i) * c.get(i))
+            buy.push(0)
+
+den(type) =>
+    switch type
+        "1 Billion" => 1000000000
+        "1 Million" => 1000000
+        "1 Thousand" => 1000
+        "None" => 1
+
+
+sellers = sell.sum()/den(denom)
+buyers = buy.sum()/den(denom)
+
+plot(-sellers, color = (-sellers) < (-sellers)[1] ? colorDown : color.new(colorDown, 50), title = "selling", style = plot.style_columns, display = mode == "Flow Comparison" ? display.all : display.none)
+plot(buyers, color = (buyers) > (buyers)[1] ? colorUp : color.new(colorUp, 50), title = "buying", style = plot.style_columns, display = mode == "Flow Comparison" ? display.all : display.none)
+plot(buyers-sellers, color = buyers-sellers > 0 ? ((buyers-sellers) > (buyers-sellers)[1] ? colorUp : color.new(colorUp, 50)) : ((buyers-sellers) < (buyers-sellers)[1] ? colorDown : color.new(colorDown, 50)), title = "Net Flow", style = plot.style_columns, display = mode == "Net Flow" ? display.all : display.none)
+plotchar(close > open and (buyers-sellers) < 0 ? 0 + ta.stdev((buyers-sellers), 30, false)*5 : na, "Bearish Bar Divergence", "▼", location.absolute, colorDown, display = mode == "Net Flow" and enble ? display.all : display.none)
+plotchar(close < open and (buyers-sellers) > 0 ? 0 - ta.stdev((buyers-sellers), 30, false)*5 : na, "Bullish Bar Divergence", "▲", location.absolute, colorUp, display = mode == "Net Flow" and enble ? display.all : display.none)
+p = plot(math.sum(sellers, len), color = colorDown, title = "selling sum", display = mode == "Sum of Flows" and not diff ? display.all : display.none)
+p1 = plot(math.sum(buyers, len), color = colorUp, title = "buying sum", display = mode == "Sum of Flows" and not diff ? display.all : display.none)
+difff = math.sum(buyers, len)-math.sum(sellers, len)
+plot(difff, color = difff > 0 ? (difff < difff[1] ? color.new(colorUp, 50) : colorUp) : (difff > difff[1] ? color.new(colorDown, 50) : colorDown), display = mode == "Sum of Flows" and diff ? display.all : display.none, style = plot.style_columns)
+fill(p, p1, math.max(math.sum(sellers, len),math.sum(buyers, len)), math.min(math.sum(sellers, len),math.sum(buyers, len)), math.sum(buyers, len) > math.sum(sellers, len) ? color.new(colorUp, 50) : color.new(colorDown, 50), color.new(chart.bg_color, 80), display = mode == "Sum of Flows" and not diff ? display.all : display.none)
+
+deviation = math.sqrt(ta.sma(math.pow(buyers-sellers,2), 70))
+col = buyers-sellers > 0 ? color.from_gradient(buyers-sellers, 0, deviation*mult1, color.new(colorUp, 85), color.new(colorUp, 0)) : color.from_gradient(buyers-sellers, -deviation*mult1, 0, color.new(colorDown, 0), color.new(colorDown, 85))
+ul = plot(deviation*mult, display = display.none)
+lu = plot(-deviation*mult, display = display.none)
+uu = plot(deviation*mult1, color = color.new(chart.fg_color, 40), display = mode == "Flow Comparison" and bands ? display.all : display.none)
+ll = plot(-deviation*mult1, color = color.new(chart.fg_color, 40), display = mode == "Flow Comparison" and bands ? display.all : display.none)
+fill(uu, ul, color.new(chart.fg_color, 80), "Upper Band", display = mode == "Flow Comparison" and bands ? display.all : display.none)
+fill(lu, ll, color.new(chart.fg_color, 80), "Upper Band", display = mode == "Flow Comparison" and bands ? display.all : display.none)
+
+///Alerts
+alertcondition(ta.crossover(buyers-sellers, 0), "Positive Net Flows")
+alertcondition(ta.crossunder(buyers-sellers, 0), "Negative Net Flows")
+alertcondition(ta.crossover(difff, 0), "Positive Sum of Net Flows")
+alertcondition(ta.crossunder(difff, 0), "Negative Sum of Net Flows")
+alertcondition(close < open and (buyers-sellers) > 0, "Bullish Net FLow Divergence")
+alertcondition(close > open and (buyers-sellers) < 0, "Bearish Net FLow Divergence")

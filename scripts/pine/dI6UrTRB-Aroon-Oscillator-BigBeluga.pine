@@ -1,0 +1,137 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Aroon Oscillator [BigBeluga]", max_bars_back = 500, format = format.percent, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int    length       = input.int(29, "Aroon Length")
+int    smooth       = input.int(25, "Smooth")
+int    sign_len     = input.int(10, "Signal Line")
+int    gain_limit   = 10
+
+bool   m_rev_sig    = input.bool(true, "Plot Mean Reversion", group = "Signals")
+bool   trend_sig    = input.bool(true, "Plot Trend Signals", group = "Signals")
+
+color  color_up     = input.color(color.lime, "Up", inline = "Col", group = "Color")
+color  color_dn     = input.color(color.blue, "Down", inline = "Col", group = "Color")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Zero Lag Function John Ehlers
+zero_lag(src, length, gain_limit) =>
+    // Initialize variables
+    float alpha        = 2 / (length + 1)
+    float ema          = na
+    float ec           = na
+    float least_error  = 1000000
+    float best_gain    = 0
+
+    // Initialize EMA
+    ema := na(ema[1]) ? src : alpha * src + (1 - alpha) * nz(ema[1])
+
+    // Loop to find the best gain
+    for int value = -gain_limit to gain_limit
+        // Calculate gain and EC
+        float gain = value / 10
+        ec := na(ec[1]) ? src : alpha * (ema + gain * (src - nz(ec[1]))) + (1 - alpha) * nz(ec[1])
+
+        // Calculate error
+        float error = src - ec
+
+        // Check if this gain results in a smaller error
+        if math.abs(error) < least_error
+            least_error := math.abs(error)
+            best_gain   := gain
+
+    // Recalculate EC using the best gain
+    ec := na(ec[1]) ? src : alpha * (ema + best_gain * (src - nz(ec[1]))) + (1 - alpha) * nz(ec[1])
+    ec
+
+aroon(simple int len, smooth) =>
+    float aroonDown   = 100 * (ta.lowestbars(low, len) + len) / len
+    float aroonUp     = 100 * (ta.highestbars(high, len) + len) / len
+    float src         = aroonUp - aroonDown
+    zero_lag(src, smooth, gain_limit)
+
+float aroon_osc   = aroon(length, smooth)
+float sig_line    = ta.sma(aroon_osc, sign_len)
+
+color color_sig   = color.new(chart.fg_color, 85)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+p1   = plot(aroon_osc, "Aroon Oscillator", color = color.from_gradient(aroon_osc, -80, 80, color_dn, color_up))
+p0   = plot(0, "Zero Line", color = color.new(chart.fg_color, 50))
+
+plot(sig_line, "Signal Line", color = bar_index % 2 == 0 ? color.new(chart.fg_color, 50) : na)
+
+fill(p1, p0, 0, -100, na, color_dn)
+fill(p1, p0, 100, 0, color_up, na)
+
+bgcolor(ta.crossover(aroon_osc, 0) ? color.new(color_up, 85) : na)
+bgcolor(ta.crossover(aroon_osc, 0) and trend_sig ? color.new(color_up, 85) : na, force_overlay = true)
+
+bgcolor(ta.crossunder(aroon_osc, 0) ? color.new(color_dn, 85) : na)
+bgcolor(ta.crossunder(aroon_osc, 0) and trend_sig ? color.new(color_dn, 85) : na, force_overlay = true)
+
+// Align plotchar and label declarations with types and columns
+plotchar(ta.crossover(aroon_osc, 0) and trend_sig, "Long (Chart)", "🢁", 
+         location = location.bottom, 
+         color    = color_up, 
+         size     = size.tiny, 
+         force_overlay = true, 
+         text     = "Long", 
+         textcolor = chart.fg_color)
+         
+plotchar(ta.crossunder(aroon_osc, 0) and trend_sig, "Short (Chart)", "🢃", 
+         location = location.top, 
+         color    = color_dn, 
+         size     = size.tiny, 
+         force_overlay = true, 
+         text     = "Short", 
+         textcolor = chart.fg_color)
+
+if barstate.islast
+    label.delete(
+         label.new(bar_index, aroon_osc, str.tostring(math.round(aroon_osc), format.percent),
+                 color      = color(na), 
+                 textcolor  = aroon_osc > 0 ? color_up : color_dn, 
+                 style      = label.style_label_left)[1]
+                 )
+
+if m_rev_sig
+    if ta.crossover(aroon_osc, sig_line)
+        label.new(bar_index, low, "●\nreversion\nup", 
+                 color          = color(na), 
+                 textcolor      = color.new(color_up, 50), 
+                 style          = label.style_label_up, 
+                 force_overlay  = true)
+
+    if ta.crossunder(aroon_osc, sig_line) 
+        label.new(bar_index, high, "reversion\ndown\n●", 
+                 color          = color(na), 
+                 textcolor      = color_dn, 
+                 style          = label.style_label_down, 
+                 force_overlay  = true)
+
+plotchar(ta.crossover(aroon_osc, sig_line) ? aroon_osc[1] : na, "Mean reversion Up", "●", 
+         location = location.absolute, 
+         color    = color_up,
+         size     = size.tiny, 
+         offset   = -1)
+
+plotchar(ta.crossunder(aroon_osc, sig_line) ? aroon_osc[1] : na, "Mean reversion Down", "●", 
+         location = location.absolute, 
+         color    = color_dn, 
+         size     = size.tiny, 
+         offset   = -1)
+
+plotchar(ta.crossover(aroon_osc, 0) ? 0 : na, "Long", "▲", location = location.absolute, color = color_up, size = size.tiny)
+plotchar(ta.crossunder(aroon_osc, 0) ? 0 : na, "Short", "▼", location = location.absolute, color = color_dn, size = size.tiny)
+
+bgcolor(aroon_osc > 0 ? color.new(color_up, 95) : color.new(color_dn, 95))
+// }

@@ -1,0 +1,202 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Ultimate Bands [BigBeluga]", overlay=false)
+
+// =====================================================================================================================}
+// ＩＮＰＵＴＳ
+// ====================================================================================================================={
+length = input.int(20, "Length", minval=1)
+numSDs = input.float(1, "Number of Standard Deviations", minval=0.1, step=0.1)
+sig_len = input.int(40, "Signal Line Length")
+bool break_outs = input.bool(false, "Show Trend BreakOuts")
+
+// Price calculation
+price = hlc3[barstate.isconfirmed ? 0 : 1]
+
+// Color definitions
+color color_up = input.color(#edddd4, "▲", inline = "g", group = "Color")
+color color_dn = input.color(#c44536, "▼", inline = "g", group = "Color")
+
+
+// =====================================================================================================================}
+// ＣＡＬＣＵＬＡＴＩＯＮＳ
+// ====================================================================================================================={
+
+// @function Normalizes a value to a 0-40 range
+// @param src (float) The source value to normalize
+// @returns (float) Normalized value between 0 and 40
+method normilize(float src)=>
+    x   = src * 2
+    val = (x > 2 ? 2 : x < -2 ? -2 : x) + 2
+    val * 10  
+
+// @function Calculates Root Mean Square Deviation (RMSD)
+// @param price (series float) Price series
+// @param src (series float) Source series to compare against price
+// @returns (float) RMSD value
+rmsd(price, src)=>
+    sumSquaredDiff = 0.0
+    for i = 0 to length - 1
+        sumSquaredDiff += math.pow(price[i] - src[i], 2)
+    math.sqrt(sumSquaredDiff / length)
+
+// @function Implements John Ehler's SuperSmoother
+// @param price (series float) Price series to smooth
+// @param period (int) Smoothing period
+// @returns (float) Smoothed price
+supersmoother(price, period) =>
+    float step = 2.0 * math.pi / period
+    a1 = math.exp(-math.sqrt(2) * math.pi / period)
+    b1 = 2 * a1 * math.cos(math.sqrt(2) * step / period)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    
+    ss = 0.0
+    ss := if bar_index >= 4
+        c1 * (price + price[1]) / 2 + c2 * ss[1] + c3 * ss[2]
+    else
+        price
+    ss
+
+// Calculate smoothed price and RMSD
+smooth = supersmoother(price, length)
+rmsd = rmsd(price, smooth)
+
+// Calculate Upper and Lower Bands
+upperBand = smooth + numSDs * rmsd
+lowerBand = smooth - numSDs * rmsd
+
+// Calculate Ultimate Oscillator
+ult_osc = (((price - lowerBand)/(upperBand - lowerBand))-0.5) * numSDs
+
+// Calculate Trend Signal Line 
+signal_line = ta.hma(ult_osc, sig_len)
+
+// Normalize signal line and oscillator values
+sig_value = signal_line.normilize()
+ob_os_val = ult_osc.normilize()
+
+
+
+// =====================================================================================================================}
+// ＰＬＯＴ
+// ====================================================================================================================={
+
+// Create heatmap table for visualization
+if barstate.islast
+    table heatmap = table.new(position.bottom_right, 50, 50, force_overlay = true)
+
+    for i = 0 to 40
+        txt_ob_os = ob_os_val > 20 ? "OB" : "OS"
+        txt_trend = sig_value > 20 ? "🠉" : "🠋"
+
+        table.cell(heatmap, i, 40, i == 20 ? "🞣" : "", 
+             bgcolor    = color.from_gradient(i, 0, 40, color.new(color_dn, 40), color.new(color_up, 40)), 
+             height     = 3, 
+             width      = 1, 
+             text_color = chart.fg_color)
+
+        table.cell(heatmap, i, 38, i == 20 ? "𝖳𝗋𝖾𝗇𝖽" : "", 
+             height     = 3, 
+             width      = 1, 
+             text_color = chart.fg_color, 
+             text_size  = size.tiny)
+
+        table.cell(heatmap, 40, 40-i, i == 20 ? "🞣" : "", 
+             bgcolor    = color.from_gradient(i, 0, 40, color.new(color_up, 40), color.new(color_dn, 40)), 
+             height     = 2, 
+             width      = 1, 
+             text_color = chart.fg_color)
+        table.cell(heatmap, 38, i, i == 20 ? "ob/os" : "", 
+             height     = 1,
+             text_color = chart.fg_color,
+             width      = 1, 
+             text_size  = size.tiny)
+
+        table.cell(heatmap, math.round(sig_value), 40, "⬤", 
+             bgcolor    = color.from_gradient(sig_value, 0, 40, color.new(color_dn, 40), color.new(color_up, 40)), 
+             height     = 2,
+             text_color = chart.bg_color, 
+             width      = 1)
+
+        table.cell(heatmap, math.round(sig_value), 39, txt_trend, 
+             height     = 4, 
+             text_color = chart.fg_color, 
+             width      = 1)
+
+        table.cell(heatmap, 40, 40-math.round(ob_os_val), "⬤", 
+             bgcolor    = color.from_gradient(ob_os_val, 0, 40, color.new(color_up, 40), color.new(color_dn, 40)), 
+             height     = 2, 
+             text_color = chart.bg_color, 
+             width      = 1)
+        table.cell(heatmap, 39, 40-math.round(ob_os_val), txt_ob_os, 
+             height     = 4, 
+             text_color = chart.fg_color, 
+             width      = 1,
+             text_size  = size.small)
+
+// Plot signal line and main oscillator
+plot(signal_line, color = color.from_gradient(signal_line, -1, 1, color.new(color_dn, 50), color.new(color_up, 50)))
+p_main = plot(ult_osc, display = display.none)
+
+// Plot Ultimate Bands
+p_upper  = plot(upperBand, "Upper Band", color=color_dn, linewidth=1, force_overlay = true)
+p_lower  = plot(lowerBand, "Lower Band", color=color_up, linewidth=1, force_overlay = true)
+p_smooth = plot(smooth, "Smooth", color=chart.fg_color, linewidth=1, force_overlay = true)
+
+// Fill areas between bands
+fill(p_smooth, p_upper, upperBand, smooth, color.new(color_dn, 80), na)
+fill(p_smooth, p_lower, smooth, lowerBand, na, color.new(color_up, 80))
+
+// Plot and fill oscillator zones
+p0     = plot(0, color = chart.fg_color)
+p_uper = plot(2, color = color_dn)
+p_low  = plot(-2, color = color_up)
+
+fill(p0, p_uper, 5, 0, color_dn, na)
+fill(p0, p_low, 0, -5, na, color_up)
+fill(p0, p_main, 1, -0.5, color_up, na)
+fill(p0, p_main, 0.5, -1, na, color_dn)
+
+// Detect breakouts
+break_out_up = ta.crossover(close, upperBand)
+break_out_dn = ta.crossunder(close, lowerBand)
+
+// Plot breakout signals
+var bool ch_break = true
+switch 
+    break_out_up and break_outs and ch_break[1] == false =>
+     ch_break := true,
+     label.new(bar_index, lowerBand, "⮝", 
+                 color         = color(na), 
+                 style         = label.style_label_up, 
+                 force_overlay = true, 
+                 size          = size.normal,
+                 textcolor      = color_up)
+
+    break_out_dn and break_outs and ch_break[1] == true =>
+     ch_break := false,
+     label.new(bar_index, upperBand, "⮟",
+                 color         = color(na), 
+                 style         = label.style_label_down, 
+                 force_overlay = true, 
+                 size          = size.normal, 
+                 textcolor     = color_dn)
+
+plotchar(break_out_dn and break_outs and ch_break[1] == true, "", "⮟", location.top, color_dn, size = size.tiny)
+plotchar(break_out_up and break_outs and ch_break[1] == false , "", "⮝", location.bottom, color_up, size = size.tiny)
+
+// Color bars based on breakouts
+barcolor  =     
+         break_out_dn and break_outs and ch_break[1] == true 
+         ? color_dn 
+         : break_out_up and break_outs and ch_break[1] == false
+         ? color_up
+         : na
+
+plotcandle(open, high, low, close, "", barcolor, barcolor, bordercolor = barcolor, force_overlay = true)
+
+// =====================================================================================================================}

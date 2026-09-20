@@ -1,0 +1,603 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("High Probability Order Blocks [AlgoAlpha]", shorttitle = "AlgoAlpha - High Probability OB", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_polylines_count = 100)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+preventOverlap = input.bool(true, title = "Prevent Overlap", group = "Calculation", tooltip = "Avoid creating blocks that overlap existing ones.")
+zLen = input.int(50, title = "Z-Score Window (bars)", minval = 1, group = "Calculation", tooltip = "Bars used to normalize distance into z-scores. Bigger = smoother; smaller = faster.")
+maxAge = input.int(2000, title = "Max Box Age (bars)", minval = 1, group = "Calculation", tooltip = "Expire blocks after this many bars if not mitigated.")
+kmLookback = input.int(70, title = "KM Training Window (zones)", minval = 1, group = "Reliability Calculation", tooltip = "Recent mitigated blocks kept per side (bullish/bearish) for KM. Higher = smoother, lower = more reactive.")
+kmMinSamples = input.int(5, title = "Minimum Sample Size", minval = 5, group = "Reliability Calculation", tooltip = "Minimum mitigated blocks needed to compute KM. Otherwise shows not enough data (N.E.D.)")
+
+// ============================================================================
+// APPEARANCE
+// ============================================================================
+showKmPanel = input.bool(true, title = "Show KM Panel", group = "Appearance", tooltip = "Toggle KM axes/grid and curves.")
+kmAxisCol = input.color(color.new(color.white, 0), title = "KM Axis Color", group = "Appearance", tooltip = "Axis line color.")
+kmGridCol = input.color(color.new(color.silver, 60), title = "KM Grid Color", group = "Appearance", tooltip = "Grid line color.")
+bullCol = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color for bullish blocks and curve.")
+bearCol = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color for bearish blocks and curve.")
+probTxtSizeOpt = input.string("Tiny", title = "Probability Text Size", options=["Tiny","Small","Medium","Large"], group = "Appearance", tooltip = "Text size inside each orderblock label.")
+probTxtSizeConst = probTxtSizeOpt == "Tiny" ? size.tiny : probTxtSizeOpt == "Small" ? size.small : probTxtSizeOpt == "Medium" ? size.normal : size.large
+
+// ============================================================================
+// KM PLOT CONSTANTS
+// ============================================================================
+kmGridYDivs = 4
+kmGridXStep = 50
+showKmLabels = true
+kmXAxisTitle = "Orderblock Age (Bars)"
+kmYAxisTitle = "Probability of Zone Survival %"
+
+var updist = 0.0
+var downdist = 0.0
+
+updist   := close > open ? nz(updist[1]) + (close - open) : 0.0
+downdist := close < open ? nz(downdist[1]) + (open - close) : 0.0
+
+upMean  = ta.sma(updist, zLen)
+upStdev = ta.stdev(updist, zLen)
+dnMean  = ta.sma(downdist, zLen)
+dnStdev = ta.stdev(downdist, zLen)
+
+zUp = (updist - upMean) / (upStdev == 0.0 ? na : upStdev)
+zDn = (downdist - dnMean) / (dnStdev == 0.0 ? na : dnStdev)
+
+bullish = ta.crossover(zUp, 4) and nz(zUp[1]) != 0
+bearish = ta.crossunder(-zDn, -4) and nz((-zDn)[1]) != 0
+
+var box[] bullBoxes = array.new<box>()
+var box[] bearBoxes = array.new<box>()
+var int[] bullStarts = array.new_int()
+var int[] bearStarts = array.new_int()
+var line[] bullMidlines = array.new<line>()
+var line[] bearMidlines = array.new<line>()
+var polyline bullKmCurve = na
+var polyline bearKmCurve = na
+
+var int[] kmStartBars = array.new_int()
+var int[] kmStartSides = array.new_int()
+var int[] kmEventStartBars = array.new_int()
+var int[] kmEventSides = array.new_int()
+var float[] kmEventAges = array.new_float()
+var int[] kmCensorStartBars = array.new_int()
+var int[] kmCensorSides = array.new_int()
+var float[] kmCensorAges = array.new_float()
+var int[] kmOpenCensorStartBars = array.new_int()
+var int[] kmOpenCensorSides = array.new_int()
+var float[] kmOpenCensorAges = array.new_float()
+
+f_remove_samples_for_start(int side, int startBar) =>
+    int nEvRm = array.size(kmEventStartBars)
+    if nEvRm > 0
+        for k = nEvRm - 1 to 0
+            if k >= 0 and array.size(kmEventSides) > k and array.size(kmEventStartBars) > k and array.size(kmEventAges) > k
+                if array.get(kmEventSides, k) == side and array.get(kmEventStartBars, k) == startBar
+                    array.remove(kmEventStartBars, k)
+                    array.remove(kmEventSides, k)
+                    array.remove(kmEventAges, k)
+    int nCeRm = array.size(kmCensorStartBars)
+    if nCeRm > 0
+        for k = nCeRm - 1 to 0
+            if k >= 0 and array.size(kmCensorSides) > k and array.size(kmCensorStartBars) > k and array.size(kmCensorAges) > k
+                if array.get(kmCensorSides, k) == side and array.get(kmCensorStartBars, k) == startBar
+                    array.remove(kmCensorStartBars, k)
+                    array.remove(kmCensorSides, k)
+                    array.remove(kmCensorAges, k)
+
+f_trim_km_starts_and_samples(int side, int lookback) =>
+    int[] idxs = array.new_int()
+    for i = 0 to array.size(kmStartBars) - 1
+        if array.size(kmStartSides) > i
+            if array.get(kmStartSides, i) == side
+                array.push(idxs, i)
+    int n = array.size(idxs)
+    if n > lookback
+        for j = n - 1 to lookback
+            int idx = array.get(idxs, j)
+            if array.size(kmStartBars) > idx and array.size(kmStartSides) > idx
+                int sb = array.get(kmStartBars, idx)
+                f_remove_samples_for_start(side, sb)
+                array.remove(kmStartBars, idx)
+                array.remove(kmStartSides, idx)
+
+// ============================================================================
+// KM AXES/GRID STATE
+// ============================================================================
+var polyline kmAxisX = na
+var polyline kmAxisY = na
+var polyline[] kmGridLines = array.new<polyline>()
+var label[] kmYTickLabels = array.new<label>()
+var label[] kmXTickLabels = array.new<label>()
+var label kmXAxisTitleLabel = na
+var label kmYAxisTitleLabel = na
+var label kmPlotTitleLabel = na
+
+bullrej = false
+bearrej = false
+bullCreate = false
+bearCreate = false
+
+f_km_survival(int side, int lookbackZones, int minSamples, int ageBars) =>
+    int[] includeStarts = array.new_int()
+    int totalStarts = array.size(kmStartBars)
+    int taken = 0
+    if totalStarts > 0
+        for i = 0 to totalStarts - 1
+            if taken >= lookbackZones
+                break
+            if i >= 0 and array.size(kmStartSides) > i and array.size(kmStartBars) > i
+                if array.get(kmStartSides, i) == side
+                    array.push(includeStarts, array.get(kmStartBars, i))
+                    taken += 1
+    float[] E = array.new_float()
+    float[] C = array.new_float()
+    int nEvt = array.size(kmEventStartBars)
+    if nEvt > 0
+        for i = 0 to nEvt - 1
+            if i >= 0 and array.size(kmEventSides) > i and array.size(kmEventStartBars) > i and array.size(kmEventAges) > i
+                if array.get(kmEventSides, i) == side
+                    int sb = array.get(kmEventStartBars, i)
+                    if array.indexof(includeStarts, sb) != -1
+                        array.push(E, array.get(kmEventAges, i))
+    int nCen = array.size(kmCensorStartBars)
+    if nCen > 0
+        for i = 0 to nCen - 1
+            if i >= 0 and array.size(kmCensorSides) > i and array.size(kmCensorStartBars) > i and array.size(kmCensorAges) > i
+                if array.get(kmCensorSides, i) == side
+                    int sb = array.get(kmCensorStartBars, i)
+                    if array.indexof(includeStarts, sb) != -1
+                        array.push(C, array.get(kmCensorAges, i))
+    int nOpen = array.size(kmOpenCensorStartBars)
+    if nOpen > 0
+        for i = 0 to nOpen - 1
+            if i >= 0 and array.size(kmOpenCensorSides) > i and array.size(kmOpenCensorStartBars) > i and array.size(kmOpenCensorAges) > i
+                if array.get(kmOpenCensorSides, i) == side
+                    int sb = array.get(kmOpenCensorStartBars, i)
+                    if array.indexof(includeStarts, sb) != -1
+                        array.push(C, array.get(kmOpenCensorAges, i))
+    int N0 = array.size(includeStarts)
+    int total = array.size(E) + array.size(C) + 0
+    if N0 < minSamples or array.size(E) == 0
+        na
+    else
+        array.sort(E)
+        array.sort(C)
+        float S = 1.0
+        int nRisk = N0
+        int ei = 0
+        int ci = 0
+        int nE = array.size(E)
+        int nC = array.size(C)
+        while ei < nE
+            float ti = array.get(E, ei)
+            if ti > ageBars
+                break
+            while ci < nC and ci >= 0 and array.size(C) > ci and array.get(C, ci) < ti
+                nRisk -= 1
+                ci += 1
+            int d = 0
+            while ei < nE and ei >= 0 and array.size(E) > ei and array.get(E, ei) == ti
+                d += 1
+                ei += 1
+            if nRisk > 0
+                S := S * (1.0 - (float(d) / float(nRisk)))
+            nRisk -= d
+            int cEq = 0
+            while ci < nC and ci >= 0 and array.size(C) > ci and array.get(C, ci) == ti
+                cEq += 1
+                ci += 1
+            nRisk -= cEq
+        S
+
+f_km_points(int side, int lookbackZones, int minSamples, float topY, float botY, int xStart, int maxBars) =>
+    chart.point[] pts = array.new<chart.point>()
+    if maxBars <= 0
+        pts
+    else
+        int[] includeStarts = array.new_int()
+        int totalStarts = array.size(kmStartBars)
+        int taken = 0
+        if totalStarts > 0
+            for i = 0 to totalStarts - 1
+                if taken >= lookbackZones
+                    break
+                if i >= 0 and array.size(kmStartSides) > i and array.size(kmStartBars) > i
+                    if array.get(kmStartSides, i) == side
+                        array.push(includeStarts, array.get(kmStartBars, i))
+                        taken += 1
+        float[] E = array.new_float()
+        float[] C = array.new_float()
+        int nEvt = array.size(kmEventStartBars)
+        if nEvt > 0
+            for i = 0 to nEvt - 1
+                if i >= 0 and array.size(kmEventSides) > i and array.size(kmEventStartBars) > i and array.size(kmEventAges) > i
+                    if array.get(kmEventSides, i) == side
+                        int sb = array.get(kmEventStartBars, i)
+                        if array.indexof(includeStarts, sb) != -1
+                            array.push(E, array.get(kmEventAges, i))
+        int nCen = array.size(kmCensorStartBars)
+        if nCen > 0
+            for i = 0 to nCen - 1
+                if i >= 0 and array.size(kmCensorSides) > i and array.size(kmCensorStartBars) > i and array.size(kmCensorAges) > i
+                    if array.get(kmCensorSides, i) == side
+                        int sb = array.get(kmCensorStartBars, i)
+                        if array.indexof(includeStarts, sb) != -1
+                            array.push(C, array.get(kmCensorAges, i))
+        int nOpen = array.size(kmOpenCensorStartBars)
+        for i = 0 to nOpen - 1
+            if i >= 0 and array.size(kmOpenCensorSides) > i and array.size(kmOpenCensorStartBars) > i and array.size(kmOpenCensorAges) > i
+                if array.get(kmOpenCensorSides, i) == side
+                    int sb = array.get(kmOpenCensorStartBars, i)
+                    if array.indexof(includeStarts, sb) != -1
+                        array.push(C, array.get(kmOpenCensorAges, i))
+        int total = array.size(E) + array.size(C)
+        if total < minSamples or array.size(E) == 0
+            pts
+        else
+            array.sort(E)
+            array.sort(C)
+            float S = 1.0
+            int nRisk = total
+            int ei = 0
+            int ci = 0
+            int nE = array.size(E)
+            int nC = array.size(C)
+            float y0 = botY + S * (topY - botY)
+            array.push(pts, chart.point.from_index(xStart, y0))
+            while ei < nE
+                int ti = int(array.get(E, ei))
+                if ti > maxBars
+                    break
+                while ci < nC and ci >= 0 and array.size(C) > ci and int(array.get(C, ci)) < ti
+                    nRisk -= 1
+                    ci += 1
+                float yS = botY + S * (topY - botY)
+                array.push(pts, chart.point.from_index(xStart + ti, yS))
+                int d = 0
+                while ei < nE and ei >= 0 and array.size(E) > ei and int(array.get(E, ei)) == ti
+                    d += 1
+                    ei += 1
+                if nRisk > 0
+                    S := S * (1.0 - (float(d) / float(nRisk)))
+                nRisk -= d
+                int cEq = 0
+                while ci < nC and ci >= 0 and array.size(C) > ci and int(array.get(C, ci)) == ti
+                    cEq += 1
+                    ci += 1
+                nRisk -= cEq
+                float yNew = botY + S * (topY - botY)
+                array.push(pts, chart.point.from_index(xStart + ti, yNew))
+            float yEnd = botY + S * (topY - botY)
+            array.push(pts, chart.point.from_index(xStart + maxBars, yEnd))
+            pts
+
+
+f_can_create(float tNew, float bNew) =>
+    bool ok = true
+    if bullBoxes.size() > 0
+        for j = 0 to array.size(bullBoxes) - 1
+            exB = array.get(bullBoxes, j)
+            float exTop = box.get_top(exB)
+            float exBot = box.get_bottom(exB)
+            if (tNew > exBot) and (bNew < exTop)
+                ok := false
+                break
+    if ok and bearBoxes.size() > 0
+        for j = 0 to array.size(bearBoxes) - 1
+            exS = array.get(bearBoxes, j)
+            float exTop2 = box.get_top(exS)
+            float exBot2 = box.get_bottom(exS)
+            if (tNew > exBot2) and (bNew < exTop2)
+                ok := false
+                break
+    ok
+
+
+lastDownIdx = ta.valuewhen(close < open, bar_index, 0)
+lastDownHigh = ta.valuewhen(close < open, high, 0)
+lastDownLow = ta.valuewhen(close < open, low, 0)
+if bullish and not na(lastDownIdx) and not na(lastDownHigh) and not na(lastDownLow)
+    if not preventOverlap or f_can_create(lastDownHigh, lastDownLow)
+        int bgTransB = 85
+        int brdTransB = math.min(100, bgTransB + 10)
+        bx = box.new(lastDownIdx, lastDownHigh, lastDownIdx + 1, lastDownLow, border_color = color.new(bullCol, brdTransB), bgcolor = color.new(bullCol, bgTransB))
+        array.unshift(bullBoxes, bx)
+        array.unshift(bullStarts, lastDownIdx)
+        array.unshift(kmStartBars, lastDownIdx)
+        array.unshift(kmStartSides, 1)
+        f_trim_km_starts_and_samples(1, kmLookback)
+        float midYB = (lastDownHigh + lastDownLow) / 2.0
+        line midB = line.new(lastDownIdx, midYB, lastDownIdx + 1, midYB, color = color.new(bullCol, 60), width = 1, style = line.style_dashed)
+        array.unshift(bullMidlines, midB)
+        bullCreate := true
+
+lastUpIdx = ta.valuewhen(close > open, bar_index, 0)
+lastUpHigh = ta.valuewhen(close > open, high, 0)
+lastUpLow = ta.valuewhen(close > open, low, 0)
+if bearish and not na(lastUpIdx) and not na(lastUpHigh) and not na(lastUpLow)
+    if not preventOverlap or f_can_create(lastUpHigh, lastUpLow)
+        int bgTransS = 85
+        int brdTransS = math.min(100, bgTransS + 10)
+        bx2 = box.new(lastUpIdx, lastUpHigh, lastUpIdx + 1, lastUpLow, border_color = color.new(bearCol, brdTransS), bgcolor = color.new(bearCol, bgTransS))
+        array.unshift(bearBoxes, bx2)
+        array.unshift(bearStarts, lastUpIdx)
+        array.unshift(kmStartBars, lastUpIdx)
+        array.unshift(kmStartSides, -1)
+        f_trim_km_starts_and_samples(-1, kmLookback)
+        float midYS = (lastUpHigh + lastUpLow) / 2.0
+        line midS = line.new(lastUpIdx, midYS, lastUpIdx + 1, midYS, color = color.new(bearCol, 60), width = 1, style = line.style_dashed)
+        array.unshift(bearMidlines, midS)
+        bearCreate := true
+
+
+if bullBoxes.size() > 0
+    for i = array.size(bullBoxes) - 1 to 0
+        if array.size(bullBoxes) <= i or array.size(bullStarts) <= i
+            continue
+        b = array.get(bullBoxes, i)
+        box.set_right(b, bar_index)
+        if array.size(bullMidlines) > i
+            line mB = array.get(bullMidlines, i)
+            mB.set_x2(bar_index)
+        float topB = box.get_top(b)
+        float botB = box.get_bottom(b)
+        bool mitigatedB = close < botB and close[1] < botB
+        int startB = array.get(bullStarts, i)
+        bool expiredB = (bar_index - startB) >= maxAge
+        if mitigatedB or expiredB
+            if mitigatedB
+                int durB = bar_index - startB
+                array.unshift(kmEventStartBars, startB)
+                array.unshift(kmEventSides, 1)
+                array.unshift(kmEventAges, durB)
+            else if expiredB
+                int durBX = bar_index - startB
+                array.unshift(kmCensorStartBars, startB)
+                array.unshift(kmCensorSides, 1)
+                array.unshift(kmCensorAges, durBX)
+            array.remove(bullBoxes, i)
+            array.remove(bullStarts, i)
+            if array.size(bullMidlines) > i
+                array.remove(bullMidlines, i)
+        else
+            int ageB = bar_index - startB
+            if close > topB and close[1] < topB
+                bullrej := true
+
+if bearBoxes.size() > 0
+    for i = array.size(bearBoxes) - 1 to 0
+        if array.size(bearBoxes) <= i or array.size(bearStarts) <= i
+            continue
+        b = array.get(bearBoxes, i)
+        box.set_right(b, bar_index)
+        if array.size(bearMidlines) > i
+            line mS = array.get(bearMidlines, i)
+            mS.set_x2(bar_index)
+        float topS = box.get_top(b)
+        float botS = box.get_bottom(b)
+        bool mitigatedS = close > topS and close[1] > topS
+        int startS = array.get(bearStarts, i)
+        bool expiredS = (bar_index - startS) >= maxAge
+        if mitigatedS or expiredS
+            if mitigatedS
+                int durS = bar_index - startS
+                array.unshift(kmEventStartBars, startS)
+                array.unshift(kmEventSides, -1)
+                array.unshift(kmEventAges, durS)
+            else if expiredS
+                int durSX = bar_index - startS
+                array.unshift(kmCensorStartBars, startS)
+                array.unshift(kmCensorSides, -1)
+                array.unshift(kmCensorAges, durSX)
+            array.remove(bearBoxes, i)
+            array.remove(bearStarts, i)
+            if array.size(bearMidlines) > i
+                array.remove(bearMidlines, i)
+        else
+            int ageS = bar_index - startS
+            if close < botS and close[1] > botS
+                bearrej := true
+
+// ============================================================================
+// KM RENDERING
+// ============================================================================
+if barstate.islast
+    if array.size(kmOpenCensorStartBars) > 0
+        for i = array.size(kmOpenCensorStartBars) - 1 to 0
+            array.remove(kmOpenCensorStartBars, i)
+            array.remove(kmOpenCensorSides, i)
+            array.remove(kmOpenCensorAges, i)
+    if array.size(bullBoxes) > 0 and array.size(bullStarts) > 0
+        for i = 0 to array.size(bullBoxes) - 1
+            if array.size(bullStarts) > i
+                int startB2 = array.get(bullStarts, i)
+                int ageB2 = bar_index - startB2
+                array.unshift(kmOpenCensorStartBars, startB2)
+                array.unshift(kmOpenCensorSides, 1)
+                array.unshift(kmOpenCensorAges, float(ageB2))
+    if array.size(bearBoxes) > 0 and array.size(bearStarts) > 0
+        for i = 0 to array.size(bearBoxes) - 1
+            if array.size(bearStarts) > i
+                int startS2 = array.get(bearStarts, i)
+                int ageS2 = bar_index - startS2
+                array.unshift(kmOpenCensorStartBars, startS2)
+                array.unshift(kmOpenCensorSides, -1)
+                array.unshift(kmOpenCensorAges, float(ageS2))
+    int rightStart = bar_index + 50
+    int maxBarsRight = 450
+    int rightEnd = math.min(rightStart + maxBarsRight, bar_index + 500)
+    int maxBarsDraw = rightEnd - rightStart
+    float frameTop = na
+    float frameBottom = na
+    if array.size(bullBoxes) > 0
+        for i = 0 to array.size(bullBoxes) - 1
+            if array.size(bullBoxes) > i
+                bx_ = array.get(bullBoxes, i)
+                float t = box.get_top(bx_)
+                float btm = box.get_bottom(bx_)
+                frameTop := na(frameTop) ? t : math.max(frameTop, t)
+                frameBottom := na(frameBottom) ? btm : math.min(frameBottom, btm)
+    if array.size(bearBoxes) > 0
+        for i = 0 to array.size(bearBoxes) - 1
+            if array.size(bearBoxes) > i
+                bx2_ = array.get(bearBoxes, i)
+                float t2 = box.get_top(bx2_)
+                float btm2 = box.get_bottom(bx2_)
+                frameTop := na(frameTop) ? t2 : math.max(frameTop, t2)
+                frameBottom := na(frameBottom) ? btm2 : math.min(frameBottom, btm2)
+    float yTop = na(frameTop) ? high : frameTop
+    float yBottom = na(frameBottom) ? low : frameBottom
+    if yTop <= yBottom
+        yTop += 1
+        yBottom -= 1
+    if showKmPanel
+        if not na(kmAxisX)
+            kmAxisX.delete()
+        if not na(kmAxisY)
+            kmAxisY.delete()
+        if array.size(kmGridLines) > 0
+            for gi = array.size(kmGridLines) - 1 to 0
+                if array.size(kmGridLines) > gi
+                    polyline gl = array.get(kmGridLines, gi)
+                    if not na(gl)
+                        gl.delete()
+                    array.remove(kmGridLines, gi)
+        if array.size(kmYTickLabels) > 0
+            for li = array.size(kmYTickLabels) - 1 to 0
+                if array.size(kmYTickLabels) > li
+                    label lb = array.get(kmYTickLabels, li)
+                    if not na(lb)
+                        lb.delete()
+                    array.remove(kmYTickLabels, li)
+        if array.size(kmXTickLabels) > 0
+            for li = array.size(kmXTickLabels) - 1 to 0
+                if array.size(kmXTickLabels) > li
+                    label lb = array.get(kmXTickLabels, li)
+                    if not na(lb)
+                        lb.delete()
+                    array.remove(kmXTickLabels, li)
+
+        chart.point[] xAxisPts = array.new<chart.point>()
+        array.push(xAxisPts, chart.point.from_index(rightStart, yBottom))
+        array.push(xAxisPts, chart.point.from_index(rightEnd, yBottom))
+        kmAxisX := polyline.new(xAxisPts, line_color = kmAxisCol, line_style = line.style_solid)
+
+        chart.point[] yAxisPts = array.new<chart.point>()
+        array.push(yAxisPts, chart.point.from_index(rightStart, yBottom))
+        array.push(yAxisPts, chart.point.from_index(rightStart, yTop))
+        kmAxisY := polyline.new(yAxisPts, line_color = kmAxisCol, line_style = line.style_solid)
+
+        for d = 0 to kmGridYDivs
+            float frac = float(d) / float(kmGridYDivs)
+            float yLvl = yBottom + frac * (yTop - yBottom)
+            chart.point[] hPts = array.new<chart.point>()
+            array.push(hPts, chart.point.from_index(rightStart, yLvl))
+            array.push(hPts, chart.point.from_index(rightEnd, yLvl))
+            polyline hLine = polyline.new(hPts, line_color = kmGridCol, line_style = line.style_dotted)
+            array.push(kmGridLines, hLine)
+            if showKmLabels
+                string lbl = str.tostring(math.round(frac * 100)) + "%"
+                label ly = label.new(rightEnd, yLvl, lbl, textcolor = chart.fg_color, color = color.new(color.black, 100), textalign = text.align_left, style = label.style_label_left, size = size.tiny)
+                array.push(kmYTickLabels, ly)
+
+        int vCount = int(math.floor(maxBarsDraw / kmGridXStep))
+        if vCount > 0
+            for i = 1 to vCount
+                int xoff = i * kmGridXStep
+                chart.point[] vPts = array.new<chart.point>()
+                array.push(vPts, chart.point.from_index(rightStart + xoff, yBottom))
+                array.push(vPts, chart.point.from_index(rightStart + xoff, yTop))
+                polyline vLine = polyline.new(vPts, line_color = kmGridCol, line_style = line.style_dotted)
+                array.push(kmGridLines, vLine)
+                if showKmLabels
+                    string tl = str.tostring(xoff)
+                    label lx = label.new(rightStart + xoff, yBottom, tl, textcolor = chart.fg_color, color = color.new(color.black, 100), textalign = text.align_center, style = label.style_label_down, size = size.tiny)
+                    array.push(kmXTickLabels, lx)
+
+        if not na(kmXAxisTitleLabel)
+            kmXAxisTitleLabel.delete()
+        if not na(kmYAxisTitleLabel)
+            kmYAxisTitleLabel.delete()
+        if not na(kmPlotTitleLabel)
+            kmPlotTitleLabel.delete()
+        kmXAxisTitleLabel := label.new(int((rightStart + rightEnd) / 2), yBottom, kmXAxisTitle, textcolor = chart.fg_color, color = color.new(color.black, 100), textalign = text.align_center, style = label.style_label_up, size = size.small)
+        float yMid = yBottom + 0.5 * (yTop - yBottom)
+        float yTitle = yMid - 0.04 * (yTop - yBottom)
+        int titlePadBars = math.max(6, int(math.round(maxBarsDraw * 0.02)))
+        int titleX = math.min(bar_index + 500 - 1, rightEnd + titlePadBars)
+        kmPlotTitleLabel := label.new(titleX, yTitle, kmYAxisTitle, textcolor = chart.fg_color, color = color.new(color.black, 100), textalign = text.align_left, style = label.style_label_left, size = size.small)
+    float bullTop = na
+    float bullBot = na
+    float bearTop = na
+    float bearBot = na
+    if array.size(bullBoxes) > 0
+        bullTop := box.get_top(array.get(bullBoxes, 0))
+        bullBot := box.get_bottom(array.get(bullBoxes, 0))
+    if array.size(bearBoxes) > 0
+        bearTop := box.get_top(array.get(bearBoxes, 0))
+        bearBot := box.get_bottom(array.get(bearBoxes, 0))
+    if showKmPanel
+        if not na(bullTop) and not na(bullBot) and bullTop != bullBot
+            chart.point[] ptsB = f_km_points(1, kmLookback, kmMinSamples, yTop, yBottom, rightStart, maxBarsDraw)
+            if array.size(ptsB) > 1
+                if not na(bullKmCurve)
+                    bullKmCurve.delete()
+                bullKmCurve := polyline.new(ptsB, line_color = bullCol, line_style = line.style_solid)
+        if not na(bearTop) and not na(bearBot) and bearTop != bearBot
+            chart.point[] ptsS = f_km_points(-1, kmLookback, kmMinSamples, yTop, yBottom, rightStart, maxBarsDraw)
+            if array.size(ptsS) > 1
+                if not na(bearKmCurve)
+                    bearKmCurve.delete()
+                bearKmCurve := polyline.new(ptsS, line_color = bearCol, line_style = line.style_solid)
+    else
+        if not na(bullKmCurve)
+            bullKmCurve.delete()
+            bullKmCurve := na
+        if not na(bearKmCurve)
+            bearKmCurve.delete()
+            bearKmCurve := na
+
+    if array.size(bullBoxes) > 0 and array.size(bullStarts) > 0
+        for i = 0 to array.size(bullBoxes) - 1
+            if array.size(bullBoxes) > i and array.size(bullStarts) > i
+                b = array.get(bullBoxes, i)
+                int startB3 = array.get(bullStarts, i)
+                int ageB3 = bar_index - startB3
+                float sB2 = f_km_survival(1, kmLookback, kmMinSamples, ageB3)
+                string txtB2 = na(sB2) ? "Age " + str.tostring(ageB3) + " | N.E.D" : "Age " + str.tostring(ageB3) + " | " + str.tostring(math.round(sB2 * 100)) + "%"
+                b.set_text(txtB2)
+                b.set_text_halign(text.align_right)
+                b.set_text_valign(text.align_bottom)
+                b.set_text_color(chart.fg_color)
+                b.set_text_size(probTxtSizeConst)
+    if array.size(bearBoxes) > 0 and array.size(bearStarts) > 0
+        for i = 0 to array.size(bearBoxes) - 1
+            if array.size(bearBoxes) > i and array.size(bearStarts) > i
+                b = array.get(bearBoxes, i)
+                int startS3 = array.get(bearStarts, i)
+                int ageS3 = bar_index - startS3
+                float sS2 = f_km_survival(-1, kmLookback, kmMinSamples, ageS3)
+                string txtS2 = na(sS2) ? "Age " + str.tostring(ageS3) + " | N.E.D" : "Age " + str.tostring(ageS3) + " | " + str.tostring(math.round(sS2 * 100)) + "%"
+                b.set_text(txtS2)
+                b.set_text_halign(text.align_right)
+                b.set_text_valign(text.align_top)
+                b.set_text_color(chart.fg_color)
+                b.set_text_size(probTxtSizeConst)
+
+volatility = ta.atr(14)
+plotchar(bullrej ? low - volatility*2 : na, "Bullish Rejection", "▲", location.absolute, bullCol, size = size.tiny)
+plotchar(bearrej ? high + volatility*2 : na, "Bearish Rejection", "▼", location.absolute, bearCol, size = size.tiny)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(bullCreate, "Bullish Zone Created", "Bullish OrderBlock Created")
+alertcondition(bearCreate, "Bearish Zone Created", "Bearish OrderBlock Created")
+alertcondition(bullrej, "Bullish Rejection", "Bullish Rejection Signal")
+alertcondition(bearrej, "Bearish Rejection", "Bearish Rejection Signal")
+

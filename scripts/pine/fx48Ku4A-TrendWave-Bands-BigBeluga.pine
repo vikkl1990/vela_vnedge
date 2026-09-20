@@ -1,0 +1,88 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("TrendWave Bands [BigBeluga]", overlay = true)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int   length = input(50)
+float factor = input.float(1.0, "Factor", step = 0.1)
+
+// Color
+color col_up = input(color.lime, "", inline = "col")
+color col_dn = input(color.rgb(221, 26, 26), "", inline = "col")
+color col_ul = input(color.aqua, "", inline = "col")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+trend(length)=>
+
+    var direction = 0
+    var count_up  = 0.
+    var count_dn  = 0.
+
+    float volatility  = ta.sma(high-low, 70) * factor
+    float upper       = ta.highest(ta.sma(close, 25) + volatility, int(length/2))
+    float lower       = ta.lowest(ta.sma(close, length) - volatility, int(length/2))
+
+    bool sig_up       = ta.crossover(hlc3, upper) and barstate.isconfirmed
+    bool sig_dn       = ta.crossunder(hlc3, lower) and barstate.isconfirmed
+
+    switch
+        sig_up => direction := 1
+        sig_dn => direction := -1
+
+    upper := direction == 1 ? float(na) : upper
+    lower := direction == -1 ? float(na) : lower
+
+    // Trends Duration 
+    if direction == 1
+        count_up += 0.5
+        count_dn := 0
+
+    if direction == -1
+        count_dn += 0.5
+        count_up := 0
+
+    count_up := count_up > 70 ? 70 : count_up    
+    count_dn := count_dn > 70 ? 70 : count_dn 
+
+    [upper, lower, direction, count_up, count_dn]
+
+[upper, lower, direction, count_up, count_dn] = trend(length)
+
+float upper_band = lower + ta.atr(100)*5
+float lower_band = upper - ta.atr(100)*5
+
+color upper_col         = color.new(col_dn, int(count_dn))
+color lower_col         = color.new(col_up, int(count_up))
+color upper_band_col    = color.new(col_ul, 70 - int(count_up))
+color lower_band_col    = color.new(col_ul, 70 - int(count_dn))
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+plot(upper_band, "Upper Wave", style = plot.style_linebr, color = bar_index % 2 == 0 ? na : upper_band_col, linewidth = 1)
+plot(lower_band, "Lower Wave", style = plot.style_linebr, color = bar_index % 2 == 0 ? na : lower_band_col, linewidth = 1)
+
+plot(upper, "Upper Band", style = plot.style_linebr, color = upper_col, linewidth = 2)
+plot(lower, "Lower Band", style = plot.style_linebr, color = lower_col, linewidth = 2)
+
+plot(upper, "Upper Band Shadow", style = plot.style_linebr, color = color.new(col_dn, int(count_dn*2)), linewidth = 6)
+plot(lower, "Lower Band Shadow", style = plot.style_linebr, color = color.new(col_up, int(count_up*2)), linewidth = 6)
+
+plotshape(direction != direction[1] and direction == 1 ? lower : na, "Trend Up", shape.circle, location.absolute, size = size.tiny, color = col_up)
+plotshape(direction != direction[1] and direction == 1 ? lower : na, "Trend Up", shape.circle, location.absolute, size = size.small, color = color.new(col_up, 70))
+
+plotshape(direction != direction[1] and direction == -1 ? upper : na, "Trend Down", shape.circle, location.absolute, size = size.tiny, color = col_dn)
+plotshape(direction != direction[1] and direction == -1 ? upper : na, "Trend Down", shape.circle, location.absolute, size = size.small, color = color.new(col_dn, 70))
+
+// Trend Duration (70 max)
+// if barstate.islast
+//     if direction == 1
+//         label.delete(label.new(bar_index, lower, str.tostring(count_up), color = color(na), style = label.style_label_left, textcolor = chart.fg_color)[1])
+//     if direction == -1
+//         label.delete(label.new(bar_index, upper, str.tostring(count_dn), color = color(na), style = label.style_label_left, textcolor = chart.fg_color)[1])
+// }

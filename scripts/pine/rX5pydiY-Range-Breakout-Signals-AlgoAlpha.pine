@@ -1,0 +1,109 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Range Breakout Signals [AlgoAlpha]", shorttitle = "AlgoAlpha - Range Breakout", overlay = true, max_boxes_count = 500)
+import TradingView/ta/9
+
+x = input(20, title="Range Length", tooltip="Defines the lookback period for calculating median and mean distance for volatility calculations", group="Settings")
+confirmation_len = input(5, title="Confirmation Length", tooltip="Number of bars used to confirm a breakout condition", group="Settings")
+ltf_ = input.timeframe("5", "Lower Timeframe Value", tooltip = "Determines the lower timeframe used to calculate buying and selling volume")
+
+bullColor = input.color(#00ffbb, title="Bullish Color", tooltip="Color used for bullishness", group="Appearance")
+bearColor = input.color(#ff1100, title="Bearish Color", tooltip="Color used for bearishness", group="Appearance")
+
+dist = math.abs(close - open)
+
+meddist = ta.median(dist, x)
+meandist = ta.sma(dist, x)
+volatility = meandist / meddist
+vrange = ta.atr(14) * 1.2
+
+isunder = volatility < 1.2
+
+var boxes = array.new_box()
+var uvboxes = array.new_box()
+var dvboxes = array.new_box()
+var isinrange = 0
+
+broken = 0
+vol_bal = 0
+locs = 0.0
+
+[upv, downv, deltav] = ta.requestUpAndDownVolume(ltf_)
+
+// Zone creation condition
+zoneCondition = ta.crossunder(volatility, 1.2) and isinrange != 1 and (isunder and isunder[confirmation_len])
+if zoneCondition
+    midpoint = math.avg(bar_index - confirmation_len, bar_index)
+    vmidpoint = math.avg(close + vrange, close - vrange)
+    upvolumesum = 0.0
+    downvolumesum = 0.0
+    for i = 0 to confirmation_len
+        upvolumesum += upv[i]
+        downvolumesum += downv[i]
+    ratio = math.abs(upvolumesum/downvolumesum)
+    boxes.unshift(box.new(bar_index - confirmation_len, close + vrange, bar_index, close - vrange, color.new(bearColor, 100), 0, bgcolor = color.new(chart.fg_color, 90)))
+    if ratio > 1
+        uvboxes.unshift(box.new(bar_index - confirmation_len, close + vrange, int(midpoint), vmidpoint, color.new(bullColor, 100), 0, bgcolor = color.new(bullColor, 60)))
+        dvboxes.unshift(box.new(bar_index - confirmation_len, vmidpoint, int((bar_index - confirmation_len) + (int(midpoint) - (bar_index - confirmation_len))/ratio), close - vrange, color.new(bearColor, 100), 0, bgcolor = color.new(bearColor, 60)))
+    else
+        uvboxes.unshift(box.new(bar_index - confirmation_len, close + vrange, int((bar_index - confirmation_len) + (int(midpoint) - (bar_index - confirmation_len))*ratio), vmidpoint, color.new(bullColor, 100), 0, bgcolor = color.new(bullColor, 60)))
+        dvboxes.unshift(box.new(bar_index - confirmation_len, vmidpoint, int(midpoint), close - vrange, color.new(bearColor, 100), 0, bgcolor = color.new(bearColor, 60)))
+    isinrange := 1
+
+if array.size(boxes) > 0
+    qt = array.size(boxes)
+    for i = 0 to qt - 1
+        b = boxes.get(i)
+        b_ = uvboxes.get(i)
+        _b_ = dvboxes.get(i)
+
+        midpoint = math.avg(b.get_left(), b.get_right())
+        vmidpoint = math.avg(b.get_top(), b.get_bottom())
+        upvolumesum = 0.0
+        downvolumesum = 0.0
+        for j = 0 to confirmation_len
+            upvolumesum += upv[j]
+            downvolumesum += downv[j]
+        ratio = math.abs(upvolumesum/downvolumesum)
+
+        if close > box.get_top(b) or close < box.get_bottom(b)
+            broken := close > box.get_top(b) ? 1 : close < box.get_bottom(b) ? -1 : 2
+            vol_bal := ratio > 1 ? 1 : -1
+            locs := broken > 0 ? b.get_bottom() + 0.15 * (b.get_top() - b.get_bottom()) : b.get_bottom() + 0.85 * (b.get_top() - b.get_bottom())
+            box.set_right(b, bar_index)
+            boxes.remove(i)
+            uvboxes.remove(i)
+            dvboxes.remove(i)
+            isinrange := 0
+        else
+            b.set_right(bar_index)
+            if ratio > 1
+                b_.set_left(b.get_left())
+                b_.set_top(b.get_top())
+                b_.set_right(int(midpoint))
+                b_.set_bottom(vmidpoint)
+                _b_.set_left(b.get_left())
+                _b_.set_top(vmidpoint)
+                _b_.set_right(int((b.get_left()) + (int(midpoint) - (b.get_left()))/ratio))
+                _b_.set_bottom(b.get_bottom())
+            else
+                b_.set_left(b.get_left())
+                b_.set_top(b.get_top())
+                b_.set_right(int((b.get_left()) + (int(midpoint) - (b.get_left()))*ratio))
+                b_.set_bottom(vmidpoint)
+                _b_.set_left(b.get_left())
+                _b_.set_top(vmidpoint)
+                _b_.set_right(int(midpoint))
+                _b_.set_bottom(b.get_bottom()) 
+
+plotchar(broken == 1 ? locs : na, "Bullish", "▲", location.absolute, bullColor, size = size.tiny, offset = -1)
+plotchar(vol_bal == 1 and broken == 1 ? locs : na, "Extra Bullish", "+", location.absolute, bullColor, size = size.tiny, offset = -2)
+plotchar(broken == -1 ? locs : na, "Bearish", "▼", location.absolute, bearColor, size = size.tiny, offset = -1)
+plotchar(vol_bal == -1 and broken == -1 ? locs : na, "Extra Bearish", "+", location.absolute, bearColor, size = size.tiny, offset = -2)
+
+// Alerts
+alertcondition(zoneCondition, title="Ranging Market", message="A new range zone has been created")
+alertcondition(broken == 1, title="Bullish Breakout", message="A bullish breakout occurred")
+alertcondition(broken == -1, title="Bearish Breakout", message="A bearish breakout occurred")

@@ -1,0 +1,79 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Consolidation Range [BigBeluga]", overlay = true, max_lines_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+len             = 14
+int lensig      = input.int(10, title="Volatility", minval=1, tooltip = "Smooth Length of ADX")
+int threshold   = input.int(17, "Volatility Threshold")
+color upper_col = input.color(#da7232, "", inline = "colors")
+color lower_col = input.color(#40b76a, "", inline = "colors")
+
+
+var upper = line(na)
+var lower = line(na)
+var label_ = label(na)
+var vol_delta = array.new<float>()
+
+max = float(na)
+min = float(na)
+mid = float(na)
+var start = int(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+[_, _, adx] = ta.dmi(len, lensig)
+
+if ta.crossunder(adx, threshold)
+    start := bar_index
+    upper := line.new(bar_index, high, bar_index, high, color = upper_col, style = line.style_solid) 
+    lower := line.new(bar_index, low, bar_index, low, color = lower_col, style = line.style_solid)  
+    label_ := label.new(bar_index, high, "", color = color(na), style = label.style_label_left, textcolor = chart.fg_color)    
+
+if adx < threshold
+    vol_delta.push(close > open ? volume : -volume)
+    max := math.max(upper.get_y1(), high)
+    min := math.min(lower.get_y1(), low)
+    mid := math.avg(max, min)
+
+    lower.set_y1(min)
+    lower.set_y2(min)
+
+
+    upper.set_y1(max)
+    upper.set_y2(max)
+
+    label_.set_xy(bar_index, mid)
+    label_.set_text(str.tostring(vol_delta.sum(), format.volume) + (vol_delta.sum() > 0 ? "▲" : "▼"))
+    upper.set_x2(bar_index)
+    lower.set_x2(bar_index)
+
+if ta.crossover(adx, threshold)
+    max := na
+    min := na
+    mid := na
+    vol_delta.clear()
+
+    if bar_index-start < 15
+        upper.delete()
+        lower.delete()
+        label_.delete()
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+pmax = plot(max, "Range Top", display = display.none, editable = true, style = plot.style_linebr)
+pmin = plot(min, "Range Bottom", display = display.none, editable = true, style = plot.style_linebr)
+pmid = plot(mid, "Range Mid", editable = true, style = plot.style_linebr, color = bar_index % 2 == 0 ? chart.fg_color : na)
+
+diff = max - min 
+
+col_val = diff / ta.percentile_linear_interpolation(diff, 400, 100)
+
+fill(pmax, pmid, max, mid, color.new(upper_col, 75), color.new(lower_col, 100))
+fill(pmin, pmid, mid, min, color.new(upper_col, 100), color.new(lower_col, 75))
+// }

@@ -1,0 +1,175 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=5
+indicator("FRAMA Channel [BigBeluga]", overlay=true, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ --------------------------------------------------------------------------------------------------------{
+// User Inputs for FRAMA Channel
+int    N          = input.int   (26, title="Length", minval=2, step = 2, group = "Channel") // Length for FRAMA calculation
+float  distance   = input.float (1.5, "Bands Distance", step = 0.01, minval = 0.3, group = "Channel") // Distance for channel bands
+string price_vol  = input.string("Price", "Signals Data", ["Price", "Average Volume"]) // Source data for signals
+string labl_size  = input.string("Small", "Lables Size", ["Small", "Normal", "Large"])
+
+// Colors
+group = "Colors"
+color color1     = input.color(#27e27b, "Momentum Up", group = group, inline = "1") // Color for upward momentum
+color color2     = input.color(color.rgb(39, 114, 226), "Down", group = group, inline = "1") // Color for downward momentum
+color color3     = input.color(#a2b5ca, "Neutral", group = group) // Color for neutral state
+var color color  = color(na) // Variable to hold the current color
+
+bool  candles    = input.bool  (true, "Color Candles") // Toggle for coloring candles based on momentum
+
+// Source for FRAMA calculation
+series float price = hl2 // Use hl2 as the default source
+
+// Variables for FRAMA calculation
+var float Filt   = na
+var float Filt1  = na
+var float Filt2  = na
+var int   count1 = na
+var int   count2 = na
+// }
+
+// UDTs----------------------------------------------------------------------------------------------------------------{
+// Define a user-defined type (UDT) to store variables used in FRAMA calculation
+type vars 
+    float N1
+    float N2
+    float N3
+    float HH
+    float LL
+    float Dimen 
+    float alpha
+
+// Initialize UDT instance
+v = vars.new(0., 0., 0., 0., 0., 0., 0.)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ----------------------------------------------------------------------------------------------{
+// Perform calculations for the FRAMA Channel
+series float volatility = ta.sma(high - low, 200) // Calculate volatility using the average true range
+series float p_vol      = switch price_vol // Select the data source for signals (Price or Average Volume)
+    "Price"             => close
+    "Average Volume"    => math.round(math.sum(volume, 10) / 10, 2)
+
+// Calculate N3 for the fractal dimension
+v.N3 := (ta.highest(high, N) - ta.lowest(low, N)) / N
+
+// Loop to calculate N1
+v.HH := high
+v.LL := low
+
+for count = 0 to N / 2 - 1
+    if high[count] > v.HH
+        v.HH := high[count]
+    if low[count] < v.LL
+        v.LL := low[count]
+
+v.N1 := (v.HH - v.LL) / (N / 2)
+
+// Loop to calculate N2
+v.HH := high[N / 2]
+v.LL := low[N / 2]
+
+for count = N / 2 to N - 1
+    if high[count] > v.HH
+        v.HH := high[count]
+    if low[count] < v.LL
+        v.LL := low[count]
+
+v.N2 := (v.HH - v.LL) / (N / 2)
+
+// Calculate the fractal dimension
+if (v.N1 > 0 and v.N2 > 0 and v.N3 > 0)
+    v.Dimen := (math.log(v.N1 + v.N2) - math.log(v.N3)) / math.log(2)
+
+// Calculate alpha for FRAMA
+v.alpha := math.exp(-4.6 * (v.Dimen - 1))
+v.alpha := math.max(math.min(v.alpha, 1), 0.01) // Clamp alpha between 0.01 and 1
+
+// Calculate the FRAMA filtered value
+Filt  := na(Filt) 
+          ? price 
+          : v.alpha * price + (1 - v.alpha) * Filt[1]
+
+Filt  := ta.sma((bar_index < N + 1) ? price : Filt, 5) // Apply SMA for smoothing
+
+// Calculate the channel bands
+Filt1 := Filt + volatility * distance
+Filt2 := Filt - volatility * distance
+// }
+
+
+// ＰＬＯＴ-------------------------------------------------------------------------------------------------------------{
+// Define conditions for plotting and coloring
+break_up = ta.crossover(hlc3, Filt1) and barstate.isconfirmed
+break_dn = ta.crossunder(hlc3, Filt2) and barstate.isconfirmed
+
+if ta.cross(close, Filt)
+    color := color3 // Neutral color 
+
+// Determine the color based on breakout conditions
+switch 
+    break_up => color := color1 // Upward breakout
+    break_dn => color := color2 // Downward breakout
+
+// Set candle color if enabled
+color color_c = candles ? color : na
+
+// Plot the FRAMA and bands
+p0 = plot(Filt,  color = color.new(color,color == color3 ? 100 : 50),  editable = false)
+p1 = plot(Filt1, color = color.new(color,20), linewidth = 1, editable = false)
+p2 = plot(Filt2, color = color.new(color,20), linewidth = 1, editable = false)
+
+// Fill the area between the bands and FRAMA
+fill(p1, p0, Filt1, Filt, color.new(color, candles ? 95 : 85), na, editable = false)
+fill(p0, p2, Filt, Filt2, na, color.new(color, candles ? 95 : 85), editable = false)
+
+size = switch labl_size
+    "Small"  => size.small
+    "Normal" => size.normal
+    "Large"  => size.large
+
+// Add labels on breakout events
+if break_up
+    count2 := 0
+    count1 += 1 
+    if count1 == 1
+        label.new(
+                  x         = bar_index,
+                  y         = Filt2, 
+                  text      = "🢁\n" + str.tostring(p_vol),
+                  style     = label.style_label_up,
+                  textcolor = color1, 
+                  color     = color(na), 
+                  size = size
+                  )
+
+if break_dn
+    count1 := 0 
+    count2 += 1
+    if count2 == 1
+        label.new(
+                  x         = bar_index,
+                  y         = Filt1, 
+                  text      = str.tostring(p_vol) + "\n🢃",
+                  style     = label.style_label_down,
+                  textcolor = color2, 
+                  color     = color(na), 
+                  size      = size
+                  )
+
+// Plot candles with the calculated colors
+plotcandle(
+             open, high, low, close, 
+             "Candles", 
+             color_c,
+             color_c, 
+             bordercolor = color_c, 
+             editable    = false
+             )
+// }

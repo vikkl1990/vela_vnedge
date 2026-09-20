@@ -1,0 +1,56 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Candlestick Trend Strength [AlgoAlpha]", shorttitle = "AlgoAlpha - 🕯️Trend Strength", overlay = true, max_labels_count = 1)
+l = input.int(33, "Trend Detection Period")
+len= input.int(7, "Normalization Period", tooltip = "Normalizes the trend indicator between 1 and -1 to properly get the strength of trend. Reducing this will make it easier for the implied trend strength to reach the extremes of the guage.")
+tc = input.int(12, "Gauge Size", minval = 3)
+green = input.color(#00ffbb, "Up Color")
+red = input.color(#ff1100, "Down Color")
+
+// Guage Function
+printTable(txt, col, row, color, txt1, col1, row1, color1) => var table t = table.new(position.middle_right, 3, tc+2), 
+                                         table.cell(t, col, row, txt, bgcolor = color),
+                                         table.cell(t, col1, row1, txt1, bgcolor = color1, text_color = color.white)
+
+
+// math
+var lab = label(na)
+candledir = close > open ? 1 : -1
+wickbodyratio = (high-low)/(math.abs(close-open))
+trendscore = candledir == 1 ? candledir/wickbodyratio : candledir/wickbodyratio
+x = -math.sum(trendscore, l)
+xMax = ta.highest(x, len)
+xMin = ta.lowest(x, len)
+range_ = xMax - xMin
+y = x / range_
+y := y > 1 ? 1 : y < -1 ? -1 : y
+y := (y + 1)/2
+
+// Draw Gauge
+if barstate.islast
+    for i = 1 to tc
+        color_ = red
+        color = color.from_gradient(i, 1, tc, green, color_)
+        printTable("", 1, i, color, ">", 1, math.round(y*tc), #ffffff00)
+
+//Plotting
+bc = color.from_gradient(y, 0, 1, green, red)
+barcolor(bc)
+plotcandle(open, high, low, close, "Candle Stick", bc, bc, bordercolor = bc)
+
+label.delete(lab)
+
+if y > 0.5 and barstate.islast
+    lab := label.new(bar_index, close, str.tostring((0.5-y)*200, format.percent), color = red, textcolor = color.white, style = label.style_label_left)
+    
+
+if y < 0.5 and barstate.islast
+    lab := label.new(bar_index, close, str.tostring((y-0.5)*200, format.percent), color = green, textcolor = color.white, style = label.style_label_left)
+
+
+//Alerts
+alertcondition(ta.crossover(y, 0.5), "Bearish Trend")
+alertcondition(ta.crossunder(y, 0.5), "Bullish Trend")
+alertcondition(ta.cross(y, 0.5), "Trend Change")

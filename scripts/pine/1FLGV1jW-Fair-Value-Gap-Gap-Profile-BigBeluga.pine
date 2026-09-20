@@ -1,0 +1,194 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Fair Value Gap & Gap Profile [BigBeluga]", overlay=true, shorttitle="FVG+GP [BigBeluga]", max_boxes_count = 500, max_lines_count = 500, max_bars_back = 1000)
+
+// ＩＮＰＵＴＳ ========================================================================================================{
+
+int  extend     = input.int(20, "Gap Extend Length", minval=1, maxval=20)  // Length to extend the gap
+int  filter     = input.int(10, "Gap Filter Length", inline = "Filter")    // Filter length for gaps
+bool off_filter = input.bool(true, "ON/OFF", inline = "Filter")       // Toggle filter on/off
+
+// Plot settings
+bool show_all = input.bool(false, "Show Filled Gaps", group = "Plot")   // Show all filled gaps
+bool show_lvl = input.bool(true, "Show Filled Gaps Levels", group = "Plot") // Show filled gaps levels
+bool show_prf = input.bool(false, "Show Gap Profile", group = "Plot")   // Show gap profile
+
+// Colors for bullish and bearish gaps
+color col_bull = input.color(#22c1c7, "Color ⭡")  // Bullish gap color
+color col_bear = input.color(#c72253, "Color 🠗")  // Bearish gap color
+
+// Variables to store lines and boxes
+var line[] lines = array.new<line>()  // Array to store lines
+var box[]  boxes = array.new<box>()    // Array to store boxes
+
+// Variables to store box and line instances
+box box1 = na
+box box2 = na
+
+line l1 = na
+line l2 = na
+
+// Gap type to store gap properties
+type gap
+    float max 
+    float min 
+    float avg
+    int n
+
+var gap gap = gap.new(na, na, na, na)  // Initialize gap variable
+
+var bool isBull_gap = na  // Boolean to identify bullish gap
+var bool isBear_gap = na  // Boolean to identify bearish gap
+
+// Loock Back Periods
+int loockback  = 200
+int loockback1 = 2000
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ ============================================================================================={
+// @method        Draws a box representing the gap area
+// @param color   Color of the box
+// @param txt     Text to display inside the box
+// @returns       (void)
+method draw_box(color color, vol, n_vol)=>
+
+    text_ = str.tostring(vol, format.volume)
+    box.new(left=gap.n-1, top=gap.max, right=gap.n+extend, bottom=gap.min, 
+             border_width   = 1, 
+             border_color   = color,
+             bgcolor        = color.from_gradient(n_vol, 0, 5, na, color.new(color, 40)), 
+             text           = text_, 
+             text_color     = chart.fg_color,
+             text_size      = size.tiny, 
+             text_valign    = text.align_bottom, 
+             text_halign    = text.align_right
+           )
+
+// @method        Draws a line at a specific y-coordinate
+// @param color   Color of the line
+// @param y1      Y-coordinate of the line
+// @returns       (void)
+method draw_line(color color, y1)=>
+    line.new(gap.n, y1, bar_index, y1, 
+             width  = 1, 
+             style  = line.style_solid, 
+             color  = color.new(color, 0)
+             )
+
+// @function      Extends the lines representing gaps
+// @param lineArray  Array of lines to extend
+// @param boxes      Array of boxes associated with the lines
+// @returns         (void)
+extend_line(lineArray, boxes) =>
+    if lineArray.size() > 0
+        for i = lineArray.size() - 1 to 0 by 1
+            x2 = line.get_x2(array.get(lineArray, i))
+            yValue = line.get_y1(array.get(lineArray, i))
+
+            if bar_index == x2 and not(high > yValue and low < yValue)
+                line.set_x2(lineArray.get(i), bar_index+1)
+            
+            if (high > yValue and low < yValue)
+                switch
+                    show_lvl => line.set_style(lineArray.get(i), line.style_dashed),
+                                 line.set_color(lineArray.get(i), color.new(chart.fg_color, 60))
+
+                    not show_lvl => line.delete(lineArray.get(i))
+                switch
+                    show_all => box.set_text(boxes.get(i), "🗹") 
+                    not show_all => box.delete(boxes.get(i))
+
+// @method        Checks if the current bar is within the allowed lookback period
+// @param loockback  Lookback period to check
+// @returns        (bool) True if within lookback period, else false
+method allowed(int loockback)=>
+    last_bar_index - bar_index < loockback
+
+// Gap Filters
+diff = close - open
+filt_up = off_filter ? diff[1] == ta.highest(diff, filter) : true  // Filter for bullish gap
+filt_dn = off_filter ? diff[1] == ta.lowest(diff, filter) : true   // Filter for bearish gap
+
+if loockback1.allowed()
+    isBull_gap := high[2] < low and high[2] < high[1] and low[2] < low and filt_up
+    isBear_gap := low[2] > high and low[2] > low[1] and high[2] > high and filt_dn
+
+// Normalized Volume 
+n_vol = volume / ta.stdev(volume, 200)
+
+// }
+// ＰＬＯＴ============================================================================================================={
+if isBull_gap
+    gap.min := high[2]
+    gap.max := low
+    gap.n   := bar_index[1]
+    gap.avg := (gap.min + gap.max) / 2
+
+    box1 := col_bull.draw_box(volume, n_vol)
+    l1   := col_bull.draw_line(gap.min)
+
+    lines.push(l1)
+    boxes.push(box1)
+
+if isBear_gap
+    gap.min := high
+    gap.max := low[2]
+    gap.n   := bar_index[1]
+    gap.avg := (gap.min + gap.max) / 2
+
+    box2 := col_bear.draw_box(volume, n_vol)
+    l2   := col_bear.draw_line(gap.max)
+
+    lines.push(l2)
+    boxes.push(box2)
+
+if loockback1.allowed()
+    extend_line(lines, boxes)
+
+// Fair Value Gap Profile
+int numBins    = 200
+var int[] Bins = array.new_int(numBins, 0)
+
+float lowestPrice  = ta.lowest(loockback1)
+float highestPrice = ta.highest(loockback1)
+
+if loockback.allowed() and show_prf
+    binSize = (highestPrice - lowestPrice) / numBins
+
+    for i = 0 to numBins - 1
+        if close > gap.min[i] and close < gap.max[i]
+            Bins.set(i, Bins.get(i) + 1)
+
+    if barstate.islast
+        // Vertical Line
+        line.new(bar_index - loockback, highestPrice, bar_index - loockback, lowestPrice, 
+                 color = color.new(chart.fg_color, 60), 
+                 style = line.style_dotted)
+
+        for i = 0 to numBins - 1
+            binLower = lowestPrice + i * binSize
+            gap_get  = Bins.get(i)
+
+            line.new(bar_index + 50, binLower, bar_index + 50 - gap_get, binLower, 
+                     color = color.new(chart.fg_color, 60), 
+                     style = line.style_dotted)
+
+// Signals
+plotchar(ta.crossover(low, gap.max), 
+         title      = "Support Bullish Gap",
+         char       = "•", 
+         location   = location.belowbar, 
+         color      = col_bull, 
+         size       = size.tiny,
+         offset     = -1)
+plotchar(ta.crossunder(high, gap.min), 
+         title      = "Resist Bearish Gap", 
+         char       = "•", 
+         location   = location.abovebar, 
+         color      = col_bear, 
+         size       = size.tiny,
+         offset     = -1)
+
+// }

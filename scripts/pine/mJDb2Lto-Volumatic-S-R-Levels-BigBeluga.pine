@@ -1,0 +1,193 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Volumatic S/R Levels [BigBeluga]", overlay = true, max_lines_count = 500, max_labels_count = 20)
+
+// =====================================================================================================================}
+// ＩＮＰＵＴＳ
+// ====================================================================================================================={
+float  level       = input.float(2.4, "Levels Strength", step = 0.1, 
+                     tooltip = "Define Volume of Levels (Higher Input = Higher Volume of Level)")
+int    line_amount = input.int(10, "Levels Amount", maxval = 20)
+
+var bar_hl2 = float(na)
+var volume_ = float(na)
+
+var color_up = #00e677d8
+var color_dn = #f18a45 
+var neutral  = color.gray
+
+var line_a  = array.new_line(line_amount, line(na))
+var label_a = array.new_label(line_amount, label(na))
+var box_a = array.new_box(line_amount, box(na))
+
+var vol_ume  = array.new_float(line_amount, float(na))
+var vol_perc = array.new_float(line_amount, float(na))
+
+// =====================================================================================================================}
+// ＣＡＬＣＵＬＡＴＩＯＮＳ
+// ====================================================================================================================={
+
+// @function       Normalizes a value if mean is 0
+// @param src      (float) Source value to normalize
+// @returns        (float) Normalized value
+method norm(float src)=>
+    (src - ta.sma(src, 200)) / ta.stdev(src, 200)
+
+// Bar Size
+series float diff = close - open 
+
+// Normalized Bars Size and Volume
+norm_vol = (close > open ? volume : -volume).norm()
+norm     = diff.norm()
+
+// Adaptive Line width based on Normalized Volume 
+line_width = int(math.round(norm_vol*(ta.atr(200)*0.1)))
+
+// Method to extend lines and add labels
+method check_cross(array<line> A, float src, bool crs)=>
+    var count = 0
+    
+    if A.size() > 0
+
+        for i = 0 to A.size()-1 
+            if i < A.size()
+
+                line_id      = A.get(i)
+                current_line = line.get_y2(line_id)
+    
+                bool cross   =     crs 
+                                 ? src < current_line and src[1] >= current_line 
+                                 : src > current_line and src[1] <= current_line
+
+                res = high < current_line and current_line >= high[1] and current_line < high[2]
+
+                if cross 
+                    count += 1
+                    line.set_color(line_id, crs ? color_dn : color_up)
+                    if count == 10
+                        line.set_width(line_id, 2)
+                        line.set_style(line_id, line.style_dotted)
+                        count := 0
+
+
+// @function       Draws a line on the chart
+// @param color    (color) Color of the line
+// @param transperent (int) Transparency level
+// @param width    (int) Width of the line
+// @returns        (line) Line object created
+method draw_line(color color, transperent = 20, width)=>
+    line.new(bar_index, bar_hl2, bar_index, bar_hl2, color = color.new(color, transperent), width = width)
+
+// @function       Draws a label on the chart
+// @param volume_  (float) Volume value to display
+// @param color    (color) Color of the label text
+// @returns        (label) Label object created
+method draw_lable(float volume_, x, y, color)=>
+    label_a.push(label.new(x+15, y,  
+                     text      = str.tostring(volume_, format.percent),
+                     textcolor = color,
+                     style     = label.style_label_left,
+                     color     = #363a4500,
+                     size      = size.small))
+
+// @function       Draws a Box on the chart
+// @param volume_  (float) Volume value to display
+// @param color    (color) Color of the label text
+// @returns        (label) Box object created
+method draw_box(float vol, color)=>
+    box.new(bar_index, bar_hl2+line_width, bar_index, bar_hl2-line_width,
+                     border_color = color.new(neutral, 80), 
+                     border_width = 1, 
+                     bgcolor      = color.new(neutral, 90), 
+                     text         = str.tostring(vol, format.volume),
+                     text_size    = size.small,
+                     text_color   = color, 
+                     text_halign  = text.align_right, 
+                     text_valign  = text.align_center)
+
+
+// Condition
+condition  = norm > level and norm_vol > level 
+         ? color_up 
+         : norm < -level and norm_vol < -level 
+         ? color_dn 
+         : na
+
+// Positive Volume Levels
+if not na(condition) and norm > 0
+    bar_hl2     := (open+close)/2 
+    volume_     := close > open ? volume : -volume
+
+    line_a.push(condition.draw_line(20, 2))
+    vol_ume.push(volume)
+    box_a.push(volume_.draw_box(condition))
+
+
+// Negative Volume Levels
+if not na(condition) and norm < 0
+    bar_hl2     := (open+close)/2  
+    volume_     := close > open ? volume : -volume
+
+    vol_ume.push(volume)
+    line_a.push(condition.draw_line(20, 2))
+    box_a.push(volume_.draw_box(condition))
+
+// Extend or Normal Mode lines
+n           = last_bar_index +15
+isAllowed   = (last_bar_index-bar_index) < 1000
+
+
+if isAllowed
+    line_a.check_cross(close, true)
+    line_a.check_cross(close, false)
+
+    for i = 0 to line_a.size()-1
+        volum_perc = vol_ume.get(i) / vol_ume.sum() * 100
+        vol_perc.push(volum_perc)
+
+        current_line  = line_a.get(i)
+        current_box   = box_a.get(i)
+
+        current_line.set_x2(n)
+        current_box.set_right(n+20)
+        
+        volum_perc.draw_lable(n+5, line.get_y1(current_line), 
+                                 vol_perc.max() == volum_perc ? #008cff : 
+                                 vol_perc.min() == volum_perc ? color_dn : 
+                                 color.from_gradient(volum_perc, 0, 10, color_dn, color_up))
+
+        label.delete(array.shift(label_a))
+        
+        if vol_perc.size() > line_amount
+            vol_perc.shift()
+
+// =====================================================================================================================}
+// ＰＬＯＴ
+// ====================================================================================================================={
+// High Volume Bars Color
+barcolor(isAllowed ? condition : na)
+
+line_arr  = line.all
+if line_arr.size() > line_amount
+    line.delete(line_arr.shift())
+
+a_allBoxes = box.all
+if array.size(a_allBoxes) > line_amount
+    box.delete(array.shift(a_allBoxes))
+
+if vol_ume.size() > line_amount
+    vol_ume.shift()
+    line_a.shift()
+    box_a.shift()
+
+var dash =table.new(position.top_right, 10, 10, frame_color = neutral, frame_width = 1)
+dash.cell(0, 0, "Max Level", text_color = chart.fg_color)
+dash.cell(1, 0, str.tostring(vol_perc.max(), format.percent), text_color = #008cff) 
+dash.cell(2, 0, str.tostring(vol_ume.max(), format.volume), text_color = neutral)
+dash.cell(0, 1, "Min Level", text_color = chart.fg_color)
+dash.cell(1, 1, str.tostring(vol_perc.min(), format.percent), text_color = color_dn) 
+dash.cell(2, 1, str.tostring(vol_ume.min(), format.volume), text_color = neutral)
+
+// =====================================================================================================================}

@@ -1,0 +1,51 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Institutional Activity Index [AlgoAlpha]", shorttitle = "AlgoAlpha - 🥷Institutional Activity")
+nlen = input.int(100, "Normalization Period", group="Main Settings")
+peaklen = input.int(77, "Peak Detection Period", group="Main Settings")
+norm = input.bool(true, "Normalize", group="Main Settings")
+maTypeInput = input.string("SMA", title="MA Type", options=["SMA", "HMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group="MA Settings", display = display.data_window)
+maLengthInput = input.int(14, title="MA Length", group="MA Settings", display = display.data_window)
+peak = input.bool(true, "Highlight Index Peaks", group="Appearance")
+trnd = input.bool(true, "Color Based on Index Trend", group="Appearance")
+upColor = input.color(#089981, "Up Color", group="Appearance")
+downColor = input.color(#f23645, "Down Color", group="Appearance")
+
+
+ma(source, length, type) =>
+    switch type
+        "SMA" => ta.sma(source, length)
+        "HMA" => ta.hma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+liq = volume/math.abs(close-open)
+mliq = ta.median(liq, 30)
+nliq = mliq / (ta.highest(mliq, nlen) - ta.lowest(mliq, nlen)) * 100
+fliq = norm ? nliq : mliq
+candledir = close > open ? 1 : -1
+MA = ma(fliq, maLengthInput, maTypeInput)
+col = trnd ? (MA > MA[1] ? upColor : downColor) : (candledir == 1 ? color.new(upColor, 50) : color.new(downColor, 50))
+fff = fliq
+transpcon1 = 10
+chg1 = fff*0.80
+chg2 = fff*0.60
+chg3 = fff*0.40
+chg4 = fff*0.20
+
+plot(fff, color = color.new(col, transpcon1+60), style = plot.style_columns, linewidth = 4)
+plot(chg1, color = color.new(col, transpcon1+55), style = plot.style_columns, linewidth = 4)
+plot(chg2, color = color.new(col, transpcon1+45), style = plot.style_columns, linewidth = 4)
+plot(chg3, color = color.new(col, transpcon1+30), style = plot.style_columns, linewidth = 4)
+plot(chg4, color = color.new(col, transpcon1+25), style = plot.style_columns, linewidth = 4)
+plot(MA, color = color.new(chart.fg_color, 30))
+plotchar(peak and ta.crossover(ta.highest(MA, peaklen)-fliq, 0) ? MA * 1.1 : na, "Peaks", "◆", location.absolute, color.orange, size = size.tiny)
+
+////////////////Alerts
+alertcondition(ta.crossover(MA, MA[1]), "Institutional Activity is Increasing")
+alertcondition(ta.crossunder(MA, MA[1]), "Institutional Activity is Decreasing")
+alertcondition(ta.crossover(ta.highest(MA, peaklen)-fliq, 0), "Institutional Activity has Peaked")

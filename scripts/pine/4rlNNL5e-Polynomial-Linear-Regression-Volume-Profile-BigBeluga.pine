@@ -1,0 +1,301 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Polynomial/Linear Regression Volume Profile [BigBeluga]', overlay = true, max_labels_count = 500, calc_bars_count = 500, max_polylines_count = 100)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Group: Core Settings
+var string G_CORE = "Core Settings"
+source        = input.source(hl2, 'Source', group = G_CORE, tooltip = 'The price data used to calculate the regression channel (e.g., Close, Open, HL2).')
+length        = input.int(200, 'Period', 2, group = G_CORE, tooltip = 'The number of bars back used to calculate the regression fit window.')
+degree_       = input.string("Polynomial", "Regression Mode", ["Linear", "Polynomial"], group = G_CORE, tooltip = 'Choose between a straight trendline (Linear) or a curved trendline (Polynomial).') == "Linear"
+
+// Group: Grid & Profile Settings
+var string G_GRID = "Grid & Profile Settings"
+num_bins      = input.int(20, 'Grid Rows Each Side', 5, group = G_GRID, tooltip = 'The number of parallel channel levels plotted above and below the center line.')
+profile_width_pct = input.int(20, 'Max Profile Width (% of Period)', 5, 50, group = G_GRID, tooltip = 'Controls how far back across the channel the volume profile lines can stretch horizontally.')
+
+// Group: Trend Colors & POC Settings
+var string G_COLOR = "POC Settings"
+showPoc       = input.bool(true, "Show POC Line", inline = "poc_cfg", group = G_COLOR, tooltip = 'Toggle to show or hide the full-length Point of Control line matrix.')
+pocColor      = input.color(color.rgb(255, 166, 0), "", inline = "poc_cfg", group = G_COLOR, tooltip = 'Color assigned to the Point of Control (highest volume zone) line.')
+pocWidth      = input.int(2, "", minval = 1, maxval = 10, inline = "poc_cfg", group = G_COLOR, tooltip = 'Line thickness/width for the full-width Point of Control line.')
+
+// Group: Standard Deviation Channel Settings
+var string G_SD    = "Standard Deviation Levels"
+showSd        = input.bool(true, "Show SD Levels", inline = "sd_toggle", group = G_SD, tooltip = 'Toggle to show or hide the Standard Deviation line channels and labels.')
+sdColor       = input.color(color.rgb(99, 122, 120, 10), "", inline = "sd_toggle", group = G_SD, tooltip = 'Color choice assigned exclusively to the Standard Deviation grid bounds.')
+sdStyle_      = input.string("Dashed", "SD Line Style", ["Solid", "Dashed", "Dotted"], group = G_SD, tooltip = 'Select visual line pattern for tracking standard deviations.')
+sdWidth       = input.int(1, "SD Line Width", minval = 1, maxval = 5, group = G_SD, tooltip = 'Set structural width parameters for standard deviation bands.')
+
+// Group: Volume Profile Gradient Colors
+var string G_GRAD = "Volume Profile Gradient Colors"
+profMidColor1  = input.color(color.blue, "Bullish/Bearish", inline = "prof_cols", group = G_GRAD, tooltip = 'Color used for low-tier volume areas.')
+profMidColor2  = input.color(color.orange, "", inline = "prof_cols", group = G_GRAD, tooltip = 'Color used for middle-tier volume areas.')
+profMidColor   = input.color(color.rgb(175, 43, 43, 63), "Low Volume", inline = "prof_cols", group = G_GRAD, tooltip = 'Color used for middle-tier volume areas.')
+
+// Group: Style & UI Settings
+var string G_STYLE = "Style & UI Settings"
+baseStyle_    = input.string("Dashed", "Baseline Style", ["Solid", "Dashed", "Dotted"], group = G_STYLE, tooltip = 'Line style for the central trend baseline.')
+gridStyle_    = input.string("Dotted", "Grid Lines Style", ["Solid", "Dashed", "Dotted"], group = G_STYLE, tooltip = 'Line style for the upper and lower boundary channels.')
+pocStyle_     = input.string("Solid", "POC Line Style", ["Solid", "Dashed", "Dotted"], group = G_STYLE, tooltip = 'Line style for the full-width Point of Control line.')
+dashSize_     = input.string("Normal", "Dashboard Size", ["Auto", "Small", "Normal", "Large"], group = G_STYLE, tooltip = 'Changes the visual size of the information dashboard text and cell boundaries.')
+
+// Helper function to map text selections to native line style properties
+getLineStyle(styleText) =>
+    switch styleText
+        "Solid"  => line.style_solid
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+// Helper function to map text selections to native table text sizes
+getDashSize(sizeText) =>
+    switch sizeText
+        "Auto"   => size.auto
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.normal
+
+string baseStyle = getLineStyle(baseStyle_)
+string gridStyle = getLineStyle(gridStyle_)
+string pocStyle  = getLineStyle(pocStyle_)
+string sdStyle   = getLineStyle(sdStyle_)
+string dashSize  = getDashSize(dashSize_)
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+degree = degree_ ? 1 : 2
+
+polyreg(source, length, degree) =>
+    if barstate.islast
+        X_all = matrix.new<float>(length, degree + 1, 0.0)
+        for i = 0 to length - 1
+            for j = 0 to degree
+                matrix.set(X_all, i, j, math.pow(i, j))
+
+        // y (length × 1), oldest → newest over the fit window
+        y = matrix.new<float>(length, 1, 0.0)
+        for i = 0 to length - 1
+            matrix.set(y, i, 0, source[length - 1 - i])
+
+        // OLS via normal equations: b = (X'X)^(-1) X'y
+        Xt      = matrix.transpose(X_all)   
+        XtX     = matrix.mult(Xt, X_all)     
+        Xty     = matrix.mult(Xt, y)        
+        XtX_inv = matrix.inv(XtX)          
+        b       = matrix.mult(XtX_inv, Xty) 
+
+        // Predictions for the historical fit window
+        preds = matrix.mult(X_all, matrix.col(b, 0))    
+        preds
+
+// Calculate baseline predictions
+predictions = polyreg(source, length, degree)
+
+// Determine 1 Standard Deviation 
+stdev_val = ta.stdev(source, length)
+
+// Scale calculation step sizes so 3 SD boundary matches max outer channel constraint
+dev = (stdev_val * 3) / num_bins
+
+float[] bin_volumes = array.new<float>(num_bins * 2, 0.0)
+float max_vol = 0.0
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+var polyline[] active_lines = array.new<polyline>()
+var label lbl_poc_high = na
+var label lbl_chan_high = na
+var label lbl_chan_low  = na
+var label[] sd_labels = array.new<label>()
+var table info_dash     = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 20), border_color=chart.bg_color, border_width=2)
+var color mainCol = na
+
+// Helper function to paint regression layers
+drawGridLayer(offset_ticks, is_baseline, up_col, dn_col, b_sty, g_sty) =>
+    points = array.new<chart.point>()
+    
+    int pred_size = array.size(predictions)
+    if pred_size > 0
+        for i = 0 to pred_size - 1
+            base_p = array.get(predictions, i)
+            target_p = base_p + offset_ticks
+            points.push(chart.point.from_index(bar_index + i - length + 1, target_p))
+        
+        int width  = is_baseline ? 2 : 1
+        string sty = is_baseline ? b_sty : g_sty
+        color clr  = is_baseline ? (array.get(predictions, pred_size - 1) > array.get(predictions, 0) ? up_col : dn_col) : color.new(chart.fg_color, 90)
+        
+        array.push(active_lines, polyline.new(points, line_width = width, line_style = sty, line_color = is_baseline ? chart.fg_color : clr))
+        clr
+    else
+        color(na)
+
+// Helper function to paint tracking SD curved polylines
+drawSdLine(multiplier, clr, sty, wdt) =>
+    int pred_size = array.size(predictions)
+    if pred_size > 0
+        sd_points = array.new<chart.point>()
+        for idx = 0 to pred_size - 1
+            base_p = array.get(predictions, idx)
+            sd_points.push(chart.point.from_index(bar_index + idx - length + 1, base_p + (multiplier * stdev_val)))
+        if array.size(sd_points) > 1
+            array.push(active_lines, polyline.new(sd_points, line_width = wdt, line_style = sty, line_color = clr))
+
+// Wrap calculations strictly when array exists and contains data
+if barstate.islast and not na(predictions)
+    int pred_size = array.size(predictions)
+    
+    // 1. Calculate profile distributions safely
+    array.fill(bin_volumes, 0.0)
+    for i = 0 to length - 1
+        int lookup_idx = math.min(i, pred_size - 1)
+        curr_close = source[length - 1 - lookup_idx]
+        base_pred  = array.get(predictions, lookup_idx)
+        
+        float diff = curr_close - base_pred
+        int bin_index = math.floor(diff / dev) + num_bins
+        
+        if bin_index >= 0 and bin_index < num_bins * 2
+            array.set(bin_volumes, bin_index, array.get(bin_volumes, bin_index) + nz(volume[length - 1 - lookup_idx]))
+
+    max_vol := array.max(bin_volumes)
+    
+    // Find the Bin Index that contains the Maximum Volume (POC Bin)
+    int poc_bin_idx = array.indexof(bin_volumes, max_vol)
+
+    // Clear old dynamic elements safely
+    if array.size(active_lines) > 0
+        for p in active_lines
+            polyline.delete(p)
+        array.clear(active_lines)
+        
+    label.delete(lbl_poc_high)
+    label.delete(lbl_chan_high)
+    label.delete(lbl_chan_low)
+    
+    if array.size(sd_labels) > 0
+        for lbl in sd_labels
+            label.delete(lbl)
+        array.clear(sd_labels)
+
+    // 2. Draw Grid Channels with user style selections
+    mainCol := drawGridLayer(0.0, true, profMidColor1, profMidColor2, baseStyle, gridStyle) 
+
+    for step = 1 to num_bins
+        drawGridLayer(step * dev, false, profMidColor1, profMidColor2, baseStyle, gridStyle)  
+        drawGridLayer(-step * dev, false, profMidColor1, profMidColor2, baseStyle, gridStyle) 
+
+    // 3. Draw standard deviation paths conforming directly to channel trends
+    if showSd
+        drawSdLine(1.0, sdColor, sdStyle, sdWidth)
+        drawSdLine(-1.0, sdColor, sdStyle, sdWidth)
+        drawSdLine(2.0, sdColor, sdStyle, sdWidth)
+        drawSdLine(-2.0, sdColor, sdStyle, sdWidth)
+        drawSdLine(3.0, sdColor, sdStyle, sdWidth)
+        drawSdLine(-3.0, sdColor, sdStyle, sdWidth)
+
+    // Determine general trend slope (Comparing last prediction point to the first)
+    bool is_bullish = array.get(predictions, pred_size - 1) > array.get(predictions, 0)
+
+    // Variables for calculation storage
+    float y_high = 0.0
+    string vol_str = str.tostring(max_vol, format.volume)
+
+    // 4. Draw the full-length POC Line Matrix with user line styles
+    if poc_bin_idx >= 0 and pred_size > 0
+        float poc_offset = (poc_bin_idx - num_bins) * dev
+        y_high := array.get(predictions, pred_size - 1) + poc_offset
+        
+        if showPoc
+            poc_points = array.new<chart.point>()
+            for idx = 0 to length - 1
+                int safe_idx = math.min(idx, pred_size - 1)
+                base_p = array.get(predictions, safe_idx)
+                poc_points.push(chart.point.from_index(bar_index + safe_idx - length + 1, base_p + poc_offset))
+                
+            if array.size(poc_points) > 1
+                array.push(active_lines, polyline.new(poc_points, line_width = pocWidth, line_style = pocStyle, line_color = pocColor))
+            
+        // 5. Generate dynamic High POC boundary label containing volume format string
+        int x_high   = bar_index
+        lbl_poc_high := label.new(x_high, y_high, "<- POC  Vol: " + vol_str, color=color.new(pocColor, 20), textcolor=chart.fg_color, style=label.style_label_left)
+
+    // 6. Draw Channel High/Low Price labels on the last bar
+    float chan_high_y = 0.0
+    float chan_low_y  = 0.0
+    if pred_size > 0
+        chan_high_y := array.get(predictions, pred_size - 1) + (num_bins * dev)
+        chan_low_y  := array.get(predictions, pred_size - 1) - (num_bins * dev)
+        
+        lbl_chan_high := label.new(bar_index, chan_high_y, "Channel High (+3 SD): " + str.tostring(chan_high_y, "#.##"), color=color.new(chart.fg_color, 90), textcolor=chart.fg_color, style=label.style_label_lower_left)
+        lbl_chan_low  := label.new(bar_index, chan_low_y, "Channel Low (-3 SD): " + str.tostring(chan_low_y, "#.##"), color=color.new(chart.fg_color, 90), textcolor=chart.fg_color, style=label.style_label_upper_left)
+
+        // Add standard deviation context data flags on historical terminal print instances
+        if showSd
+            float last_pred = array.get(predictions, pred_size - 1)
+            array.push(sd_labels, label.new(bar_index, last_pred + (1 * stdev_val), "+1 SD", color=color.new(sdColor, 100), textcolor=sdColor, style=label.style_label_left))
+            array.push(sd_labels, label.new(bar_index, last_pred - (1 * stdev_val), "-1 SD", color=color.new(sdColor, 100), textcolor=sdColor, style=label.style_label_left))
+            array.push(sd_labels, label.new(bar_index, last_pred + (2 * stdev_val), "+2 SD", color=color.new(sdColor, 100), textcolor=sdColor, style=label.style_label_left))
+            array.push(sd_labels, label.new(bar_index, last_pred - (2 * stdev_val), "-2 SD", color=color.new(sdColor, 100), textcolor=sdColor, style=label.style_label_left))
+
+    // 7. Update the Information Dashboard Table with Custom Size Constants
+    // Row 0: Header
+    table.cell(info_dash, 0, 0, "Regression Matrix", text_color=chart.fg_color, text_size=dashSize, bgcolor=chart.bg_color)
+    table.cell(info_dash, 1, 0, "Metrics", text_color=chart.fg_color, text_size=dashSize, bgcolor=chart.bg_color)
+    
+    // Row 1: Bull/Bear Direction
+    table.cell(info_dash, 0, 1, "Direction", text_color=color.white, text_size=dashSize, text_halign=text.align_left)
+    table.cell(info_dash, 1, 1, is_bullish ? "Bullish ↗" : "Bearish ↘", text_color=color.white, text_size=dashSize, bgcolor=is_bullish ? profMidColor1 : profMidColor2)
+    
+    // Row 2: Point of Control Tracking
+    table.cell(info_dash, 0, 2, "POC Level", text_color=color.white, text_size=dashSize, text_halign=text.align_left)
+    table.cell(info_dash, 1, 2, str.tostring(y_high, "#.##"), text_color=color.yellow, text_size=dashSize)
+    
+    // Row 3: POC Volume
+    table.cell(info_dash, 0, 3, "POC Volume", text_color=color.white, text_size=dashSize, text_halign=text.align_left)
+    table.cell(info_dash, 1, 3, vol_str, text_color=color.orange, text_size=dashSize)
+
+    // Row 4: Channel Boundaries
+    table.cell(info_dash, 0, 4, "Channel High/Low", text_color=color.white, text_size=dashSize, text_halign=text.align_left)
+    table.cell(info_dash, 1, 4, "H: " + str.tostring(chan_high_y, "#.##") + "\nL: " + str.tostring(chan_low_y, "#.##"), text_color=color.white, text_size=dashSize)
+
+    // 8. Draw Fixed & Curved Volume Profile Lines
+    if max_vol > 0 and pred_size > 0
+        int profile_len = math.round(length * (profile_width_pct / 100.0))
+
+        // DYNAMIC LINE WIDTH CALCULATION:
+        int dynamic_bin_width = math.max(1, math.round(150 / num_bins))
+
+        for step = 0 to (num_bins * 2) - 1
+            vol_weight = array.get(bin_volumes, step)
+            if vol_weight > 0
+                int max_line_width = math.round(profile_len * (vol_weight / max_vol))
+                int line_start_idx = length - max_line_width
+                float bin_offset   = (step - num_bins) * dev
+                
+                profile_points = array.new<chart.point>()
+                
+                color colbin = color(na)
+                float relative_weight = vol_weight / max_vol
+                
+                // Interpolate between Mid threshold color and Max threshold color
+                colbin := color.from_gradient(relative_weight, 0, 1, profMidColor, mainCol)
+
+                for idx = line_start_idx to length - 1
+                    int safe_idx = math.min(idx, pred_size - 1)
+                    base_p = array.get(predictions, safe_idx)
+                    int target_x = bar_index + safe_idx - length + 1
+                    profile_points.push(chart.point.from_index(target_x, base_p + bin_offset))
+
+                if array.size(profile_points) > 1
+                    array.push(active_lines, polyline.new(profile_points, line_width = dynamic_bin_width, line_style = line.style_solid, line_color = colbin))
+
+// }

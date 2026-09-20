@@ -1,0 +1,79 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Point of Control [BigBeluga]", overlay = true, calc_bars_count = 3000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+grp        = "POC"
+rangeLen   = input.int(100, "LookBack Period", minval = 10, maxval = 400, group = grp)
+poccol     = input.color(#e91e63, "POC Color", group = grp)
+pocChannel = input.bool(true, "POC Channel", group = grp)
+
+colUp = input.color(color.blue, "", inline = "1", group = "Candles Color")
+colNe = input.color(color.gray, "", inline = "1", group = "Candles Color")
+colDn = input.color(color.orange, "", inline = "1", group = "Candles Color")
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+H = ta.highest(rangeLen)
+L = ta.lowest(rangeLen)
+
+bins = 25
+step = (H - L) / 25 
+
+vol = array.new<float>(bins, 0.)
+lvl = array.new<float>(bins)
+var poc     = float(na)
+var volume_ = float(na)
+
+
+for i = 0 to rangeLen
+
+    c = close[i]
+    v = volume[i]
+
+    for k = 0 to lvl.size() - 1
+
+        l   = L + k * step
+        mid = l + step/2
+        lvl.set(k, mid)
+
+        if math.abs(c-mid) <= step
+            vol.set(k, vol.get(k) + v)
+
+if bar_index % 15 == 0 and barstate.isconfirmed
+    poc := lvl.get(vol.indexof(vol.max()))
+    volume_ := vol.max()
+
+upperPoc = poc+step * 2
+lowerPoc = poc-step * 2
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+candleCol = close < upperPoc and close > lowerPoc and barstate.isconfirmed ? colNe : close > upperPoc and barstate.isconfirmed ? colUp : close < lowerPoc and barstate.isconfirmed ? colDn : color(na)
+
+barcolor(candleCol)
+plotcandle(open, high, low, close, title='Candles Color', color = candleCol, wickcolor=candleCol, bordercolor = candleCol)
+
+pp = plot(poc, "Point of Control", poccol, style = plot.style_stepline, linewidth = 2)
+pu = plot(upperPoc, "Upper POC", color.new(poccol, pocChannel ? 80 : 100), style = plot.style_stepline)
+pl = plot(lowerPoc, "Lower POC", color.new(poccol, pocChannel ? 80 : 100), style = plot.style_stepline)
+
+fill(pp, pu, upperPoc, poc, color.new(poccol, pocChannel ? 80 : 100), color(na))
+fill(pp, pl, lowerPoc, poc, color.new(poccol, pocChannel ? 80 : 100), color(na))
+
+plot(H, "Upper Range", color.new(chart.fg_color, 75))
+plot(L, "Lower Range", color.new(chart.fg_color, 75))
+
+if barstate.islast 
+    indication = close < upperPoc and close > lowerPoc ? "" : close > upperPoc ? "🔵" : "🟠"
+    price = close < upperPoc and close > lowerPoc ? "Price inside Channel" : close > upperPoc ? "🔵Price Above POC Channel" : "🟠Price Below POC Channel"
+    label.delete(label.new(bar_index, poc, indication, color = color.new(poccol, 100), style = "lcn", tooltip = price)[1])
+
+    label.delete(label.new(bar_index, poc, "< " +str.tostring(volume_, format.volume), color = color.new(poccol, 100), textcolor = poccol, style = "llf", tooltip = "PoC Volume")[1])
+    label.delete(label.new(bar_index-rangeLen, L[rangeLen], ">", color = color.new(chart.fg_color, 75), style = "lup", tooltip = "LookBack Period " + str.tostring(rangeLen))[1])
+// }

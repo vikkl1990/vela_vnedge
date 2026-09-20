@@ -1,0 +1,89 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator(title="Parabolic SAR Deviation [BigBeluga]", shorttitle="SAR + Deviation [BigBeluga]", overlay=true, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float start = input.float(0.01, step = 0.01, group = "SAR")
+float increment = input.float(0.004, step = 0.001, group = "SAR")
+int maximum = 1
+bool prices = input.bool(true, "Signals", group = "SAR")
+color col_up = input.color(#40c3fb, "", inline = "col", group = "SAR")
+color col_dn = input.color(#e040fb, "", inline = "col", group = "SAR")
+float deviation_size = input.float(1.5, "Deviation", step = 0.1, group = "Deviation Levels")
+
+color color_na = color.new(color.black, 100)
+color standart_col = chart.fg_color
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+out = ta.sar(start, increment, maximum)
+
+deviation_levels(trend)=>
+    float dist = ta.sma(high-low, 100)*deviation_size
+
+    var lines = array.new<line>(4, line(na))
+    var labels = array.new<label>(4, label(na))
+
+    if trend != trend[1] 
+
+        for i = 1 to 4
+            y = trend ? close+dist*i : close-dist*i
+            line1 = line.new(bar_index, y, bar_index, y, color = standart_col)
+            label1 = label.new(bar_index, y, str.tostring(i), style = label.style_label_right, color = color_na, textcolor = standart_col) 
+
+            labels.push(label1)
+            lines.push(line1)
+
+   
+    if lines.size() > 4 
+        line.delete(lines.shift())
+        label.delete(labels.shift())
+
+    if lines.size() > 0
+        for i = lines.size() -1  to 0 
+            line_id = lines.get(i)
+            line_id.set_x2(bar_index)
+            labdel_id = labels.get(i)
+
+            if trend and high > line_id.get_y1() and high[1] <= line_id.get_y1()
+                labdel_id.set_text(str.tostring(volume, format.volume))
+                line_id.set_x2(bar_index)
+                line_id.set_style(line.style_dashed)
+                lines.remove(i)
+                labels.remove(i)
+
+            if not trend and low < line_id.get_y1() and low[1] >= line_id.get_y1()
+                labdel_id.set_text(str.tostring(volume, format.volume))
+                line_id.set_x2(bar_index)
+                line_id.set_style(line.style_dashed)
+                lines.remove(i)
+                labels.remove(i)
+
+          
+
+bool trend = close > out 
+bool trend_up = ta.crossover(close, out) and barstate.isconfirmed
+bool trend_dn = ta.crossunder(close, out) and barstate.isconfirmed
+
+color trend_col = trend ? col_up : col_dn
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if prices
+    if trend_up
+        label.new(bar_index, out, "▲\n" + str.tostring(close, "#,###.####"), style=label.style_label_up, textcolor = trend_col, color = color_na)
+
+    if trend_dn
+        label.new(bar_index, out, str.tostring(close, "#,###.####") + "\n▼", style=label.style_label_down, textcolor = trend_col, color = color_na)
+
+deviation_levels(trend)
+
+pp = plot(hl2, editable = false, display = display.none)
+po = plot(trend != trend[1] ? na : out, "ParabolicSAR", color=trend_col, style = plot.style_linebr, linewidth = 2)
+
+fill(pp, po, hl2, out, na, color.new(trend_col, 90))
+// }

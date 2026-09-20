@@ -1,0 +1,141 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Adaptive MACD Deluxe [AlgoAlpha]", "AlgoAlpha - MACD Deluxe", overlay = false, explicit_plot_zorder = true)
+
+r2Period  = input.int(title = "R-Squared Lookback", defval = 20, minval = 2, group = "MACD", tooltip = "Lookback period for the R-squared calculation, which adjusts the MACD's dynamic weighting. Higher values mean slower adaptation.")
+fastLen   = input.int(title = "Fast EMA Length",    defval = 10, minval = 2, group = "MACD", tooltip = "Length for the fast EMA. Controls MACD’s sensitivity to recent price action. Lower values = faster, higher values = smoother.")
+slowLen   = input.int(title = "Slow EMA Length",    defval = 20, minval = 2, group = "MACD", tooltip = "Length for the slow EMA. Sets the baseline for MACD. Larger values emphasize longer-term trends.")
+sigLen    = input.int(title = "Signal EMA Length",  defval = 9,  minval = 2, group = "MACD", tooltip = "Length for the signal line’s smoothing. Lower values = faster reactions to MACD changes, higher values = more smoothing.")
+
+sigType = input.string("Heiken Ashi", "Signal Smoothing Type", options = ["EMA", "SMA", "SMMA (RMA)", "WMA", "VWMA", "Heiken Ashi"], group = "Signal", tooltip = "Choose the smoothing type for the signal line, or Heiken Ashi")
+normalize = input.bool(title = "Normalize MACD", defval = true, group = "Normalize", tooltip = "Normalize the MACD series by volatility, resulting in a percentage")
+upperZone = input.float(title = "Upper Zone", defval = 100.0, group = "Normalize", tooltip = "Upper threshold for normalized MACD")
+lowerZone = input.float(title = "Lower Zone", defval = -100.0, group = "Normalize", tooltip = "Lower threshold for normalized MACD")
+
+green     = input.color(#3179f5, "Primary Color", group="Appearance", tooltip="Color for uptrend elements.", inline = "a")
+red     = input.color(#f23645, "", group="Appearance", tooltip="Color for downtrend elements.", inline = "a")
+
+green1i     = input.color(#5b9cf6, "Secondary Colors", group="Appearance", tooltip="Color for uptrend elements.", inline = "b")
+red1i     = input.color(#f77c80, "", group="Appearance", tooltip="Color for downtrend elements.", inline = "b")
+
+red1 = color.new(red1i, 40)
+green1 = color.new(green1i, 40)
+
+HA(float val) =>
+    o_rsi = val[1]
+    h_rsi = math.max(val, val[1])
+    l_rsi = math.min(val, val[1])
+    c_rsi = val
+
+    haClose = (o_rsi + h_rsi + l_rsi + c_rsi) / 4
+    haOpen = float(na)
+    haOpen := na(haOpen[1]) ? (o_rsi + c_rsi) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2
+    haHigh = math.max(h_rsi, math.max(haOpen, haClose))
+    haLow = math.min(l_rsi, math.min(haOpen, haClose))
+
+    [haOpen, haHigh, haLow, haClose]
+
+fastK = 2.0 / (fastLen + 1)
+slowK = 2.0 / (slowLen + 1)
+
+r      = ta.correlation(close, bar_index, r2Period)
+detWgt = 0.5 + 0.5 * r * r
+
+blendCoeff = detWgt * (1 - fastK) * (1 - slowK) +
+             (1 - detWgt) * (1 - fastK) / (1 - slowK)
+
+var float mac = na
+
+priceDelta   = close - close[1]
+momentTerm   = priceDelta * (fastK - slowK)
+feedbackTerm = (2 - fastK - slowK) * nz(mac[1])
+dampTerm     = blendCoeff * nz(mac[2])
+
+mac := momentTerm + feedbackTerm - dampTerm
+
+float macSeries = normalize ? (mac / ta.ema(high - low, slowLen) * 100) : mac
+
+emaSignal  = ta.ema(macSeries, sigLen)
+smaSignal  = ta.sma(macSeries, sigLen)
+smmaSignal = ta.rma(macSeries, sigLen)
+wmaSignal  = ta.wma(macSeries, sigLen)
+vwmaSignal = ta.vwma(macSeries, sigLen)
+
+[haOpen, haHigh, haLow, haClose] = HA(macSeries)
+
+signal = switch sigType
+    "EMA"         => emaSignal
+    "SMA"         => smaSignal
+    "SMMA (RMA)"  => smmaSignal
+    "WMA"         => wmaSignal
+    "VWMA"        => vwmaSignal
+    "Heiken Ashi" => emaSignal
+
+hist   = macSeries - signal
+
+upperLine   = plot(upperZone, title = "Normalized MACD Upper Threshold", color = color.new(color.gray, 50), display=display.none)
+upperLineIn = plot(upperZone - 30, title = "Normalized MACD Upper Inner Threshold", color = color.new(color.gray, 70), display=display.none)
+lowerLine   = plot(lowerZone, title = "Normalized MACD Lower Threshold", color = color.new(color.gray, 50), display=display.none)
+lowerLineIn = plot(lowerZone + 30, title = "Normalized MACD Lower Inner Threshold", color = color.new(color.gray, 70), display=display.none)
+
+fill(upperLine, upperLineIn, normalize ? upperZone : na, normalize ? (upperZone - 30) : na, color.new(red, 70), color.new(chart.bg_color, 90), title = "Overbought Zone Highlight")
+fill(lowerLine, lowerLineIn, normalize ? (lowerZone + 30) : na, normalize ? lowerZone : na, color.new(chart.bg_color, 90), color.new(green, 70), title = "Oversold Zone Highlight")
+
+histColor = hist >= 0 ? green : red
+histDecreasing = hist < hist[1]
+gradTrigger = (hist > 0 and histDecreasing) or (hist < 0 and not histDecreasing)
+
+histColorFinal = hist >= 0
+     ? (histDecreasing ? color.new(green, 70) : green)
+     : (histDecreasing ? red : color.new(red, 70))
+
+float transp = 20
+float chg1 = hist * 0.80
+float chg2 = hist * 0.60
+float chg3 = hist * 0.40
+float chg4 = hist * 0.20
+
+plot(not gradTrigger ? hist : na, title = "MACD Histogram (Non-Decreasing)", style = plot.style_columns, color = histColorFinal)
+plot(gradTrigger ? hist  : na, title = "MACD Histogram Gradient 1 (Decreasing)", style = plot.style_columns, color = hist >= 0 ? color.new(green, transp + 60) : color.new(red, transp + 60))
+plot(gradTrigger ? chg1  : na, title = "MACD Histogram Gradient 2 (Decreasing)", style = plot.style_columns, color = hist >= 0 ? color.new(green, transp + 55) : color.new(red, transp + 55))
+plot(gradTrigger ? chg2  : na, title = "MACD Histogram Gradient 3 (Decreasing)", style = plot.style_columns, color = hist >= 0 ? color.new(green, transp + 45) : color.new(red, transp + 45))
+plot(gradTrigger ? chg3  : na, title = "MACD Histogram Gradient 4 (Decreasing)", style = plot.style_columns, color = hist >= 0 ? color.new(green, transp + 30) : color.new(red, transp + 30))
+plot(gradTrigger ? chg4  : na, title = "MACD Histogram Gradient 5 (Decreasing)", style = plot.style_columns, color = hist >= 0 ? color.new(green, transp + 25) : color.new(red, transp + 25))
+plot(gradTrigger ? hist  : na, title = "MACD Histogram Outline (Decreasing)", style = plot.style_linebr, color = hist >= 0 ? green : red)
+
+candlecol = haClose >= haOpen ? green1 : red1
+plotcandle(haOpen, haHigh, haLow, haClose, title = "Heiken Ashi Signal Candles (MACD)", color = haClose >= haOpen ? candlecol : color.new(color.blue,100), bordercolor = candlecol, wickcolor = candlecol, display = sigType == "Heiken Ashi" ? display.all : display.none)
+plot(macSeries, title = "MACD Value Series", color = green1, linewidth = 2, display = sigType != "Heiken Ashi" ? display.all : display.none)
+plot(signal, title = "MACD Signal Line", color = red1, linewidth = 1, display = sigType != "Heiken Ashi" ? display.all : display.none)
+
+float arrowSpacing = 30
+enterUpperOuter = (macSeries[1] > upperZone) and (macSeries <= upperZone)
+enterLowerOuter = (macSeries[1] < lowerZone) and (macSeries >= lowerZone)
+enterUpperInner = (macSeries[1] > (upperZone - 30)) and (macSeries <= (upperZone - 30))
+enterLowerInner = (macSeries[1] < (lowerZone + 30)) and (macSeries >= (lowerZone + 30))
+
+upperArrowLevel = math.max(macSeries + arrowSpacing, upperZone + arrowSpacing)
+lowerArrowLevel = math.min(macSeries - arrowSpacing, lowerZone - arrowSpacing)
+upperInnerArrowLevel = math.max(macSeries + arrowSpacing, upperZone + arrowSpacing)
+lowerInnerArrowLevel = math.min(macSeries - arrowSpacing, lowerZone - arrowSpacing)
+
+plotchar(enterUpperOuter ? upperArrowLevel : na, title="MACD Crosses Below Upper Threshold", char="▼", location=location.absolute, color=red, size=size.tiny)
+plotchar(enterLowerOuter ? lowerArrowLevel : na, title="MACD Crosses Above Lower Threshold", char="▲", location=location.absolute, color=green, size=size.tiny)
+plotchar(enterUpperInner ? upperInnerArrowLevel : na, title="MACD Crosses Below Upper Inner Threshold", char="▽", location=location.absolute, color=red, size=size.tiny)
+plotchar(enterLowerInner ? lowerInnerArrowLevel : na, title="MACD Crosses Above Lower Inner Threshold", char="△", location=location.absolute, color=green, size=size.tiny)
+
+bullCross = sigType == "Heiken Ashi" ? (haClose > haOpen  and haClose[1] <= haOpen[1])  : ta.crossover(macSeries, signal)
+bearCross = sigType == "Heiken Ashi" ? (haClose < haOpen  and haClose[1] >= haOpen[1])  : ta.crossunder(macSeries, signal)
+
+alertcondition(bullCross, title = "MACD Bullish")
+alertcondition(bearCross, title = "MACD Bearish")
+histUp   = ta.crossover(hist, 0)
+histDown = ta.crossunder(hist, 0)
+alertcondition(histUp,   title = "Histogram Turns Positive")
+alertcondition(histDown, title = "Histogram Turns Negative")
+alertcondition(enterUpperOuter, title = "▼ MACD Strong Bearish Reversal")
+alertcondition(enterLowerOuter, title = "▲ MACD Strong Bullish Reversal")
+alertcondition(enterUpperInner, title = "▽ MACD Weak Bearish Reversal")
+alertcondition(enterLowerInner, title = "△ MACD Weak Bullish Reversal")

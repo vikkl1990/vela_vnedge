@@ -1,0 +1,289 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Dynamic Grid Indicator [BigBeluga]", overlay = false, max_bars_back = 5000, max_labels_count = 500, calc_bars_count = 3000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+var string G_MA = 'Trend & Base Channel Settings'
+hmaLength = input.int(150, 'HMA Length', minval = 1, group = G_MA, tooltip = 'Period length for the central Hull Moving Average baseline.')
+atrLength = input.int(100, 'ATR Length', minval = 1, group = G_MA, tooltip = 'Period length used to measure average true range volatility.')
+atrMult   = input.float(1.6, 'ATR Multiplier Step', minval = 0.1, step = 0.1, group = G_MA, tooltip = 'Multiplier step distance applied to each grid channel level.')
+
+var string G_GRID = 'Grid Settings'
+numLevels  = input.int(3, 'Grid Levels (Each Side)', minval = 1, maxval = 5, group = G_GRID, tooltip = 'Number of channel levels projected above and below the baseline (1 to 5).')
+thresholdP = input.float(0.5, 'Proximity Sensitivity (% of Step)', minval = 0.01, maxval = 1.0, step = 0.1, group = G_GRID, tooltip = 'Defines proximity distance to hide line segment when price is near.')
+
+var string G_SIG = 'Signal Settings'
+minGap = input.int(10, 'Minimum Bar Gap Between Signals', minval = 1, group = G_SIG, tooltip = 'Minimum number of bars required between consecutive crossover signals.')
+
+var string G_STYLE = 'Style Settings'
+baseTeal   = input.color(#1ecc75, 'Bullish Color', group = G_STYLE, tooltip = 'Primary color used for bullish levels, oscillator lines, and buy signals.')
+baseMaroon = input.color(#c04020, 'Bearish Color', group = G_STYLE, tooltip = 'Primary color used for bearish levels, oscillator lines, and sell signals.')
+
+sigLblSizeInput = input.string('normal', 'Signal Label Size', options = ['auto', 'tiny', 'small', 'normal', 'large', 'huge'], group = G_STYLE, tooltip = 'Font size applied to signal crossover annotations on both chart and oscillator.')
+edgeLblSizeInput = input.string('normal', 'Right-Edge Label Size', options = ['auto', 'tiny', 'small', 'normal', 'large', 'huge'], group = G_STYLE, tooltip = 'Font size for right-edge grid level indicators.')
+
+var string G_DASH = 'Dashboard Settings'
+showDash    = input.bool(true, 'Show Position Dashboard', group = G_DASH, tooltip = 'Toggle vertical scale dashboard visibility.')
+dashPos     = input.string('middle_right', 'Dashboard Position', options = ['top_right', 'middle_right', 'bottom_right'], group = G_DASH)
+dashSizeInput = input.string('normal', 'Dashboard Size', options = ['auto', 'tiny', 'small', 'normal', 'large', 'huge'], group = G_DASH, tooltip = 'Controls the text size of the dashboard.')
+
+// Helper function to translate string input to Pine Script label/table size
+getLabelSize(string sz) =>
+    switch sz
+        'auto'   => size.auto
+        'tiny'   => size.tiny
+        'small'  => size.small
+        'normal' => size.normal
+        'large'  => size.large
+        'huge'   => size.huge
+        => size.small
+
+sigLblSize  = getLabelSize(sigLblSizeInput)
+edgeLblSize = getLabelSize(edgeLblSizeInput)
+dashSize    = getLabelSize(dashSizeInput)
+
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Core Calculations
+centerLine = ta.hma(close, hmaLength)
+atrVal     = ta.atr(atrLength) * atrMult
+proxDist   = atrVal * thresholdP
+oscValue   = atrVal != 0 ? (close - centerLine) / atrVal : 0.0
+
+// Dynamic Level Calculations
+upper1 = centerLine + atrVal * 1
+lower1 = centerLine - atrVal * 1
+upper2 = centerLine + atrVal * 2
+lower2 = centerLine - atrVal * 2
+upper3 = centerLine + atrVal * 3
+lower3 = centerLine - atrVal * 3
+upper4 = centerLine + atrVal * 4
+lower4 = centerLine - atrVal * 4
+upper5 = centerLine + atrVal * 5
+lower5 = centerLine - atrVal * 5
+
+// Helper for upper vs lower channel overlay dynamic colors
+getGridColor(float gridLevel, int levelIdx, bool isUpper) =>
+    float diff  = math.abs(close - gridLevel)
+    float diff1 = math.abs(open - gridLevel)
+    float diff2 = math.abs(hl2 - gridLevel)
+    float diff3 = math.abs(hlc3 - gridLevel)
+    float diff4 = math.abs(hlcc4 - gridLevel)
+
+    bool isClose = diff <= proxDist or diff1 <= proxDist or diff2 <= proxDist or diff3 <= proxDist or diff4 <= proxDist
+
+    float stepNorm   = levelIdx / float(numLevels)
+    color targetBase = isUpper ? baseTeal : baseMaroon
+    color startColor = color.new(targetBase, 85)
+    color endColor   = color.new(targetBase, 20)
+
+    color computedColor = color.from_gradient(stepNorm, 0.0, 1.0, startColor, endColor)
+    isClose ? color(na) : computedColor
+
+// Oscillator Grid Line Color
+getOscGridColor(int levelIdx, bool isUpper) =>
+    float stepNorm   = levelIdx / float(numLevels)
+    color targetBase = isUpper ? baseTeal : baseMaroon
+    color startColor = color.new(targetBase, 80)
+    color endColor   = color.new(targetBase, 0)
+    color.from_gradient(stepNorm, 0.0, 1.0, startColor, endColor)
+
+// Right-Edge Label Management
+drawOverlayLabel(float yVal, string labelText, color txtColor) =>
+    var label lbl = na
+    if barstate.islast
+        lbl := label.new(bar_index + 2, yVal, labelText, xloc = xloc.bar_index, yloc = yloc.price, color = color(na), textcolor = txtColor, style = label.style_label_left, size = edgeLblSize, force_overlay = true)
+        label.delete(lbl[1])
+
+drawOscLabel(float yVal, string labelText, color txtColor) =>
+    var label lbl = na
+    if barstate.islast
+        lbl := label.new(bar_index + 2, yVal, labelText, xloc = xloc.bar_index, yloc = yloc.price, color = color(na), textcolor = txtColor, style = label.style_label_left, size = edgeLblSize, force_overlay = false)
+        label.delete(lbl[1])
+
+// --- Unconditional Cross Calculations ---
+bool crossBear1 = ta.crossunder(close, upper1)
+bool crossBear2 = ta.crossunder(close, upper2)
+bool crossBear3 = ta.crossunder(close, upper3)
+bool crossBear4 = ta.crossunder(close, upper4)
+bool crossBear5 = ta.crossunder(close, upper5)
+
+bool crossBull1 = ta.crossover(close, lower1)
+bool crossBull2 = ta.crossover(close, lower2)
+bool crossBull3 = ta.crossover(close, lower3)
+bool crossBull4 = ta.crossover(close, lower4)
+bool crossBull5 = ta.crossover(close, lower5)
+
+// Level-filtered signals
+bool rawBear1 = crossBear1 and numLevels >= 1
+bool rawBear2 = crossBear2 and numLevels >= 2
+bool rawBear3 = crossBear3 and numLevels >= 3
+bool rawBear4 = crossBear4 and numLevels >= 4
+bool rawBear5 = crossBear5 and numLevels >= 5
+
+bool rawBull1 = crossBull1 and numLevels >= 1
+bool rawBull2 = crossBull2 and numLevels >= 2
+bool rawBull3 = crossBull3 and numLevels >= 3
+bool rawBull4 = crossBull4 and numLevels >= 4
+bool rawBull5 = crossBull5 and numLevels >= 5
+
+bool rawBearSignal = rawBear1 or rawBear2 or rawBear3 or rawBear4 or rawBear5
+bool rawBullSignal = rawBull1 or rawBull2 or rawBull3 or rawBull4 or rawBull5
+
+// Get dynamic string value
+getBearLevelStr() =>
+    rawBear5 ? "-5" : rawBear4 ? "-4" : rawBear3 ? "-3" : rawBear2 ? "-2" : rawBear1 ? "-1" : ""
+
+getBullLevelStr() =>
+    rawBull5 ? "+5" : rawBull4 ? "+4" : rawBull3 ? "+3" : rawBull2 ? "+2" : rawBull1 ? "+1" : ""
+
+// Minimum bar spacing & bar confirmation filter
+var int lastSigBar = -999
+bool bearSignal = false
+bool bullSignal = false
+
+if barstate.isconfirmed and (rawBearSignal or rawBullSignal) and (bar_index - lastSigBar >= minGap)
+    bearSignal := rawBearSignal
+    bullSignal := rawBullSignal
+    lastSigBar := bar_index
+
+// Signal Labels (Price Chart Overlay)
+if bearSignal
+    label.new(bar_index, high, text = getBearLevelStr()+"\n▼", xloc = xloc.bar_index, yloc = yloc.abovebar, color = color.new(chart.bg_color, 100), textcolor = baseMaroon, style = label.style_label_down, size = sigLblSize, force_overlay = true)
+
+if bullSignal
+    label.new(bar_index, low, text = "▲\n"+getBullLevelStr(), xloc = xloc.bar_index, yloc = yloc.belowbar, color = color.new(chart.bg_color, 100), textcolor = baseTeal, style = label.style_label_up, size = sigLblSize, force_overlay = true)
+
+// Signal Labels (Oscillator Pane)
+if bearSignal
+    label.new(bar_index, oscValue, text = getBearLevelStr()+"\n▼", xloc = xloc.bar_index, yloc = yloc.price, color = color.new(chart.bg_color, 100), textcolor = baseMaroon, style = label.style_label_down, size = sigLblSize, force_overlay = false)
+
+if bullSignal
+    label.new(bar_index, oscValue, text = "▲\n"+getBullLevelStr(), xloc = xloc.bar_index, yloc = yloc.price, color = color.new(chart.bg_color, 100), textcolor = baseTeal, style = label.style_label_up, size = sigLblSize, force_overlay = false)
+
+// }
+
+// ＤＡＳＨＢＯＡＲＤ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+getDashPos(string p) =>
+    switch p
+        'top_right'    => position.top_right
+        'middle_right' => position.middle_right
+        'bottom_right' => position.bottom_right
+        => position.middle_right
+
+var table dash = table.new(getDashPos(dashPos), 2, 12, bgcolor = color.new(#20273a, 10), border_width = 2, border_color = chart.bg_color, force_overlay = true)
+
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "Level", text_color = color.gray, text_size = dashSize)
+    table.cell(dash, 1, 0, "Scale", text_color = color.gray, text_size = dashSize)
+
+    for i = numLevels to -numLevels by 1
+        int rowIdx = 6 - i
+        float levelVal = i
+        bool isCurrentRow = math.round(oscValue) == levelVal or (i == 5 and oscValue >= 5) or (i == -5 and oscValue <= -5)
+        
+        // Hide unused levels based on numLevels input
+        if math.abs(i) > numLevels
+            table.cell(dash, 0, rowIdx, "", text_size = dashSize)
+            table.cell(dash, 1, rowIdx, "", text_size = dashSize)
+        else
+            string lvlStr = i > 0 ? "+" + str.tostring(i) : str.tostring(i)
+            color lvlColor = i > 0 ? baseTeal : i < 0 ? baseMaroon : color.gray
+            
+            // Format marker to include value inside brackets instead of NOW
+            string valFormatted = str.tostring(oscValue, "#.##")
+            string marker = isCurrentRow ? "◄ [" + valFormatted + "]" : "│"
+            color markerColor = isCurrentRow ? (oscValue >= 0 ? baseTeal : baseMaroon) : color.new(color.gray, 60)
+            
+            table.cell(dash, 0, rowIdx, lvlStr, text_color = lvlColor, text_size = dashSize)
+            table.cell(dash, 1, rowIdx, marker, text_color = markerColor, text_size = dashSize)
+
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// OVERLAY PLOTS (force_overlay = true)
+trendColor = centerLine > centerLine[1] ? baseTeal : baseMaroon
+plot(centerLine, 'Central HMA', color = trendColor, linewidth = 2, force_overlay = true)
+plot(centerLine, 'Central HMA Glow', color = color.new(trendColor, 80), linewidth = 10, force_overlay = true)
+
+// Upper/Lower Overlay Levels
+plot(numLevels >= 1 ? upper1 : na, 'Upper 1', color = getGridColor(upper1, 1, true), linewidth = 1, force_overlay = true)
+plot(numLevels >= 1 ? lower1 : na, 'Lower 1', color = getGridColor(lower1, 1, false), linewidth = 1, force_overlay = true)
+if numLevels >= 1
+    drawOverlayLabel(upper1, '+1', baseTeal)
+    drawOverlayLabel(lower1, '-1', baseMaroon)
+
+plot(numLevels >= 2 ? upper2 : na, 'Upper 2', color = getGridColor(upper2, 2, true), linewidth = 1, force_overlay = true)
+plot(numLevels >= 2 ? lower2 : na, 'Lower 2', color = getGridColor(lower2, 2, false), linewidth = 1, force_overlay = true)
+if numLevels >= 2
+    drawOverlayLabel(upper2, '+2', baseTeal)
+    drawOverlayLabel(lower2, '-2', baseMaroon)
+
+plot(numLevels >= 3 ? upper3 : na, 'Upper 3', color = getGridColor(upper3, 3, true), linewidth = 2, force_overlay = true)
+plot(numLevels >= 3 ? lower3 : na, 'Lower 3', color = getGridColor(lower3, 3, false), linewidth = 2, force_overlay = true)
+if numLevels >= 3
+    drawOverlayLabel(upper3, '+3', baseTeal)
+    drawOverlayLabel(lower3, '-3', baseMaroon)
+
+plot(numLevels >= 4 ? upper4 : na, 'Upper 4', color = getGridColor(upper4, 4, true), linewidth = 2, force_overlay = true)
+plot(numLevels >= 4 ? lower4 : na, 'Lower 4', color = getGridColor(lower4, 4, false), linewidth = 2, force_overlay = true)
+if numLevels >= 4
+    drawOverlayLabel(upper4, '+4', baseTeal)
+    drawOverlayLabel(lower4, '-4', baseMaroon)
+
+plot(numLevels >= 5 ? upper5 : na, 'Upper 5', color = getGridColor(upper5, 5, true), linewidth = 2, force_overlay = true)
+plot(numLevels >= 5 ? lower5 : na, 'Lower 5', color = getGridColor(lower5, 5, false), linewidth = 2, force_overlay = true)
+if numLevels >= 5
+    drawOverlayLabel(upper5, '+5', baseTeal)
+    drawOverlayLabel(lower5, '-5', baseMaroon)
+
+// OSCILLATOR PANE (overlay = false)
+pZero = plot(0, 'Osc Zero Line', color = color.new(color.gray, 50), linewidth = 1)
+
+// Dynamic Oscillator Grid Lines & Labels
+pOscU1 = plot(numLevels >= 1 ? 1.0 : na, 'Osc +1', color = getOscGridColor(1, true), linewidth = 1)
+pOscL1 = plot(numLevels >= 1 ? -1.0 : na, 'Osc -1', color = getOscGridColor(1, false), linewidth = 1)
+if numLevels >= 1
+    drawOscLabel(1.0, '+1', baseTeal)
+    drawOscLabel(-1.0, '-1', baseMaroon)
+
+pOscU2 = plot(numLevels >= 2 ? 2.0 : na, 'Osc +2', color = getOscGridColor(2, true), linewidth = 1)
+pOscL2 = plot(numLevels >= 2 ? -2.0 : na, 'Osc -2', color = getOscGridColor(2, false), linewidth = 1)
+if numLevels >= 2
+    drawOscLabel(2.0, '+2', baseTeal)
+    drawOscLabel(-2.0, '-2', baseMaroon)
+
+pOscU3 = plot(numLevels >= 3 ? 3.0 : na, 'Osc +3', color = getOscGridColor(3, true), linewidth = 1)
+pOscL3 = plot(numLevels >= 3 ? -3.0 : na, 'Osc -3', color = getOscGridColor(3, false), linewidth = 1)
+if numLevels >= 3
+    drawOscLabel(3.0, '+3', baseTeal)
+    drawOscLabel(-3.0, '-3', baseMaroon)
+
+pOscU4 = plot(numLevels >= 4 ? 4.0 : na, 'Osc +4', color = getOscGridColor(4, true), linewidth = 1)
+pOscL4 = plot(numLevels >= 4 ? -4.0 : na, 'Osc -4', color = getOscGridColor(4, false), linewidth = 1)
+if numLevels >= 4
+    drawOscLabel(4.0, '+4', baseTeal)
+    drawOscLabel(-4.0, '-4', baseMaroon)
+
+pOscU5 = plot(numLevels >= 5 ? 5.0 : na, 'Osc +5', color = getOscGridColor(5, true), linewidth = 1)
+pOscL5 = plot(numLevels >= 5 ? -5.0 : na, 'Osc -5', color = getOscGridColor(5, false), linewidth = 1)
+if numLevels >= 5
+    drawOscLabel(5.0, '+5', baseTeal)
+    drawOscLabel(-5.0, '-5', baseMaroon)
+
+// Oscillator Line Plot
+oscColor = oscValue >= 0 ? baseTeal : baseMaroon
+pOscLine = plot(oscValue, 'Channel Oscillator', color = oscColor, linewidth = 1)
+
+// Gradient Fill for Oscillator
+
+fill(pOscLine, pZero, 4, 0.0, oscColor, color(na), title = 'Oscillator Gradient Fill')
+fill(pOscLine, pZero, 0.0, -4, color(na), oscColor, title = 'Oscillator Gradient Fill')
+// }

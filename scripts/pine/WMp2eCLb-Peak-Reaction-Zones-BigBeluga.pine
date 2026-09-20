@@ -1,0 +1,70 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=6
+indicator("Peak Reaction Zones [BigBeluga]", overlay = true, max_labels_count = 500, max_bars_back = 500)
+
+var high_i = int(na)
+var high_v = float(na)
+var low_i = int(na)
+var low_v = float(na)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+lookback = input(72)
+multiplier = input.float(1, "Zones Width", step = 0.1, inline = "h/l")
+high_col = input.color(color.orange, "", inline = "h/l")
+low_col  = input.color(color.blue, "", inline = "h/l")
+// }
+
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+highest = ta.highest(lookback)
+lowest = ta.lowest(lookback)
+
+
+atr = ta.atr(200) * multiplier
+
+if high[1] == highest[1] and high < highest
+    high_i := bar_index-1
+    high_v := high[1]
+
+if low[1] == lowest[1] and low > lowest
+    low_i := bar_index-1
+    low_v := low[1]
+
+draw_zone(x, y, h_l, color)=>
+
+    dist = h_l ? -atr : atr
+
+    line.delete(line.new(x, y, bar_index, y, color = color, style = line.style_solid, width = 2)[1])
+    line.delete(line.new(x+3, y+dist, bar_index, y+dist, color = color, style = line.style_dashed)[1])
+    label.delete(label.new(bar_index, y, str.tostring(y, "#,###.####"), color = color(na), style = label.style_label_left, textcolor = color)[1])
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if barstate.islast
+
+    size = bar_index - (high_i > low_i ? low_i : high_i)
+
+    draw_zone(high_i, high_v, true, high_col)
+    draw_zone(low_i, low_v, false, low_col)
+    mid = math.avg(high_v, low_v)
+    mid_index = bar_index -  size/2
+
+    line.delete(line.new(mid_index, mid, bar_index, mid, color = chart.fg_color, style = line.style_dashed)[1])
+    label.delete(label.new(bar_index, mid, str.tostring(mid, "#,###.####"), color = color(na), style = label.style_label_left, textcolor = chart.fg_color)[1])
+
+    for i = 0 to size
+   
+        index = bar_index-i-2
+
+        if low[i+3] > low_v+atr and low[i+2] < low_v+atr and high[i+1] > low_v+atr and index > low_i
+            label.new(index, low[i+2], "", style = label.style_label_up, color = low_col, size = size.tiny)
+
+        if high[i+3] < high_v-atr and high[i+2] > high_v-atr and low[i+1] < high_v-atr and index > high_i
+            label.new(index, high[i+2], "", style = label.style_label_down, color = high_col, size = size.tiny)
+
+// }

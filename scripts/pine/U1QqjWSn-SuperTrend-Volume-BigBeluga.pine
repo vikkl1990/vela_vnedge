@@ -1,0 +1,63 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("SuperTrend Volume [BigBeluga]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+import TradingView/ta/9
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float  multip  = input.float(4, "Bands", step = 0.01)
+bool   option_ = input.string("Bars", "Volume Type", ["Bars", "Area"]) == "Bars"
+color  col_up  = input.color(color.lime, "", group = "Color", inline = "color")
+color  col_dn  = input.color(color.fuchsia, "", group = "Color", inline = "color")
+color  col_mv  = input.color(color.blue, "", group = "Color", inline = "color")
+
+
+var   line1       = line(na)
+label labl        = label(na)
+float volume_line = float(na)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+[supertrend, direction] = ta.supertrend(multip, 25)
+float distance     = ta.sma(high - low, 200)
+float supertrend1  = supertrend + distance * direction 
+float n_vol        = math.min(4, (volume / ta.stdev(volume, 200)))
+float step         = (supertrend - supertrend1)/4
+bool  trend_change = direction != direction[1]
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+color trend_col    = (direction < 0 ? col_up : col_dn)
+trend_col := n_vol >= 4 ? col_mv : trend_col
+color bars_col     = color.from_gradient(n_vol, 0, 4, color.new(trend_col, 60), trend_col)
+
+
+// Volume Histogram
+upper = not trend_change ? supertrend1 +step*n_vol : na
+lower = not trend_change ? supertrend1 : na
+
+if not trend_change
+    labl  := label.new(bar_index, upper, str.tostring(n_vol, "#.##"), style = label.style_label_left, color = trend_col)
+label.delete(labl[1])
+
+plotcandle(upper, upper, lower, lower, "", bars_col, bars_col, bordercolor = bars_col)
+
+// Main Plot
+float vol_val = trend_change ? na : (option_ ? na : line1.get_y1())
+
+vol_line   = plot(vol_val, color = trend_col, style = plot.style_linebr)
+super_line1= plot(trend_change ? na : supertrend1, linewidth = 2, color = trend_col, style = plot.style_linebr)
+super_line = plot(trend_change ? na : supertrend, color = color.new(trend_col, 30), style = plot.style_steplinebr)
+
+fill(vol_line, super_line1, vol_val, supertrend1, trend_col, color.new(trend_col, 50))
+
+// Max Vol points
+if n_vol == 4 
+    source = direction < 0 ? high : low
+    style  = direction < 0 ? label.style_label_down : label.style_label_up
+    label.new(bar_index, direction < 0 ? high : low, "o", color = color.new(color.black, 100), textcolor = trend_col, style = style)
+// }

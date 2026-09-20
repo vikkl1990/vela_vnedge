@@ -1,0 +1,186 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Non-Repainting Support and Resistance [AlgoAlpha]", shorttitle = "AlgoAlpha - Non-Repainting S/R", overlay=true, max_boxes_count=100, max_lines_count =100, max_bars_back=5000)
+
+
+x = input.int(70, title="Pivot Lookback Period")
+max = input.int(300)
+
+green = input.color(#00ffbb, title="Bullish Color", tooltip="Color when trend is bullish")
+red = input.color(#ff1100, title="Bearish Color", tooltip="Color when trend is bearish")
+
+
+type store
+    int   dir
+    int   n
+    float y
+
+
+limit = ta.sma(math.abs(open - close), 100)
+
+
+ph = ta.pivothigh(high, x, x)
+pl = ta.pivotlow(low, x, x)
+
+
+var float pph = na
+var float ppl = na
+var float cpph = na
+var float cppl = na
+var int ln = na
+var int hn = na
+var int lpt = 0
+
+res = false
+sup = false
+
+var store[] sequence = array.new<store>()
+
+var boxesBullish = array.new_box()
+var boxesBearish = array.new_box()
+
+var lineBullish = array.new_line()
+var lineBearish = array.new_line()
+
+
+if not na(ph)
+    lpt := 1
+    if na(ppl)
+        hn := bar_index - x
+        cpph := ph
+
+        boxBullish = box.new(
+             left=bar_index, 
+             bottom=math.min(open[x], close[x]), 
+             right=bar_index - x + 1, 
+             top=math.max(open[x], close[x]), 
+             border_color=green, 
+             bgcolor=color.new(green, 90), 
+             extend=extend.none, 
+             border_width=1
+         )
+        array.unshift(boxesBullish, boxBullish)
+        lineBullish.unshift(line.new(bar_index, low[x], bar_index - x + 1, low[x], color = green, width = 3))
+        sup := true
+        array.unshift(sequence, store.new(1, x, close[x]))
+        pph := ph
+    else if ph > ppl and (lpt == lpt[1] ? ph > pph : true)
+        hn := bar_index - x
+        cppl := ppl
+
+        boxBearish = box.new(
+             left=bar_index, 
+             bottom=math.max(open[x], close[x]), 
+             right=bar_index - x + 1, 
+             top=high[x], 
+             border_color=color.new(red, 80), 
+             bgcolor=color.new(red, 80), 
+             extend=extend.none, 
+             border_width=1
+         ) 
+        
+        array.unshift(boxesBearish, boxBearish)
+        lineBearish.unshift(line.new(bar_index, high[x], bar_index - x + 1, high[x], color = red, width = 3))
+        res := true
+        array.unshift(sequence, store.new(-1, x, close[x]))
+        pph := ph
+
+
+if not na(pl)
+    lpt := -1
+    if na(pph)
+        ln := bar_index - x
+        cppl := pl
+
+        boxBearish = box.new(
+             left=bar_index, 
+             bottom=math.min(open[x], close[x]), 
+             right=bar_index - x + 1, 
+             top=math.max(open[x], close[x]), 
+             border_color=red, 
+             bgcolor=color.new(red, 90), 
+             extend=extend.none, 
+             border_width=1
+         )
+        array.unshift(boxesBearish, boxBearish)
+        lineBearish.unshift(line.new(bar_index, high[x], bar_index - x + 1, high[x], color = red, width = 3))
+        res := true
+        array.unshift(sequence, store.new(-1, x, close[x]))
+        ppl := pl
+    else if pl < pph and (lpt == lpt[1] ? pl < ppl : true)
+        ln := bar_index - x
+        cpph := pph
+
+        boxBullish = box.new(
+             left=bar_index, 
+             bottom=low[x], 
+             right=bar_index - x + 1, 
+             top=math.min(open[x], close[x]), 
+             border_color=color.new(green, 80), 
+             bgcolor=color.new(green, 80), 
+             extend=extend.none, 
+             border_width=1
+         )
+        array.unshift(boxesBullish, boxBullish)
+        lineBullish.unshift(line.new(bar_index, low[x], bar_index - x + 1, low[x], color = green, width = 3))
+        sup := true
+        array.unshift(sequence, store.new(1, x, close[x]))
+        ppl := pl
+
+if array.size(boxesBullish) > 500
+    boxToDelete = array.pop(boxesBullish)
+    box.delete(boxToDelete)
+
+
+if array.size(boxesBearish) > 500
+    boxToDelete = array.pop(boxesBearish)
+    box.delete(boxToDelete)
+
+
+if boxesBearish.size() > 0
+    qt = boxesBearish.size()
+    for i = qt - 1 to 0
+        if i < boxesBearish.size()
+            cL = boxesBearish.get(i)
+            yL = cL.get_top()
+            xL = cL.get_bottom()
+            left = cL.get_left()
+            if bar_index-left > max
+                boxesBearish.remove(i)
+                lineBearish.remove(i)
+            else
+                if (close > yL)
+                    boxesBearish.remove(i)
+                    lineBearish.remove(i)
+                else
+                    cL.set_right(bar_index + 1)
+                    lineBearish.get(i).set_x2(bar_index + 1)
+
+if boxesBullish.size() > 0
+    qt = boxesBullish.size()
+    for i = qt - 1 to 0
+        if i < boxesBullish.size()
+            cL = boxesBullish.get(i)
+            yL = cL.get_top()
+            xL = cL.get_bottom()
+            left = cL.get_left()
+            if bar_index-left > max
+                boxesBullish.remove(i)
+                lineBullish.remove(i)
+            else
+                if (close < xL)
+                    boxesBullish.remove(i)
+                    lineBullish.remove(i)
+                else
+                    cL.set_right(bar_index + 1)
+                    lineBullish.get(i).set_x2(bar_index + 1)
+
+
+alertcondition(sup, "New Bullish Zone Created", "A new bullish zone has formed.")
+alertcondition(res, "New Bearish Zone Created", "A new bearish zone has formed.")
+
+alertcondition(boxesBullish.size() < boxesBullish.size()[1], "Bullish Zone Invalidated", "A bullish zone was Invalidated")
+alertcondition(boxesBearish.size() < boxesBearish.size()[1], "Bearish Zone Invalidated", "A bearish zone was Invalidated")
+

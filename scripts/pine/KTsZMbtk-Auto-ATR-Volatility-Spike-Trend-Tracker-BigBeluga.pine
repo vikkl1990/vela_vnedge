@@ -1,0 +1,159 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Auto-ATR Volatility Spike & Trend Tracker [BigBeluga]", overlay=true, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+modeInput       = input.string("Auto ATR", title="Detection Mode", options=["Fixed %", "Auto ATR"], inline = "1", tooltip="Choose how spikes are calculated. 'Fixed %' uses a hard percentage move. 'Auto ATR' dynamically calculates spikes based on recent market volatility.")
+useWicksInput   = input.bool(false, title="Calculate From Wicks (High/Low)", tooltip="If enabled, spike detection and percentage changes are calculated using the full candle range (High to Low). If disabled, only the candle body (Open to Close) is used.")
+thresholdInput  = input.float(1.0, title="Fixed Spike Threshold (%)", minval=0.1, step=0.01, active = modeInput == "Fixed %", tooltip="The minimum percentage price change required to trigger a spike when using 'Fixed %' mode.") 
+atrMultInput    = input.float(2.0, title="ATR Multiplier", minval=0.1, step=0.1, active = modeInput == "Auto ATR", tooltip="Multiplier applied to the ATR to determine if a candle's total range qualifies as an abnormal spike.")
+
+atrLengthInput  = input.int(14, title="ATR Length (for Auto-Detection & Trailing)", minval=1, tooltip="The lookback period used to calculate the Average True Range (ATR) for volatility detection and trailing stop distances.")
+atrMultInput1   = input.float(3.0, title="Trailing ATR Multiplier", minval=0.5, step=0.1, tooltip="Determines how many ATRs away from the price your trailing stop-loss line will sit.")
+
+// Visibility Toggles
+showMidLine     = input.bool(true, title="Display Mid Level Dash Line", group="Visibility Settings", tooltip="Toggle to show or hide the horizontal dashed midline extending from the spike center.")
+showTrail       = input.bool(true, title="Display Trailing Stop & Fill", group="Visibility Settings", tooltip="Toggle to show or hide the trailing stop line and its background area color fill.")
+showSize        = input.bool(true, title="Display Size % Labels & Arrow Lines", group="Visibility Settings", tooltip="Toggle to show or hide the percentage text labels along with their surrounding indicator arrow lines.")
+
+// Color Customization
+bullColorInput  = input.color(color.rgb(245, 171, 12), title="Bullish Theme Color", tooltip="Color used for upward spikes, buy arrows, positive percentage text, and uptrend tracking elements.")
+bearColorInput  = input.color(color.rgb(20, 166, 250), title="Bearish Theme Color", tooltip="Color used for downward spikes, sell arrows, negative percentage text, and downtrend tracking elements.")
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Math tracking properties depending on wick toggle selection
+priceChange = useWicksInput ? (((high - low) / low) * 100) : (((close - open) / open) * 100)
+atr         = ta.atr(atrLengthInput)
+candleRange = useWicksInput ? (high - low) : (math.max(close, open) - math.min(close, open))
+
+// State persistence variables 
+var int trendState = 0 
+var float trailStop = na
+
+// Spike determination profiles
+isBigCandleUp   = modeInput == "Fixed %" ? (priceChange >= thresholdInput and close > open) : (candleRange > (atr * atrMultInput) and close > open)
+isBigCandleDown = modeInput == "Fixed %" ? (useWicksInput ? (priceChange >= thresholdInput and close < open) : (priceChange <= -thresholdInput)) : (candleRange > (atr * atrMultInput) and close < open)
+
+// Trigger restrictions (Locks execution while a trend state is currently dominant)
+upSpike   = isBigCandleUp and trendState != 1
+downSpike = isBigCandleDown and trendState != -1
+
+// Dashboard history variable persistence
+var int lastBullBar = na
+var float lastBullSize = na
+var float lastBullPrice = na
+
+var int lastBearBar = na
+var float lastBearSize = na
+var float lastBearPrice = na
+
+if upSpike
+    lastBullBar   := bar_index
+    lastBullSize  := priceChange
+    lastBullPrice := close
+
+if downSpike
+    lastBearBar   := bar_index
+    lastBearSize  := useWicksInput ? -priceChange : priceChange
+    lastBearPrice := close
+
+// Execution & System Tracking State Machine
+if upSpike and trendState <= 0
+    trendState := 1
+    trailStop  := low - atr * atrMultInput1
+
+if downSpike and trendState >= 0
+    trendState := -1
+    trailStop  := high + atr * atrMultInput1
+
+if trendState == 1
+    trailStop := math.max(trailStop, low - atr * atrMultInput1)
+    if close < trailStop
+        trendState := 0
+        trailStop  := na
+
+else if trendState == -1
+    trailStop := math.min(trailStop, high + atr * atrMultInput1)
+    if close > trailStop
+        trendState := 0
+        trailStop  := na
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Coordinate tracking variables for anchoring structural box extensions
+y_top    = useWicksInput ? high : math.max(open, close)
+y_bottom = useWicksInput ? low  : math.min(open, close)
+
+var line Level = na
+
+// Graphical Engine Pass: Upward Spikes
+if upSpike 
+    if showMidLine
+        Level := line.new(bar_index, math.avg(close, open), bar_index, math.avg(close, open), style = line.style_dashed, color = bullColorInput)
+    
+    if showSize
+        line.new(bar_index-1, y_top, bar_index-1, y_bottom, color=chart.fg_color, style = line.style_arrow_both)
+        line.new(bar_index-1, y_top, bar_index, y_top, color=chart.fg_color, style = line.style_dashed)
+        line.new(bar_index-1, y_bottom, bar_index, y_bottom, color=chart.fg_color, style = line.style_dashed)
+        label.new(bar_index-1, hl2, text=str.tostring(priceChange, "+#.##") + "%", color=color.new(bullColorInput, 100), textcolor=chart.fg_color, style=label.style_label_right)
+    
+    txt = "▲\n△"
+    label.new(bar_index, low - atr, text=txt, color=color.new(bullColorInput, 100), textcolor=bullColorInput, style=label.style_label_center, size=size.normal)
+
+// Graphical Engine Pass: Downward Spikes
+if downSpike
+    if showMidLine
+        Level := line.new(bar_index, math.avg(close, open), bar_index, math.avg(close, open), style = line.style_dashed, color = bearColorInput)
+
+    if showSize
+        line.new(bar_index-1, y_top, bar_index-1, y_bottom, color=chart.fg_color, style = line.style_arrow_both)    
+        line.new(bar_index-1, y_top, bar_index, y_top, color=chart.fg_color, style = line.style_dashed)
+        line.new(bar_index-1, y_bottom, bar_index, y_bottom, color=chart.fg_color, style = line.style_dashed)
+        label.new(bar_index-1, hl2, text=str.tostring(useWicksInput ? -priceChange : priceChange, "#.##") + "%", color=color.new(bearColorInput, 100), textcolor=chart.fg_color, style=label.style_label_right)
+    
+    txt = "▽\n▼"
+    label.new(bar_index, high+atr, text=txt, color=color.new(bearColorInput, 100), textcolor=bearColorInput, style=label.style_label_center, size=size.normal)
+
+// Dynamic lengthening calculation for midline
+if trendState != 0 and showMidLine
+    Level.set_x2(bar_index)
+
+// Trailing Protection Lines & Dynamic Colored Fills
+p_trail = plot(showTrail and trendState == trendState[1] ? trailStop : float(na), title="Trailing Stop", color=trendState == 1 ? bullColorInput : trendState == -1 ? bearColorInput : color.new(color.white, 100), style=plot.style_linebr, linewidth=2)
+p_price = plot(showTrail and trendState != 0 ? close : na, title="Price Reference for Fill", color=color.new(color.white, 100))
+
+fillColor = showTrail and trendState == 1 ? color.new(bullColorInput, 80) : showTrail and trendState == -1 ? color.new(bearColorInput, 80) : color.new(color.white, 100)
+fill(p_trail, p_price, close, trailStop, color(na), fillColor)
+
+// Primary Custom Candle Color Overwrites
+candleCol = isBigCandleUp ? bullColorInput : isBigCandleDown ? bearColorInput : color(na)
+plotcandle(open, high, low, close, title='Theme Overwrite Candles', color = candleCol, wickcolor=candleCol, bordercolor = candleCol)
+barcolor(candleCol)
+
+// Metrics Display Table Element Generation
+var table debugTable = table.new(position.top_right, 4, 3, bgcolor=color.new(color.black, 30), border_color=chart.bg_color, border_width=3)
+
+if barstate.islast
+    bullShift = bar_index - lastBullBar
+    bearShift = bar_index - lastBearBar
+
+    table.cell(debugTable, 0, 0, "Spike Type", text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 50))
+    table.cell(debugTable, 2, 0, "Size (%)",   text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 50))
+    table.cell(debugTable, 3, 0, "Price",      text_color=color.white, text_size=size.normal, bgcolor=color.new(color.gray, 50))
+
+    table.cell(debugTable, 0, 1, "Last Bullish", text_color=bullColorInput, text_size=size.normal, text_font_family=font.family_monospace)
+    table.cell(debugTable, 2, 1, na(lastBullSize) ? "-" : str.tostring(lastBullSize, "+#.##") + "%", text_color=bullColorInput, text_size=size.normal)
+    table.cell(debugTable, 3, 1, na(lastBullPrice) ? "-" : str.tostring(lastBullPrice, "#.##"), text_color=color.white, text_size=size.normal)
+
+    table.cell(debugTable, 0, 2, "Last Bearish", text_color=bearColorInput, text_size=size.normal, text_font_family=font.family_monospace)
+    table.cell(debugTable, 2, 2, na(lastBearSize) ? "-" : str.tostring(lastBearSize, "#.##") + "%", text_color=bearColorInput, text_size=size.normal)
+    table.cell(debugTable, 3, 2, na(lastBearPrice) ? "-" : str.tostring(lastBearPrice, "#.##"), text_color=color.white, text_size=size.normal)
+
+// }

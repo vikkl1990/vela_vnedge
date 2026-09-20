@@ -1,0 +1,95 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("AI Adaptive Money Flow Index (Clustering) [AlgoAlpha]", "AlgoAlpha - 🤖 AI MFI")
+
+src = input.source(hlc3, "MFI Source", group = "MFI Settings")
+len = input.int(14, "MFI length", minval = 1, group = "MFI Settings")
+length = input.int(300, "The Training Data Size", minval = 1, group = "K-means Clustering Settings")
+iterations = input.int(5, "How Many Iterations the k-Means Clustering Logic is Applied per Bar", minval = 1, group = "K-means Clustering Settings")
+overbought = input.float(80.0, "Initial Overbought Value", group = "K-means Clustering Settings")
+neutral = input.float(50.0, "Initial Neutral Value", group = "K-means Clustering Settings")
+oversold = input.float(20.0, "Initial Oversold Value", group = "K-means Clustering Settings")
+
+adj = input.bool(true, "Use Adjusted MFI", "Adjusts the MFI instead so that the Overbought, Oversold and Neutral levels stay fixed", group = "Appearance")
+mlt = input.float(1.0, "Numbers Distance Multiplier", tooltip = "Increase this to make the classification numbers appear further away from the oscillator plot", group = "Appearance")
+green = input.color(#00ffbb, "Up Color", group = "Appearance") //#00ffbb
+red = input.color(#ff1100, "Down Color", group = "Appearance") //#ff1100
+
+osc = ta.mfi(src, len)
+
+a = overbought
+b = neutral
+c = oversold
+
+var ob = array.new_float(1, overbought)
+var ne = array.new_float(1, neutral)
+var os = array.new_float(1, oversold)
+
+if nz(osc) > 0
+    for j = iterations to 1
+
+        ob.clear()
+        ne.clear()
+        os.clear()
+
+        for i = length to 0
+
+            if math.abs(osc[i] - b) < math.abs(osc[i] - a) and math.abs(osc[i] - b) < math.abs(osc[i] - c)
+                ne.push(osc[i])
+
+            if math.abs(osc[i] - a) < math.abs(osc[i] - b) and math.abs(osc[i] - a) < math.abs(osc[i] - c)
+                ob.push(osc[i])
+
+            if math.abs(osc[i] - c) < math.abs(osc[i] - a) and math.abs(osc[i] - c) < math.abs(osc[i] - b)
+                os.push(osc[i])
+        
+        a := array.avg(ob)
+        b := array.avg(ne)
+        c := array.avg(os)
+
+ne_new = array.avg(ne)
+ob_new = array.avg(ob)
+os_new = array.avg(os)
+
+positionBetweenBands = 100 * ((osc - os_new)/(ob_new - os_new))
+
+val = adj ? positionBetweenBands : osc
+
+st = ta.stdev(val, len)
+
+col = osc > ne_new ? color.new(green, 90) : color.new(red, 90)
+col1 = osc > ne_new ? color.new(green, 0) : color.new(red, 0)
+
+main = plot(val, color = col)
+
+mid = plot(adj ? neutral : ne_new, color = col)
+
+plot(adj ? 100 : ob_new, color =  color.from_gradient(osc, ne_new, adj ? 100 : ob_new, color.new(color.gray, 70), color.new(red, 0)), linewidth = 3)
+plot(adj ? 0 : os_new, color = color.from_gradient(osc, adj ? 0 : os_new, ne_new, color.new(green, 0), color.new(color.gray, 70)), linewidth = 3)
+
+plotchar(math.abs(osc - ne_new) < math.abs(osc - ob_new) and math.abs(osc - ne_new) < math.abs(osc - os_new) ? val + (osc > ne_new ? st*mlt : -st*mlt) : na, "Ranging Classification", "0", location.absolute, col1)
+plotchar(math.abs(osc - ob_new) < math.abs(osc - ne_new) and math.abs(osc - ob_new) < math.abs(osc - os_new) ? val + (osc > ne_new ? st*mlt : -st*mlt) : na, "Up-Trend Classification", "+", location.absolute, col1)
+plotchar(math.abs(osc - os_new) < math.abs(osc - ob_new) and math.abs(osc - os_new) < math.abs(osc - ne_new) ? val + (osc > ne_new ? st*mlt : -st*mlt) : na, "Down-Trend Classification", "-", location.absolute, col1)
+
+plotchar(ta.crossunder(osc, ob_new) ? (adj ? 100 : ob_new) + 10 : na, "Bearish Reversal", "▼", location.absolute, red, size = size.tiny)
+plotchar(ta.crossover(osc, os_new) ? (adj ? 0 : os_new) - 10 : na, "Bullish Reversal", "▲", location.absolute, green, size = size.tiny)
+
+fill(mid, main, color = col, title="Trend Fill")
+fill(mid, main, val, adj ? 50 : ne_new, color.new(chart.bg_color, 1000), osc > ne_new ? green : red)
+
+//Alerts
+alertcondition(ta.crossover(osc, ne_new), "Bullish Trend")
+alertcondition(ta.crossunder(osc, ne_new), "Bearish Trend")
+
+alertcondition(ta.crossover(osc, os_new), "Bullish Reversal")
+alertcondition(ta.crossunder(osc, ob_new), "Bearish Reversal")
+
+alertcondition(ta.crossover(osc, ob_new), "Overbought")
+alertcondition(ta.crossunder(osc, os_new), "Oversold")
+
+alertcondition(math.abs(osc - ne_new) < math.abs(osc - ob_new) and math.abs(osc - ne_new) < math.abs(osc - os_new), "MFI Classification Ranging")
+alertcondition(math.abs(osc - ob_new) < math.abs(osc - ne_new) and math.abs(osc - ob_new) < math.abs(osc - os_new), "MFI Classification Up-Trend")
+alertcondition(math.abs(osc - os_new) < math.abs(osc - ob_new) and math.abs(osc - os_new) < math.abs(osc - ne_new), "MFI Classification Down-Trend")
+

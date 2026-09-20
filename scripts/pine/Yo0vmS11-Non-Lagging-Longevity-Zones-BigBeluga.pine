@@ -1,0 +1,189 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Non-Lagging Longevity Zones [BigBeluga]", "Longevity Zones [BigBeluga]", overlay = true, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000)
+
+
+type level 
+    float top
+    float bot 
+    int start
+
+type drawing 
+    line top
+    line bot 
+    linefill fill
+    label lbl
+
+var upper = array.new<level>()
+var lower = array.new<level>()
+
+
+var lower_draw = array.new<drawing>()
+var upper_draw = array.new<drawing>()
+
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+len = input.int(25, "Length")
+col_upper = input.color(color.red, "", inline = "cc")
+col_lower = input.color(color.green, "", inline = "cc")
+labels_position = input.string("Root", "Labels Position", ["Root", "LastBar"]) == "Root"
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+h = ta.highest(len)
+l = ta.lowest(len)
+
+high_pivot = high[1] == h[1] and high < h
+low_pivot  = low[1] == l[1] and low > l
+
+atr = ta.atr(200)*0.5
+
+
+if last_bar_index - bar_index < 5000
+    if high_pivot
+
+        up = level.new(h, h-atr, bar_index-1)
+        upper.push(up)
+
+
+    if low_pivot
+
+        lw = level.new(l+atr, l, bar_index-1)
+        lower.push(lw)
+
+
+    if upper.size() > 10
+        upper.shift()
+
+    if lower.size() > 10
+        lower.shift()
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// PLOT UPPER ZONES
+if upper.size() > 0
+    for i in upper
+
+        top = i.top
+        bot = i.bot
+        strt = i.start
+
+        l_top = upper.last().top
+        l_bot = upper.last().bot
+
+
+        if high > top and bar_index > strt
+            upper.remove(upper.indexof(i))
+
+        if l_top < top and l_top > bot
+            upper.remove(upper.indexof(i))
+        if l_bot < top and l_bot > bot
+            upper.remove(upper.indexof(i))
+
+
+    if barstate.islast
+
+        if upper_draw.size() > 0
+
+            for i in upper_draw
+
+                line.delete(i.top)
+                line.delete(i.bot)
+                linefill.delete(i.fill)
+                label.delete(i.lbl)
+
+
+        for i in upper
+
+            top = i.top
+            bot = i.bot
+            start = i.start
+
+            f_start = upper.first().start
+
+            max_duration = last_bar_index - f_start
+
+            duration = last_bar_index - start
+
+            color_fill = color.from_gradient(duration, 0, max_duration, color.new(col_upper, 80), color.new(col_upper, 20))
+
+            l1 = line.new(start, top, bar_index, top, color = color(na))
+            l2 = line.new(start, bot, bar_index, bot, color = color(na))
+
+            fill = linefill.new(l1, l2, color = color_fill)
+
+            days_ = int(duration*(timeframe.in_seconds("")/60/60/24))
+            days = days_ >= 365 ? int(days_ / 365) : days_ >= 30 ? int(days_ / 30) : days_
+            marker = days_ >= 365 ? " Y" : days_ >= 30 ? " M" : " D"
+
+            labl = label.new(labels_position ? start : last_bar_index, labels_position ? top : math.avg(bot, top), str.tostring(days) + marker, style = labels_position ? label.style_label_down : label.style_label_left, textcolor = chart.fg_color, color = color(na))
+
+            upper_draw.push(drawing.new(l1, l2, fill, labl))
+
+// PLOT LOWER ZONES
+if lower.size() > 0
+    for i in lower
+
+        top = i.top
+        bot = i.bot
+        strt = i.start
+        l_top = lower.last().top
+        l_bot = lower.last().bot
+
+
+        if low < bot and bar_index > strt
+            lower.remove(lower.indexof(i))
+        if l_top < top and l_top > bot
+            lower.remove(lower.indexof(i))
+        if l_bot < top and l_bot > bot
+            lower.remove(lower.indexof(i))
+
+
+
+    if barstate.islast
+
+        if lower_draw.size() > 0
+
+            for i in lower_draw
+
+                line.delete(i.top)
+                line.delete(i.bot)
+                linefill.delete(i.fill)
+                label.delete(i.lbl)
+
+        for i in lower
+
+            top = i.top
+            bot = i.bot
+            start = i.start
+
+            f_start = lower.first().start
+
+            max_duration = last_bar_index - f_start
+            duration = last_bar_index- start
+
+
+            color_fill = color.from_gradient(duration, 0, max_duration, color.new(col_lower, 80), color.new(col_lower, 20))
+
+            l1 = line.new(start, top, bar_index, top, color = color(na))
+            l2 = line.new(start, bot, bar_index, bot, color = color(na))
+
+            fill = linefill.new(l1, l2, color = color_fill)
+
+            days_ = int(duration*(timeframe.in_seconds("")/60/60/24))
+            days = days_ >= 365 ? int(days_ / 365) : days_ >= 30 ? int(days_ / 30) : days_
+            marker = days_ >= 365 ? " Y" : days_ >= 30 ? " M" : " D"
+
+            labl = label.new(labels_position ? start : last_bar_index, labels_position ? bot : math.avg(bot, top), str.tostring(days) + marker, style = labels_position ? label.style_label_up : label.style_label_left, textcolor = chart.fg_color, color = color(na))
+
+            lower_draw.push(drawing.new(l1, l2, fill, labl))
+// }

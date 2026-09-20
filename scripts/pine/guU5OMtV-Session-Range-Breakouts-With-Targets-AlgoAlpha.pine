@@ -1,0 +1,138 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Session Range Breakouts With Targets [AlgoAlpha]", "AlgoAlpha - ⛓️‍💥Session Range", true, max_boxes_count = 500)
+
+zone_offset = input.int(0, 'UTC (+/-)', group = 'Session Settings')
+asia = input.session("0000-0900", "Asian Session", group = 'Session Settings')
+america = input.session("1300-2200", "American Session", group = 'Session Settings')
+europe = input.session("0700-1600", "European Session", group = 'Session Settings')
+oceana = input.session("2100-0600", "Oceanic Session", group = 'Session Settings')
+custom = input.session("1300-1700", "Custom Session", group = 'Session Settings')
+session = input.string("Asia", "Session Type", ["Asia", "America", "Europe", "Oceana", "Custom"], "The input to choose which session the indicator will run on", group = 'Session Settings')
+
+wait_before_draw = input.int(120, "Wait bars Before Drawing Range", tooltip = "How many bars to wait before determining the range high and lows, do note that loading the indicatoron different timeframes will give different range levels because it waits a different amount of time before drawing the range high and lows", group = "Breakout Settings")
+atrlen = input.int(12, "ATR Length", tooltip = "The ATR Length to calculate the volatility to determine the width of the zones", group = "Breakout Settings")
+mult = input.float(1.2, "Zone Width Multiplier", tooltip = "This can be used to further adjust the zone width, when increased can be used to filter out fakeouts", group = "Breakout Settings")
+baseTarget = input.float(7, "ATR Multiplier for Targets", tooltip = "The Multiplier to determine the targets for price to hit. A larger value will give targets further away but might result in price reaching those targets less often.", group = "Breakout Settings")
+
+red = input.color(#ff1100, "Down Color", group = "Appearance")
+green = input.color(#00ffbb, "Up Color", group = "Appearance")
+blue = input.color(color.blue, "Session Highlight Color", group = "Appearance")
+
+chosensession(type) =>
+    switch type
+        "Asia" => asia
+        "America" => america
+        "Europe" => europe
+        "Oceana" => oceana
+        "Custom" => custom
+
+t = time(timeframe.period, chosensession(session))
+
+isSession = time == t
+
+bgcolor(isSession ? color.new(blue, 90) : na)
+
+var boxes = array.new_box()
+hst = ta.highest(wait_before_draw)
+lst = ta.lowest(wait_before_draw)
+hindx = bar_index + ta.highestbars(wait_before_draw)
+lindx = bar_index + ta.lowestbars(wait_before_draw)
+volatility = ta.atr(atrlen)
+var frozen_volatility = 0.0
+var brokehigh = 0
+var brokelow = 0
+var uTP = 0
+var lTP = 0
+
+var counter = 0
+
+if isSession and not isSession[1]
+    counter += 1
+    while boxes.size() > 0
+        boxes.shift()
+    brokehigh := 0
+    brokelow := 0
+    uTP := 0
+    lTP := 0
+
+if ta.barssince(isSession and not isSession[1]) == wait_before_draw-1
+    counter += 1
+    frozen_volatility := volatility
+    boxes.unshift(box.new(bar_index - wait_before_draw, hst + volatility*mult, bar_index, hst, border_style = line.style_solid, border_color = color.new(red, 70), border_width = 1, bgcolor = color.new(red, 80)))
+    boxes.unshift(box.new(bar_index - wait_before_draw, lst, bar_index, lst - volatility*mult, border_style = line.style_solid, border_color = color.new(green, 70), border_width = 1, bgcolor = color.new(green, 80)))
+
+if not (isSession and not isSession[1]) and boxes.size() > 0 and counter%2 == 0
+    boxes.get(0).set_right(bar_index)
+    boxes.get(1).set_right(bar_index)
+
+if boxes.size() > 0
+    if close < boxes.get(0).get_bottom() and brokelow == 0
+        brokelow := 1
+    if close > boxes.get(1).get_top() and brokehigh == 0
+        brokehigh := 1   
+
+brokethehigh = brokehigh == 1
+brokethelow = brokelow == 1
+
+uptarget = boxes.size() > 0 ? boxes.get(1).get_top() + frozen_volatility * baseTarget : 0
+uptarget1 = boxes.size() > 0 ? boxes.get(1).get_top() + frozen_volatility * baseTarget * 2 : 0
+uptarget2 = boxes.size() > 0 ? boxes.get(1).get_top() + frozen_volatility * baseTarget * 3 : 0
+
+downtarget = boxes.size() > 0 ? boxes.get(0).get_bottom() - frozen_volatility * baseTarget : 0
+downtarget1 = boxes.size() > 0 ? boxes.get(0).get_bottom() - frozen_volatility * baseTarget * 2 : 0
+downtarget2 = boxes.size() > 0 ? boxes.get(0).get_bottom() - frozen_volatility * baseTarget * 3 : 0
+
+if ta.crossover(high, uptarget) and uTP < 1 and not (isSession and not isSession[1])
+    uTP += 1
+if ta.crossover(high, uptarget1) and uTP < 2 and not (isSession and not isSession[1])
+    uTP += 1
+if ta.crossover(high, uptarget2) and uTP < 3 and not (isSession and not isSession[1])
+    uTP += 1
+
+if ta.crossunder(low, downtarget) and lTP < 1 and not (isSession and not isSession[1])
+    lTP += 1
+if ta.crossunder(low, downtarget1) and lTP < 2 and not (isSession and not isSession[1])
+    lTP += 1
+if ta.crossunder(low, downtarget2) and lTP < 3 and not (isSession and not isSession[1])
+    lTP += 1
+
+
+plot(brokethehigh ? uptarget : na, "Bullish TP 1", color = color.new(green, 40), style = plot.style_linebr)
+plot(brokethehigh ? uptarget1 : na, "Bullish TP 2", color = color.new(green, 40), style = plot.style_linebr)
+plot(brokethehigh ? uptarget2 : na, "Bullish TP 3", color = color.new(green, 40), style = plot.style_linebr)
+
+plot(brokethelow ? downtarget : na, "Bearish TP 1", color = color.new(red, 40), style = plot.style_linebr)
+plot(brokethelow ? downtarget1 : na, "Bearish TP 2", color = color.new(red, 40), style = plot.style_linebr)
+plot(brokethelow ? downtarget2 : na, "Bearish TP 3", color = color.new(red, 40), style = plot.style_linebr)
+
+plotchar(brokehigh[1] == 0 and brokehigh == 1, "Bullish Breakout", "▲", location.belowbar, green, size = size.tiny)
+plotchar(brokelow[1] == 0 and brokelow == 1, "Bearish Breakout", "▼", location.abovebar, red, size = size.tiny)
+
+plotchar(uTP > uTP[1], "Take Profits from Buys", "X", location.abovebar, green, size = size.tiny)
+plotchar(lTP > lTP[1], "Take Profits from Sells", "X", location.belowbar, red, size = size.tiny)
+
+////////////////////ALERTS
+alertcondition(brokehigh[1] == 0 and brokehigh == 1, "Bullish Breakout")
+alertcondition(brokelow[1] == 0 and brokelow == 1, "Bearish Breakout")
+
+alertcondition((brokehigh[1] == 0 and brokehigh == 1) or (brokelow[1] == 0 and brokelow == 1), "Breakout (Bullish or Bearish)")
+
+alertcondition(ta.crossover(high, uptarget) and uTP < 1 and not (isSession and not isSession[1]), "Buy TP 1 Hit")
+alertcondition(ta.crossover(high, uptarget1) and uTP < 2 and not (isSession and not isSession[1]), "Buy TP 2 Hit")
+alertcondition(ta.crossover(high, uptarget2) and uTP < 3 and not (isSession and not isSession[1]), "Buy TP 3 Hit")
+
+alertcondition(ta.crossunder(low, downtarget) and lTP < 1 and not (isSession and not isSession[1]), "Sell TP 1 Hit")
+alertcondition(ta.crossunder(low, downtarget1) and lTP < 2 and not (isSession and not isSession[1]), "Sell TP 2 Hit")
+alertcondition(ta.crossunder(low, downtarget2) and lTP < 3 and not (isSession and not isSession[1]), "Sell TP 3 Hit")
+
+alertcondition(
+     (ta.crossover(high, uptarget) and uTP < 1 and not (isSession and not isSession[1])) or
+     (ta.crossover(high, uptarget1) and uTP < 2 and not (isSession and not isSession[1])) or
+     (ta.crossover(high, uptarget2) and uTP < 3 and not (isSession and not isSession[1])) or
+     (ta.crossunder(low, downtarget) and lTP < 1 and not (isSession and not isSession[1])) or
+     (ta.crossunder(low, downtarget1) and lTP < 2 and not (isSession and not isSession[1])) or
+     (ta.crossunder(low, downtarget2) and lTP < 3 and not (isSession and not isSession[1])),
+     "Take-Profit Hit (Any Direction)")

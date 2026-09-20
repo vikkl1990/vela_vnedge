@@ -1,0 +1,119 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Trend Flow Trail [AlgoAlpha]", shorttitle = "AlgoAlpha - Trend Flow", overlay = false)
+
+const string grpAlpha = "AlphaTrail Settings"
+const string grpMfi   = "Money Flow Settings"
+
+alphaLen  = input.int(33,  "AlphaTrail Length",      minval = 1,   group = grpAlpha, tooltip = "Look-back length for the Hull-MA basis used in AlphaTrail", display = display.data_window)
+alphaMult = input.float(3.3, "AlphaTrail Multiplier", minval = 0.1, step = 0.1, group = grpAlpha, tooltip = "Volatility multiplier applied to the AlphaTrail band spread", display = display.data_window)
+
+mfiLen       = input.int(14,     "MFI Length",   minval = 1, maxval = 2000, group = grpMfi, tooltip = "Number of bars used for Money Flow Index calculation", display = display.data_window)
+bullishColor = input.color(#00ffbb, "Bullish Color", group = grpMfi, tooltip = "Primary color for bullish visual elements", display = display.data_window)
+bearishColor = input.color(#ff1100, "Bearish Color", group = grpMfi, tooltip = "Primary color for bearish visual elements", display = display.data_window)
+
+alphatrail(len, mult) =>
+    basis  = ta.hma(close, len)
+    spread = ta.ema(high - low, len) * mult
+    upper  = basis + spread
+    lower  = basis - spread
+    prevLower = nz(lower[1])
+    prevUpper = nz(upper[1])
+    lower := lower > prevLower or close[1] < prevLower ? lower : prevLower
+    upper := upper < prevUpper or close[1] > prevUpper ? upper : prevUpper
+    int dir  = na
+    float trail = na
+    prevTrail = trail[1]
+    if na(prevTrail)
+        dir := 1
+    else if prevTrail == prevUpper
+        dir := close > upper ? -1 : 1
+    else
+        dir := close < lower ? 1 : -1
+    trail := dir == -1 ? lower : upper
+    [trail, dir]
+
+mf_raw(src, length) =>
+    float upper = math.sum(volume * (ta.change(src) <= 0.0 ? 0.0 : src), length)
+    float lower = math.sum(volume * (ta.change(src) >= 0.0 ? 0.0 : src), length)
+    100.0 - (100.0 / (1.0 + upper / lower))
+
+[alphaTrail, alphaDir] = alphatrail(alphaLen, alphaMult)
+
+src      = hlc3
+mfiRaw   = mf_raw(src, mfiLen)
+mfi      = ta.hma(mfiRaw, 7)
+
+ocAvg     = math.avg(open, close)
+
+ocAvgPlot = plot(ocAvg, title = "OC Avg (invisible)", display = display.none, force_overlay = true)
+
+a_plot    = plot(mfi, title = "Money Flow Index", color = color.from_gradient(mfi, 0, 100, bullishColor, bearishColor))
+plot(mfi, title = "MFI Highlight", color = color.new(color.from_gradient(mfi, 0, 100, bullishColor, bearishColor), mfi < 80 and mfi > 20 ? 80 : 0), linewidth = 5)
+
+hline(80,  title = "Overbought",  color = #787B86)
+hline(50,  title = "Middle Band", color = color.new(#787B86, 50))
+hline(20,  title = "Oversold",    color = #787B86)
+
+aBull     = plot(alphaDir < 0 ? alphaTrail : na, title = "AlphaTrail Bullish", color = bullishColor, style = plot.style_linebr, force_overlay = true)
+aBear     = plot(alphaDir > 0 ? alphaTrail : na, title = "AlphaTrail Bearish", color = bearishColor, style = plot.style_linebr, force_overlay = true)
+
+fill(aBull, ocAvgPlot, alphaDir < 0 ? alphaTrail : na, alphaDir < 0 ? ocAvg : na, color.new(bullishColor, 70), color.new(chart.bg_color, 90), title = "Bullish Trail Fill")
+fill(aBear, ocAvgPlot, alphaDir > 0 ? alphaTrail : na, alphaDir > 0 ? ocAvg : na, color.new(bearishColor, 70), color.new(chart.bg_color, 90), title = "Bearish Trail Fill")
+
+barCol = color(na)
+if alphaDir < 0
+    barCol := color.from_gradient(mfi, 20, 100, chart.bg_color, bullishColor)
+else if alphaDir > 0
+    barCol := color.from_gradient(mfi, 0, 80, bearishColor, chart.bg_color)
+barcolor(barCol, title = "Bar Colour")
+
+upperLevel = 80
+lowerLevel = 20
+
+tpUpper = ta.crossover(mfi, upperLevel) and alphaDir == -1
+tpLower = ta.crossunder(mfi, lowerLevel) and alphaDir == 1
+
+plotchar(tpUpper, char = "○", title = "TP Signal Upper", location = location.abovebar, color = bullishColor, size = size.tiny, offset = 0, force_overlay = true)
+plotchar(tpLower, char = "○", title = "TP Signal Lower", location = location.belowbar, color = bearishColor, size = size.tiny, offset = 0, force_overlay = true)
+
+alertcondition(tpUpper, title = "Exit Longs")
+alertcondition(tpLower, title = "Exit Shorts")
+
+alphaTrailBullishSwitch = ta.crossover(alphaDir, 0)
+alphaTrailBearishSwitch = ta.crossunder(alphaDir, 0)
+
+mfiOverbought = ta.crossover(mfi, upperLevel)
+mfiOversold = ta.crossunder(mfi, lowerLevel)
+
+mfiCrossUpMid = ta.crossover(mfi, 50)
+mfiCrossDownMid = ta.crossunder(mfi, 50)
+
+priceCrossAlphaTrailUp = ta.crossover(close, alphaTrail)
+priceCrossAlphaTrailDown = ta.crossunder(close, alphaTrail)
+
+mfiAbove90 = ta.crossover(mfi, 90)
+mfiBelow10 = ta.crossunder(mfi, 10)
+
+barRegimeBullish = ta.crossover(alphaDir, 0)
+barRegimeBearish = ta.crossunder(alphaDir, 0)
+
+alertcondition(alphaTrailBullishSwitch, title = "AlphaTrail Bullish Switch", message = "AlphaTrail direction switched to bullish")
+alertcondition(alphaTrailBearishSwitch, title = "AlphaTrail Bearish Switch", message = "AlphaTrail direction switched to bearish")
+
+alertcondition(mfiOverbought, title = "MFI Overbought", message = "MFI crossed into overbought zone")
+alertcondition(mfiOversold, title = "MFI Oversold", message = "MFI crossed into oversold zone")
+
+alertcondition(mfiCrossUpMid, title = "MFI Crossed Above 50", message = "MFI crossed above 50")
+alertcondition(mfiCrossDownMid, title = "MFI Crossed Below 50", message = "MFI crossed below 50")
+
+alertcondition(priceCrossAlphaTrailUp, title = "Price Crossed Above AlphaTrail", message = "Price crossed above AlphaTrail")
+alertcondition(priceCrossAlphaTrailDown, title = "Price Crossed Below AlphaTrail", message = "Price crossed below AlphaTrail")
+
+alertcondition(mfiAbove90, title = "MFI Above 90", message = "MFI crossed above 90 (extreme overbought)")
+alertcondition(mfiBelow10, title = "MFI Below 10", message = "MFI crossed below 10 (extreme oversold)")
+
+alertcondition(barRegimeBullish, title = "Bar Regime Bullish", message = "Bar color regime switched to bullish")
+alertcondition(barRegimeBearish, title = "Bar Regime Bearish", message = "Bar color regime switched to bearish")

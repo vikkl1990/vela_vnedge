@@ -1,0 +1,112 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator('Levels Strength Index [BigBeluga]', overlay = true, max_lines_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int length = input.int(20, 'Length')
+int transp = input.int(5, 'Levels Transparency', minval = 2, maxval = 10)
+string trend_col = input.string('Neutral', 'Price Color', ['Trend', 'Neutral', 'None'])
+color up_color = input.color(#17e05a, '', inline = 'col')
+color dn_color = input.color(#db621c, '', inline = 'col')
+float src = close
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+var level = array.new<float>(11)
+series int strength = 0
+series float Lower_band = ta.lowest(length)
+series float Upper_band = ta.highest(length)
+series float step = (Upper_band - Lower_band) / 10
+
+for i = 0 to 10 by 1
+    level.set(i, Lower_band + step * i)
+
+    float lvl = level.get(i)
+    bool cross_up = ta.crossover(src, lvl)
+    bool cross_dn = ta.crossunder(src, lvl)
+
+    if cross_up
+        strength := strength + 1
+        strength
+    if cross_dn
+        strength := strength - 1
+        strength
+
+series float price = barstate.islast ? level.get(strength) : close
+
+draw_label(level1, level2, src) =>
+    if barstate.islast
+        lvl = (level1 + level2) / 2
+        label.delete(label.new(bar_index + 1, lvl, src > level1 ? '▲' : '▼', textcolor = src > level1 ? up_color : dn_color, color = color(na), style = label.style_label_center)[1])
+
+col1 = src < level.get(1) ? color.new(dn_color, 100 - transp * 11) : color.new(up_color, 100 - transp * 1)
+col2 = src > level.get(1) ? color.new(up_color, 100 - transp * 2) : color.new(dn_color, 100 - transp * 10)
+col3 = src > level.get(2) ? color.new(up_color, 100 - transp * 3) : color.new(dn_color, 100 - transp * 9)
+col4 = src > level.get(3) ? color.new(up_color, 100 - transp * 4) : color.new(dn_color, 100 - transp * 8)
+col5 = src > level.get(4) ? color.new(up_color, 100 - transp * 5) : color.new(dn_color, 100 - transp * 7)
+col6 = src > level.get(5) ? color.new(up_color, 100 - transp * 6) : color.new(dn_color, 100 - transp * 6)
+col7 = src > level.get(6) ? color.new(up_color, 100 - transp * 7) : color.new(dn_color, 100 - transp * 5)
+col8 = src > level.get(7) ? color.new(up_color, 100 - transp * 8) : color.new(dn_color, 100 - transp * 4)
+col9 = src > level.get(8) ? color.new(up_color, 100 - transp * 9) : color.new(dn_color, 100 - transp * 3)
+col10 = src > level.get(9) ? color.new(up_color, 100 - transp * 10) : color.new(dn_color, 100 - transp * 2)
+col11 = src > level.get(10) ? color.new(up_color, 100 - transp * 11) : color.new(dn_color, 100 - transp * 1)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+color color = switch trend_col
+    'Trend' => color.from_gradient(strength, 4, 6, dn_color, up_color)
+    'Neutral' => chart.fg_color
+    'None' => color(na)
+
+disp = display.all
+p0 = plot(level.get(0), display = disp, color = col1)
+p1 = plot(level.get(1), display = disp, color = col2)
+p2 = plot(level.get(2), display = disp, color = col3)
+p3 = plot(level.get(3), display = disp, color = col4)
+p4 = plot(level.get(4), display = disp, color = col5)
+p5 = plot(level.get(5), display = disp, color = col6)
+p6 = plot(level.get(6), display = disp, color = col7)
+p7 = plot(level.get(7), display = disp, color = col8)
+p8 = plot(level.get(8), display = disp, color = col9)
+p9 = plot(level.get(9), display = disp, color = col10)
+p10 = plot(level.get(10), display = disp, color = col11)
+
+fill(p0, p1, col1)
+fill(p1, p2, col2)
+fill(p2, p3, col3)
+fill(p3, p4, col4)
+fill(p4, p5, col5)
+fill(p5, p6, col6)
+fill(p6, p7, col7)
+fill(p7, p8, col8)
+fill(p8, p9, col9)
+fill(p9, p10, col10)
+
+if barstate.islast
+    color col_grad = strength > 5 ? up_color : dn_color
+    float level_ = level.get(strength)
+    float stren = strength * 10
+
+    draw_label(level.get(0), level.get(1), src)
+    draw_label(level.get(1), level.get(2), src)
+    draw_label(level.get(2), level.get(3), src)
+    draw_label(level.get(3), level.get(4), src)
+    draw_label(level.get(4), level.get(5), src)
+    draw_label(level.get(5), level.get(6), src)
+    draw_label(level.get(6), level.get(7), src)
+    draw_label(level.get(7), level.get(8), src)
+    draw_label(level.get(8), level.get(9), src)
+    draw_label(level.get(9), level.get(10), src)
+
+    label.delete(label.new(bar_index + 1, level_, str.tostring(100 - stren, format.percent) + '▼ | ' + str.tostring(stren, format.percent) + '▲', color = color.new(col_grad, 50), style = label.style_label_left, textcolor = col_grad)[1])
+    line.delete(line.new(bar_index, level_, bar_index + 1, level_, color = color.new(col_grad, 50))[1])
+
+plot(price, color = color, linewidth = 3)
+// }

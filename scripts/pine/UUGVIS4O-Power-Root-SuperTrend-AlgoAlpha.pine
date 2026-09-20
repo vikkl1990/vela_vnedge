@@ -1,0 +1,151 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Power Root SuperTrend [AlgoAlpha]", "AlgoAlpha - Power Root", true, max_lines_count = 500)
+import TradingView/ta/8
+
+atrMult = input.float(4.5, "Factor")
+atrlen = input.int(12, "ATR Length")
+rsmlen = input.int(3, "Root-Mean-Square Length")
+tplen = input.int(14, "RSI Take-Profit Length")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance")
+
+// SuperTrend Function
+superTrendCalc(multiplier, atrLength, source) =>
+    atrValue1 = ta.atr(atrLength)
+    upperLevel = source + multiplier * atrValue1
+    lowerLevel = source - multiplier * atrValue1
+    previousLowerLevel = nz(lowerLevel[1])
+    previousUpperLevel = nz(upperLevel[1])
+    // Ensure continuity of lower and upper bands
+    lowerLevel := lowerLevel > previousLowerLevel or source[1] < previousLowerLevel ? lowerLevel : previousLowerLevel
+    upperLevel := upperLevel < previousUpperLevel or source[1] > previousUpperLevel ? upperLevel : previousUpperLevel
+    // Determine direction and SuperTrend
+    int trendDirection = na
+    float trendValue = na
+    previousTrend = trendValue[1]
+    // Initialize direction
+    if na(atrValue1[1])
+        trendDirection := 1
+    else if previousTrend == previousUpperLevel
+        trendDirection := source > upperLevel ? -1 : 1
+    else
+        trendDirection := source < lowerLevel ? 1 : -1
+    // Set SuperTrend value based on direction
+    trendValue := trendDirection == -1 ? lowerLevel : upperLevel
+    [trendValue, trendDirection]
+[superTrendValue, trendDirection] = superTrendCalc(atrMult, atrlen, ta.rms(close, rsmlen))
+
+dist = math.abs(close-superTrendValue)
+
+var chg = 0.0
+var tp1 = 0.0
+var tp2 = 0.0
+var tp3 = 0.0
+var tp4 = 0.0
+var tp5 = 0.0
+var tp6 = 0.0
+var tp7 = 0.0
+
+lvlCol = trendDirection > 0 ? red : green
+
+var keys = array.new_line()
+
+var printedtp1 = 0
+var printedtp2 = 0
+var printedtp3 = 0
+var printedtp4 = 0
+var printedtp5 = 0
+var printedtp6 = 0
+var printedtp7 = 0
+
+if ta.cross(trendDirection, 0)
+    keys.clear()
+    printedtp1 := 0
+    printedtp2 := 0
+    printedtp3 := 0
+    printedtp4 := 0
+    printedtp5 := 0
+    printedtp6 := 0
+    printedtp7 := 0
+    chg := math.abs(superTrendValue-superTrendValue[1])
+    tp1 := superTrendValue[1] + (trendDirection > 0 ? -chg : chg)
+    tp2 := superTrendValue[1] + (trendDirection > 0 ? -chg * 2 : chg * 2)
+    tp3 := superTrendValue[1] + (trendDirection > 0 ? -chg * 3 : chg * 3)
+    tp4 := superTrendValue[1] + (trendDirection > 0 ? -chg * 4 : chg * 4)
+    tp5 := superTrendValue[1] + (trendDirection > 0 ? -chg * 5 : chg * 5)
+    tp6 := superTrendValue[1] + (trendDirection > 0 ? -chg * 6 : chg * 6)
+    tp7 := superTrendValue[1] + (trendDirection > 0 ? -chg * 7 : chg * 7)
+    keys.push(line.new(bar_index[1], tp1, bar_index, tp1, color = lvlCol, width = 2))
+    printedtp1 := 1
+
+tp = ta.crossunder(ta.rsi(dist, tplen), 60)
+
+extreme = trendDirection > 0 ? low : high
+
+extreme_tp1_dist = math.abs(extreme - tp1)
+extreme_tp2_dist = math.abs(extreme - tp2)
+extreme_tp3_dist = math.abs(extreme - tp3)
+extreme_tp4_dist = math.abs(extreme - tp4)
+extreme_tp5_dist = math.abs(extreme - tp5)
+extreme_tp6_dist = math.abs(extreme - tp6)
+extreme_tp7_dist = math.abs(extreme - tp7)
+
+p = plot(superTrendValue, color = trendDirection > 0 ? color.new(red, 70) : color.new(green, 70))
+upTrend = plot(close > superTrendValue ? superTrendValue : na, color = color.new(green, 70), style = plot.style_linebr) //, force_overlay = true
+downTrend = plot(close < superTrendValue ? superTrendValue : na, color = color.new(red, 70), style = plot.style_linebr, force_overlay = false) //, force_overlay = true
+bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle",display = display.none)
+
+fill(bodyMiddle, upTrend, (open + close) / 2, superTrendValue, color.new(green, 95), color.new(green, 70))
+fill(bodyMiddle, downTrend, superTrendValue, (open + close) / 2, color.new(red, 70), color.new(red, 95))
+
+plotchar(tp and trendDirection > 0, "RSI-Based Shorts TP", "X", location.belowbar, red, size = size.tiny)
+plotchar(tp and trendDirection < 0, "RSI-Based Longs TP", "X", location.abovebar, green, size = size.tiny)
+
+if printedtp2 == 0 and extreme_tp2_dist < extreme_tp1_dist
+    keys.push(line.new(bar_index[1], tp2, bar_index, tp2, color = lvlCol, width = 2))
+    printedtp2 := 1
+
+if printedtp3 == 0 and extreme_tp3_dist < extreme_tp2_dist
+    keys.push(line.new(bar_index[1], tp3, bar_index, tp3, color = lvlCol, width = 2))
+    printedtp3 := 1
+
+if printedtp4 == 0 and extreme_tp4_dist < extreme_tp3_dist
+    keys.push(line.new(bar_index[1], tp4, bar_index, tp4, color = lvlCol, width = 2))
+    printedtp4 := 1
+
+if printedtp5 == 0 and extreme_tp5_dist < extreme_tp4_dist
+    keys.push(line.new(bar_index[1], tp5, bar_index, tp5, color = lvlCol, width = 2))
+    printedtp5 := 1
+
+if printedtp6 == 0 and extreme_tp6_dist < extreme_tp5_dist
+    keys.push(line.new(bar_index[1], tp6, bar_index, tp6, color = lvlCol, width = 2))
+    printedtp6 := 1
+
+if printedtp7 == 0 and extreme_tp7_dist < extreme_tp6_dist
+    keys.push(line.new(bar_index[1], tp7, bar_index, tp7, color = lvlCol, width = 2))
+    printedtp7 := 1
+
+
+if keys.size() > 0
+    aSZ = keys.size()
+    for i = aSZ - 1 to 0
+        keys.get(i).set_x2(bar_index)
+
+
+// Alert when SuperTrend changes direction
+alertcondition(ta.cross(trendDirection, 0), title="SuperTrend Direction Change", message="SuperTrend has changed direction")
+
+// Alert when each TP line is drawn
+alertcondition(printedtp1 == 1, title="TP1 Line Drawn", message="TP1 line has been drawn")
+alertcondition(printedtp2 == 1, title="TP2 Line Drawn", message="TP2 line has been drawn")
+alertcondition(printedtp3 == 1, title="TP3 Line Drawn", message="TP3 line has been drawn")
+alertcondition(printedtp4 == 1, title="TP4 Line Drawn", message="TP4 line has been drawn")
+alertcondition(printedtp5 == 1, title="TP5 Line Drawn", message="TP5 line has been drawn")
+alertcondition(printedtp6 == 1, title="TP6 Line Drawn", message="TP6 line has been drawn")
+alertcondition(printedtp7 == 1, title="TP7 Line Drawn", message="TP7 line has been drawn")
+
+// Alert for crossing under RSI
+alertcondition(tp, title="Take-Profit Condition", message="Take-Profit condition met")

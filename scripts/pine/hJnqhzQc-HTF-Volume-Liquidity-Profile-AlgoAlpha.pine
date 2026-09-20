@@ -1,0 +1,194 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("HTF Volume Liquidity Profile [AlgoAlpha]", "AlgoAlpha - HTF Volume Liquidity", overlay = true, max_boxes_count = 500, max_labels_count = 500, behind_chart = true)
+tf = input.timeframe("1D", "Higher TimeFrame", group = "Main Settings", tooltip = "The higher timeframe used to build each heatmap block. This should be higher than the chart timeframe.")
+res = input.int(30, "Profile Resolution", minval = 2, maxval = 200, group = "Main Settings", tooltip = "Number of vertical price segments in each interval heatmap. Higher values add detail but increase object updates.")
+showHeatmap = input.bool(true, "Show Heatmap", group = "Appearance", tooltip = "Enable or disable the main stacked heatmap boxes.")
+showMiniBoxes = input.bool(true, "Show Mini Delta Bars", group = "Appearance", tooltip = "Enable or disable the inner positive/negative mini boxes.")
+green = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color used for bullish visuals and positive net-volume profile segments.")
+red   = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color used for bearish visuals and negative net-volume profile segments.")
+
+new = timeframe.change(tf)
+
+profileCalculation(start_index, end_index, res, scale, top_truncation, bottom_truncation) =>
+    top_boundaries = array.new_float(res)
+    bottom_boundaries = array.new_float(res)
+    binlen = array.new_float(res)
+    bintype = array.new_float(res)
+    highs = array.new_float()
+    lows = array.new_float()
+    volumes = array.new_float()
+    dirs = array.new_int()
+
+    for i = bar_index - start_index to bar_index - end_index
+        highs.push(high[i])
+        lows.push(low[i])
+        volumes.push(volume[i])
+        dirs.push(close[i] > open[i] ? 1 : -1)
+
+    maxx = array.max(highs)
+    minn = array.min(lows)
+    size_ = array.size(highs)
+
+    poc = 0.0
+
+    if not na(top_truncation)
+        maxx := math.min(maxx, top_truncation)
+    if not na(bottom_truncation)
+        minn := math.max(minn, bottom_truncation)
+
+    if size_ > 0 and maxx > minn
+        step = (maxx - minn) / res
+        granularity = res
+        for i = 0 to granularity - 1
+            bin_size = 0.0
+            bin_signed = 0.0
+            bottom = minn + (i * step)
+            top = minn + ((i + 1) * step)
+            bottom_boundaries.insert(i, bottom)
+            top_boundaries.insert(i, top)
+            for j = 0 to array.size(highs) - 1
+                candle_above_hbar = lows.get(j) > top
+                candle_below_hbar = highs.get(j) < bottom
+                is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+                if is_candle_in_bucket
+                    v = volumes.get(j)
+                    bin_size += v
+                    bin_signed += v * dirs.get(j)
+            array.insert(binlen, i, bin_size)
+            array.insert(bintype, i, bin_signed)
+        boc = binlen.max()
+        boci = binlen.indexof(boc) > 0 ? binlen.indexof(boc) : 0
+        poc := math.avg(top_boundaries.get(boci), bottom_boundaries.get(boci))
+
+    [top_boundaries, bottom_boundaries, binlen, bintype, poc]
+
+formatVolume(vol) =>
+    str.lower(str.tostring(math.abs(vol), format.volume))
+
+var heatmapBoxes = array.new_box()
+var positiveMiniBoxes = array.new_box()
+var negativeMiniBoxes = array.new_box()
+var sentimentLabels = array.new_label()
+var label activeSentimentLabel = na
+var int intervalStartBar = na
+
+if na(intervalStartBar) or new
+    intervalStartBar := bar_index
+    if array.size(heatmapBoxes) > 0
+        array.clear(heatmapBoxes)
+    if array.size(positiveMiniBoxes) > 0
+        array.clear(positiveMiniBoxes)
+    if array.size(negativeMiniBoxes) > 0
+        array.clear(negativeMiniBoxes)
+    segmentHeight = (high - low) / res
+    for i = 0 to res - 1
+        segTop = high - (segmentHeight * i)
+        segBottom = high - (segmentHeight * (i + 1))
+        heatBg = showHeatmap ? color.new(chart.fg_color, 100) : na
+        heatBorder = showHeatmap ? color.new(chart.fg_color, 70) : na
+        b = box.new(intervalStartBar, segTop, bar_index, segBottom, border_color = heatBorder, bgcolor = heatBg)
+        array.push(heatmapBoxes, b)
+        segmentMid = math.avg(segTop, segBottom)
+        posBg = showMiniBoxes ? color.new(green, 60) : na
+        negBg = showMiniBoxes ? color.new(red, 60) : na
+        posMini = box.new(intervalStartBar, segTop, bar_index, segmentMid, border_color = na, bgcolor = posBg)
+        negMini = box.new(intervalStartBar, segmentMid, bar_index, segBottom, border_color = na, bgcolor = negBg)
+        array.push(positiveMiniBoxes, posMini)
+        array.push(negativeMiniBoxes, negMini)
+    activeSentimentLabel := label.new(intervalStartBar, low, "", style = label.style_label_up, color = chart.bg_color, textcolor = chart.fg_color, size = size.small, textalign = text.align_left)
+    array.push(sentimentLabels, activeSentimentLabel)
+
+barsInInterval = bar_index - intervalStartBar + 1
+htfHigh = ta.highest(high, barsInInterval)
+htfLow = ta.lowest(low, barsInInterval)
+
+[top_boundaries, bottom_boundaries, binlen, bintype, _] = profileCalculation(intervalStartBar, bar_index, res, 0, htfHigh, htfLow)
+
+maxBinVolume = array.size(binlen) > 0 ? array.max(binlen) : 0.0
+if array.size(heatmapBoxes) > 0 and array.size(positiveMiniBoxes) > 0 and array.size(negativeMiniBoxes) > 0 and array.size(top_boundaries) > 0 and array.size(bottom_boundaries) > 0 and array.size(binlen) > 0 and array.size(bintype) > 0
+    drawCount = math.min(res, math.min(array.size(heatmapBoxes), math.min(array.size(positiveMiniBoxes), math.min(array.size(negativeMiniBoxes), math.min(array.size(top_boundaries), math.min(array.size(bottom_boundaries), math.min(array.size(binlen), array.size(bintype))))))))
+    if drawCount > 0
+        totalVolume = 0.0
+        netVolume = 0.0
+        curIdx = int(na)
+        maxMiniVolume = 0.0
+        for i = 0 to drawCount - 1
+            revIdx = drawCount - 1 - i
+            totalVolSeg = math.abs(array.get(binlen, revIdx))
+            signedVolSeg = array.get(bintype, revIdx)
+            totalVolume += totalVolSeg
+            netVolume += signedVolSeg
+            posVolSeg = math.max((totalVolSeg + signedVolSeg) / 2.0, 0.0)
+            negVolSeg = math.max((totalVolSeg - signedVolSeg) / 2.0, 0.0)
+            maxMiniVolume := math.max(maxMiniVolume, math.max(posVolSeg, negVolSeg))
+            segTopScan = array.get(top_boundaries, revIdx)
+            segBottomScan = array.get(bottom_boundaries, revIdx)
+            if na(curIdx) and close <= segTopScan and close >= segBottomScan
+                curIdx := revIdx
+
+        for i = 0 to drawCount - 1
+            revIdx = drawCount - 1 - i
+            segTop_ = array.get(top_boundaries, revIdx)
+            segBottom_ = array.get(bottom_boundaries, revIdx)
+            segVolume = math.abs(array.get(binlen, revIdx))
+            segDirectionalVolume = array.get(bintype, revIdx)
+            posVol = math.max((segVolume + segDirectionalVolume) / 2.0, 0.0)
+            negVol = math.max((segVolume - segDirectionalVolume) / 2.0, 0.0)
+            norm = maxBinVolume > 0 ? segVolume / maxBinVolume : 0.0
+            // Keep base heatmap intentionally faint so inner mini-boxes remain readable.
+            transp = 70 + int(math.round((1.0 - math.min(norm, 1.0)) * 25.0))
+            baseColor = segDirectionalVolume > 0 ? green : segDirectionalVolume < 0 ? red : chart.fg_color
+            b = array.get(heatmapBoxes, i)
+            box.set_left(b, intervalStartBar)
+            box.set_right(b, bar_index)
+            box.set_top(b, segTop_)
+            box.set_bottom(b, segBottom_)
+            box.set_bgcolor(b, showHeatmap ? color.new(baseColor, transp) : na)
+            box.set_border_color(b, showHeatmap ? color.new(baseColor, math.min(transp + 10, 100)) : na)
+
+            rightX = bar_index
+            leftX = intervalStartBar
+            midX = int(math.round((leftX + rightX) / 2.0))
+            halfWidth = math.max(rightX - midX, 0)
+            posLen = maxMiniVolume > 0 ? int(math.round((posVol / maxMiniVolume) * halfWidth)) : 0
+            negLen = maxMiniVolume > 0 ? int(math.round((negVol / maxMiniVolume) * halfWidth)) : 0
+            posLeft = rightX - posLen
+            negLeft = rightX - negLen
+            segMidY = math.avg(segTop_, segBottom_)
+
+            posMiniBox = array.get(positiveMiniBoxes, i)
+            box.set_left(posMiniBox, posLeft)
+            box.set_right(posMiniBox, rightX)
+            box.set_top(posMiniBox, segTop_)
+            box.set_bottom(posMiniBox, segMidY)
+            box.set_bgcolor(posMiniBox, showMiniBoxes ? color.new(green, 20) : na)
+            box.set_border_color(posMiniBox, showMiniBoxes ? color.new(green, 40) : na)
+
+            negMiniBox = array.get(negativeMiniBoxes, i)
+            box.set_left(negMiniBox, negLeft)
+            box.set_right(negMiniBox, rightX)
+            box.set_top(negMiniBox, segMidY)
+            box.set_bottom(negMiniBox, segBottom_)
+            box.set_bgcolor(negMiniBox, showMiniBoxes ? color.new(red, 20) : na)
+            box.set_border_color(negMiniBox, showMiniBoxes ? color.new(red, 40) : na)
+
+        upVolume = math.max((totalVolume + netVolume) / 2.0, 0.0)
+        downVolume = math.max((totalVolume - netVolume) / 2.0, 0.0)
+        deltaVolume = upVolume - downVolume
+        isBullish = netVolume >= 0
+        sentimentText = isBullish ? "Bullish" : "Bearish"
+        sentimentColor = isBullish ? green : red
+        signDelta = deltaVolume >= 0 ? "+" : "-"
+        labelText = "Sentiment: " + sentimentText + " \n▲ " + formatVolume(upVolume) + " | ▼ " + formatVolume(downVolume) + " | △ " + signDelta + formatVolume(deltaVolume)
+        rangeNow = math.max(htfHigh - htfLow, syminfo.mintick)
+        labelY = htfLow - (rangeNow * 0.08)
+        labelX = int(math.round((intervalStartBar + bar_index) / 2.0))
+        if not na(activeSentimentLabel)
+            label.set_x(activeSentimentLabel, labelX)
+            label.set_y(activeSentimentLabel, labelY)
+            label.set_text(activeSentimentLabel, labelText)
+            label.set_textcolor(activeSentimentLabel, sentimentColor)
+            label.set_color(activeSentimentLabel, chart.bg_color)

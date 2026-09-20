@@ -1,0 +1,164 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Price Action Fractal Forecasts [AlgoAlpha]", shorttitle = "AlgoAlpha - 🔮 Fractal Forecasts", overlay = true, max_bars_back = 4000, max_lines_count = 500)
+
+src = input.source(close, "Data Series")
+len = input.int(200, "Training Data", tooltip = "The total data lookback of the indicator, the script won't use data outside of this window")
+leng = input.int(70, "Reference Length", tooltip = "How many most recent bars should the script use as reference to find similar data in the training data. Can't be more than half of the training data")
+length = input.int(60, "Forecast Length", minval = 1, maxval = 500, tooltip = "How many bars into the future should the forecast be. Can't be more than the reference length or 500")
+mult = input.float(4.0, "Deviation Cone Multiplier")
+typ = input.string("Repetitive", "Forecast Type", ["Anticipatory", "Repetitive"], "Anticipatory mode will use data that comes after the 'Most Similar Data' window as the forecast while Repetitive mode will use data wihtin the 'Most Similar Data' window as the forecast")
+dirtyp = input.string("Mean", "Forecast Direction Type", ["End-Point Relative to Start-Point", "Mean"], "'End-Point Relative to Start-Point' mode will determine the forecast direction by comparing the furthest forecasted price to the current price while 'Mean' mode will show direction based on whether the mean(average) of all the forecasted prices are greater or lesser than the current price")
+divcone = input.bool(true, "Enable Forecast Deviation Cone")
+green = input.color(#00ffbb, "Up Color")
+red = input.color(#ff0000, "Down Color")
+refcol = input.color(color.blue, "Reference Data Color")
+simcol = input.color(#ff9800, "Most Similar Data Color")
+forcol = input.color(#ffeb3b, "Forecasted Data Color")
+var c = array.new_float()
+var index = array.new_int()
+
+if leng > (math.floor(len/2.0))
+    runtime.error("'Reference Length' cannot be more than half of 'Training Data'")
+if length > leng
+    runtime.error("'Forecast Length' cannot be more than 'Reference Length'")
+
+c.clear()
+index.clear()
+
+for i = leng to len - leng
+    c.push(ta.correlation(src, src[i], leng))
+    index.push(i)
+
+c1 = c.indexof(c.max())
+similarBarsBack = index.get(c1<0 ? 0 : c1)
+
+var t = array.new_box() //total training Data
+var r = array.new_box() //Reference data
+var s = array.new_box() //most similar data
+var p = array.new_box() //Forecasted data
+var l = array.new_line()//Line memory
+var d = array.new_line()//deviation cone memory
+var f = array.new_linefill()//deviation cone fill memory
+
+while t.size() > 0
+    t.shift().delete()
+while r.size() > 0
+    r.shift().delete()
+while s.size() > 0
+    s.shift().delete()
+while p.size() > 0
+    p.shift().delete()
+while l.size() > 0
+    l.shift().delete()
+while d.size() > 0
+    d.shift().delete()
+while f.size() > 0
+    f.shift().delete()
+
+ps = math.sum(src, length)
+
+highest_range(int left_bars_back, int right_bars_back) =>
+    highs = array.new_float()
+    for i = math.max(left_bars_back, 0) to right_bars_back
+        highs.push(high[i])
+    highs.max()
+
+lowest_range(int left_bars_back, int right_bars_back) =>
+    lows = array.new_float()
+    for i = math.max(left_bars_back, 0) to right_bars_back
+        lows.push(low[i])
+        lows.min()
+
+ftype(type) =>
+    switch type
+        "Anticipatory" => (similarBarsBack-length)
+        "Repetitive" => (similarBarsBack+leng-length)
+ftypediff(type) =>
+    switch type
+        "Anticipatory" => dirtyp == "End-Point Relative to Start-Point" ? src[(similarBarsBack-length)] - src[(similarBarsBack)] : ps[(similarBarsBack-length)]/length - src[(similarBarsBack)]
+        "Repetitive" => dirtyp == "End-Point Relative to Start-Point" ? src[(similarBarsBack+leng-length)] - src[(similarBarsBack+leng)] : ps[(similarBarsBack+leng-length)]/length - src[(similarBarsBack+leng)]
+ftypelim(type) =>
+    switch type
+        "Anticipatory" => length
+        "Repetitive" => leng
+ftypeleft(type) =>
+    switch type
+        "Anticipatory" => bar_index-similarBarsBack
+        "Repetitive" => bar_index-similarBarsBack-leng
+ftyperight(type) =>
+    switch type
+        "Anticipatory" => bar_index-similarBarsBack+length
+        "Repetitive" => bar_index-similarBarsBack-leng+length
+
+t.push(box.new(bar_index-len, ta.highest(len), bar_index, ta.lowest(len), color.new(color.gray, 40), 1, line.style_solid, extend.none, bgcolor = color.new(color.gray, 75), text = "Total Training Data", text_size = size.tiny, text_color = color.gray, text_halign =  text.align_center, text_valign = text.align_top))
+r.push(box.new(bar_index-leng, highest_range(leng, 0), bar_index, lowest_range(leng, 0), color.new(refcol, 40), 1, line.style_solid, extend.none, bgcolor = color.new(refcol, 75), text = "Reference Data", text_size = size.tiny, text_color = refcol, text_halign =  text.align_center, text_valign = text.align_top))
+s.push(box.new(bar_index-similarBarsBack-leng, highest_range(similarBarsBack+leng, similarBarsBack), bar_index-similarBarsBack, lowest_range(similarBarsBack+leng, similarBarsBack), color.new(simcol, 40), 1, line.style_solid, extend.none, bgcolor = color.new(simcol, 75), text = "Most Similar Data", text_size = size.tiny, text_color = simcol, text_halign =  text.align_center, text_valign = text.align_top))
+p.push(box.new(ftypeleft(typ), highest_range(bar_index-ftypeleft(typ), bar_index-ftyperight(typ)), ftyperight(typ), lowest_range(bar_index-ftypeleft(typ), bar_index-ftyperight(typ)), color.new(forcol, 40), 1, line.style_solid, extend.none, bgcolor = color.new(forcol, 75), text = "Forecasted Data", text_size = size.tiny, text_color = forcol, text_halign =  text.align_center, text_valign = text.align_bottom))
+
+// Calculate the forecast based on the historical period identified
+
+forecastPrices = array.new_float(length)
+diff = ftypediff(typ)
+
+// Loop to fill the forecastPrices based on historical data
+for i = 0 to length
+    array.push(forecastPrices, src[ftype(typ) + i])
+
+
+// Drawing forecast lines
+col = diff > 0 ? green : red
+if bar_index > similarBarsBack
+    for i = 0 to array.size(forecastPrices) - 1
+        val = math.max(i-length, 0)
+        if i < array.size(forecastPrices) - 1
+            l.push(line.new(x1 = bar_index[val]+length, y1 = array.get(forecastPrices, i)+(src-forecastPrices.last()), x2 = bar_index[val + 1]+length, y2 = array.get(forecastPrices, i + 1)+(src-forecastPrices.last()), width = 1, color = col))
+
+upper = (forecastPrices.get(length)+(src-forecastPrices.last())) + src*(forecastPrices.stdev(false)/forecastPrices.avg())*mult
+lower = (forecastPrices.get(length)+(src-forecastPrices.last())) - src*(forecastPrices.stdev(false)/forecastPrices.avg())*mult
+
+if divcone
+    d.push(line.new(x1 = bar_index, y1 = src, x2 = bar_index+length, y2 = upper, width = 1, color = forcol, extend = extend.right))
+    d.push(line.new(x1 = bar_index, y1 = src, x2 = bar_index+length, y2 = lower, width = 1, color = forcol, extend = extend.right))
+    f.push(linefill.new(d.first(), d.last(), color.new(forcol, 90)))
+
+
+
+
+var data_table = table.new(position=position.bottom_right, columns=2, rows=8, bgcolor=color.new(#000000, 10), border_width=1, border_color = #ffffff, frame_color = #ffffff, frame_width = 1)
+
+table.cell(data_table, text_halign=text.align_center, column=0, row=0, text="🔮 Price Action Fractal Forecasts Data Window", text_color = #ffffff)
+table.merge_cells(data_table, 0, 0, 1, 0)
+
+table.cell(data_table, text_halign=text.align_left, column=0, row=1, text="Overall Forecast Certainty", text_color = #ffffff)
+table.cell(data_table, text_halign=text.align_right, column=1, row=1, text=str.tostring(math.round((((c.max()+1)/2)-(forecastPrices.stdev(false)/forecastPrices.avg()))*100)) +"%", text_color = #ffffff)
+if  math.round((((c.max()+1)/2)-(forecastPrices.stdev(false)/forecastPrices.avg()))*100) > 0
+    table.cell_set_bgcolor(data_table, column=1, row=1, bgcolor=color.from_gradient(math.round((((c.max()+1)/2)-(forecastPrices.stdev(false)/forecastPrices.avg()))*100), 0, 100, color.new(green, 50), color.new(green, 0)))
+    table.cell_set_text_color(data_table, column=1, row=1, text_color = #000000)
+else if math.round((((c.max()+1)/2)-(forecastPrices.stdev(false)/forecastPrices.avg()))*100) < 0
+    table.cell_set_bgcolor(data_table, column=1, row=1, bgcolor=color.from_gradient(math.round((((c.max()+1)/2)-(forecastPrices.stdev(false)/forecastPrices.avg()))*100), -100, 0, color.new(red, 0), color.new(red, 50)))
+    table.cell_set_text_color(data_table, column=1, row=1, text_color = #ffffff)
+
+table.cell(data_table, text_halign=text.align_left, column=0, row=2, text="Similarity", text_color = #ffffff)
+table.cell(data_table, text_halign=text.align_right, column=1, row=2, text=str.tostring(math.round(((c.max()+1)/2)*100))+"%", text_color = #ffffff)
+if math.round(((c.max()+1)/2)*100) > 0
+    table.cell_set_bgcolor(data_table, column=1, row=2, bgcolor=color.from_gradient(math.round(((c.max()+1)/2)*100), 0, 100, color.new(green, 50), color.new(green, 0)))
+    table.cell_set_text_color(data_table, column=1, row=2, text_color = #000000)
+else if math.round(((c.max()+1)/2)*100) < 0
+    table.cell_set_bgcolor(data_table, column=1, row=2, bgcolor=red)
+    table.cell_set_text_color(data_table, column=1, row=2, text_color = #ffffff)
+
+table.cell(data_table, text_halign=text.align_left, column=0, row=3, text="Forecast Uncertainty (Forecasted Deviations)", text_color = #ffffff)
+table.cell(data_table, text_halign=text.align_right, column=1, row=3, text=str.tostring(math.round((forecastPrices.stdev(false)/forecastPrices.avg())*100))+"%", text_color = #ffffff)
+if  (forecastPrices.stdev(false)/forecastPrices.avg())*100 > 0
+    table.cell_set_bgcolor(data_table, column=1, row=3, bgcolor=color.from_gradient((forecastPrices.stdev(false)/forecastPrices.avg())*100, 0, 100, color.new(red, 50), color.new(red, 0)))
+    table.cell_set_text_color(data_table, column=1, row=3, text_color = #000000)
+else if (forecastPrices.stdev(false)/forecastPrices.avg())*100 < 0
+    table.cell_set_bgcolor(data_table, column=1, row=3, bgcolor=red)
+    table.cell_set_text_color(data_table, column=1, row=3, text_color = #ffffff)
+
+/////////////////////////////////Alerts
+alertcondition(ta.crossover(diff, 0), "Forecasted Direction Bullish")
+alertcondition(ta.crossunder(diff, 0), "Forecasted Direction Bearish")

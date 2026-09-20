@@ -1,0 +1,189 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Low Volatility Profiles [BigBeluga]", max_boxes_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+length       = input.int(14, "ADX Length", group = "ADX")
+adxThreshold = input.int(30, "ADX Threshold", inline = "th", group = "ADX")
+crossType    = input.string("crossunder", "", ["crossunder", "crossover"], inline = "th", group = "ADX") == "crossunder"
+
+rangeBox = input.int(20, "Range Creation of the box", minval =20, maxval = 100, group = "Range Box")
+bodyCol  = input.color(color.gray, "Range Color", group = "Range Box")
+fillCol  = input.color(color.rgb(33, 149, 243, 80), "Fill Color", group = "Range Box")
+
+binsqty = input.int(35, "Profile Bins", group = "Volume Profile")
+extendPoc = input.bool(false, "Extend PoC", group = "Volume Profile")
+pocCol1 = input.color(color.orange, "", group = "Volume Profile", inline = "pf")
+pocCol2 = input.color(color.blue, "", group = "Volume Profile", inline = "pf")
+
+
+
+var body      = box(na)
+var innerbody = box(na)
+var inProcess = false
+var boxes     = array.new<box>(binsqty+1)
+
+bins  = array.new<float>(binsqty, 0.)
+delta  = array.new<float>(binsqty, 0.)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+[_, _, adx] = ta.dmi(14, length)
+
+// Start Range
+cross = crossType ? ta.crossunder(adx, adxThreshold) : ta.crossover(adx, adxThreshold)
+
+if cross and not inProcess
+
+
+    innerbody := box.new(bar_index, high, bar_index, low, border_color = color(na), force_overlay = true, bgcolor = fillCol)
+
+    for i = 0 to bins.size()-1
+        boxes.set(i, box.new(bar_index, na, na, na, force_overlay = true, border_color = color.new(chart.fg_color, 80)))
+
+        if i == bins.size()-1
+            boxes.set(i+1, box.new(bar_index, na, na, na, force_overlay = true))
+
+    body      := box.new(bar_index, high, bar_index, low, border_color = bodyCol, force_overlay = true, bgcolor = color(na))
+    inProcess := true
+
+
+// Build Range
+if inProcess and bar_index - body.get_left() < rangeBox
+
+    if high > body.get_top()
+        body.set_top(high)
+
+    if low < body.get_bottom()
+        body.set_bottom(low)
+
+    innerbody.set_right(bar_index)
+    innerbody.set_top(body.get_top())
+    innerbody.set_bottom(body.get_bottom())
+
+if inProcess
+    body.set_right(bar_index+5)
+
+if extendPoc
+    pocBox = boxes.get(binsqty)
+    pocBox.set_right(bar_index)
+
+// Break outs
+crossunder = ta.crossunder(close, body.get_bottom())
+
+
+
+if ta.crossover(close, body.get_top()) or crossunder
+    
+    inProcess := false
+    body.set_border_color(color.new(bodyCol, 50))
+    body.set_border_style(line.style_dashed)
+    body.set_right(bar_index)
+    pocBox = boxes.get(binsqty)
+    pocBox.set_right(bar_index)
+
+
+    if body.get_right() - body.get_left() <= rangeBox+2
+
+        body.delete()
+        innerbody.delete()
+
+        for b in boxes
+            b.delete()
+
+    body := box(na)
+    
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Build Profile
+if bar_index - body.get_left() > rangeBox and inProcess
+
+    // Profile
+    size  = (body.get_top() - body.get_bottom())/binsqty
+
+    start = body.get_left()
+
+    lookback = bar_index - start
+
+
+    for k = 0 to lookback
+
+        c = close[k]
+        o = open[k]
+        v = volume[k]
+
+        vol = c > o ? v : -v
+
+        for i = 0 to bins.size()-1
+
+            L   = body.get_bottom() + size * i
+            mid = L + size/2
+
+
+            if math.abs(c - mid) < size 
+                bins.set(i, bins.get(i) + v)
+
+                delta.set(i, delta.get(i) + vol)
+
+
+                break
+
+    for i = 0 to bins.size()-1
+
+        L   = body.get_bottom() + size* i
+        mid = L + size/2
+        H = L + size
+        val = int(bins.get(i)/bins.max()*rangeBox)
+
+        bool poc = bins.get(i)==bins.max()
+
+        b = boxes.get(i)
+
+
+        bgCol = color.from_gradient(val, 0, rangeBox, color.new(pocCol2, 0), pocCol1)
+
+  
+        b.set_right(start + val)
+        b.set_top(H)
+        b.set_bottom(L)
+        b.set_bgcolor(bgCol)
+
+
+        txt = delta.sum() > 0 ? "🟢 " : "🔴 "
+        body.set_text("Delta" + txt + str.tostring(delta.sum(), format.volume))
+        body.set_text_halign(text.align_right)
+        body.set_text_valign(text.align_bottom)
+        body.set_text_size(size.small)
+        body.set_text_color(chart.fg_color)
+
+
+        if poc
+            pocBox = boxes.get(binsqty)
+            pocBox.set_top(H)
+            pocBox.set_bottom(L)
+            pocBox.set_left(start + val)
+            pocBox.set_right(body.get_right())
+            pocBox.set_bgcolor(color(na))
+            pocBox.set_border_color(pocCol1)
+            pocBox.set_text(str.tostring(bins.max(), format.volume))
+            pocBox.set_text_color(chart.fg_color)
+            
+
+padx = plot(adx, "ADX", color = color.from_gradient(adx, 20, ta.highest(adx, 500), pocCol2, pocCol1))
+pt = plot(adxThreshold, "ADX Threshold", color = pocCol2)
+
+fill(padx, pt, ta.highest(adx, 500), adxThreshold, adx > adxThreshold ? color.new(pocCol1, 50) : color(na), color(na))
+
+if barstate.islast
+    label.delete(label.new(bar_index, adxThreshold, str.tostring(adxThreshold) + " " + (crossType ? "crossunder" : "crossover"), style = "llf", color = pocCol2)[1])
+
+
+// }

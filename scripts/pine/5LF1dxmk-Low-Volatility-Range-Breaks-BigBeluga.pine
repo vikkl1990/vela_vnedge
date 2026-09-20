@@ -1,0 +1,132 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+
+//@version=5
+indicator("Low Volatility Range Breaks [BigBeluga]", "LV Range [BigBeluga]", overlay = true)
+
+
+//#region ———————————————————— Inputs
+// @variable Length for calculating highest and lowest prices
+int length           = input(50, "Volatility Length")
+// @variable Sensitivity level for low volatility detection
+int volatility_level = input.int(10, "Volatility Level", minval = 5, maxval = 20, tooltip = "Sensitivity of Volatility")
+// @variable Multiplier for ATR to determine box height
+float box_high       = input.float(2., "Boxes High", step = 0.1)
+// @variable up upper color
+color up = #23bdad
+// @variable dn lower color
+color dn = #b82372
+//#endregion
+
+//#region ———————————————————— Calculations
+// Calculate highest and lowest prices over the specified length
+float h              = ta.highest(length)
+float l              = ta.lowest(length)
+// Calculate ATR and multiply by box_high for box size
+float atr            = ta.atr(200)*box_high
+
+// @variable Counter for low volatility periods
+var count_activity   = int(na)
+// @variable Box object to represent low volatility zone
+var box_             = box(na)
+// @variable Line object for mid-line of the box
+var line_            = line(na)
+// @variable Counters for probability of upward and downward moves
+var prob_up          = int(na)
+var prob_dn          = int(na)
+// @variable Flag to control box creation
+var check            = bool(na)
+
+// @variable Condition to detect low volatility
+bool lv_condition    = ta.change(l[1] == l) or ta.change(h[1] == h)
+//#endregion
+
+//#region ———————————————————— Low Volatility Detection and Box Creation
+// Increment counter if not in low volatility condition
+if not lv_condition
+    count_activity += 1
+
+// Reset counter if in low volatility condition
+if lv_condition
+    count_activity := 0
+
+// Set check flag after 201 bars
+if bar_index == 201
+    check := true
+
+// Create box and mid-line when low volatility period reaches the specified level
+if (count_activity == volatility_level) and check
+    box_  := box.new(bar_index-volatility_level, high + atr, bar_index + 40, low - atr,
+                         bgcolor = na, 
+                         border_color = chart.fg_color)
+    half   = (box_.get_bottom() + box_.get_top()) / 2
+
+    line_ := line.new(bar_index-volatility_level, half, bar_index+40, half, color = chart.fg_color)
+    check := false
+//#endregion
+
+//#region ———————————————————— Probability Calculation
+// Increment upward probability counter
+if hl2 > line_.get_y1()
+    prob_up += 1
+
+// Increment downward probability counter
+if hl2 < line_.get_y1()
+    prob_dn += 1
+//#endregion
+
+//#region ———————————————————— Breakout Detection and Visualization
+// Detect downward breakout
+if ta.crossunder(close, box_.get_bottom())
+    prob_up := 0
+    prob_dn := 0
+    check   := true
+
+    label.new(bar_index, box_.get_top(), "Break Dn", xloc.bar_index, yloc.price, #00000000, 
+                 label.style_label_down, chart.fg_color)
+    box_.set_right(bar_index)
+    box_.set_border_style(line.style_dashed)
+    box_.set_border_color(dn)
+    line.delete(line_[1])
+
+    box_ := na
+
+// Detect upward breakout
+if  ta.crossover(close, box_.get_top())
+    prob_up := 0
+    prob_dn := 0
+    check   := true
+
+    label.new(bar_index, box_.get_bottom(), "Break Up", xloc.bar_index, yloc.price, #00000000, 
+                 label.style_label_up, chart.fg_color)
+
+    box_.set_right(bar_index)
+    box_.set_border_style(line.style_dashed)
+    box_.set_border_color(up)
+    line.delete(line_[1])
+
+    box_ := na
+//#endregion
+
+//#region ———————————————————— Probability Display
+// Display probability labels on the last bar
+if barstate.islast
+    label.delete(label.new(bar_index+40, box_.get_bottom(), str.tostring(prob_dn), 
+                 xloc.bar_index, 
+                 yloc.price, 
+                 #00000000, 
+                 label.style_label_up,  
+                 prob_dn > prob_up ? dn : chart.fg_color)[1])
+
+    label.delete(label.new(bar_index+40, box_.get_top(), str.tostring(prob_up), 
+                 xloc.bar_index,
+                 yloc.price, 
+                 #00000000, 
+                 label.style_label_down, 
+                 prob_dn < prob_up ? up : chart.fg_color)[1])
+    
+// Update box and line to extend to the current bar
+box_.set_right(bar_index+40)
+line_.set_x2(bar_index+40)
+
+//#endregion

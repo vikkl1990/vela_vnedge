@@ -1,0 +1,279 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Institutional Volume Flow [BigBeluga]", overlay = true, max_boxes_count = 500, max_bars_back = 5000)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+resInput = input.timeframe(
+     "W",
+     "Segment Resolution",
+     options = ["D", "W", "M"],
+     tooltip = "Defines the higher timeframe used to segment the chart.\n\nA new volume profile will start every time this timeframe changes."
+)
+
+minBars = input.int(
+     10,
+     "Minimum Bars Required",
+     minval = 1,
+     tooltip = "Minimum number of bars required before calculating and displaying the volume profile."
+)
+
+binsCount = input.int(
+     50,
+     "Volume Profile Bins",
+     minval = 10,
+     tooltip = "Number of price rows used to distribute volume.\n\nHigher values create more detailed profiles but increase calculation cost."
+)
+
+profileWidth = input.int(
+     20,
+     "Profile Width (Bars)",
+     minval = 10,
+     tooltip = "Controls how far the profile extends to the right in bar units."
+)
+
+profileCol = color.new(color.gray, 20)
+
+profilePoc = input.color(
+     color.rgb(255, 170, 0),
+     "POC Color",
+     tooltip = "Color used to highlight the Point of Control (highest volume node)."
+)
+
+upperLineCol = input.color(
+     color.rgb(0, 200, 120),
+     "Upper Range Line Color",
+     tooltip = "Color of the developing segment High line."
+)
+
+lowerLineCol = input.color(
+     color.rgb(50, 129, 220),
+     "Lower Range Line Color",
+     tooltip = "Color of the developing segment Low line."
+)
+midlleLineCol = input.color(
+     color.rgb(124, 124, 124, 50),
+     "Midlle Range Line Color",
+     tooltip = "Color of the developing segment Mid line."
+)
+
+zspikeVol = input.bool(true, "Volume Spike", inline = "vs")
+
+zSpikeCol = input.color(
+     color.rgb(0, 255, 21, 85),
+     "", inline = "vs",
+     tooltip = "Color used when volume exceeds the average volume of the last 50 bars."
+)
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+
+// ───── Segment Detection ─────
+isNewSegment = timeframe.change(resInput)
+
+var int segmentStart = bar_index
+bgCol = color(na)
+bgCol1 = color(na)
+
+if isNewSegment
+    segmentStart := bar_index
+
+segmentLength = bar_index - segmentStart + 1
+
+// ───── Developing High / Low ─────
+devHigh = ta.highest(high, segmentLength)
+devLow  = ta.lowest(low, segmentLength)
+
+col1 = close > math.avg(devHigh, devLow) ? upperLineCol : lowerLineCol
+
+if isNewSegment
+    bgCol := col1[1]
+
+if barstate.islast
+    bgCol1 := col1
+
+bgcolor(bgCol, title = "Range Start", offset = 1)
+bgcolor(bgCol1, title = "Range End", offset = profileWidth + 1, show_last = 1)
+
+// ───── Developing Volume Profile ─────
+float pocPrice = na
+
+float range_ = devHigh - devLow
+float step   = range_ / binsCount
+
+binsVol = array.new_float(binsCount, 0.0)
+
+// Reset bins
+for i = 0 to binsCount - 1
+    array.set(binsVol, i, 0.0)
+
+// Distribute volume across segment
+for i = 0 to segmentLength - 1
+    price = close[i]
+    vol   = volume[i]
+
+    index = math.round((price - devLow) / step)
+    index := math.max(0, index-1)
+
+    prevVol = array.get(binsVol, index)
+    array.set(binsVol, index, prevVol + vol)
+
+// Rolling POC
+pocPrice := devLow + step * binsVol.indexof(binsVol.max()) + step / 2
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// ───── Plot Developing High / Low ─────
+ph = plot(isNewSegment ? na : devHigh, "Upper Range", color=upperLineCol, style=plot.style_linebr, linewidth = 2)
+pl = plot(isNewSegment ? na : devLow, "Lower Range",  color=lowerLineCol, style=plot.style_linebr, linewidth = 2)
+plot(isNewSegment ? na : math.avg(devHigh, devLow), "Middle Range",  color=midlleLineCol, style=plot.style_linebr, linewidth = 2)
+
+// ───── Plot Developing POC ─────
+plot(isNewSegment ? na : pocPrice, "PoC", color=profilePoc, linewidth=1, style=plot.style_circles)
+
+
+// ───── Draw Developing Profile (Last Bar Only) ─────
+var profileBoxes = array.new_box()
+
+if isNewSegment or barstate.islast
+    if profileBoxes.size() > 0
+        for i = 0 to profileBoxes.size() - 1
+            box.delete(array.get(profileBoxes, i))
+        array.clear(profileBoxes)
+
+if barstate.islast and segmentLength >= minBars and range_ > 0
+
+    maxVol = binsVol.max()
+    maxWidthBars = profileWidth
+    rightEdge = bar_index + maxWidthBars
+
+    lh = line.new(bar_index, devHigh, rightEdge, devHigh, width = 2, color=upperLineCol)
+    ll = line.new(bar_index, devLow, rightEdge, devLow, width = 2, color=lowerLineCol)
+    lm = line.new(bar_index, math.avg(devHigh, devLow), rightEdge, math.avg(devHigh, devLow), width = 2, color=midlleLineCol)
+
+    line.delete(ll[1])
+    line.delete(lh[1])
+    line.delete(lm[1])
+
+
+    lblH = label.new(rightEdge, devHigh, "< " + str.tostring(devHigh), style = label.style_label_left, color = color.new(color.black, 100), textcolor = upperLineCol)
+    lblL = label.new(rightEdge, devLow,  "< " + str.tostring(devLow),  style = label.style_label_left, color = color.new(color.black, 100), textcolor = lowerLineCol)
+    lblM = label.new(rightEdge, math.avg(devHigh, devLow),  "< " + str.tostring(math.avg(devHigh, devLow)),  style = label.style_label_left, color = color.new(color.black, 100), textcolor = midlleLineCol)
+
+    label.delete(lblH[1])
+    label.delete(lblL[1])
+    label.delete(lblM[1])
+
+
+
+    for i = 0 to binsCount - 1
+        volAtBin = array.get(binsVol, i)
+
+        width = math.round((volAtBin / maxVol) * maxWidthBars)
+
+        y1 = devLow + step * i
+        y2 = y1 + step
+
+        leftEdge = rightEdge - width
+
+        col = color.from_gradient(width, 0, profileWidth, color.new(col1, 80), col1)
+
+        if i == binsVol.indexof(maxVol)
+            col := profilePoc
+
+        b = box.new(
+            left = leftEdge,
+            right = i == binsVol.indexof(maxVol) ? rightEdge + 10 : rightEdge,
+            top = y2,
+            bottom = y1,
+            bgcolor = col,
+            border_width = 1,
+            border_color = chart.bg_color,
+            text = i == binsVol.indexof(maxVol) ? str.tostring(maxVol, format.volume) : "",
+            text_halign = text.align_right
+        )
+        array.push(profileBoxes, b)
+
+// ───── Freeze Previous Segment Profile ─────
+
+if isNewSegment and segmentLength[1] >= minBars
+
+    prevLength = segmentLength[1]
+    prevHigh   = devHigh[1]
+    prevLow    = devLow[1]
+
+    prevRange = prevHigh - prevLow
+
+    if prevRange > 0
+
+        prevStep = prevRange / binsCount
+        prevBins = array.new_float(binsCount, 0.0)
+
+        for i = 1 to prevLength
+            price = close[i]
+            vol   = volume[i]
+
+            index = math.round((price - prevLow) / prevStep)
+            index := math.max(0, index- 1)
+
+            array.set(prevBins, index,
+                array.get(prevBins, index) + vol)
+
+        prevMaxVol = prevBins.max()
+        rightEdge  = bar_index
+        maxWidthBars = profileWidth
+
+        for i = 0 to binsCount - 1
+            volAtBin = array.get(prevBins, i)
+
+            if volAtBin > 0
+                width = math.round((volAtBin / prevMaxVol) * maxWidthBars)
+
+                y1 = prevLow + prevStep * i
+                y2 = y1 + prevStep
+
+                leftEdge = rightEdge - width
+
+
+                col = color.from_gradient(width, 0, profileWidth, color.new(col1[1], 80), col1[1])
+
+
+                if i == prevBins.indexof(prevMaxVol)
+                    col := profilePoc
+
+                box.new(
+                    left = leftEdge,
+                    right = rightEdge,
+                    top = y2,
+                    bottom = y1,
+                    bgcolor = col,
+                    border_width = 1,
+                    border_color = chart.bg_color,
+                    text = i == prevBins.indexof(prevMaxVol) ? str.tostring(prevMaxVol, format.volume) : ""
+                )
+
+
+
+// ───── Volume Z-Score ─────
+zScore = float(na)
+
+if zspikeVol
+    zLength = 50
+    volMean = ta.sma(volume, zLength)
+    volStd  = ta.stdev(volume, zLength)
+    zScore := volStd != 0 ? (volume - volMean) / volStd : 0.0
+
+fill(ph, pl, color.from_gradient(zScore, 0, 4, color(na), zSpikeCol), title = "Volume Spikes", editable = true)
+
+// }

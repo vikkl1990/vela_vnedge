@@ -1,0 +1,292 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("VWAP Reversal Probability Signals", "AlgoAlpha - VWAP Reversal Probability", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// Inputs
+
+GROUP_VWAP = "VWAP Settings"
+GROUP_BANDS = "Reversal Bands"
+GROUP_SIGNALS = "Signal Tracking"
+GROUP_APPEARANCE = "Appearance"
+
+anchor_period = input.string("Session", "Anchor Period", options = ["Session", "Week", "Month", "Quarter", "Year"], group = GROUP_VWAP, tooltip = "Sets when VWAP and its volume-weighted standard deviation restart.")
+source = input.source(hlc3, "Source", group = GROUP_VWAP, tooltip = "Price source used to calculate the anchored VWAP and its standard-deviation bands.")
+hide_on_dwm = input.bool(false, "Hide on 1D or Above", group = GROUP_VWAP, tooltip = "Hides the VWAP, bands, fills, and reversal signals on daily or higher chart timeframes.")
+
+band_multiplier_1 = input.float(2.56, "Band 1", minval = 0.01, step = 0.01, inline = "multipliers", group = GROUP_BANDS)
+band_multiplier_2 = input.float(4.02, "Band 2", minval = 0.01, step = 0.01, inline = "multipliers", group = GROUP_BANDS, tooltip = "Band 1 controls the inner upper and lower reversal levels. Band 2 controls the outer upper and lower reversal levels and must be greater than Band 1.")
+
+signal_expiry = input.int(40, "Signal Expiry", minval = 1, group = GROUP_SIGNALS, tooltip = "Number of bars after a reversal signal in which price must touch the fixed VWAP target. A touch on the final expiry bar counts as a win.")
+
+bearish_color = input.color(#ff1100, "Bearish Color", inline = "colors", group = GROUP_APPEARANCE)
+bullish_color = input.color(#00ffbb, "Bullish Color", inline = "colors", group = GROUP_APPEARANCE, tooltip = "Bearish Color controls upper zones, upper bands, bearish signals, and bearish win-rate text. Bullish Color controls lower zones, lower bands, bullish signals, VWAP target lines, and target checkmarks.")
+
+// VWAP bands
+
+if barstate.isfirst and band_multiplier_2 <= band_multiplier_1
+    runtime.error("Band 2 must be greater than Band 1.")
+
+cumulative_volume = ta.cum(volume)
+
+if barstate.islast and cumulative_volume == 0
+    runtime.error("No volume is provided by the data vendor.")
+
+is_new_period = switch anchor_period
+    "Session" => timeframe.change("D")
+    "Week" => timeframe.change("W")
+    "Month" => timeframe.change("M")
+    "Quarter" => timeframe.change("3M")
+    "Year" => timeframe.change("12M")
+    => false
+
+if na(source[1])
+    is_new_period := true
+
+vwap_value = float(na)
+stdev_value = float(na)
+
+if not (hide_on_dwm and timeframe.isdwm)
+    [_vwap, _stdev_upper, _] = ta.vwap(source, is_new_period, 1.0)
+    vwap_value := _vwap
+    stdev_value := _stdev_upper - _vwap
+
+upper_band_1 = vwap_value + stdev_value * band_multiplier_1
+upper_band_2 = vwap_value + stdev_value * band_multiplier_2
+lower_band_1 = vwap_value - stdev_value * band_multiplier_1
+lower_band_2 = vwap_value - stdev_value * band_multiplier_2
+
+// Outcome tracking
+
+UPPER_BAND_1_ID = 1
+UPPER_BAND_2_ID = 2
+LOWER_BAND_1_ID = 3
+LOWER_BAND_2_ID = 4
+
+var upper_band_1_results = array.new_int()
+var upper_band_2_results = array.new_int()
+var lower_band_1_results = array.new_int()
+var lower_band_2_results = array.new_int()
+
+var active_target_lines = array.new_line()
+var active_target_prices = array.new_float()
+var active_expiry_bars = array.new_int()
+var active_start_bars = array.new_int()
+var active_directions = array.new_int()
+var active_band_ids = array.new_int()
+
+bullish_tp_hit = false
+bearish_tp_hit = false
+
+active_signal_count = array.size(active_target_lines)
+
+if barstate.isconfirmed and active_signal_count > 0
+    for loop_index = 0 to active_signal_count - 1
+        active_index = active_signal_count - 1 - loop_index
+        active_target_line = array.get(active_target_lines, active_index)
+        active_target_price = array.get(active_target_prices, active_index)
+        active_expiry_bar = array.get(active_expiry_bars, active_index)
+        active_start_bar = array.get(active_start_bars, active_index)
+        active_direction = array.get(active_directions, active_index)
+        active_band_id = array.get(active_band_ids, active_index)
+
+        line.set_x2(active_target_line, time)
+        line.set_y2(active_target_line, active_target_price)
+
+        target_hit = bar_index > active_start_bar and (active_direction == 1 ? high >= active_target_price : low <= active_target_price)
+        signal_expired = bar_index >= active_expiry_bar
+
+        if target_hit or signal_expired
+            result = target_hit ? 1 : 0
+
+            if active_band_id == UPPER_BAND_1_ID
+                array.push(upper_band_1_results, result)
+            else if active_band_id == UPPER_BAND_2_ID
+                array.push(upper_band_2_results, result)
+            else if active_band_id == LOWER_BAND_1_ID
+                array.push(lower_band_1_results, result)
+            else if active_band_id == LOWER_BAND_2_ID
+                array.push(lower_band_2_results, result)
+
+            if target_hit and active_direction == 1
+                bullish_tp_hit := true
+
+            if target_hit and active_direction == -1
+                bearish_tp_hit := true
+
+            array.remove(active_target_lines, active_index)
+            array.remove(active_target_prices, active_index)
+            array.remove(active_expiry_bars, active_index)
+            array.remove(active_start_bars, active_index)
+            array.remove(active_directions, active_index)
+            array.remove(active_band_ids, active_index)
+
+upper_band_1_samples = array.size(upper_band_1_results)
+upper_band_2_samples = array.size(upper_band_2_results)
+lower_band_1_samples = array.size(lower_band_1_results)
+lower_band_2_samples = array.size(lower_band_2_results)
+
+upper_band_1_win_rate = upper_band_1_samples > 0 ? array.sum(upper_band_1_results) * 100.0 / upper_band_1_samples : na
+upper_band_2_win_rate = upper_band_2_samples > 0 ? array.sum(upper_band_2_results) * 100.0 / upper_band_2_samples : na
+lower_band_1_win_rate = lower_band_1_samples > 0 ? array.sum(lower_band_1_results) * 100.0 / lower_band_1_samples : na
+lower_band_2_win_rate = lower_band_2_samples > 0 ? array.sum(lower_band_2_results) * 100.0 / lower_band_2_samples : na
+
+// Reversal signals
+
+cross_above_upper_band_1 = ta.crossover(close, upper_band_1)
+cross_below_upper_band_1 = ta.crossunder(close, upper_band_1)
+cross_below_upper_band_2 = ta.crossunder(close, upper_band_2)
+
+cross_below_lower_band_1 = ta.crossunder(close, lower_band_1)
+cross_above_lower_band_1 = ta.crossover(close, lower_band_1)
+cross_above_lower_band_2 = ta.crossover(close, lower_band_2)
+
+var upper_excursion_level = 0
+var lower_excursion_level = 0
+
+bearish_band_1_signal = false
+bearish_band_2_signal = false
+bullish_band_1_signal = false
+bullish_band_2_signal = false
+
+if barstate.isconfirmed
+    if is_new_period or na(vwap_value)
+        upper_excursion_level := 0
+        lower_excursion_level := 0
+    else
+        if upper_excursion_level == 0 and cross_above_upper_band_1
+            upper_excursion_level := close > upper_band_2 ? 2 : 1
+
+        if upper_excursion_level > 0
+            if close > upper_band_2
+                upper_excursion_level := 2
+
+            if upper_excursion_level == 2 and cross_below_upper_band_2
+                bearish_band_2_signal := true
+                upper_excursion_level := 0
+            else if upper_excursion_level == 1 and cross_below_upper_band_1
+                bearish_band_1_signal := true
+                upper_excursion_level := 0
+
+        if lower_excursion_level == 0 and cross_below_lower_band_1
+            lower_excursion_level := close < lower_band_2 ? 2 : 1
+
+        if lower_excursion_level > 0
+            if close < lower_band_2
+                lower_excursion_level := 2
+
+            if lower_excursion_level == 2 and cross_above_lower_band_2
+                bullish_band_2_signal := true
+                lower_excursion_level := 0
+            else if lower_excursion_level == 1 and cross_above_lower_band_1
+                bullish_band_1_signal := true
+                lower_excursion_level := 0
+
+bullish_signal = bullish_band_1_signal or bullish_band_2_signal
+bearish_signal = bearish_band_1_signal or bearish_band_2_signal
+
+// Absolute signal placement
+
+placement_atr = nz(ta.atr(14), high - low)
+band_span = upper_band_2 - lower_band_2
+placement_gap = math.max(math.max(placement_atr * 0.35, band_span * 0.04), syminfo.mintick * 20)
+
+bearish_outside_level = math.max(high, upper_band_2)
+bullish_outside_level = math.min(low, lower_band_2)
+
+bearish_signal_price = bearish_outside_level + placement_gap
+bullish_signal_price = bullish_outside_level - placement_gap
+
+bearish_probability_price = bearish_outside_level + placement_gap * 7.0
+bullish_probability_price = bullish_outside_level - placement_gap * 7.0
+
+// Signal drawings
+
+if bearish_band_1_signal
+    upper_1_target_line = line.new(time, vwap_value, time, vwap_value, xloc = xloc.bar_time, extend = extend.none, color = bullish_color, style = line.style_dashed, width = 2)
+
+    array.push(active_target_lines, upper_1_target_line)
+    array.push(active_target_prices, vwap_value)
+    array.push(active_expiry_bars, bar_index + signal_expiry)
+    array.push(active_start_bars, bar_index)
+    array.push(active_directions, -1)
+    array.push(active_band_ids, UPPER_BAND_1_ID)
+
+    upper_1_win_rate_text = na(upper_band_1_win_rate) ? "N/A" : str.tostring(upper_band_1_win_rate, "#.0") + "%"
+    label.new(bar_index, bearish_probability_price, upper_1_win_rate_text, xloc = xloc.bar_index, yloc = yloc.price, color = color.new(bearish_color, 100), style = label.style_none, textcolor = bearish_color, size = size.normal, textalign = text.align_center, tooltip = "Upper Band 1\nResolved signals: " + str.tostring(upper_band_1_samples))
+
+if bearish_band_2_signal
+    upper_2_target_line = line.new(time, vwap_value, time, vwap_value, xloc = xloc.bar_time, extend = extend.none, color = bullish_color, style = line.style_dashed, width = 2)
+
+    array.push(active_target_lines, upper_2_target_line)
+    array.push(active_target_prices, vwap_value)
+    array.push(active_expiry_bars, bar_index + signal_expiry)
+    array.push(active_start_bars, bar_index)
+    array.push(active_directions, -1)
+    array.push(active_band_ids, UPPER_BAND_2_ID)
+
+    upper_2_win_rate_text = na(upper_band_2_win_rate) ? "N/A" : str.tostring(upper_band_2_win_rate, "#.0") + "%"
+    label.new(bar_index, bearish_probability_price, upper_2_win_rate_text, xloc = xloc.bar_index, yloc = yloc.price, color = color.new(bearish_color, 100), style = label.style_none, textcolor = bearish_color, size = size.normal, textalign = text.align_center, tooltip = "Upper Band 2\nResolved signals: " + str.tostring(upper_band_2_samples))
+
+if bullish_band_1_signal
+    lower_1_target_line = line.new(time, vwap_value, time, vwap_value, xloc = xloc.bar_time, extend = extend.none, color = bullish_color, style = line.style_dashed, width = 2)
+
+    array.push(active_target_lines, lower_1_target_line)
+    array.push(active_target_prices, vwap_value)
+    array.push(active_expiry_bars, bar_index + signal_expiry)
+    array.push(active_start_bars, bar_index)
+    array.push(active_directions, 1)
+    array.push(active_band_ids, LOWER_BAND_1_ID)
+
+    lower_1_win_rate_text = na(lower_band_1_win_rate) ? "N/A" : str.tostring(lower_band_1_win_rate, "#.0") + "%"
+    label.new(bar_index, bullish_probability_price, lower_1_win_rate_text, xloc = xloc.bar_index, yloc = yloc.price, color = color.new(bullish_color, 100), style = label.style_none, textcolor = bullish_color, size = size.normal, textalign = text.align_center, tooltip = "Lower Band 1\nResolved signals: " + str.tostring(lower_band_1_samples))
+
+if bullish_band_2_signal
+    lower_2_target_line = line.new(time, vwap_value, time, vwap_value, xloc = xloc.bar_time, extend = extend.none, color = bullish_color, style = line.style_dashed, width = 2)
+
+    array.push(active_target_lines, lower_2_target_line)
+    array.push(active_target_prices, vwap_value)
+    array.push(active_expiry_bars, bar_index + signal_expiry)
+    array.push(active_start_bars, bar_index)
+    array.push(active_directions, 1)
+    array.push(active_band_ids, LOWER_BAND_2_ID)
+
+    lower_2_win_rate_text = na(lower_band_2_win_rate) ? "N/A" : str.tostring(lower_band_2_win_rate, "#.0") + "%"
+    label.new(bar_index, bullish_probability_price, lower_2_win_rate_text, xloc = xloc.bar_index, yloc = yloc.price, color = color.new(bullish_color, 100), style = label.style_none, textcolor = bullish_color, size = size.normal, textalign = text.align_center, tooltip = "Lower Band 2\nResolved signals: " + str.tostring(lower_band_2_samples))
+
+// Visuals
+
+body_midpoint = (open + close) * 0.5
+
+vwap_plot = plot(vwap_value, "VWAP", color = chart.fg_color, linewidth = 2)
+upper_band_1_plot = plot(upper_band_1, "Upper Band 1", color = color.new(bearish_color, 35), linewidth = 1)
+upper_band_2_plot = plot(upper_band_2, "Upper Band 2", color = bearish_color, linewidth = 2)
+lower_band_1_plot = plot(lower_band_1, "Lower Band 1", color = color.new(bullish_color, 35), linewidth = 1)
+lower_band_2_plot = plot(lower_band_2, "Lower Band 2", color = bullish_color, linewidth = 2)
+body_midpoint_plot = plot(body_midpoint, "Candle Body Midpoint", display = display.none)
+
+fill(vwap_plot, upper_band_2_plot, upper_band_2, vwap_value, color.new(bearish_color, 99), color.new(bearish_color, 85), title = "Upper VWAP Gradient", fillgaps = false)
+fill(vwap_plot, lower_band_2_plot, vwap_value, lower_band_2, color.new(bullish_color, 85), color.new(bullish_color, 99), title = "Lower VWAP Gradient", fillgaps = false)
+
+fill(body_midpoint_plot, upper_band_2_plot, color = body_midpoint > upper_band_2 ? bearish_color : na, title = "Upper Extreme Fill", fillgaps = false)
+fill(body_midpoint_plot, lower_band_2_plot, color = body_midpoint < lower_band_2 ? bullish_color : na, title = "Lower Extreme Fill", fillgaps = false)
+
+plotshape(bearish_band_1_signal ? bearish_signal_price : na, title = "Upper Band 1 Bearish Reversal", style = shape.labeldown, location = location.absolute, color = bearish_color, text = "▼", textcolor = color.white, size = size.small)
+plotshape(bearish_band_2_signal ? bearish_signal_price : na, title = "Upper Band 2 Bearish Reversal", style = shape.labeldown, location = location.absolute, color = bearish_color, text = "▼", textcolor = color.white, size = size.small)
+plotshape(bullish_band_1_signal ? bullish_signal_price : na, title = "Lower Band 1 Bullish Reversal", style = shape.labelup, location = location.absolute, color = bullish_color, text = "▲", textcolor = color.white, size = size.small)
+plotshape(bullish_band_2_signal ? bullish_signal_price : na, title = "Lower Band 2 Bullish Reversal", style = shape.labelup, location = location.absolute, color = bullish_color, text = "▲", textcolor = color.white, size = size.small)
+
+plotchar(bullish_tp_hit, title = "Bullish VWAP Target Hit", char = "✅", location = location.abovebar, color = bullish_color, size = size.tiny)
+plotchar(bearish_tp_hit, title = "Bearish VWAP Target Hit", char = "✅", location = location.belowbar, color = bullish_color, size = size.tiny)
+
+// Alerts
+
+alertcondition(bullish_band_1_signal, title = "Bullish Reversal - Lower Band 1")
+alertcondition(bullish_band_2_signal, title = "Bullish Reversal - Lower Band 2")
+alertcondition(bearish_band_1_signal, title = "Bearish Reversal - Upper Band 1")
+alertcondition(bearish_band_2_signal, title = "Bearish Reversal - Upper Band 2")
+alertcondition(bullish_signal, title = "Any Bullish VWAP Reversal")
+alertcondition(bearish_signal, title = "Any Bearish VWAP Reversal")
+alertcondition(bullish_tp_hit, title = "Bullish VWAP Target Hit")
+alertcondition(bearish_tp_hit, title = "Bearish VWAP Target Hit")

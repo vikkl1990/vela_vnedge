@@ -1,0 +1,1094 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Santa's Adventure! [AlgoAlpha]", shorttitle="AlgoAlpha - Santa's Adventure", overlay=true, max_labels_count=500, max_polylines_count=100, max_bars_back=5000)
+
+////inputs
+snow_hor_range = input.int(484, "Snow Distance")
+snow_roof = input.int(40, "Snow Upper Limit")
+snow_density = input.int(333, "Snow Density")
+
+
+sleigh_red = input.color(#ff2929, title="Sleigh Red") 
+sleigh_handle_col = input.color(#cc7e00, title="Sleigh Handle")
+ski_color = input.color(color.white, title="Ski Color")
+sleigh_white_outline = input.color(color.white, title="Sleigh White Outline")
+present1_color = input.color(color.green, title="Present 1 Color")
+present2_color = input.color(#FFA500, title="Present 2 Color")
+present3_color = input.color(#ffd700, title="Present 3 Color")
+present4_color = input.color(#FF69B4, title="Present 4 Color")
+present5_color = input.color(#9370DB, title="Present 5 Color")
+ribbon_color = input.color(color.red, title="Ribbon Color")
+santa_outfit_red = input.color(color.red, title="Santa Outfit Red")
+santa_outfit_white = input.color(color.white, title="Santa Outfit White")
+santa_outfit_outline = input.color(#000000, title="Santa Outfit Outline")
+santa_beard = input.color(#cccccc, title="Santa Beard")
+santa_gloves = input.color(#000000, title="Santa Gloves")
+santa_belt = input.color(color.black, title="Santa Belt")
+rudolf_leash_color = input.color(color.white, title="Rudolf Leash Color")
+rudolf_outline_color = input.color(#000000, title="Rudolf Outline Color")
+rudolf_color = input.color(#664e33, title="Rudolf Color")
+rudolf_nose = input.color(color.red, title="Rudolf Nose")
+rudolf_antler = input.color(color.white, title="Rudolf Antler")
+
+// Settings
+widthhh    = 33
+Scalee    = 7
+
+// Variables
+dist            = high - low
+volatility      = ta.sma(dist, 100)
+distmed         = ta.median(dist, 500)
+
+type coordinates
+    int x
+    float y
+
+// Plot location and scaling
+int   mid   = bar_index
+float rangO = distmed * Scalee
+float baseY = high + volatility * 2
+
+coords = array.new<coordinates>()
+
+// Arrays to hold chart points
+sleigh         = array.new<chart.point>()
+sleigh_legs    = array.new<chart.point>()
+sleigh_handle  = array.new<chart.point>()
+ribbon         = array.new<chart.point>()
+squaresBack2   = array.new<chart.point>()
+
+// Existing present ribbons
+present_ribbonH = array.new<chart.point>()
+present_ribbonV = array.new<chart.point>()
+
+// Additional presents (2 & 3) + their ribbons
+squaresPresent2      = array.new<chart.point>()
+present2_ribbonH     = array.new<chart.point>()
+present2_ribbonV     = array.new<chart.point>()
+
+squaresPresent3      = array.new<chart.point>()
+present3_ribbonH     = array.new<chart.point>()
+present3_ribbonV     = array.new<chart.point>()
+
+// Additional presents (4 & 5) + their ribbons
+squaresPresent4      = array.new<chart.point>()
+present4_ribbonH     = array.new<chart.point>()
+present4_ribbonV     = array.new<chart.point>()
+
+squaresPresent5      = array.new<chart.point>()
+present5_ribbonH     = array.new<chart.point>()
+present5_ribbonV     = array.new<chart.point>()
+
+// NEW ARRAYS for Santa's torso, belt, beard, hat
+santaTorso = array.new<chart.point>()
+santaBelt  = array.new<chart.point>()
+santaBeard = array.new<chart.point>()
+santaHead  = array.new<chart.point>() 
+santaMouth = array.new<chart.point>()
+santaHatBase   = array.new<chart.point>()
+santaHatTrim   = array.new<chart.point>()
+santaHatPomPom = array.new<chart.point>()
+santaEyeLeft   = array.new<chart.point>()
+santaEyeRight  = array.new<chart.point>()  
+santaNose      = array.new<chart.point>()
+
+// NEW ARRAYS for Santa's hand (red sleeve, white collar, black glove)
+santaHandSleeve = array.new<chart.point>()
+santaHandCollar = array.new<chart.point>()
+santaHandGlove  = array.new<chart.point>()
+
+// NEW ARRAYS for Rudolf
+rudolfTorso = array.new<chart.point>()
+rudolfLegLeft = array.new<chart.point>()
+rudolfLegRight = array.new<chart.point>()
+rudolfNeck = array.new<chart.point>()
+rudolfHead = array.new<chart.point>()
+rudolfNose = array.new<chart.point>()
+rudolfMouth = array.new<chart.point>()
+rudolfEye = array.new<chart.point>()
+rudolfAntlers = array.new<chart.point>()
+rudolfLeash = array.new<chart.point>()
+
+// Arrays to hold polylines
+var sleighO         = array.new<polyline>()
+var sleigh_legsO    = array.new<polyline>()
+var sleigh_handleO  = array.new<polyline>()
+var ribbonO         = array.new<polyline>()
+var squaresBack2O   = array.new<polyline>()
+var present_ribbonHO = array.new<polyline>()
+var present_ribbonVO = array.new<polyline>()
+
+var squaresPresent2O      = array.new<polyline>()
+var present2_ribbonHO     = array.new<polyline>()
+var present2_ribbonVO     = array.new<polyline>()
+
+var squaresPresent3O      = array.new<polyline>()
+var present3_ribbonHO     = array.new<polyline>()
+var present3_ribbonVO     = array.new<polyline>()
+
+var squaresPresent4O      = array.new<polyline>()
+var present4_ribbonHO     = array.new<polyline>()
+var present4_ribbonVO     = array.new<polyline>()
+
+var squaresPresent5O      = array.new<polyline>()
+var present5_ribbonHO     = array.new<polyline>()
+var present5_ribbonVO     = array.new<polyline>()
+
+// NEW VAR polylines for Santa's torso, belt, beard, hat
+var santaTorsoO = array.new<polyline>()
+var santaBeltO  = array.new<polyline>()
+var santaBeardO = array.new<polyline>()
+var santaHeadO  = array.new<polyline>()
+var santaMouthO = array.new<polyline>()
+var santaHatBaseO   = array.new<polyline>()
+var santaHatTrimO   = array.new<polyline>()
+var santaHatPomPomO = array.new<polyline>()
+var santaEyeLeftO   = array.new<polyline>()
+var santaEyeRightO  = array.new<polyline>()
+var santaNoseO      = array.new<polyline>()
+
+// NEW VAR polylines for Santa's hand (sleeve, collar, glove)
+var santaHandSleeveO = array.new<polyline>()
+var santaHandCollarO = array.new<polyline>()
+var santaHandGloveO  = array.new<polyline>()
+
+// NEW VAR polylines for Rudolf
+var rudolfTorsoO = array.new<polyline>()
+var rudolfLegLeftO = array.new<polyline>()
+var rudolfLegRightO = array.new<polyline>()
+var rudolfNoseO = array.new<polyline>()
+var rudolfNeckO = array.new<polyline>()
+var rudolfHeadO = array.new<polyline>()
+var rudolfMouthO = array.new<polyline>()
+var rudolfEyeO = array.new<polyline>()
+var rudolfAntlersO = array.new<polyline>()
+
+// NEW VAR polyline for Rudolf's leash
+var rudolfLeashO = array.new<polyline>()
+
+// Clear old drawings
+if sleighO.size() > 0
+    sleighO.shift().delete()
+if sleigh_legsO.size() > 0
+    sleigh_legsO.shift().delete()
+if sleigh_handleO.size() > 0
+    sleigh_handleO.shift().delete()
+if ribbonO.size() > 0
+    ribbonO.shift().delete()
+if squaresBack2O.size() > 0
+    squaresBack2O.shift().delete()
+
+if present_ribbonHO.size() > 0
+    present_ribbonHO.shift().delete()
+if present_ribbonVO.size() > 0
+    present_ribbonVO.shift().delete()
+
+if squaresPresent2O.size() > 0
+    squaresPresent2O.shift().delete()
+if present2_ribbonHO.size() > 0
+    present2_ribbonHO.shift().delete()
+if present2_ribbonVO.size() > 0
+    present2_ribbonVO.shift().delete()
+
+if squaresPresent3O.size() > 0
+    squaresPresent3O.shift().delete()
+if present3_ribbonHO.size() > 0
+    present3_ribbonHO.shift().delete()
+if present3_ribbonVO.size() > 0
+    present3_ribbonVO.shift().delete()
+
+if squaresPresent4O.size() > 0
+    squaresPresent4O.shift().delete()
+if present4_ribbonHO.size() > 0
+    present4_ribbonHO.shift().delete()
+if present4_ribbonVO.size() > 0
+    present4_ribbonVO.shift().delete()
+
+if squaresPresent5O.size() > 0
+    squaresPresent5O.shift().delete()
+if present5_ribbonHO.size() > 0
+    present5_ribbonHO.shift().delete()
+if present5_ribbonVO.size() > 0
+    present5_ribbonVO.shift().delete()
+
+// CLEAR old polylines for Santa's torso, belt, beard, hat
+if santaTorsoO.size() > 0
+    santaTorsoO.shift().delete()
+if santaBeltO.size() > 0
+    santaBeltO.shift().delete()
+if santaBeardO.size() > 0
+    santaBeardO.shift().delete()
+if santaHeadO.size() > 0
+    santaHeadO.shift().delete()
+if santaMouthO.size() > 0
+    santaMouthO.shift().delete()
+if santaHatBaseO.size() > 0
+    santaHatBaseO.shift().delete()
+if santaHatTrimO.size() > 0
+    santaHatTrimO.shift().delete()
+if santaHatPomPomO.size() > 0
+    santaHatPomPomO.shift().delete()    
+if santaEyeLeftO.size() > 0
+    santaEyeLeftO.shift().delete()
+if santaEyeRightO.size() > 0
+    santaEyeRightO.shift().delete() 
+if santaNoseO.size() > 0
+    santaNoseO.shift().delete()
+
+// CLEAR old polylines for Santa's hand (sleeve, collar, glove)
+if santaHandSleeveO.size() > 0
+    santaHandSleeveO.shift().delete()
+if santaHandCollarO.size() > 0
+    santaHandCollarO.shift().delete()
+if santaHandGloveO.size() > 0
+    santaHandGloveO.shift().delete()
+
+// CLEAR old polylines for Rudolf
+if rudolfTorsoO.size() > 0
+    rudolfTorsoO.shift().delete()
+if rudolfLegLeftO.size() > 0
+    rudolfLegLeftO.shift().delete()
+if rudolfLegRightO.size() > 0
+    rudolfLegRightO.shift().delete()
+if rudolfNoseO.size() > 0
+    rudolfNoseO.shift().delete()
+if rudolfNeckO.size() > 0
+    rudolfNeckO.shift().delete()
+if rudolfHeadO.size() > 0
+    rudolfHeadO.shift().delete()
+if rudolfMouthO.size() > 0
+    rudolfMouthO.shift().delete()
+if rudolfEyeO.size() > 0
+    rudolfEyeO.shift().delete()
+if rudolfAntlersO.size() > 0
+    rudolfAntlersO.shift().delete()
+
+// CLEAR old polyline for Rudolf's leash
+if rudolfLeashO.size() > 0
+    rudolfLeashO.shift().delete()
+
+// Clear point arrays
+while sleigh.size() > 0
+    sleigh.clear()
+while sleigh_legs.size() > 0
+    sleigh_legs.clear()
+while sleigh_handle.size() > 0
+    sleigh_handle.clear()
+while ribbon.size() > 0
+    ribbon.clear()
+while squaresBack2.size() > 0
+    squaresBack2.clear()
+
+while present_ribbonH.size() > 0
+    present_ribbonH.clear()
+while present_ribbonV.size() > 0
+    present_ribbonV.clear()
+
+while squaresPresent2.size() > 0
+    squaresPresent2.clear()
+while present2_ribbonH.size() > 0
+    present2_ribbonH.clear()
+while present2_ribbonV.size() > 0
+    present2_ribbonV.clear()
+
+while squaresPresent3.size() > 0
+    squaresPresent3.clear()
+while present3_ribbonH.size() > 0
+    present3_ribbonH.clear()
+while present3_ribbonV.size() > 0
+    present3_ribbonV.clear()
+
+while squaresPresent4.size() > 0
+    squaresPresent4.clear()
+while present4_ribbonH.size() > 0
+    present4_ribbonH.clear()
+while present4_ribbonV.size() > 0
+    present4_ribbonV.clear()
+
+while squaresPresent5.size() > 0
+    squaresPresent5.clear()
+while present5_ribbonH.size() > 0
+    present5_ribbonH.clear()
+while present5_ribbonV.size() > 0
+    present5_ribbonV.clear()
+
+// CLEAR the new Santa torso arrays
+while santaTorso.size() > 0
+    santaTorso.clear()
+while santaBelt.size() > 0
+    santaBelt.clear()
+while santaBeard.size() > 0
+    santaBeard.clear()
+while santaHead.size() > 0
+    santaHead.clear()
+while santaMouth.size() > 0
+    santaMouth.clear()
+while santaHatBase.size() > 0
+    santaHatBase.clear()
+while santaHatTrim.size() > 0
+    santaHatTrim.clear()
+while santaHatPomPom.size() > 0
+    santaHatPomPom.clear()  
+while santaEyeLeft.size() > 0
+    santaEyeLeft.clear()
+while santaEyeRight.size() > 0
+    santaEyeRight.clear()
+while santaNose.size() > 0
+    santaNose.clear()
+
+// CLEAR the new Santa hand arrays
+while santaHandSleeve.size() > 0
+    santaHandSleeve.clear()
+while santaHandCollar.size() > 0
+    santaHandCollar.clear()
+while santaHandGlove.size() > 0
+    santaHandGlove.clear()
+
+// CLEAR the Rudolf arrays
+while rudolfTorso.size() > 0
+    rudolfTorso.clear()
+while rudolfLegLeft.size() > 0
+    rudolfLegLeft.clear()
+while rudolfLegRight.size() > 0
+    rudolfLegRight.clear()
+while rudolfNose.size() > 0
+    rudolfNose.clear()
+while rudolfNeck.size() > 0
+    rudolfNeck.clear()
+while rudolfHead.size() > 0
+    rudolfHead.clear()
+while rudolfMouth.size() > 0
+    rudolfMouth.clear()
+while rudolfEye.size() > 0
+    rudolfEye.clear()
+while rudolfAntlers.size() > 0
+    rudolfAntlers.clear()
+while rudolfLeash.size() > 0
+    rudolfLeash.clear()
+    
+
+// Store all coordinates first
+coords.push(coordinates.new(mid - int(widthhh * 1), baseY + rangO*0.4))
+coords.push(coordinates.new(mid - int(widthhh * 1), baseY + rangO*1.7))
+coords.push(coordinates.new(mid - int(widthhh * 0.9), baseY + rangO*1.6))    
+coords.push(coordinates.new(mid - int(widthhh * 0.8), baseY + rangO*1.5))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.1))
+coords.push(coordinates.new(mid - int(widthhh * -0.5), baseY + rangO*1.1))
+coords.push(coordinates.new(mid - int(widthhh * -0.4), baseY + rangO*0.4))
+coords.push(coordinates.new(mid - int(widthhh * 1.2), baseY + rangO*0.35))  
+coords.push(coordinates.new(mid - int(widthhh * 1.1), baseY + rangO*0.3))
+coords.push(coordinates.new(mid - int(widthhh * -0.5), baseY + rangO*0.3))   
+coords.push(coordinates.new(mid - int(widthhh * -0.6), baseY + rangO*0.35))
+coords.push(coordinates.new(mid - int(widthhh * 1), baseY + rangO*1.8))
+coords.push(coordinates.new(mid - int(widthhh * 0.9), baseY + rangO*1.7))
+coords.push(coordinates.new(mid - int(widthhh * 0.8), baseY + rangO*1.6))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * -0.5), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * -0.5), baseY + rangO*1.1))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.1))
+coords.push(coordinates.new(mid - int(widthhh * 0.8), baseY + rangO*1.5))
+coords.push(coordinates.new(mid - int(widthhh * 0.9), baseY + rangO*1.6))
+coords.push(coordinates.new(mid - int(widthhh * 1), baseY + rangO*1.7))
+coords.push(coordinates.new(mid - int(widthhh * 1), baseY + rangO*1.8))
+coords.push(coordinates.new(mid - int(widthhh * 0.72), baseY + rangO*1.81))
+coords.push(coordinates.new(mid - int(widthhh * 0.72), baseY + rangO*1.9))
+coords.push(coordinates.new(mid - int(widthhh * 0.8), baseY + rangO*1.81))
+coords.push(coordinates.new(mid - int(widthhh * 0.8), baseY + rangO*1.9))
+coords.push(coordinates.new(mid - int(widthhh * 0.70), baseY + rangO*1.60))
+coords.push(coordinates.new(mid - int(widthhh * 0.70), baseY + rangO*1.80))
+coords.push(coordinates.new(mid - int(widthhh * 0.80), baseY + rangO*1.80))
+coords.push(coordinates.new(mid - int(widthhh * 0.80), baseY + rangO*1.60))
+coords.push(coordinates.new(mid - int(widthhh * 0.70), baseY + rangO*1.70))
+coords.push(coordinates.new(mid - int(widthhh * 0.80), baseY + rangO*1.70))
+coords.push(coordinates.new(mid - int(widthhh * 0.80), baseY + rangO*1.68))
+coords.push(coordinates.new(mid - int(widthhh * 0.70), baseY + rangO*1.68))
+coords.push(coordinates.new(mid - int(widthhh * 0.74), baseY + rangO*1.80))
+coords.push(coordinates.new(mid - int(widthhh * 0.74), baseY + rangO*1.60))
+coords.push(coordinates.new(mid - int(widthhh * 0.76), baseY + rangO*1.60))
+coords.push(coordinates.new(mid - int(widthhh * 0.76), baseY + rangO*1.80))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.6))
+coords.push(coordinates.new(mid - int(widthhh * 0.72), baseY + rangO*1.6))
+coords.push(coordinates.new(mid - int(widthhh * 0.72), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.53))
+coords.push(coordinates.new(mid - int(widthhh * 0.72), baseY + rangO*1.53))
+coords.push(coordinates.new(mid - int(widthhh * 0.72), baseY + rangO*1.51))
+coords.push(coordinates.new(mid - int(widthhh * 0.6), baseY + rangO*1.51))
+coords.push(coordinates.new(mid - int(widthhh * 0.66), baseY + rangO*1.6))
+coords.push(coordinates.new(mid - int(widthhh * 0.66), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.68), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.68), baseY + rangO*1.6))
+coords.push(coordinates.new(mid - int(widthhh * 0.5), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.5), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.65), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.65), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.5), baseY + rangO*1.325))
+coords.push(coordinates.new(mid - int(widthhh * 0.65), baseY + rangO*1.325))
+coords.push(coordinates.new(mid - int(widthhh * 0.65), baseY + rangO*1.305))
+coords.push(coordinates.new(mid - int(widthhh * 0.5), baseY + rangO*1.305))
+coords.push(coordinates.new(mid - int(widthhh * 0.575), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.575), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.595), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.595), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.4), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.4), baseY + rangO*1.65))
+coords.push(coordinates.new(mid - int(widthhh * 0.52), baseY + rangO*1.65))
+coords.push(coordinates.new(mid - int(widthhh * 0.52), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.4), baseY + rangO*1.55))
+coords.push(coordinates.new(mid - int(widthhh * 0.52), baseY + rangO*1.55))
+coords.push(coordinates.new(mid - int(widthhh * 0.52), baseY + rangO*1.53))
+coords.push(coordinates.new(mid - int(widthhh * 0.4), baseY + rangO*1.53))
+coords.push(coordinates.new(mid - int(widthhh * 0.46), baseY + rangO*1.65))
+coords.push(coordinates.new(mid - int(widthhh * 0.46), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.48), baseY + rangO*1.45))
+coords.push(coordinates.new(mid - int(widthhh * 0.48), baseY + rangO*1.65))
+coords.push(coordinates.new(mid - int(widthhh * 0.3), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.3), baseY + rangO*1.4))
+coords.push(coordinates.new(mid - int(widthhh * 0.42), baseY + rangO*1.4))
+coords.push(coordinates.new(mid - int(widthhh * 0.42), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.3), baseY + rangO*1.3))
+coords.push(coordinates.new(mid - int(widthhh * 0.42), baseY + rangO*1.3))
+coords.push(coordinates.new(mid - int(widthhh * 0.42), baseY + rangO*1.28))
+coords.push(coordinates.new(mid - int(widthhh * 0.3), baseY + rangO*1.28))
+coords.push(coordinates.new(mid - int(widthhh * 0.36), baseY + rangO*1.4))
+coords.push(coordinates.new(mid - int(widthhh * 0.36), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.38), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.38), baseY + rangO*1.4))
+coords.push(coordinates.new(mid - int(widthhh * 0.04), baseY + rangO*1.8))
+coords.push(coordinates.new(mid - int(widthhh * 0.07), baseY + rangO*2))
+coords.push(coordinates.new(mid + int(widthhh * 0.16), baseY + rangO*2))
+coords.push(coordinates.new(mid + int(widthhh * 0.13), baseY + rangO*1.8))
+coords.push(coordinates.new(mid - int(widthhh * 0.1), baseY + rangO*1.97))
+coords.push(coordinates.new(mid + int(widthhh * 0.2), baseY + rangO*1.97))
+coords.push(coordinates.new(mid + int(widthhh * 0.18), baseY + rangO*2))
+coords.push(coordinates.new(mid - int(widthhh * 0.1), baseY + rangO*2))
+coords.push(coordinates.new(mid - int(widthhh * 0.1), baseY + rangO*2))
+coords.push(coordinates.new(mid + int(widthhh * 0.18), baseY + rangO*2))
+coords.push(coordinates.new(mid + int(widthhh * 0.15), baseY + rangO*2.05))
+coords.push(coordinates.new(mid + int(widthhh * 0.06), baseY + rangO*2.1))
+coords.push(coordinates.new(mid - int(widthhh * 0.08), baseY + rangO*2.1))
+coords.push(coordinates.new(mid - int(widthhh * 0.08), baseY + rangO*2.1))
+coords.push(coordinates.new(mid + int(widthhh * 0.06), baseY + rangO*2.1))
+coords.push(coordinates.new(mid + int(widthhh * 0.06), baseY + rangO*2.16))
+coords.push(coordinates.new(mid - int(widthhh * 0.08), baseY + rangO*2.16))
+coords.push(coordinates.new(mid - int(widthhh * 0.02), baseY + rangO*1.94))
+coords.push(coordinates.new(mid - int(widthhh * 0.02), baseY + rangO*1.96))
+coords.push(coordinates.new(mid - int(widthhh * 0.01), baseY + rangO*1.96))
+coords.push(coordinates.new(mid - int(widthhh * 0.01), baseY + rangO*1.94))
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.94))
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.96))
+coords.push(coordinates.new(mid + int(widthhh * 0.09), baseY + rangO*1.96))
+coords.push(coordinates.new(mid + int(widthhh * 0.09), baseY + rangO*1.94))
+coords.push(coordinates.new(mid + int(widthhh * 0.05), baseY + rangO*1.90))
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.90))
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.92))
+coords.push(coordinates.new(mid + int(widthhh * 0.05), baseY + rangO*1.92))
+coords.push(coordinates.new(mid - int(widthhh * 0.25), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.1), baseY + rangO*1.7))
+coords.push(coordinates.new(mid + int(widthhh * 0.0), baseY + rangO*1.8))
+coords.push(coordinates.new(mid + int(widthhh * 0.1), baseY + rangO*1.8))
+coords.push(coordinates.new(mid + int(widthhh * 0.2), baseY + rangO*1.7))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.2))
+coords.push(coordinates.new(mid - int(widthhh * 0.25), baseY + rangO*1.25))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.25))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.3))
+coords.push(coordinates.new(mid - int(widthhh * 0.25), baseY + rangO*1.3))
+coords.push(coordinates.new(mid - int(widthhh * -0.1), baseY + rangO*1.65))
+coords.push(coordinates.new(mid + int(widthhh * 0.15), baseY + rangO*1.65))
+coords.push(coordinates.new(mid + int(widthhh * 0.2), baseY + rangO*1.9))
+coords.push(coordinates.new(mid - int(widthhh * 0.095), baseY + rangO*1.9))
+coords.push(coordinates.new(mid - int(widthhh * 0.02), baseY + rangO*1.88))
+coords.push(coordinates.new(mid, baseY + rangO*1.85))
+coords.push(coordinates.new(mid + int(widthhh * 0.08), baseY + rangO*1.85))
+coords.push(coordinates.new(mid + int(widthhh * 0.1), baseY + rangO*1.88))
+coords.push(coordinates.new(mid + int(widthhh * 0.05), baseY + rangO*1.60))
+coords.push(coordinates.new(mid + int(widthhh * 0.05), baseY + rangO*1.45))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.38))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.48))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.38))
+coords.push(coordinates.new(mid + int(widthhh * 0.35), baseY + rangO*1.48))
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.46))
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.36))
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.36))
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.46))
+coords.push(coordinates.new(mid + int(widthhh * 0.44), baseY + rangO*1.41))
+coords.push(coordinates.new(mid - int(widthhh * 0), baseY + rangO*2))  // index 144
+coords.push(coordinates.new(mid + int(widthhh * 0.18), baseY + rangO*2)) // index 145
+coords.push(coordinates.new(mid + int(widthhh * 0.15), baseY + rangO*2.05)) // index 146
+coords.push(coordinates.new(mid + int(widthhh * 0.06), baseY + rangO*2.1)) // index 147
+coords.push(coordinates.new(mid - int(widthhh * 0.08), baseY + rangO*2.1)) // index 148
+coords.push(coordinates.new(mid - int(widthhh * 0.08), baseY + rangO*2.1)) // index 149
+coords.push(coordinates.new(mid + int(widthhh * 0.06), baseY + rangO*2.1)) // index 150
+coords.push(coordinates.new(mid + int(widthhh * 0.06), baseY + rangO*2.16)) // index 151
+coords.push(coordinates.new(mid - int(widthhh * 0.08), baseY + rangO*2.16)) // index 152
+coords.push(coordinates.new(mid - int(widthhh * 0.02), baseY + rangO*1.94)) // index 153
+coords.push(coordinates.new(mid - int(widthhh * 0.02), baseY + rangO*1.96)) // index 154
+coords.push(coordinates.new(mid - int(widthhh * 0.01), baseY + rangO*1.96)) // index 155
+coords.push(coordinates.new(mid - int(widthhh * 0.01), baseY + rangO*1.94)) // index 156
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.94)) // index 157
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.96)) // index 158
+coords.push(coordinates.new(mid + int(widthhh * 0.09), baseY + rangO*1.96)) // index 159
+coords.push(coordinates.new(mid + int(widthhh * 0.09), baseY + rangO*1.94)) // index 160
+coords.push(coordinates.new(mid + int(widthhh * 0.05), baseY + rangO*1.90)) // index 161
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.90)) // index 162
+coords.push(coordinates.new(mid + int(widthhh * 0.07), baseY + rangO*1.92)) // index 163
+coords.push(coordinates.new(mid + int(widthhh * 0.05), baseY + rangO*1.92)) // index 164
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.36)) // index 165
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.46)) // index 166
+coords.push(coordinates.new(mid + int(widthhh * 0.44), baseY + rangO*1.41)) // index 167
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.46)) // index 168
+coords.push(coordinates.new(mid + int(widthhh * 0.37), baseY + rangO*1.36)) // index 169
+
+// Function to find the bounding box of coordinates
+find_bounds(coords_array) =>
+    float min_x = array.get(coords_array, 0).x
+    float max_x = min_x
+    float min_y = array.get(coords_array, 0).y  
+    float max_y = min_y
+    
+    for i = 1 to array.size(coords_array) - 1
+        coord = array.get(coords_array, i)
+        min_x := math.min(min_x, coord.x)
+        max_x := math.max(max_x, coord.x)
+        min_y := math.min(min_y, coord.y)
+        max_y := math.max(max_y, coord.y)
+    
+    [min_x, max_x, min_y, max_y]
+
+// Function to rotate a coordinate around a reference point (x0, y0) by a given angle in degrees
+rotate_coordinate(coord, x0, y0, theta_deg, scale_factor) =>
+    // Convert the angle from degrees to radians
+    float theta = math.toradians(theta_deg)
+    // Calculate the difference in x and y from the reference point
+    float dx = (coord.x - x0) * scale_factor
+    float dy = coord.y - y0
+    // Calculate the new x and y positions using cosine and sine of the rotation angle
+    float x_rot = x0 + (dx * math.cos(theta) - dy * math.sin(theta)) / scale_factor
+    float y_rot = y0 + dx * math.sin(theta) + dy * math.cos(theta)
+    // Return the new rotated coordinate
+    coordinates.new(int(x_rot), y_rot)
+
+// Function to rotate all coordinates in an array around a reference point (x0, y0) by a given angle in degrees
+rotate_coords_array(coords_array, x0, y0, theta_deg) =>
+    // Find the bounding box
+    [min_x, max_x, min_y, max_y] = find_bounds(coords_array)
+    
+    // Calculate the aspect ratio (width/height)
+    float width = max_x - min_x
+    float height = max_y - min_y
+    float scale_factor = height / width
+    
+    // Iterate over each coordinate in the array
+    for i = 0 to array.size(coords_array) - 1
+        // Get the current coordinate
+        coord = array.get(coords_array, i)
+        // Rotate the coordinate with scaling
+        coord_rot = rotate_coordinate(coord, x0, y0, theta_deg, scale_factor)
+        // Update the array with the rotated coordinate
+        array.set(coords_array, i, coord_rot)
+
+// Calculate rotation angle based on price gradient over last 40 bars
+float current_close = ta.hma(close, 40)
+float prev_close = ta.hma(close, 40)[40]
+
+// Find the bounding box to get width and height
+[min_x, max_x, min_y, max_y] = find_bounds(coords)
+float width = max_x - min_x
+float height = max_y - min_y
+
+// Calculate the scale-adjusted dx and dy
+float dx = 40  // Fixed time difference
+float dy = (current_close - prev_close) * (width / height)  // Adjust dy by the aspect ratio
+
+// Calculate angle
+float angle = math.atan(dy/dx) * 180/math.pi
+// Make angle negative for uptrend, positive for downtrend
+angle := current_close > prev_close ? angle : angle
+
+// Check if it's the last bar state and perform the rotation
+if barstate.islast
+    // Rotate the coordinates array around the midpoint (mid, baseY)
+    rotate_coords_array(coords, mid, baseY, angle) // Now includes automatic scaling
+
+// --------------------------------------------------------
+// 1) Sleigh Shape
+// --------------------------------------------------------
+sleigh.push(chart.point.from_index(coords.get(0).x, coords.get(0).y))
+sleigh.push(chart.point.from_index(coords.get(1).x, coords.get(1).y))
+sleigh.push(chart.point.from_index(coords.get(2).x, coords.get(2).y))
+sleigh.push(chart.point.from_index(coords.get(3).x, coords.get(3).y))
+sleigh.push(chart.point.from_index(coords.get(4).x, coords.get(4).y))
+sleigh.push(chart.point.from_index(coords.get(5).x, coords.get(5).y))
+sleigh.push(chart.point.from_index(coords.get(6).x, coords.get(6).y))
+
+// --------------------------------------------------------
+// 2) Sleigh Skis
+// --------------------------------------------------------
+sleigh_legs.push(chart.point.from_index(coords.get(7).x, coords.get(7).y))
+sleigh_legs.push(chart.point.from_index(coords.get(8).x, coords.get(8).y))
+sleigh_legs.push(chart.point.from_index(coords.get(9).x, coords.get(9).y))
+sleigh_legs.push(chart.point.from_index(coords.get(10).x, coords.get(10).y))
+
+// --------------------------------------------------------
+// 3) Sleigh Handle
+// --------------------------------------------------------
+sleigh_handle.push(chart.point.from_index(coords.get(11).x, coords.get(11).y))
+sleigh_handle.push(chart.point.from_index(coords.get(12).x, coords.get(12).y))
+sleigh_handle.push(chart.point.from_index(coords.get(13).x, coords.get(13).y))
+sleigh_handle.push(chart.point.from_index(coords.get(14).x, coords.get(14).y))
+sleigh_handle.push(chart.point.from_index(coords.get(15).x, coords.get(15).y))
+sleigh_handle.push(chart.point.from_index(coords.get(16).x, coords.get(16).y))
+sleigh_handle.push(chart.point.from_index(coords.get(17).x, coords.get(17).y))
+sleigh_handle.push(chart.point.from_index(coords.get(18).x, coords.get(18).y))
+sleigh_handle.push(chart.point.from_index(coords.get(19).x, coords.get(19).y))
+sleigh_handle.push(chart.point.from_index(coords.get(20).x, coords.get(20).y))
+sleigh_handle.push(chart.point.from_index(coords.get(21).x, coords.get(21).y))
+
+// --------------------------------------------------------
+// 4) Bow Tie & Green Box (the "main" present)
+// --------------------------------------------------------
+
+// 4A) Red Bow Tie
+ribbon.push(chart.point.from_index(coords.get(22).x, coords.get(22).y))
+ribbon.push(chart.point.from_index(coords.get(23).x, coords.get(23).y))
+ribbon.push(chart.point.from_index(coords.get(24).x, coords.get(24).y))
+ribbon.push(chart.point.from_index(coords.get(25).x, coords.get(25).y))
+
+// 4B) Green Box
+squaresBack2.push(chart.point.from_index(coords.get(26).x, coords.get(26).y))
+squaresBack2.push(chart.point.from_index(coords.get(27).x, coords.get(27).y))
+squaresBack2.push(chart.point.from_index(coords.get(28).x, coords.get(28).y))
+squaresBack2.push(chart.point.from_index(coords.get(29).x, coords.get(29).y))
+
+// 4C) Ribbons on the green present
+present_ribbonH.push(chart.point.from_index(coords.get(30).x, coords.get(30).y))
+present_ribbonH.push(chart.point.from_index(coords.get(31).x, coords.get(31).y))
+present_ribbonH.push(chart.point.from_index(coords.get(32).x, coords.get(32).y))
+present_ribbonH.push(chart.point.from_index(coords.get(33).x, coords.get(33).y))
+
+present_ribbonV.push(chart.point.from_index(coords.get(34).x, coords.get(34).y))
+present_ribbonV.push(chart.point.from_index(coords.get(35).x, coords.get(35).y))
+present_ribbonV.push(chart.point.from_index(coords.get(36).x, coords.get(36).y))
+present_ribbonV.push(chart.point.from_index(coords.get(37).x, coords.get(37).y))
+
+// --------------------------------------------------------
+// 5) Additional Presents (four more) along the top
+// --------------------------------------------------------
+
+// PRESENT 2
+squaresPresent2.push(chart.point.from_index(coords.get(38).x, coords.get(38).y))
+squaresPresent2.push(chart.point.from_index(coords.get(39).x, coords.get(39).y))
+squaresPresent2.push(chart.point.from_index(coords.get(40).x, coords.get(40).y))
+squaresPresent2.push(chart.point.from_index(coords.get(41).x, coords.get(41).y))
+
+present2_ribbonH.push(chart.point.from_index(coords.get(42).x, coords.get(42).y))
+present2_ribbonH.push(chart.point.from_index(coords.get(43).x, coords.get(43).y))
+present2_ribbonH.push(chart.point.from_index(coords.get(44).x, coords.get(44).y))
+present2_ribbonH.push(chart.point.from_index(coords.get(45).x, coords.get(45).y))
+
+present2_ribbonV.push(chart.point.from_index(coords.get(46).x, coords.get(46).y))
+present2_ribbonV.push(chart.point.from_index(coords.get(47).x, coords.get(47).y))
+present2_ribbonV.push(chart.point.from_index(coords.get(48).x, coords.get(48).y))
+present2_ribbonV.push(chart.point.from_index(coords.get(49).x, coords.get(49).y))
+
+// PRESENT 3
+squaresPresent3.push(chart.point.from_index(coords.get(50).x, coords.get(50).y))
+squaresPresent3.push(chart.point.from_index(coords.get(51).x, coords.get(51).y))
+squaresPresent3.push(chart.point.from_index(coords.get(52).x, coords.get(52).y))
+squaresPresent3.push(chart.point.from_index(coords.get(53).x, coords.get(53).y))
+
+present3_ribbonH.push(chart.point.from_index(coords.get(54).x, coords.get(54).y))
+present3_ribbonH.push(chart.point.from_index(coords.get(55).x, coords.get(55).y))
+present3_ribbonH.push(chart.point.from_index(coords.get(56).x, coords.get(56).y))
+present3_ribbonH.push(chart.point.from_index(coords.get(57).x, coords.get(57).y))
+
+present3_ribbonV.push(chart.point.from_index(coords.get(58).x, coords.get(58).y))
+present3_ribbonV.push(chart.point.from_index(coords.get(59).x, coords.get(59).y))
+present3_ribbonV.push(chart.point.from_index(coords.get(60).x, coords.get(60).y))
+present3_ribbonV.push(chart.point.from_index(coords.get(61).x, coords.get(61).y))
+
+// PRESENT 4 (New)
+squaresPresent4.push(chart.point.from_index(coords.get(62).x, coords.get(62).y))
+squaresPresent4.push(chart.point.from_index(coords.get(63).x, coords.get(63).y))
+squaresPresent4.push(chart.point.from_index(coords.get(64).x, coords.get(64).y))
+squaresPresent4.push(chart.point.from_index(coords.get(65).x, coords.get(65).y))
+
+present4_ribbonH.push(chart.point.from_index(coords.get(66).x, coords.get(66).y))
+present4_ribbonH.push(chart.point.from_index(coords.get(67).x, coords.get(67).y))
+present4_ribbonH.push(chart.point.from_index(coords.get(68).x, coords.get(68).y))
+present4_ribbonH.push(chart.point.from_index(coords.get(69).x, coords.get(69).y))
+
+present4_ribbonV.push(chart.point.from_index(coords.get(70).x, coords.get(70).y))
+present4_ribbonV.push(chart.point.from_index(coords.get(71).x, coords.get(71).y))
+present4_ribbonV.push(chart.point.from_index(coords.get(72).x, coords.get(72).y))
+present4_ribbonV.push(chart.point.from_index(coords.get(73).x, coords.get(73).y))
+
+// PRESENT 5 (New)
+squaresPresent5.push(chart.point.from_index(coords.get(74).x, coords.get(74).y))
+squaresPresent5.push(chart.point.from_index(coords.get(75).x, coords.get(75).y))
+squaresPresent5.push(chart.point.from_index(coords.get(76).x, coords.get(76).y))
+squaresPresent5.push(chart.point.from_index(coords.get(77).x, coords.get(77).y))
+
+present5_ribbonH.push(chart.point.from_index(coords.get(78).x, coords.get(78).y))
+present5_ribbonH.push(chart.point.from_index(coords.get(79).x, coords.get(79).y))
+present5_ribbonH.push(chart.point.from_index(coords.get(80).x, coords.get(80).y))
+present5_ribbonH.push(chart.point.from_index(coords.get(81).x, coords.get(81).y))
+
+present5_ribbonV.push(chart.point.from_index(coords.get(82).x, coords.get(82).y))
+present5_ribbonV.push(chart.point.from_index(coords.get(83).x, coords.get(83).y))
+present5_ribbonV.push(chart.point.from_index(coords.get(84).x, coords.get(84).y))
+present5_ribbonV.push(chart.point.from_index(coords.get(85).x, coords.get(85).y))
+
+// --------------------------------------------------------------------
+// 8) Santa's Head, Torso, Belt, Beard, Hat
+// --------------------------------------------------------------------
+// Head (simple oval shape)
+santaHead.push(chart.point.from_index(coords.get(86).x, coords.get(86).y))
+santaHead.push(chart.point.from_index(coords.get(87).x, coords.get(87).y))
+santaHead.push(chart.point.from_index(coords.get(88).x, coords.get(88).y))
+santaHead.push(chart.point.from_index(coords.get(89).x, coords.get(89).y))
+
+// Hat Base (inverted trapezoid, shifted up)
+santaHatBase.push(chart.point.from_index(coords.get(90).x, coords.get(90).y))
+santaHatBase.push(chart.point.from_index(coords.get(91).x, coords.get(91).y))
+santaHatBase.push(chart.point.from_index(coords.get(92).x, coords.get(92).y))
+santaHatBase.push(chart.point.from_index(coords.get(93).x, coords.get(93).y))
+
+// Hat Trim
+santaHatTrim.push(chart.point.from_index(coords.get(94).x, coords.get(94).y))
+santaHatTrim.push(chart.point.from_index(coords.get(95).x, coords.get(95).y))
+santaHatTrim.push(chart.point.from_index(coords.get(96).x, coords.get(96).y))
+santaHatTrim.push(chart.point.from_index(coords.get(144).x, coords.get(144).y))  // Bottom left
+santaHatTrim.push(chart.point.from_index(coords.get(145).x, coords.get(145).y))  // Bottom right
+santaHatTrim.push(chart.point.from_index(coords.get(146).x, coords.get(146).y))   // Top middle right
+santaHatTrim.push(chart.point.from_index(coords.get(147).x, coords.get(147).y))   // Top right
+santaHatTrim.push(chart.point.from_index(coords.get(148).x, coords.get(148).y))  // Top left
+
+// Hat Pompom (circle approximation)
+santaHatPomPom.push(chart.point.from_index(coords.get(149).x, coords.get(149).y))  // Bottom left
+santaHatPomPom.push(chart.point.from_index(coords.get(150).x, coords.get(150).y))  // Bottom right
+santaHatPomPom.push(chart.point.from_index(coords.get(151).x, coords.get(151).y))  // Top right
+santaHatPomPom.push(chart.point.from_index(coords.get(152).x, coords.get(152).y))  // Top left
+
+// Santa's Eyes Left
+santaEyeLeft.push(chart.point.from_index(coords.get(153).x, coords.get(153).y))  // Bottom left
+santaEyeLeft.push(chart.point.from_index(coords.get(154).x, coords.get(154).y))  // Bottom right
+santaEyeLeft.push(chart.point.from_index(coords.get(155).x, coords.get(155).y))  // Top right
+santaEyeLeft.push(chart.point.from_index(coords.get(156).x, coords.get(156).y))  // Top left
+
+// Santa's Eyes Right
+santaEyeRight.push(chart.point.from_index(coords.get(157).x, coords.get(157).y))  // Bottom left  
+santaEyeRight.push(chart.point.from_index(coords.get(158).x, coords.get(158).y))  // Bottom right
+santaEyeRight.push(chart.point.from_index(coords.get(159).x, coords.get(159).y))  // Top right
+santaEyeRight.push(chart.point.from_index(coords.get(160).x, coords.get(160).y))  // Top left
+
+// Santa's Nose (circle approximation)
+santaNose.push(chart.point.from_index(coords.get(161).x, coords.get(161).y))  // Bottom left
+santaNose.push(chart.point.from_index(coords.get(162).x, coords.get(162).y))  // Bottom right
+santaNose.push(chart.point.from_index(coords.get(163).x, coords.get(163).y))  // Top right
+santaNose.push(chart.point.from_index(coords.get(164).x, coords.get(164).y))  // Top left
+
+// Torso coordinates with wider base:  
+santaTorso.push(chart.point.from_index(coords.get(115).x, coords.get(115).y))
+santaTorso.push(chart.point.from_index(coords.get(116).x, coords.get(116).y))
+santaTorso.push(chart.point.from_index(coords.get(117).x, coords.get(117).y))
+santaTorso.push(chart.point.from_index(coords.get(118).x, coords.get(118).y))
+santaTorso.push(chart.point.from_index(coords.get(119).x, coords.get(119).y))
+santaTorso.push(chart.point.from_index(coords.get(120).x, coords.get(120).y))
+
+// Belt
+santaBelt.push(chart.point.from_index(coords.get(121).x, coords.get(121).y))
+santaBelt.push(chart.point.from_index(coords.get(122).x, coords.get(122).y))
+santaBelt.push(chart.point.from_index(coords.get(123).x, coords.get(123).y))
+santaBelt.push(chart.point.from_index(coords.get(124).x, coords.get(124).y))
+
+// Simple trapezoid beard
+santaBeard.push(chart.point.from_index(coords.get(125).x, coords.get(125).y))
+santaBeard.push(chart.point.from_index(coords.get(126).x, coords.get(126).y))
+santaBeard.push(chart.point.from_index(coords.get(127).x, coords.get(127).y))
+santaBeard.push(chart.point.from_index(coords.get(128).x, coords.get(128).y))
+
+// Mouth (trapezoid)
+santaMouth.push(chart.point.from_index(coords.get(129).x, coords.get(129).y))
+santaMouth.push(chart.point.from_index(coords.get(130).x, coords.get(130).y))
+santaMouth.push(chart.point.from_index(coords.get(131).x, coords.get(131).y))
+santaMouth.push(chart.point.from_index(coords.get(132).x, coords.get(132).y))
+
+// --------------------------------------------------------------------
+// 9) Santa's Visible Hand (Red Sleeve, White Collar, Black Glove)
+// --------------------------------------------------------------------
+// Diagonal red sleeve with white cuff and black glove at the end
+    
+// 9A) Sleeve (red diagonal)
+santaHandSleeve.push(chart.point.from_index(coords.get(133).x, coords.get(133).y))
+santaHandSleeve.push(chart.point.from_index(coords.get(134).x, coords.get(134).y))
+santaHandSleeve.push(chart.point.from_index(coords.get(135).x, coords.get(135).y))
+santaHandSleeve.push(chart.point.from_index(coords.get(136).x, coords.get(136).y))
+
+// 9B) White cuff at the end of sleeve (diagonal rectangle)
+santaHandCollar.push(chart.point.from_index(coords.get(135).x, coords.get(135).y))
+santaHandCollar.push(chart.point.from_index(coords.get(136).x, coords.get(136).y))
+santaHandCollar.push(chart.point.from_index(coords.get(168).x, coords.get(168).y))
+santaHandCollar.push(chart.point.from_index(coords.get(169).x, coords.get(169).y))
+
+// 9C) Black glove at the tip (wider triangle)
+santaHandGlove.push(chart.point.from_index(coords.get(165).x, coords.get(165).y))
+santaHandGlove.push(chart.point.from_index(coords.get(166).x, coords.get(166).y))
+santaHandGlove.push(chart.point.from_index(coords.get(167).x, coords.get(167).y))
+
+// rudolfTorso
+rudolfTorso.push(chart.point.from_index(mid + int(widthhh * 3.91), baseY + rangO*1.489))
+rudolfTorso.push(chart.point.from_index(mid + int(widthhh * 3.91), baseY + rangO*0.98))
+rudolfTorso.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*0.98))
+rudolfTorso.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*1.489))
+
+//rudolfLegLeft
+rudolfLegLeft.push(chart.point.from_index(mid + int(widthhh * 3.93), baseY + rangO*0.98))
+rudolfLegLeft.push(chart.point.from_index(mid + int(widthhh * 3.86), baseY + rangO*0.489))
+rudolfLegLeft.push(chart.point.from_index(mid + int(widthhh * 4.01), baseY + rangO*0.489))
+rudolfLegLeft.push(chart.point.from_index(mid + int(widthhh * 4.08), baseY + rangO*0.98))
+
+//rudolfLegRight
+rudolfLegRight.push(chart.point.from_index(mid + int(widthhh * 4.83), baseY + rangO*0.98))
+rudolfLegRight.push(chart.point.from_index(mid + int(widthhh * 4.76), baseY + rangO*0.489))
+rudolfLegRight.push(chart.point.from_index(mid + int(widthhh * 4.91), baseY + rangO*0.489))
+rudolfLegRight.push(chart.point.from_index(mid + int(widthhh * 4.98), baseY + rangO*0.98))
+
+//rudolfNeck
+rudolfNeck.push(chart.point.from_index(mid + int(widthhh * 4.5), baseY + rangO*1.8))
+rudolfNeck.push(chart.point.from_index(mid + int(widthhh * 4.7), baseY + rangO*1.47))
+rudolfNeck.push(chart.point.from_index(mid + int(widthhh * 5), baseY + rangO*1.47))
+rudolfNeck.push(chart.point.from_index(mid + int(widthhh * 4.7), baseY + rangO*1.8))
+
+//rudolfHead
+rudolfHead.push(chart.point.from_index(mid + int(widthhh * 4.5), baseY + rangO*2.2))
+rudolfHead.push(chart.point.from_index(mid + int(widthhh * 4.5), baseY + rangO*1.8))
+rudolfHead.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*1.8))
+rudolfHead.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*2))
+
+//rudolfNose
+rudolfNose.push(chart.point.from_index(mid + int(widthhh * 4.95), baseY + rangO*2))
+rudolfNose.push(chart.point.from_index(mid + int(widthhh * 4.95), baseY + rangO*1.95))
+rudolfNose.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*1.95))
+rudolfNose.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*2)) 
+
+//rudolfMouth
+rudolfMouth.push(chart.point.from_index(mid + int(widthhh * 4.85), baseY + rangO*1.9))
+rudolfMouth.push(chart.point.from_index(mid + int(widthhh * 4.85), baseY + rangO*1.9))
+rudolfMouth.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*1.8))
+rudolfMouth.push(chart.point.from_index(mid + int(widthhh * 5.0), baseY + rangO*1.85)) 
+
+//rudolfEye
+rudolfEye.push(chart.point.from_index(mid + int(widthhh * 4.7), baseY + rangO*2.07))
+rudolfEye.push(chart.point.from_index(mid + int(widthhh * 4.7), baseY + rangO*2.03))
+rudolfEye.push(chart.point.from_index(mid + int(widthhh * 4.7), baseY + rangO*2.03))
+rudolfEye.push(chart.point.from_index(mid + int(widthhh * 4.7), baseY + rangO*2.07)) 
+
+//rudolfAntlers
+rudolfAntlers.push(chart.point.from_index(mid + int(widthhh * 4.5), baseY + rangO*2.2))
+rudolfAntlers.push(chart.point.from_index(mid + int(widthhh * 4.3), baseY + rangO*2.7))
+rudolfAntlers.push(chart.point.from_index(mid + int(widthhh * 4.5), baseY + rangO*2.5))
+rudolfAntlers.push(chart.point.from_index(mid + int(widthhh * 4.8), baseY + rangO*2.7))
+rudolfAntlers.push(chart.point.from_index(mid + int(widthhh * 4.6), baseY + rangO*2.4))
+rudolfAntlers.push(chart.point.from_index(mid + int(widthhh * 4.8), baseY + rangO*2.3))
+
+//rudolfLeash
+rudolfLeash.push(chart.point.from_index(coords.get(167).x, coords.get(167).y))
+rudolfLeash.push(chart.point.from_index(int(math.avg(mid + int(widthhh * 0.44), mid + int(widthhh * 3.95))), baseY + rangO*1.3))
+rudolfLeash.push(chart.point.from_index(mid + int(widthhh * 3.91), baseY + rangO*1.489))
+
+// --------------------------------------------------------
+// Draw everything as polylines
+// --------------------------------------------------------
+
+// 1) Sleigh Body
+sleighO.unshift(
+     polyline.new(sleigh, false, true, xloc.bar_index, line_color=sleigh_white_outline, fill_color=sleigh_red, line_width=3)
+ )
+
+// 2) Sleigh Skis
+sleigh_legsO.unshift(
+     polyline.new(sleigh_legs, false, false, xloc.bar_index, line_color=ski_color, line_width=7)
+ )
+
+// 3) Sleigh Handle
+sleigh_handleO.unshift(
+     polyline.new(sleigh_handle, false, false, xloc.bar_index, line_color=sleigh_handle_col, line_width=3, fill_color=sleigh_handle_col)
+ )
+
+// 4) Bow Tie & Green Box
+ribbonO.unshift(
+     polyline.new(ribbon, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+squaresBack2O.unshift(
+     polyline.new(squaresBack2, false, true, xloc.bar_index, line_color=present1_color, fill_color=present1_color, line_width=2)
+ )
+
+// 5) Ribbons on the green box
+present_ribbonHO.unshift(
+     polyline.new(present_ribbonH, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+present_ribbonVO.unshift(
+     polyline.new(present_ribbonV, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+
+// 6) Additional Present 2
+squaresPresent2O.unshift(
+     polyline.new(squaresPresent2, false, true, xloc.bar_index, line_color=color.new(present2_color, 0), fill_color=color.new(present2_color, 0), line_width=2)
+ )
+present2_ribbonHO.unshift(
+     polyline.new(present2_ribbonH, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+present2_ribbonVO.unshift(
+     polyline.new(present2_ribbonV, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+
+// 7) Additional Present 3
+squaresPresent3O.unshift(
+     polyline.new(squaresPresent3, false, true, xloc.bar_index, line_color=color.new(present3_color, 0), fill_color=color.new(present3_color, 0), line_width=2)
+ )
+present3_ribbonHO.unshift(
+     polyline.new(present3_ribbonH, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+present3_ribbonVO.unshift(
+     polyline.new(present3_ribbonV, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+
+// 8) Additional Present 4 
+squaresPresent4O.unshift(
+     polyline.new(squaresPresent4, false, true, xloc.bar_index, line_color=color.new(present4_color, 0), fill_color=color.new(present4_color, 0), line_width=2)
+ )
+present4_ribbonHO.unshift(
+     polyline.new(present4_ribbonH, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+present4_ribbonVO.unshift(
+     polyline.new(present4_ribbonV, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+
+// 9) Additional Present 5
+squaresPresent5O.unshift(
+     polyline.new(squaresPresent5, false, true, xloc.bar_index, line_color=color.new(present5_color, 0), fill_color=color.new(present5_color, 0), line_width=2)
+ )
+present5_ribbonHO.unshift(
+     polyline.new(present5_ribbonH, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+present5_ribbonVO.unshift(
+     polyline.new(present5_ribbonV, false, true, xloc.bar_index, line_color=ribbon_color, fill_color=ribbon_color, line_width=2)
+ )
+
+// 8) Draw Santa's Head, Torso, Belt, Beard, Hat
+santaHeadO.unshift(
+     polyline.new(santaHead, true, false, xloc.bar_index, line_color=#ffc6ad, fill_color=#ffc6ad, line_width=2)
+ )
+santaTorsoO.unshift(
+     polyline.new(santaTorso, true, false, xloc.bar_index, line_color=santa_outfit_red, fill_color=santa_outfit_red, line_width=2)
+ )
+santaBeltO.unshift(
+     polyline.new(santaBelt, false, true, xloc.bar_index, line_color=santa_belt, fill_color=santa_belt, line_width=2)
+ )
+santaBeardO.unshift(
+     polyline.new(santaBeard, false, true, xloc.bar_index, line_color=santa_beard, fill_color=santa_beard, line_width=2)
+ )
+santaMouthO.unshift(
+     polyline.new(santaMouth, true, false, xloc.bar_index, line_color=santa_outfit_outline, fill_color=santa_outfit_outline, line_width=2)
+ )
+santaHatBaseO.unshift(
+     polyline.new(santaHatBase, false, true, xloc.bar_index, line_color=santa_outfit_white, fill_color=santa_outfit_white, line_width=2)
+ )
+santaHatTrimO.unshift(
+     polyline.new(santaHatTrim, false, true, xloc.bar_index, line_color=santa_outfit_red, fill_color=santa_outfit_red, line_width=2)
+ )
+santaHatPomPomO.unshift(
+     polyline.new(santaHatPomPom, true, true, xloc.bar_index, line_color=santa_outfit_white, fill_color=santa_outfit_white, line_width=2)
+ )
+santaEyeLeftO.unshift(
+     polyline.new(santaEyeLeft, true, true, xloc.bar_index, line_color=santa_outfit_outline, fill_color=santa_outfit_outline, line_width=2)
+ )
+santaEyeRightO.unshift(
+     polyline.new(santaEyeRight, true, true, xloc.bar_index, line_color=santa_outfit_outline, fill_color=santa_outfit_outline, line_width=2)
+ )  
+santaNoseO.unshift(
+     polyline.new(santaNose, true, true, xloc.bar_index, line_color=santa_outfit_outline, fill_color=#ffc6ad, line_width=1)
+ )
+
+// 9) Draw Santa's Hand
+santaHandSleeveO.unshift(
+     polyline.new(santaHandSleeve, false, true, xloc.bar_index, line_color=santa_outfit_outline, fill_color=santa_outfit_red, line_width=2)
+ )
+santaHandCollarO.unshift(
+     polyline.new(santaHandCollar, false, true, xloc.bar_index, line_color=santa_outfit_white, fill_color=santa_outfit_white, line_width=2)
+ )
+santaHandGloveO.unshift(
+     polyline.new(santaHandGlove, true, true, xloc.bar_index, line_color=santa_gloves, fill_color=santa_gloves, line_width=2)
+ )
+
+// --------------------------------------------------------------------
+// Draw Rudolf
+// -------------------------------------------------------------------- 
+rudolfTorsoO.unshift(
+     polyline.new(rudolfTorso, false, true, xloc.bar_index, line_color=rudolf_color, fill_color=rudolf_color, line_width=2)
+ )
+
+rudolfLegLeftO.unshift(
+     polyline.new(rudolfLegLeft, false, true, xloc.bar_index, line_color=rudolf_outline_color, fill_color=rudolf_color, line_width=2)
+ )    
+
+rudolfLegRightO.unshift(
+     polyline.new(rudolfLegRight, false, true, xloc.bar_index, line_color=rudolf_outline_color, fill_color=rudolf_color, line_width=2)
+ )
+
+rudolfNeckO.unshift(
+     polyline.new(rudolfNeck, false, true, xloc.bar_index, line_color=rudolf_outline_color, fill_color=rudolf_color, line_width=2)
+ )
+rudolfHeadO.unshift(
+     polyline.new(rudolfHead, false, true, xloc.bar_index, line_color=rudolf_outline_color, fill_color=rudolf_color, line_width=2)
+ )  
+
+rudolfNoseO.unshift(
+     polyline.new(rudolfNose, true, true, xloc.bar_index, line_color=rudolf_nose, fill_color=rudolf_nose, line_width=2)
+ )
+
+rudolfMouthO.unshift(
+     polyline.new(rudolfMouth, false, true, xloc.bar_index, line_color=rudolf_outline_color, fill_color=rudolf_outline_color, line_width=2)
+ )
+
+rudolfEyeO.unshift(
+     polyline.new(rudolfEye, true, true, xloc.bar_index, line_color=rudolf_outline_color, fill_color=rudolf_outline_color, line_width=2)
+ )
+
+rudolfAntlersO.unshift(
+     polyline.new(rudolfAntlers, false, true, xloc.bar_index, line_color=rudolf_antler, fill_color=rudolf_antler, line_width=2)
+ )
+
+rudolfLeashO.unshift(
+     polyline.new(rudolfLeash, true, false, xloc.bar_index, line_color=rudolf_leash_color, line_width=2)
+ )  
+
+middle = math.avg(open, close)
+
+v1 = close-volatility*6
+v2 = math.min(close-volatility*20, ta.lowest(close-volatility*10, 200))
+v3 = close-volatility*4
+
+bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle",display = display.none)
+p1 = plot(v1, display = display.none)
+p2 = plot(v2, display = display.none)
+p3 = plot(v3, display = display.none)
+
+fill(bodyMiddle, p3, middle, v3, color.white, color.white)
+fill(p3, p1, v3, v1, color.gray, color.gray)
+fill(p1, p2, v1, v2, #3d3d3d, #3d3d3d)
+
+var snow = array.new_label()
+
+while snow.size() > 0
+    snow.shift().delete()
+
+for i = 1 to snow_density
+    lower_limit = baseY
+    upper_limit = high + volatility * snow_roof
+    left_limit = bar_index - snow_hor_range
+    right_limit = bar_index + snow_hor_range
+    snow.unshift(label.new(x = int(math.random(left_limit, right_limit)), y = math.random(lower_limit, upper_limit), text = "❄", textcolor = color.white, style = label.style_none))

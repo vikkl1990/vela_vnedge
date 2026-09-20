@@ -1,0 +1,79 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("HTF Trend Tracker [BigBeluga]", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+tf = input.timeframe("D", "Timeframe")
+
+bull_col = input.color(color.rgb(12, 193, 142), "✓", inline = "col")
+bear_col = input.color(color.red, "✕", inline = "col")
+mid_col  = input.color(color.rgb(121, 121, 121), "-", inline = "col")
+
+var line_1 = line(na)
+var line_2 = line(na)
+var color_trend = color(na)
+var trend       = bool(na)
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+draw_line(x1, x2, y, txt, color)=>
+    l = line.new(x1, y, x2, y, color = color, style = line.style_dashed)
+    label.delete(label.new(x1, y, txt, color = color(na), style = label.style_label_right)[1])
+    l
+
+
+var h = float(na)
+var l = float(na)
+var count = 0
+
+if not timeframe.change(tf)
+    count +=1
+    h := ta.highest(count)
+    l := ta.lowest(count)
+
+if timeframe.change(tf)
+    count := 0
+    line_1 := draw_line(bar_index, bar_index, h[1], tf + " High", bear_col)
+    line_2 := draw_line(bar_index, bar_index, l[1], tf + " Low", bull_col)
+
+line_1.set_x2(bar_index)
+line_2.set_x2(bar_index)
+
+if barstate.islast
+    line.delete(line.new(line_1.get_x1(), line_1.get_y1(), bar_index+15, line_1.get_y1(), color = bear_col, style = line.style_arrow_right)[1])
+    line.delete(line.new(line_2.get_x1(), line_2.get_y1(), bar_index+15, line_2.get_y1(), color = bull_col, style = line.style_arrow_right)[1])
+
+mid = math.avg(line_1.get_y1(),line_2.get_y1())
+
+if ta.crossover(close, line_1.get_y1()) and barstate.isconfirmed
+    color_trend := bull_col
+    trend := true
+if ta.crossunder(close, line_2.get_y1()) and barstate.isconfirmed
+    color_trend := bear_col
+    trend := false
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+if trend and trend != trend[1]
+    label.new(bar_index, low - ta.sma(high-low, 100), "✓", style = label.style_label_up, size = size.tiny, color = bull_col)
+if not trend and trend != trend[1]
+    label.new(bar_index, high + ta.sma(high-low, 100), "✕", style = label.style_label_down, size = size.tiny, color = bear_col)
+
+high_sdv = (high- mid) 
+low_sdv = (mid - low) 
+
+color_bars =  
+       trend
+     ? color.from_gradient(high_sdv, 0, ta.highest(high_sdv, 100), mid_col, bull_col) 
+     : color.from_gradient(low_sdv, 0, ta.highest(low_sdv,100), mid_col, bear_col) 
+ 
+
+plotcandle(open, high, low, close, title ='Candles', color = color_bars, wickcolor=color_bars, bordercolor = color_bars)
+plot(mid, "Trend", color = color_trend, linewidth = 2)
+// }

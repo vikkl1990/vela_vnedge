@@ -1,0 +1,56 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Trend Continuation Signals [AlgoAlpha]", shorttitle = "AlgoAlpha - ♾️ Continuation Signals", overlay = true, timeframe = "", timeframe_gaps = false)
+mult = input(2.0, "Volatility Bands Multiplier")
+reductionFactor = input(6.0, "Volatility Bands reductionFactor", tooltip = "Increase this to make the bands thinner")
+malen = input.int(93, "Trend Period")
+malen1 = input.int(50, "Fast Length")
+green = input(#00ffbb)
+red = input(#ff1100)
+
+v1 = ta.hma(hl2, malen)
+v2 = ta.hma(close, malen1)
+dev = mult * ta.stdev(hl2, malen)
+upper = v1 + dev
+lower = v1 - dev
+
+dev1 = mult/reductionFactor * ta.stdev(upper, malen)
+upperu = upper + dev1
+loweru = upper - dev1
+
+dev2 = mult/reductionFactor * ta.stdev(lower, malen)
+upperl = lower + dev2
+lowerl = lower - dev2
+
+uptrend = v1 > v1[1]
+downtrend = v1 < v1[1]
+neutral = (uptrend and v2 < v1) or (downtrend and v2 > v1)
+
+plot(v1, color = neutral ? color.gray : downtrend ? red : uptrend ? green : na, linewidth = 3, title = "Trend")
+plot(v2, display = display.none)
+u = plot(upper, color = color.gray)
+l = plot(lower, color = color.gray)
+
+u1 = plot(upperu, color = color.new(red, 50))
+u2 = plot(loweru, color = color.new(red, 90))
+
+l1 = plot(upperl, color = color.new(green, 90))
+l2 = plot(lowerl, color = color.new(green, 50))
+
+plotchar(uptrend and ta.crossover(close, v2), "Bullish Continuation", "▲", location.belowbar, green, size = size.tiny)
+plotchar(downtrend and ta.crossunder(close, v2), "Bearish Continuation", "▼", location.abovebar, red, size = size.tiny)
+//bgcolor(uptrend and hl2 < v1 ? color.new(green, 90) : downtrend and hl2 > v1 ? color.new(red, 90) : na)
+
+fill(u1, u, color.new(red, 50))
+fill(u2, u, color.new(red, 90))
+fill(l1, l, color.new(green, 90))
+fill(l2, l, color.new(green, 50))
+
+//Alerts
+alertcondition(uptrend and ta.crossover(close, v2), "Bullish Continuation", "Bullish Continuation Signal")
+alertcondition(downtrend and ta.crossunder(close, v2), "Bearish Continuation", "Bearish Continuation Signal")
+
+alertcondition(ta.crossover(v1, v1[1]), "Bullish Trend", "Bullish Trend Signal")
+alertcondition(ta.crossunder(v1, v1[1]), "Bearish Trend", "Bearish Trend Signal")

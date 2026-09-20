@@ -1,0 +1,177 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Multi-Asset SuperTrend Map [BigBeluga]"
+            , overlay = true
+            , max_lines_count = 500
+            , max_boxes_count = 50
+            , max_bars_back = 100
+            , max_polylines_count = 100
+            , calc_bars_count = 5000)
+
+import TradingView/ta/12
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+var grpMap = "Map Configuration"
+offset = input.int(10, "Horizontal Offset", minval = 0, group = grpMap, tooltip = "Distance (in bars) between the current price and the start of the Multi-Asset Map.")
+period = 60
+
+var grpST = "SuperTrend Engine"
+atrPeriod = input.int(25, "ATR Length", group = grpST, minval = 1, tooltip = "ATR lookback for volatility calculation.")
+factor = input.float(2.0, "ATR Factor", group = grpST, minval = 1, maxval = 5, step = 0.01, tooltip = "Multiplier for the SuperTrend bands.")
+symBull = input.color(color.new(color.lime, 0), "Main Bull Color", inline = "st", group = grpST)
+symBear = input.color(color.new(#ff3535, 0), "Main Bear Color", inline = "st", group = grpST)
+useTrend = input.bool(true, "Trend-Based Coloring", group = grpST, tooltip = "Apply SuperTrend colors to the main chart candles and map blocks.")
+
+var grpAssets = "Asset Selection"
+// Asset 1
+showSym4 = input.bool(true, "", inline = "a4", group = grpAssets)
+sym4     = input.symbol("BTCUSDT", "Asset 1", inline = "a4", group = grpAssets)
+sym4Bull = input.color(color.lime, "", inline = "a4", group = grpAssets)
+sym4Bear = input.color(#ff3535, "", inline = "a4", group = grpAssets)
+
+// Asset 2
+showSym3 = input.bool(true, "", inline = "a3", group = grpAssets)
+sym3     = input.symbol("ETHUSDT", "Asset 2", inline = "a3", group = grpAssets)
+sym3Bull = input.color(color.lime, "", inline = "a3", group = grpAssets)
+sym3Bear = input.color(#ff3535, "", inline = "a3", group = grpAssets)
+
+// Asset 3
+showSym2 = input.bool(true, "", inline = "a2", group = grpAssets)
+sym2     = input.symbol("XRPUSDT", "Asset 3", inline = "a2", group = grpAssets)
+sym2Bull = input.color(color.lime, "", inline = "a2", group = grpAssets)
+sym2Bear = input.color(#ff3535, "", inline = "a2", group = grpAssets)
+
+// Asset 4
+showSym1 = input.bool(true, "", inline = "a1", group = grpAssets)
+sym1     = input.symbol("SOLUSDT", "Asset 4", inline = "a1", group = grpAssets)
+sym1Bull = input.color(color.lime, "", inline = "a1", group = grpAssets)
+sym1Bear = input.color(#ff3535, "", inline = "a1", group = grpAssets)
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+[superT, direct] = ta.supertrend(factor, atrPeriod)
+
+// Candle Coloring Logic for Main Chart
+candleCol = useTrend ? (direct == -1 ? symBull : symBear) : (close > open ? symBull : symBear)
+
+mapScaled(price, baseClose, anchorClose, k) =>
+    anchorClose + (price - baseClose) * k
+
+type Data
+    float superLine 
+    float h 
+    float l
+    float o 
+    float c 
+    bool direct
+
+atr = ta.atr(200)
+dist = ta.sma(high-low, 100)
+
+mtaSuper(sym, vOffset, hOffset, bullC, bearC, isActive)=>
+    float currentMax = vOffset
+    float currentMin = vOffset
+    
+    if isActive
+        [s, dir, c, o, h, l, v] = request.security(sym, "", [superT, direct, close, open, high, low, volume])
+
+        atrLen = 200
+        atrChart = ta.atr(atrLen)
+        atrSym2  = request.security(sym, timeframe.period, ta.atr(atrLen))
+
+        lastClose = request.security(sym, timeframe.period, close)
+
+        k = atrSym2 != 0.0 ? atrChart / atrSym2 : 1.0
+
+        if barstate.islast
+            anchorClose = vOffset
+            arrayData = array.new<Data>(period)
+            arrayP = array.new<chart.point>(period)
+            
+            delta = 0.
+            var lines = array.new<line>()
+            for ln in lines
+                ln.delete()
+            lines.clear()
+
+            maxVal = mapScaled(h[0], c, anchorClose, k)
+            minVal = mapScaled(l[0], c, anchorClose, k)
+
+            for i = 0 to period - 1
+                baseClose = c
+                ma = mapScaled(h[i], baseClose, anchorClose, k)
+                mi = mapScaled(l[i], baseClose, anchorClose, k)
+
+                arrayData.set(i, Data.new(
+                  mapScaled(s[i], baseClose, anchorClose, k),
+                  ma, mi,
+                  mapScaled(o[i], baseClose, anchorClose, k),
+                  mapScaled(c[i], baseClose, anchorClose, k),
+                  dir[i] == -1
+                ))
+
+                delta += c[i] > o[i] ? v[i] : -v[i]
+                maxVal := math.max(ma, maxVal)
+                minVal := math.min(mi, minVal)
+
+            arrayData.reverse()
+            shift = vOffset - minVal
+
+            for i = 0 to period - 1
+                d = arrayData.get(i)
+                col = useTrend ? (d.c < d.superLine ? bearC : bullC) : (d.c < d.o ? bearC : bullC)
+
+                wick = line.new(bar_index+hOffset+i, d.h+shift, bar_index+hOffset+i, d.l+shift, color = col)
+                body = line.new(bar_index+hOffset+i, d.o+shift, bar_index+hOffset+i, d.c+shift, width = 3, color = col)
+
+                lines.push(wick)
+                lines.push(body)
+                arrayP.set(i, chart.point.from_index(bar_index+hOffset+i, d.superLine+shift))
+
+            p = polyline.new(arrayP, line_color = chart.fg_color)
+
+            topEdge = maxVal + shift 
+            botEdge = minVal + shift 
+            lastD = arrayData.last()
+            direction = lastD.c < lastD.superLine 
+
+            b = box.new(bar_index+hOffset-1, topEdge+atr, bar_index+period+hOffset, botEdge-atr
+                     , border_color = color.new(color.gray, 50), bgcolor = color.new(direction ? bearC : bullC, 95)
+                     , text = (direction ? "▼ " : "▲ ") + str.split(sym, ":").last() + ": " + str.tostring(lastClose, "#.#####")
+                     , text_halign = text.align_right, text_valign = text.align_top, text_size = size.normal, text_color = direction ? bearC : bullC)
+
+            b1 = box.new(bar_index+hOffset-1, topEdge+atr, bar_index+period+hOffset, botEdge-atr 
+                     , border_color = color.new(chart.bg_color, 100), bgcolor = color(na)
+                     , text_valign = text.align_bottom, text_halign = text.align_right
+                     , text = "Δ " + str.tostring(delta, format.volume), text_size = size.normal, text_color = delta < 0 ? bearC : bullC)
+
+            box.delete(b[1]), box.delete(b1[1]), polyline.delete(p[1])
+            currentMax := topEdge+atr
+            currentMin := botEdge-atr
+    
+    [currentMax, currentMin]
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+// Plot Candles for Main Chart
+plotcandle(open, high, low, close, "Trend Candles", color = candleCol, wickcolor = candleCol, bordercolor = candleCol)
+
+// Calculate and stack the maps
+[max1, min1] = mtaSuper(sym1, close-dist*12, offset, sym1Bull, sym1Bear, showSym1)
+[max2, min2] = mtaSuper(sym2, (showSym1 ? max1 : (close-dist*12)) + atr, offset, sym2Bull, sym2Bear, showSym2)
+[max3, min3] = mtaSuper(sym3, (showSym2 ? max2 : (showSym1 ? max1 : (close-dist*12))) + atr, offset, sym3Bull, sym3Bear, showSym3)
+[max4, min4] = mtaSuper(sym4, (showSym3 ? max3 : (showSym2 ? max2 : (showSym1 ? max1 : (close-dist*12)))) + atr, offset, sym4Bull, sym4Bear, showSym4)
+
+// SuperTrend line and fill
+ps = plot(direct != direct[1] ? float(na) : superT, "SuperTrend Line", style = plot.style_linebr, color = direct == -1 ? symBull : symBear, linewidth = 2)
+pp = plot(hl2, "Median Price", editable = false, display = display.none)
+fill(ps, pp, superT, hl2, color.new(direct == -1 ? symBull : symBear, 85), color(na), "SuperTrend Fill")
+// }

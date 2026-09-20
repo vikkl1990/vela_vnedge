@@ -1,0 +1,492 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © BigBeluga
+//@version=6
+
+indicator("Volume DNA: Heatmap [BigBeluga]", overlay = true, max_boxes_count = 500, max_labels_count = 500, calc_bars_count = 2000)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+int   volLengthInput    = input.int(20,   "Volume Lookback Length",
+     minval  = 5, maxval = 200,
+     tooltip = "Number of bars used to calculate the rolling mean and standard deviation of volume. Higher = smoother baseline, less sensitive to short spikes.",
+     group   = "DNA Engine")
+
+int   spreadLengthInput = input.int(20,   "Spread Lookback Length",
+     minval  = 5, maxval = 200,
+     tooltip = "Number of bars used to calculate the rolling mean and standard deviation of the High-Low price spread. Controls how 'wide' or 'narrow' a spread is judged.",
+     group   = "DNA Engine")
+
+float volThreshInput    = input.float(1.5,"Volume Std Dev Threshold",
+     minval  = 0.5, maxval = 4.0, step = 0.1,
+     tooltip = "Z-score threshold above which volume is classified as 'High'. A value of 1.5 means volume must be 1.5 standard deviations above the mean to trigger Absorption or Effort.",
+     group   = "DNA Engine")
+
+float spreadThreshInput = input.float(1.0,"Spread Std Dev Threshold",
+     minval  = 0.5, maxval = 4.0, step = 0.1,
+     tooltip = "Z-score multiplier used to define 'Wide' spread. A lower value makes the wide-spread condition easier to trigger. Affects Effort and Exhaustion classification.",
+     group   = "DNA Engine")
+
+bool  showAbsorption    = input.bool(true,     "Absorption",
+     inline  = "abs",
+     tooltip = "Toggle Absorption bars on/off. Absorption = High volume + Narrow spread. Signals institutional limit orders absorbing market flow. Color applies to candles, glow, cloud and table.",
+     group   = "DNA Types")
+color absorptionColorIn = input.color(#ff7b00, "",
+     inline  = "abs",
+     group   = "DNA Types")
+
+bool  showEffort        = input.bool(true,     "Effort  Bull/Bear",
+     inline  = "eff",
+     tooltip = "Toggle Effort bars on/off. Effort = High volume + Wide spread. Left color = Bullish Effort (green candle), Right color = Bearish Effort (red candle). Signals aggressive trend continuation.",
+     group   = "DNA Types")
+color effortBullColorIn = input.color(color.aqua, "",
+     inline  = "eff",
+     group   = "DNA Types")
+color effortBearColorIn = input.color(#e91e63, "",
+     inline  = "eff",
+     group   = "DNA Types")
+
+bool  showExhaustion    = input.bool(true,     "Exhaustion",
+     inline  = "exh",
+     tooltip = "Toggle Exhaustion bars on/off. Exhaustion = Low volume + Wide spread. Indicates a lack of liquidity behind a price move — often precedes reversals or pullbacks.",
+     group   = "DNA Types")
+color exhaustionColorIn = input.color(#FFD600, "",
+     inline  = "exh",
+     group   = "DNA Types")
+
+bool  showStagnation    = input.bool(true,     "Stagnation",
+     inline  = "stg",
+     tooltip = "Toggle Stagnation bars on/off. Stagnation = Low volume + Narrow spread. Market is in equilibrium with no directional conviction. Often seen during consolidation or low-interest periods.",
+     group   = "DNA Types")
+color stagnationColorIn = input.color(#787B86, "",
+     inline  = "stg",
+     group   = "DNA Types")
+
+
+
+bool  showGlowInput    = input.bool(true,  "Show Ghost Glow",
+     tooltip = "Renders a semi-transparent wider candle behind each classified DNA bar to create a glowing aura effect. Helps visually distinguish DNA bars from normal price action.",
+     group   = "Visuals")
+
+bool  showCloudsInput  = input.bool(true,  "Show Liquidity Clouds",
+     tooltip = "Draws a transparent box zone over Absorption bars extending N bars to the right. Marks where institutional limit orders may be resting as a visual support/resistance cloud.",
+     group   = "Visuals")
+
+bool  showBarcodeInput = input.bool(true,  "Show DNA Barcode Tape",
+     tooltip = "Displays a vertical heatmap table on the right side of the chart showing the DNA type and volume of the last N bars. Acts as a real-time institutional activity tape.",
+     group   = "Visuals")
+
+bool  showSignalsInput = input.bool(true,  "Show Signal Shapes",
+     tooltip = "Plots circle markers on Effort and Exhaustion bars. Size and color intensity scale with the volume Z-score. Absorption signals are shown inside the Liquidity Cloud box instead.",
+     group   = "Visuals")
+
+bool  hidenormalCandles = input.bool(false,  "Hide normal candles",
+     tooltip = "Hides normal candles that are not falling into any of the DNA categories",
+     group   = "Visuals")
+
+    
+int   cloudExtendInput = input.int(10,     "Cloud Extension (bars)",
+     minval  = 1, maxval = 50,
+     tooltip = "How many bars to the right the Absorption Liquidity Cloud box extends. Larger values create wider zones that remain visible longer as price moves forward.",
+     group   = "Visuals")
+
+int   tapeRowsInput    = input.int(20,     "Barcode Tape Rows",
+     minval  = 5, maxval = 30,
+     tooltip = "Number of recent bars shown in the DNA Barcode Tape table. Each row represents one confirmed bar. Newest bar appears at the top.",
+     group   = "Visuals")
+
+string barcodePos = input.string("Middle Right", "Barcode Table Position",
+     options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"],
+     tooltip = "Sets the screen position of the DNA Barcode Tape table.",
+     group   = "Barcode Table")
+string barcodeSizeInput = input.string("Small", "Barcode Table Text Size",
+     options = ["Tiny", "Small", "Normal", "Large"],
+     tooltip = "Controls the text size inside the DNA Barcode Tape table cells.",
+     group   = "Barcode Table")
+
+string statsPos = input.string("Top Right", "Stats Table Position",
+     options = ["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"],
+     tooltip = "Sets the screen position of the Volume DNA Stats table.",
+     group   = "Stats Table")
+string statsSizeInput = input.string("Small", "Stats Table Text Size",
+     options = ["Tiny", "Small", "Normal", "Large"],
+     tooltip = "Controls the text size inside the Stats table cells.",
+     group   = "Stats Table")
+
+string themeInput = input.string("Dark", "Color Theme",
+     options = ["Dark", "Light"],
+     tooltip = "Switches the table and UI backgrounds between Dark mode (#0D1117 base) and Light mode (#F5F5F5 base). Does not affect DNA candle or signal colors.",
+     group   = "Theme")
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+bool isDark = themeInput == "Dark"
+
+color absorptionBase  = absorptionColorIn
+color absorptionCloud = color.new(absorptionBase, 82)
+
+color effortBullBase = effortBullColorIn
+color effortBearBase = effortBearColorIn
+
+color exhaustionBase = exhaustionColorIn
+color stagnationBase = stagnationColorIn
+
+color bgTable = isDark ? color.new(#0D1117, 10) : color.new(#F5F5F5, 10)
+color fgText  = isDark ? #E0E0E0 : #212121
+
+resolvePos(string p) =>
+    p == "Top Left"       ? position.top_left     :
+     p == "Top Center"    ? position.top_center    :
+     p == "Top Right"     ? position.top_right     :
+     p == "Middle Left"   ? position.middle_left   :
+     p == "Middle Center" ? position.middle_center :
+     p == "Middle Right"  ? position.middle_right  :
+     p == "Bottom Left"   ? position.bottom_left   :
+     p == "Bottom Center" ? position.bottom_center :
+     position.bottom_right
+
+resolveSize(string s) =>
+    s == "Tiny"   ? size.tiny   :
+     s == "Small"  ? size.small  :
+     s == "Normal" ? size.normal :
+     size.large
+
+string barcodePosition = resolvePos(barcodePos)
+string statsPosition   = resolvePos(statsPos)
+string barcodeCellSize = resolveSize(barcodeSizeInput)
+string statsCellSize   = resolveSize(statsSizeInput)
+
+float volMean = ta.sma(volume, volLengthInput)
+float volStd  = ta.stdev(volume, volLengthInput)
+float volZ    = volStd > 0 ? (volume - volMean) / volStd : 0.0
+
+float spread     = high - low
+float spreadMean = ta.sma(spread, spreadLengthInput)
+float spreadStd  = ta.stdev(spread, spreadLengthInput)
+float spreadZ    = spreadStd > 0 ? (spread - spreadMean) / spreadStd : 0.0
+
+bool highVol      = volZ    >=  volThreshInput
+bool lowVol       = volZ    <= -volThreshInput * 0.3
+bool wideSpread   = spreadZ >=  spreadThreshInput * 0.5
+bool narrowSpread = spreadZ <= 0.0
+
+bool isBullishBar = close >= open
+
+bool rawAbsorption = highVol and narrowSpread
+bool rawEffort     = highVol and wideSpread and not rawAbsorption
+bool rawExhaustion = lowVol  and wideSpread
+bool rawStagnation = lowVol  and not wideSpread and not rawExhaustion
+
+bool isAbsorption = rawAbsorption and showAbsorption
+bool isEffort     = rawEffort     and showEffort
+bool isEffortBull = isEffort and isBullishBar
+bool isEffortBear = isEffort and not isBullishBar
+bool isExhaustion = rawExhaustion and showExhaustion
+bool isStagnation = rawStagnation and showStagnation
+
+color effortBase = isEffortBull ? effortBullBase : effortBearBase
+
+int dnaCode = isAbsorption ? 1 : isEffortBull ? 2 : isEffortBear ? 5 : isExhaustion ? 3 : isStagnation ? 4 : 0
+
+float glowExpand = (high - low) * 0.2
+
+colorNA = hidenormalCandles ? chart.bg_color : color(na)
+
+
+color glowBorderColor = isAbsorption ? color.new(absorptionBase, 70) :
+     isEffort          ? color.new(effortBase, 70)      :
+     isExhaustion      ? color.new(exhaustionBase, 70)  :
+     isStagnation      ? color.new(stagnationBase, 70)   : color(na)
+
+color glowBodyColor = isAbsorption ? color.new(absorptionBase, 78) :
+     isEffort        ? color.new(effortBase, 78)      :
+     isExhaustion    ? color.new(exhaustionBase, 78)  :
+     isStagnation    ? color.new(stagnationBase, 78)   : color(na)
+
+bool showGlowBar = showGlowInput and dnaCode != 0
+
+color candleBody = isAbsorption ? color.new(absorptionBase, 20) :
+     isEffortBull               ? color.new(effortBullBase, 20)  :
+     isEffortBear               ? color.new(effortBearBase, 20)  :
+     isExhaustion               ? color.new(exhaustionBase, 20)  :
+     isStagnation               ? color.new(stagnationBase, 0)  : colorNA
+
+color candleWick = isAbsorption  ? absorptionBase  :
+     isEffortBull               ? effortBullBase   :
+     isEffortBear               ? effortBearBase   :
+     isExhaustion               ? exhaustionBase   :
+     isStagnation               ? stagnationBase   : colorNA
+
+dnaColor(int code) =>
+    code == 1 ? absorptionBase :
+     code == 2 ? effortBullBase :
+     code == 5 ? effortBearBase :
+     code == 3 ? exhaustionBase :
+     code == 4 ? stagnationBase :
+     color.new(isDark ? #1E2130 : #CFD8DC, 20)
+
+dnaLabel(int code) =>
+    code == 1 ? "ABS"  :
+     code == 2 ? "EFF+" :
+     code == 5 ? "EFF-" :
+     code == 3 ? "EXH"  :
+     code == 4 ? "STG"  : "..."
+
+dnaTooltip(int code) =>
+    code == 1 ? "ABSORPTION\nHigh volume + Narrow spread.\nInstitutional limit orders absorbing market flow.\nPotential support or resistance zone."           :
+     code == 2 ? "EFFORT BULLISH\nHigh volume + Wide spread on a bullish candle.\nAggressive buying pressure driving price up.\nTrend continuation signal."    :
+     code == 5 ? "EFFORT BEARISH\nHigh volume + Wide spread on a bearish candle.\nAggressive selling pressure driving price down.\nTrend continuation signal." :
+     code == 3 ? "EXHAUSTION\nLow volume + Wide spread.\nPrice moving on thin liquidity.\nOften precedes a reversal or pullback."                              :
+     code == 4 ? "STAGNATION\nLow volume + Narrow spread.\nMarket in equilibrium with no directional conviction.\nTypically seen during consolidation."        : ""
+
+volShort(float v) =>
+    v >= 1000000000 ? str.tostring(math.round(v / 1000000000, 1), "#.#") + "B" :
+     v >= 1000000    ? str.tostring(math.round(v / 1000000, 1),    "#.#") + "M" :
+     v >= 1000       ? str.tostring(math.round(v / 1000, 1),       "#.#") + "K" :
+     str.tostring(int(v))
+
+var array<int>   dnaHistory = array.new<int>(tapeRowsInput, 0)
+var array<float> volHistory = array.new<float>(tapeRowsInput, 0.0)
+
+if barstate.isconfirmed
+    dnaHistory.push(dnaCode)
+    volHistory.push(volume)
+    if dnaHistory.size() > tapeRowsInput
+        dnaHistory.shift()
+    if volHistory.size() > tapeRowsInput
+        volHistory.shift()
+
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+bodymax = math.max(close, open)
+bodymin = math.min(close, open)
+
+plotcandle(
+     showGlowBar ? bodymax + glowExpand : na,
+     showGlowBar ? bodymax : na,
+     showGlowBar ? bodymin  : na,
+     showGlowBar ? bodymin - glowExpand : na,
+     title         = "Ghost Glow",
+     color         = glowBodyColor,
+     wickcolor     = glowBorderColor,
+     bordercolor   = glowBorderColor,
+     force_overlay = true
+     )
+
+plotcandle(open, high, low, close,
+     title         = "DNA Candle",
+     color         = candleBody,
+     wickcolor     = candleWick,
+     bordercolor   = candleWick,
+     force_overlay = true
+     )
+
+if showCloudsInput and isAbsorption
+    float cloudTop    = math.max(open, close) + (high - low) * 0.1
+    float cloudBottom = math.min(open, close) - (high - low) * 0.1
+    string absText    = "ABS  " + str.tostring(volume, format.volume)
+    box.new(
+         left          = bar_index,
+         top           = cloudTop,
+         right         = bar_index + cloudExtendInput,
+         bottom        = cloudBottom,
+         bgcolor       = absorptionCloud,
+         border_color  = color.new(absorptionBase, 60),
+         border_width  = 0,
+         text          = absText,
+         text_color    = absorptionBase,
+         text_size     = size.small,
+         text_halign   = text.align_center,
+         text_valign   = text.align_center,
+         force_overlay = true
+         )
+
+if showSignalsInput and (isEffort or isExhaustion)
+    color rawColor = isEffortBull ? effortBullBase :
+         isEffortBear ? effortBearBase :
+         exhaustionBase
+
+    string dnaTag = isEffortBull ? "Effort UP " + str.tostring(volume, format.volume) :
+         isEffortBear ? "Effort DOWN " + str.tostring(volume, format.volume)           :
+         "Exhaustion " + str.tostring(volume, format.volume)
+
+    string labelSize = volZ < 2.0 ? size.tiny  :
+         volZ < 3.0              ? size.small  :
+         volZ < 4.0              ? size.normal :
+         size.large
+
+    int labelTransp = volZ < 2.0 ? 60 :
+         volZ < 3.0             ? 35  :
+         volZ < 4.0             ? 15  : 0
+
+    color labelColor = color.new(rawColor, labelTransp)
+
+    label.new(
+         bar_index,
+         hl2,
+         "",
+         color         = labelColor,
+
+         textcolor     = color(na),
+         style         = label.style_circle,
+         size          = labelSize,
+         force_overlay = true,
+         tooltip       = dnaTag
+         )
+
+    label.new(
+         bar_index,
+         hl2,
+         str.tostring(volume, format.volume),
+         color         = color.new(color.black, 100),
+
+         textcolor     = chart.fg_color,
+         style         = label.style_label_center,
+         size          = labelSize,
+         force_overlay = true,
+         tooltip       = dnaTag
+         )
+
+var table barcodeTable = table.new(
+     position     = barcodePosition,
+     columns      = 2,
+     rows         = tapeRowsInput + 1,
+     bgcolor      = bgTable,
+     border_color = color.new(chart.fg_color, 90),
+     border_width = 1,
+     frame_color  = color.new(chart.fg_color, 50),
+     frame_width  = 2
+     )
+
+if barstate.islast and showBarcodeInput
+    table.cell(barcodeTable, 0, 0, "DNA",
+         text_color  = color.new(absorptionBase, 0),
+         text_size   = barcodeCellSize,
+         bgcolor     = color.new(isDark ? #1e2735 : #ECEFF1, 5),
+         text_halign = text.align_center,
+         tooltip     = "Color swatch column.\nEach cell background color represents the DNA type of that bar.\nBrighter = more significant event.")
+
+    table.cell(barcodeTable, 1, 0, "TYPE",
+         text_color  = color.new(absorptionBase, 0),
+         text_size   = barcodeCellSize,
+         bgcolor     = color.new(isDark ? #1e2735 : #ECEFF1, 5),
+         text_halign = text.align_center,
+         tooltip     = "DNA Type column.\nABS = Absorption | EFF+ = Bullish Effort | EFF- = Bearish Effort\nEXH = Exhaustion | STG = Stagnation | ... = Normal bar")
+
+    int histSize = dnaHistory.size()
+
+    for i = 0 to tapeRowsInput - 1
+        int   rowIdx    = tapeRowsInput - 1 - i
+        int   code      = histSize > rowIdx ? dnaHistory.get(rowIdx) : 0
+        float barVol    = histSize > rowIdx ? volHistory.get(rowIdx) : 0.0
+        color cellFg    = dnaColor(code)
+        color cellBg    = color.new(cellFg, 55)
+        color neutralBg = color.new(isDark ? #0D1117 : #F5F5F5, 10)
+        string tt       = dnaTooltip(code) + "\nVolume: " + volShort(barVol)
+
+
+        table.cell(barcodeTable, 0, i + 1,
+             code != 0 ? volShort(barVol) : ".",
+             bgcolor     = cellBg,
+             text_color  = code != 0 ? cellFg : color.new(fgText, 60),
+             text_size   = barcodeCellSize,
+             text_halign = text.align_center,
+             tooltip     = tt)
+
+        table.cell(barcodeTable, 1, i + 1,
+             dnaLabel(code),
+             bgcolor     = neutralBg,
+             text_color  = cellFg,
+             text_size   = barcodeCellSize,
+             text_halign = text.align_center,
+             tooltip     = tt)
+
+var table statsTable = table.new(
+     position     = statsPosition,
+     columns      = 2,
+     rows         = 6,
+     bgcolor      = color.new(isDark ? #0D1117 : #F5F5F5, 15),
+     border_color = color.new(chart.fg_color, 90),
+     border_width = 1,
+     frame_color  = color.new(chart.fg_color, 50),
+     frame_width  = 2
+     )
+
+if barstate.islast
+    table.cell(statsTable, 0, 0, "VOLUME DNA",
+         text_color  = color.new(absorptionBase, 0),
+         text_size   = statsCellSize,
+         bgcolor     = color.new(isDark ? #0D1117 : #ECEFF1, 5),
+         text_halign = text.align_center,
+         tooltip     = "Volume DNA: Institutional Heatmap\nClassifies every bar into one of four DNA signatures based on the relationship between volume and price spread.")
+
+    table.cell(statsTable, 1, 0, "STATUS",
+         text_color  = color.new(absorptionBase, 0),
+         text_size   = statsCellSize,
+         bgcolor     = color.new(isDark ? #0D1117 : #ECEFF1, 5),
+         text_halign = text.align_center,
+         tooltip     = "Current bar DNA classification status.\nUpdates on every confirmed bar close.")
+
+    string currentDNA = isAbsorption ? "ABSORPTION" :
+         isEffortBull  ? "EFFORT UP"                :
+         isEffortBear  ? "EFFORT DOWN"              :
+         isExhaustion  ? "EXHAUSTION"               :
+         isStagnation  ? "STAGNATION"               : "NORMAL"
+
+    color currentCol = isAbsorption ? absorptionBase :
+         isEffortBull  ? effortBullBase              :
+         isEffortBear  ? effortBearBase              :
+         isExhaustion  ? exhaustionBase              :
+         isStagnation  ? stagnationBase              :
+         color.new(isDark ? #787B86 : #90A4AE, 0)
+
+    string currentTT = isAbsorption ? "ABSORPTION detected.\nHigh volume absorbed into a narrow spread.\nInstitutional limit orders likely present."  :
+         isEffortBull  ? "BULLISH EFFORT detected.\nHigh volume driving a wide bullish spread.\nAggressive buyers in control."                        :
+         isEffortBear  ? "BEARISH EFFORT detected.\nHigh volume driving a wide bearish spread.\nAggressive sellers in control."                       :
+         isExhaustion  ? "EXHAUSTION detected.\nWide spread on low volume.\nMove may be running out of fuel. Watch for reversal."                     :
+         isStagnation  ? "STAGNATION detected.\nLow volume and narrow spread.\nMarket is in equilibrium. No directional conviction."                  : ""
+
+    table.cell(statsTable, 0, 1, "Current",
+         text_color = color.new(fgText, 0), text_size = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "The DNA classification of the most recently confirmed bar.")
+    table.cell(statsTable, 1, 1, currentDNA,
+         text_color = currentCol, text_size = statsCellSize,
+         bgcolor    = color.new(currentCol, 75),
+         tooltip    = currentTT)
+
+    table.cell(statsTable, 0, 2, "Vol Z-Score",
+         text_color = color.new(fgText, 0), text_size = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "Volume Z-Score: how many standard deviations the current bar's volume is from the rolling mean.\n> +1.5 = High Volume (Absorption/Effort threshold)\n< -0.45 = Low Volume (Exhaustion/Stagnation threshold)")
+    table.cell(statsTable, 1, 2, str.tostring(volZ, "#.##"),
+         text_color = volZ > 0 ? #22c55e : #ef4444,
+         text_size  = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "Current Vol Z = " + str.tostring(volZ, "#.##") + "\nPositive = above-average volume (green)\nNegative = below-average volume (red)")
+
+    table.cell(statsTable, 0, 3, "Spread Z",
+         text_color = color.new(fgText, 0), text_size = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "Spread Z-Score: how many standard deviations the current bar's High-Low range is from the rolling mean.\n> +0.5 = Wide spread (Effort/Exhaustion threshold)\n<= 0.0 = Narrow spread (Absorption threshold)")
+    table.cell(statsTable, 1, 3, str.tostring(spreadZ, "#.##"),
+         text_color = spreadZ > 0 ? #22c55e : #ef4444,
+         text_size  = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "Current Spread Z = " + str.tostring(spreadZ, "#.##") + "\nPositive = wider than average spread (green)\nNegative = narrower than average spread (red)")
+
+    table.cell(statsTable, 0, 4, "Theme",
+         text_color = color.new(fgText, 0), text_size = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "Active UI color theme.\nDark = dark background tables.\nLight = light background tables.\nChange via the Theme input setting.")
+    table.cell(statsTable, 1, 4, themeInput,
+         text_color = color.new(absorptionBase, 0), text_size = statsCellSize,
+         bgcolor    = color.new(isDark ? #0D1117 : #F5F5F5, 20),
+         tooltip    = "Currently active theme: " + themeInput)
+
+// }

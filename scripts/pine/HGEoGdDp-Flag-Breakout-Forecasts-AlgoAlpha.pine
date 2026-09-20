@@ -1,0 +1,683 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Flag Breakout Forecasts [AlgoAlpha]", "AlgoAlpha - Flag Breakout", true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+import TradingView/ta/12
+
+len = input.int(7, "Zig Zag Length", tooltip = "The time horizon for zigzag length detection, smaller values will capture shorter term moves and vice versa.")
+col_tol = input.float(0.5, "Collinearity Tolerance (%)", tooltip = "Max deviation of the middle point from a perfect straight line through the outer two points, as a percentage of price. Lower values mean pivots must be more aligned to be detected") / 100
+showPatternVolTable = input.bool(true, "Show Pattern Volume Table", tooltip = "Show a table with up, down, and net volume for the latest active pattern.", group = "Appearance")
+table_size = input.string("Small", "Table Size", options = ["Tiny", "Small", "Medium", "Large"], tooltip = "Controls text size for the pattern volume table.", group = "Appearance")
+patternTablePosition = input.string("top right", "Table Position", options = ["bottom center", "bottom left", "bottom right", "middle center", "middle left", "middle right", "top center", "top left", "top right"], tooltip = "Position of the pattern volume table.", group = "Appearance")
+bullColor = input.color(#00ffbb, "Bullish Color", tooltip = "Color used after an upside break and for bullish table cells.", group = "Appearance", inline = "patternColors")
+bearColor = input.color(#ff1100, "", tooltip = "Color used after a downside break and for bearish table cells.", group = "Appearance", inline = "patternColors")
+
+tableSize(sz) =>
+    switch sz
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Medium" => size.normal
+        "Large" => size.large
+
+posFromString(str) =>
+    switch str
+        "bottom center" => position.bottom_center
+        "bottom left" => position.bottom_left
+        "bottom right" => position.bottom_right
+        "middle center" => position.middle_center
+        "middle left" => position.middle_left
+        "middle right" => position.middle_right
+        "top center" => position.top_center
+        "top left" => position.top_left
+        "top right" => position.top_right
+
+alphaForVal(v, vmax) =>
+    vmax <= 0 ? 85 : math.max(50, math.round(85 - math.min(1.0, v / vmax) * 70))
+
+sumSinceBar(cumSeries, startBar) =>
+    int barsBack = bar_index - startBar
+    barsBack < 0 ? na : cumSeries - nz(cumSeries[barsBack + 1], 0.0)
+
+patternStatsText(dirText, totalVol, bars) =>
+    dirText + "\nDuration: " + str.tostring(bars) + " bars" + "\nTotal volume: " + str.tostring(totalVol, format.volume)
+
+// Standard normal CDF Φ(z) — Abramowitz & Stegun approximation
+norm_cdf(z) =>
+    float t = 1.0 / (1.0 + 0.2316419 * math.abs(z))
+    float d = 0.3989423 * math.exp(-0.5 * z * z)
+    float poly = t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))))
+    float p = d * poly
+    z >= 0 ? 1.0 - p : p
+
+activePatternProbText(dur, pBreak, pBull, pBear) =>
+    string sBreak = na(pBreak) ? "—" : str.tostring(pBreak * 100.0, "#.#") + "%"
+    string sBull = na(pBull) ? "—" : str.tostring(pBull * 100.0, "#.#") + "%"
+    string sBear = na(pBear) ? "—" : str.tostring(pBear * 100.0, "#.#") + "%"
+    "Active Flag\nDuration: " + str.tostring(dur) + " bars" + "\nP(break): " + sBreak + "\nP(bull): " + sBull + "\nP(bear): " + sBear
+
+isCollinear(ay, ax, my2, mx2, cy, cx) =>
+    float interp = ay + (cy - ay) * (mx2 - ax) / (cx - ax)
+    float dev = math.abs(my2 - interp) / math.abs(ay)
+    dev < col_tol
+
+calcEndY(p1y, p1x, p2y, p2x, p3y, p3x) =>
+    float mx = (p2x + p3x) / 2.0
+    float my = (p2y + p3y) / 2.0
+    p1y + (my - p1y) * (p3x - p1x) / (mx - p1x)
+
+isAligned(x1a, x2a, x1b, x2b) =>
+    float len_a = x2a - x1a
+    float len_b = x2b - x1b
+    float max_len = math.max(len_a, len_b)
+    float min_len = math.min(len_a, len_b)
+    float overlap = math.min(x2a, x2b) - math.max(x1a, x1b)
+    max_len > 0 and overlap / max_len >= 0.5 and min_len / max_len >= 0.5
+
+lineY(x1, y1, x2, y2, x) =>
+    y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+
+isConverging(hx1, hy1, hx2, hy2, lx1, ly1, lx2, ly2) =>
+    float left_x = math.min(hx1, lx1)
+    float right_x = math.max(hx2, lx2)
+    float h_left = lineY(hx1, hy1, hx2, hy2, left_x)
+    float l_left = lineY(lx1, ly1, lx2, ly2, left_x)
+    float h_right = lineY(hx1, hy1, hx2, hy2, right_x)
+    float l_right = lineY(lx1, ly1, lx2, ly2, right_x)
+    math.abs(h_right - l_right) < math.abs(h_left - l_left)
+
+isInside(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2, price, x) =>
+    float a_proj = lineY(ax1, ay1, ax2, ay2, x)
+    float b_proj = lineY(bx1, by1, bx2, by2, x)
+    float left_x = math.min(ax1, bx1)
+    float a_left = lineY(ax1, ay1, ax2, ay2, left_x)
+    float b_left = lineY(bx1, by1, bx2, by2, left_x)
+    float upper = a_left > b_left ? a_proj : b_proj
+    float lower = a_left > b_left ? b_proj : a_proj
+    upper > lower and price >= lower and price <= upper
+
+//zigzag
+ph = ta.pivothigh(len,len)
+pl = ta.pivotlow(len,len)
+
+// plotchar(ph, ".", "●", location.abovebar, size = size.tiny, offset = -len)
+// plotchar(pl, ".", "●", location.belowbar, size = size.tiny, offset = -len)
+
+var lasttype = 0
+
+var pivh = array.new_float()
+var pivl = array.new_float()
+var pivh_i = array.new_int()
+var pivl_i = array.new_int()
+
+if not na(ph)
+    if lasttype != 1
+        pivh.unshift(ph)
+        pivh_i.unshift(bar_index-len)
+    else
+        if ph > pivh.first()
+            pivh.unshift(ph)
+            pivh_i.unshift(bar_index-len)
+    lasttype := 1
+
+if not na(pl)
+    if lasttype != -1
+        pivl.unshift(pl)
+        pivl_i.unshift(bar_index-len)
+    else
+        if pl < pivl.first()
+            pivl.unshift(pl)
+            pivl_i.unshift(bar_index-len)
+    lasttype := -1
+
+while pivh.size() > 500
+    pivh.pop()
+    pivh_i.pop()
+
+while pivl.size() > 500
+    pivl.pop()
+    pivl_i.pop()
+
+var zzp = array.new_float()
+
+if lasttype != lasttype[1] and (pivh.size() > 3 and pivl.size() > 3)
+    if lasttype == 1
+        //line.new(pivh_i.get(1),pivh.get(1),pivl_i.first(),pivl.first())
+        zzp.unshift(pivl_i.first())
+        zzp.unshift(pivl.first())
+    else
+        //line.new(pivl_i.get(1),pivl.get(1),pivh_i.first(),pivh.first())
+        zzp.unshift(pivh_i.first())
+        zzp.unshift(pivh.first())
+
+while zzp.size() > 200
+    zzp.pop()
+    zzp.pop()
+
+// Track potential unconfirmed pivots (running extreme since last confirmed zigzag point)
+var float pot_val = na
+var int pot_idx = na
+
+if lasttype != lasttype[1]
+    pot_val := na
+    pot_idx := na
+
+if lasttype == 1
+    if na(pot_val) or low <= pot_val
+        pot_val := low
+        pot_idx := bar_index
+
+if lasttype == -1
+    if na(pot_val) or high >= pot_val
+        pot_val := high
+        pot_idx := bar_index
+
+// Pattern state: track confirmed collinear patterns on each side (highs / lows)
+var bool hi_pat = false
+var float hi_x1 = na
+var float hi_y1 = na
+var float hi_x2 = na
+var float hi_y2 = na
+var int hi_piv = 0
+
+var bool lo_pat = false
+var float lo_x1 = na
+var float lo_y1 = na
+var float lo_x2 = na
+var float lo_y2 = na
+var int lo_piv = 0
+
+var int piv_cnt = 0
+var int last_draw_piv = -10
+var int last_draw_end_x = -1
+var table patternVolTable = na
+var int patternTableLastCols = na
+var int patternTableLastRows = na
+var string patternTableLastPos = ""
+var string patternTableLastSize = ""
+var line[] gaugeLines = array.new<line>()
+var label gaugeLabel = na
+var label activePatternProbLabel = na
+
+var histBreakDur = array.new_float()
+var histBreakBull = array.new_int()
+int histBreakMax = 200
+int histMinForZ = 5
+
+var array<line> act_hi = array.new_line()
+var array<line> act_lo = array.new_line()
+var array<linefill> act_fill = array.new_linefill()
+var array<int> act_out = array.new_int()
+var array<int> act_dash = array.new_int()
+var array<float> act_p2y = array.new_float()
+var array<float> act_p2x = array.new_float()
+
+bool draw_bar = false
+
+zzp1 = array.new_float()
+zzp2 = array.new_float()
+color patternNeutralLineColor = color.new(chart.fg_color, 50)
+color patternNeutralFillColor = color.new(chart.fg_color, 90)
+
+if zzp.size() > 16
+    for i = 0 to zzp.size()-1 by 4
+        zzp1.push(zzp.get(i))
+        zzp1.push(zzp.get(i+1))
+        if i+3 <= zzp.size()-1
+            zzp2.push(zzp.get(i+2))
+            zzp2.push(zzp.get(i+3))
+
+    // On confirmed pivot change: check both sides for collinearity
+    if lasttype != lasttype[1]
+        piv_cnt += 1
+
+        // s1: zzp1 already has the latest opposite-type pivot, check 3 points from it
+        bool s1 = zzp1.size() >= 6 and isCollinear(zzp1.get(4), zzp1.get(5), zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1))
+
+        // s2: zzp2 is missing the current pivot — include it (pivh/pivl.first()) as the newest point
+        // When lasttype==1: zzp1=lows, zzp2=highs (missing current HIGH)
+        // When lasttype==-1: zzp1=highs, zzp2=lows (missing current LOW)
+        float cur_y = lasttype == 1 ? pivh.first() : pivl.first()
+        float cur_x = lasttype == 1 ? float(pivh_i.first()) : float(pivl_i.first())
+        bool s2 = zzp2.size() >= 4 and isCollinear(zzp2.get(2), zzp2.get(3), zzp2.get(0), zzp2.get(1), cur_y, cur_x)
+
+        if lasttype == 1
+            if s1
+                lo_pat := true
+                lo_y1 := zzp1.get(4)
+                lo_x1 := zzp1.get(5)
+                lo_y2 := calcEndY(zzp1.get(4), zzp1.get(5), zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1))
+                lo_x2 := zzp1.get(1)
+                lo_piv := piv_cnt
+            if s2
+                hi_pat := true
+                hi_y1 := zzp2.get(2)
+                hi_x1 := zzp2.get(3)
+                hi_y2 := calcEndY(zzp2.get(2), zzp2.get(3), zzp2.get(0), zzp2.get(1), cur_y, cur_x)
+                hi_x2 := cur_x
+                hi_piv := piv_cnt
+        else
+            if s1
+                hi_pat := true
+                hi_y1 := zzp1.get(4)
+                hi_x1 := zzp1.get(5)
+                hi_y2 := calcEndY(zzp1.get(4), zzp1.get(5), zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1))
+                hi_x2 := zzp1.get(1)
+                hi_piv := piv_cnt
+            if s2
+                lo_pat := true
+                lo_y1 := zzp2.get(2)
+                lo_x1 := zzp2.get(3)
+                lo_y2 := calcEndY(zzp2.get(2), zzp2.get(3), zzp2.get(0), zzp2.get(1), cur_y, cur_x)
+                lo_x2 := cur_x
+                lo_piv := piv_cnt
+
+        // Both sides found within 1 pivot offset → draw the full pattern
+        if hi_pat and lo_pat and math.abs(hi_piv - lo_piv) <= 1 and piv_cnt - last_draw_piv >= 2 and isAligned(hi_x1, hi_x2, lo_x1, lo_x2) and int(math.min(hi_x1, lo_x1)) > last_draw_end_x and isConverging(hi_x1, hi_y1, hi_x2, hi_y2, lo_x1, lo_y1, lo_x2, lo_y2) and isInside(hi_x1, hi_y1, hi_x2, hi_y2, lo_x1, lo_y1, lo_x2, lo_y2, close, float(bar_index))
+            line hi_line = line.new(int(hi_x1), hi_y1, int(hi_x2), hi_y2, color = patternNeutralLineColor, width = 1)
+            line lo_line = line.new(int(lo_x1), lo_y1, int(lo_x2), lo_y2, color = patternNeutralLineColor, width = 1)
+            act_hi.push(hi_line)
+            act_lo.push(lo_line)
+            act_fill.push(linefill.new(hi_line, lo_line, patternNeutralFillColor))
+            act_out.push(0)
+            act_dash.push(0)
+            act_p2y.push(0.0)
+            act_p2x.push(0.0)
+            draw_bar := true
+            hi_pat := false
+            lo_pat := false
+            last_draw_piv := piv_cnt
+            last_draw_end_x := int(math.max(hi_x2, lo_x2))
+
+        // Expire stale pending patterns (more than 1 pivot old)
+        if hi_pat and piv_cnt - hi_piv > 1
+            hi_pat := false
+        if lo_pat and piv_cnt - lo_piv > 1
+            lo_pat := false
+
+    // Early detection: when one side is pending, check the other with an unconfirmed pivot
+    if lasttype == lasttype[1] and piv_cnt != last_draw_piv and not na(pot_val) and not na(pot_idx)
+        bool early_hit = false
+
+        // Highs pending, need lows. When lasttype==1: zzp1=lows, pot=potential low
+        if hi_pat and not lo_pat and lasttype == 1 and zzp1.size() >= 4
+            if isCollinear(zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1), pot_val, float(pot_idx))
+                float ex1 = zzp1.get(3)
+                float ex2 = float(pot_idx)
+                float ey = calcEndY(zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1), pot_val, float(pot_idx))
+                if int(math.min(hi_x1, ex1)) > last_draw_end_x and isAligned(hi_x1, hi_x2, ex1, ex2) and isConverging(hi_x1, hi_y1, hi_x2, hi_y2, ex1, zzp1.get(2), ex2, ey) and isInside(hi_x1, hi_y1, hi_x2, hi_y2, ex1, zzp1.get(2), ex2, ey, close, float(bar_index))
+                    line hi_line = line.new(int(hi_x1), hi_y1, int(hi_x2), hi_y2, color = patternNeutralLineColor, width = 1)
+                    line lo_line = line.new(int(ex1), zzp1.get(2), pot_idx, ey, color = patternNeutralLineColor, width = 1, style = line.style_dashed)
+                    act_hi.push(hi_line)
+                    act_lo.push(lo_line)
+                    act_fill.push(linefill.new(hi_line, lo_line, patternNeutralFillColor))
+                    act_out.push(0)
+                    act_dash.push(-1)
+                    act_p2y.push(zzp1.get(0))
+                    act_p2x.push(zzp1.get(1))
+                    early_hit := true
+                    last_draw_end_x := int(math.max(hi_x2, ex2))
+
+        // Lows pending, need highs. When lasttype==-1: zzp1=highs, pot=potential high
+        if not early_hit and lo_pat and not hi_pat and lasttype == -1 and zzp1.size() >= 4
+            if isCollinear(zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1), pot_val, float(pot_idx))
+                float ex1 = zzp1.get(3)
+                float ex2 = float(pot_idx)
+                float ey = calcEndY(zzp1.get(2), zzp1.get(3), zzp1.get(0), zzp1.get(1), pot_val, float(pot_idx))
+                if int(math.min(lo_x1, ex1)) > last_draw_end_x and isAligned(lo_x1, lo_x2, ex1, ex2) and isConverging(lo_x1, lo_y1, lo_x2, lo_y2, ex1, zzp1.get(2), ex2, ey) and isInside(lo_x1, lo_y1, lo_x2, lo_y2, ex1, zzp1.get(2), ex2, ey, close, float(bar_index))
+                    line lo_line = line.new(int(lo_x1), lo_y1, int(lo_x2), lo_y2, color = patternNeutralLineColor, width = 1)
+                    line hi_line = line.new(int(ex1), zzp1.get(2), pot_idx, ey, color = patternNeutralLineColor, width = 1, style = line.style_dashed)
+                    act_lo.push(lo_line)
+                    act_hi.push(hi_line)
+                    act_fill.push(linefill.new(hi_line, lo_line, patternNeutralFillColor))
+                    act_out.push(0)
+                    act_dash.push(1)
+                    act_p2y.push(zzp1.get(0))
+                    act_p2x.push(zzp1.get(1))
+                    early_hit := true
+                    last_draw_end_x := int(math.max(lo_x2, ex2))
+
+        if early_hit
+            draw_bar := true
+            hi_pat := false
+            lo_pat := false
+            last_draw_piv := piv_cnt
+
+// Update dashed lines to solid when the temporary pivot gets confirmed by zigzag
+if lasttype != lasttype[1] and act_dash.size() > 0
+    for i = act_dash.size() - 1 to 0
+        int d = act_dash.get(i)
+        if d == -1 and lasttype == -1
+            line lo_l = act_lo.get(i)
+            float p2y = act_p2y.get(i)
+            float p2x = act_p2x.get(i)
+            float orig_y1 = line.get_y1(lo_l)
+            float orig_x1 = float(line.get_x1(lo_l))
+            float conf_y = pivl.first()
+            float conf_x = float(pivl_i.first())
+            line.set_x2(lo_l, pivl_i.first())
+            line.set_y2(lo_l, calcEndY(orig_y1, orig_x1, p2y, p2x, conf_y, conf_x))
+            line.set_style(lo_l, line.style_solid)
+            act_dash.set(i, 0)
+        if d == 1 and lasttype == 1
+            line hi_l = act_hi.get(i)
+            float p2y = act_p2y.get(i)
+            float p2x = act_p2x.get(i)
+            float orig_y1 = line.get_y1(hi_l)
+            float orig_x1 = float(line.get_x1(hi_l))
+            float conf_y = pivh.first()
+            float conf_x = float(pivh_i.first())
+            line.set_x2(hi_l, pivh_i.first())
+            line.set_y2(hi_l, calcEndY(orig_y1, orig_x1, p2y, p2x, conf_y, conf_x))
+            line.set_style(hi_l, line.style_solid)
+            act_dash.set(i, 0)
+
+// Body stats for strong-breakout detection (must be at global scope for ta.* statefulness)
+float body_top = math.max(open, close)
+float body_bot = math.min(open, close)
+float body_len = body_top - body_bot
+float body_25 = body_bot + 0.25 * body_len
+float body_75 = body_bot + 0.75 * body_len
+float body_mean = ta.sma(body_len, 20)
+float body_std = ta.stdev(body_len, 20)
+float body_z = body_std > 0 ? (body_len - body_mean) / body_std : 0.0
+float upBarVol = close > open ? volume : 0.0
+float downBarVol = close < open ? volume : 0.0
+float cumUpVol = ta.cum(upBarVol)
+float cumDownVol = ta.cum(downBarVol)
+float cumTotalVol = ta.cum(volume)
+float upbreak = na
+float downbreak = na
+bool alertStrongBullBreak = false
+bool alertStrongBearBreak = false
+
+// Extend active channel lines while close stays inside
+if act_hi.size() > 0
+    for i = act_hi.size() - 1 to 0
+        line hi_l = act_hi.get(i)
+        line lo_l = act_lo.get(i)
+        linefill fill_l = act_fill.get(i)
+        float hx1 = float(line.get_x1(hi_l))
+        float hy1 = line.get_y1(hi_l)
+        float hx2 = float(line.get_x2(hi_l))
+        float hy2 = line.get_y2(hi_l)
+        float lx1 = float(line.get_x1(lo_l))
+        float ly1 = line.get_y1(lo_l)
+        float lx2 = float(line.get_x2(lo_l))
+        float ly2 = line.get_y2(lo_l)
+
+        float hi_proj = lineY(hx1, hy1, hx2, hy2, float(bar_index))
+        float lo_proj = lineY(lx1, ly1, lx2, ly2, float(bar_index))
+
+        float upper = math.max(hi_proj, lo_proj)
+        float lower = math.min(hi_proj, lo_proj)
+
+        bool inside = close >= lower and close <= upper
+        bool bullBreak = close > upper
+        bool strong_break = not inside and body_z >= 3 and (body_25 > upper or body_75 < lower)
+
+        if inside
+            act_out.set(i, 0)
+            line.set_x2(hi_l, bar_index)
+            line.set_y2(hi_l, hi_proj)
+            line.set_x2(lo_l, bar_index)
+            line.set_y2(lo_l, lo_proj)
+            line.set_color(hi_l, patternNeutralLineColor)
+            line.set_color(lo_l, patternNeutralLineColor)
+            linefill.set_color(fill_l, patternNeutralFillColor)
+        else
+            color breakLineColor = color.new(bullBreak ? bullColor : bearColor, 50)
+            color breakFillColor = color.new(bullBreak ? bullColor : bearColor, 90)
+            int patternStartBar = int(math.min(hx1, lx1))
+            int patternMidBar = int(math.round((patternStartBar + bar_index) / 2.0))
+            int breakoutBars = math.max(bar_index - patternStartBar + 1, 1)
+            float breakoutAtr = ta.atr2(breakoutBars)
+            float breakoutTotalVol = sumSinceBar(cumTotalVol, patternStartBar)
+            line.set_x2(hi_l, bar_index)
+            line.set_y2(hi_l, hi_proj)
+            line.set_x2(lo_l, bar_index)
+            line.set_y2(lo_l, lo_proj)
+            line.set_color(hi_l, breakLineColor)
+            line.set_color(lo_l, breakLineColor)
+            linefill.set_color(fill_l, breakFillColor)
+            float midXf = float(patternMidBar)
+            float hiMid = lineY(hx1, hy1, float(bar_index), hi_proj, midXf)
+            float loMid = lineY(lx1, ly1, float(bar_index), lo_proj, midXf)
+            float upperMid = math.max(hiMid, loMid)
+            float lowerMid = math.min(hiMid, loMid)
+            float chMid = upperMid - lowerMid
+            float labelYPad = math.max(math.max(breakoutAtr * 1.75, chMid * 0.22), syminfo.mintick * 8)
+            int cnt = act_out.get(i) + 1
+            act_out.set(i, cnt)
+            if strong_break or cnt >= 2
+                if strong_break
+                    if bullBreak
+                        alertStrongBullBreak := true
+                    else
+                        alertStrongBearBreak := true
+                // Place marker on the farther boundary (opposite side of the pattern) so it sits away from price
+                if bullBreak
+                    upbreak := lower
+                else
+                    downbreak := upper
+                label.new(x = patternMidBar, y = bullBreak ? upperMid + labelYPad : lowerMid - labelYPad, text = patternStatsText(bullBreak ? "Bull Break" : "Bear Break", breakoutTotalVol, breakoutBars), xloc = xloc.bar_index, color = na, textcolor = chart.fg_color, textalign = text.align_center, size = size.small, style = label.style_none)
+                array.unshift(histBreakDur, float(breakoutBars))
+                array.unshift(histBreakBull, bullBreak ? 1 : 0)
+                while array.size(histBreakDur) > histBreakMax
+                    array.pop(histBreakDur)
+                    array.pop(histBreakBull)
+                act_hi.remove(i)
+                act_lo.remove(i)
+                act_fill.remove(i)
+                act_out.remove(i)
+                act_dash.remove(i)
+                act_p2y.remove(i)
+                act_p2x.remove(i)
+
+float patternUpVol = na
+float patternDownVol = na
+float patternNetVol = na
+float patternTotalVol = na
+float patternAtr = na
+int patternBars = na
+float patternGaugeVal = na
+float gaugeTopBound = na
+float gaugeBottomBound = na
+float probBreakDisp = na
+float probBullDisp = na
+
+if act_hi.size() > 0 and act_lo.size() > 0
+    int latestPatternIdx = act_hi.size() - 1
+    line latestHi = act_hi.get(latestPatternIdx)
+    line latestLo = act_lo.get(latestPatternIdx)
+    int patternStartBar = int(math.min(line.get_x1(act_hi.get(latestPatternIdx)), line.get_x1(act_lo.get(latestPatternIdx))))
+    patternBars := math.max(bar_index - patternStartBar + 1, 1)
+    patternUpVol := sumSinceBar(cumUpVol, patternStartBar)
+    patternDownVol := sumSinceBar(cumDownVol, patternStartBar)
+    patternTotalVol := sumSinceBar(cumTotalVol, patternStartBar)
+    patternNetVol := patternUpVol - patternDownVol
+    patternAtr := ta.atr2(patternBars)
+    float netRatio = patternTotalVol > 0 ? patternNetVol / patternTotalVol : 0.0
+    patternGaugeVal := math.max(math.min(-100 * netRatio, 100), -100)
+    gaugeTopBound := math.max(line.get_y2(latestHi), line.get_y2(latestLo))
+    gaugeBottomBound := math.min(line.get_y2(latestHi), line.get_y2(latestLo))
+
+    int hn = array.size(histBreakDur)
+    if hn >= histMinForZ
+        float sumAll = 0.0
+        for i = 0 to hn - 1
+            sumAll += array.get(histBreakDur, i)
+        float meanAll = sumAll / hn
+        float vAll = 0.0
+        for i = 0 to hn - 1
+            float da = array.get(histBreakDur, i) - meanAll
+            vAll += da * da
+        float stAll = hn > 1 ? math.sqrt(vAll / (hn - 1)) : 1.0
+        float zBreak = stAll > 1e-6 ? (patternBars - meanAll) / stAll : 0.0
+        probBreakDisp := math.max(0.01, math.min(0.99, norm_cdf(zBreak)))
+
+    float pBull = 0.5
+    if hn > 0
+        float sumB = 0.0
+        float sumS = 0.0
+        int cntB = 0
+        int cntS = 0
+        for i = 0 to hn - 1
+            if array.get(histBreakBull, i) == 1
+                sumB += array.get(histBreakDur, i)
+                cntB += 1
+            else
+                sumS += array.get(histBreakDur, i)
+                cntS += 1
+
+        float meanB = cntB > 0 ? sumB / cntB : na
+        float meanS = cntS > 0 ? sumS / cntS : na
+        float vB = 0.0
+        float vS = 0.0
+        for i = 0 to hn - 1
+            if array.get(histBreakBull, i) == 1 and not na(meanB)
+                float db = array.get(histBreakDur, i) - meanB
+                vB += db * db
+            if array.get(histBreakBull, i) == 0 and not na(meanS)
+                float ds = array.get(histBreakDur, i) - meanS
+                vS += ds * ds
+        float stB = cntB > 1 ? math.sqrt(vB / (cntB - 1)) : na
+        float stS = cntS > 1 ? math.sqrt(vS / (cntS - 1)) : na
+
+        if cntB >= 3 and cntS >= 3 and not na(stB) and not na(stS) and stB > 1e-6 and stS > 1e-6 and not na(meanB) and not na(meanS)
+            float zBull = (patternBars - meanB) / stB
+            float zBear = (patternBars - meanS) / stS
+            float wBull = norm_cdf(zBull)
+            float wBear = norm_cdf(zBear)
+            float wSum = wBull + wBear
+            pBull := wSum > 0 ? wBull / wSum : 0.5
+        else
+            int bullTot = 0
+            for i = 0 to hn - 1
+                if array.get(histBreakBull, i) == 1
+                    bullTot += 1
+            pBull := float(bullTot) / hn
+
+        if patternTotalVol > 0
+            float pNet = math.max(0.01, math.min(0.99, 0.5 + 0.5 * (patternNetVol / patternTotalVol)))
+            pBull := 0.55 * pBull + 0.45 * pNet
+        probBullDisp := math.max(0.01, math.min(0.99, pBull))
+    else
+        probBullDisp := patternTotalVol > 0 ? math.max(0.01, math.min(0.99, 0.5 + 0.5 * (patternNetVol / patternTotalVol))) : 0.5
+
+if barstate.islast
+    if array.size(gaugeLines) > 0
+        for ln in gaugeLines
+            ln.delete()
+        gaugeLines.clear()
+
+    if not na(gaugeLabel)
+        gaugeLabel.delete()
+        gaugeLabel := na
+
+    if not na(activePatternProbLabel)
+        activePatternProbLabel.delete()
+        activePatternProbLabel := na
+
+    if not na(patternGaugeVal) and not na(gaugeTopBound) and not na(gaugeBottomBound) and gaugeTopBound != gaugeBottomBound
+        int segments = 21
+        float segLen = (gaugeTopBound - gaugeBottomBound) / segments
+
+        for i = 0 to segments - 1
+            float y1 = gaugeTopBound - i * segLen
+            float y2 = gaugeTopBound - (i + 1) * segLen
+            color segCol = color.from_gradient(y1, gaugeBottomBound, gaugeTopBound, bearColor, bullColor)
+            line ln = line.new(x1 = bar_index + 2, y1 = y1, x2 = bar_index + 2, y2 = y2, color = segCol, width = 4)
+            gaugeLines.unshift(ln)
+
+        float pointerPos = gaugeTopBound - ((patternGaugeVal + 100) / 200) * (gaugeTopBound - gaugeBottomBound)
+        string gaugeBiasText = patternGaugeVal < 0 ? " bullish" : patternGaugeVal > 0 ? " bearish" : " neutral"
+        float gaugeNetPct = math.abs(patternGaugeVal)
+        string gaugeLabelText = "◀" + gaugeBiasText + " | " + str.tostring(gaugeNetPct, "#.#") + "%"
+        gaugeLabel := label.new(x = bar_index + 3, y = pointerPos, text = gaugeLabelText, color = na, textcolor = chart.fg_color, size = size.small, style = label.style_label_left)
+
+    if act_hi.size() > 0 and act_lo.size() > 0
+        int lix = act_hi.size() - 1
+        line hiLab = act_hi.get(lix)
+        line loLab = act_lo.get(lix)
+        float hx1p = float(line.get_x1(hiLab))
+        float hy1p = line.get_y1(hiLab)
+        float hx2p = float(line.get_x2(hiLab))
+        float hy2p = line.get_y2(hiLab)
+        float lx1p = float(line.get_x1(loLab))
+        float ly1p = line.get_y1(loLab)
+        float lx2p = float(line.get_x2(loLab))
+        float ly2p = line.get_y2(loLab)
+        int psbLab = int(math.min(hx1p, lx1p))
+        int pMidLab = int(math.round((psbLab + bar_index) / 2.0))
+        float midXLab = float(pMidLab)
+        float hiMLab = lineY(hx1p, hy1p, hx2p, hy2p, midXLab)
+        float loMLab = lineY(lx1p, ly1p, lx2p, ly2p, midXLab)
+        float upMLab = math.max(hiMLab, loMLab)
+        float loMLab2 = math.min(hiMLab, loMLab)
+        float chLab = upMLab - loMLab2
+        int durBarsLab = math.max(bar_index - psbLab + 1, 1)
+        float labAtr = ta.atr2(durBarsLab)
+        float yPadLab = math.max(math.max(labAtr * 1.75, chLab * 0.22), syminfo.mintick * 8)
+        float pBearLab = 1.0 - nz(probBullDisp, 0.5)
+        activePatternProbLabel := label.new(x = pMidLab, y = upMLab + yPadLab, text = activePatternProbText(patternBars, probBreakDisp, probBullDisp, pBearLab), xloc = xloc.bar_index, color = na, textcolor = chart.fg_color, textalign = text.align_center, size = size.small, style = label.style_none)
+
+if barstate.islast and showPatternVolTable
+    int cols = 2
+    int rows = 7
+    bool needRecreate = na(patternVolTable) or na(patternTableLastCols) or na(patternTableLastRows) or patternTableLastCols != cols or patternTableLastRows != rows or patternTableLastPos != patternTablePosition or patternTableLastSize != table_size
+    if needRecreate
+        if not na(patternVolTable)
+            table.delete(patternVolTable)
+        patternVolTable := table.new(position = posFromString(patternTablePosition), columns = cols, rows = rows, bgcolor = chart.bg_color, border_width = 1, border_color = chart.fg_color, frame_color = chart.fg_color, frame_width = 1)
+        patternTableLastCols := cols
+        patternTableLastRows := rows
+        patternTableLastPos := patternTablePosition
+        patternTableLastSize := table_size
+
+    table.clear(patternVolTable, 0, 0, cols - 1, rows - 1)
+
+    cellSize = tableSize(table_size)
+    float upVolSafe = nz(patternUpVol, 0.0)
+    float downVolSafe = nz(patternDownVol, 0.0)
+    float netVolSafe = nz(patternNetVol, 0.0)
+    float totalVolSafe = nz(patternTotalVol, 0.0)
+    float atrSafe = nz(patternAtr, 0.0)
+    float maxTableVol = math.max(math.max(upVolSafe, downVolSafe), math.max(math.max(math.abs(netVolSafe), totalVolSafe), atrSafe))
+    color netVolColor = netVolSafe >= 0 ? bullColor : bearColor
+    string upVolText = na(patternUpVol) ? "-" : str.tostring(patternUpVol, format.volume)
+    string downVolText = na(patternDownVol) ? "-" : str.tostring(patternDownVol, format.volume)
+    string netVolText = na(patternNetVol) ? "-" : str.tostring(patternNetVol, format.volume)
+    string totalVolText = na(patternTotalVol) ? "-" : str.tostring(patternTotalVol, format.volume)
+    string atrText = na(patternAtr) ? "-" : str.tostring(patternAtr, format.mintick)
+    string durText = na(patternBars) ? "-" : str.tostring(patternBars) + " bars"
+
+    table.cell(patternVolTable, 0, 0, "Metric", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 0, "Volume Absorbed", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 0, 1, "Duration", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 1, durText, text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 0, 2, "Bullish", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 2, upVolText, text_color = chart.fg_color, bgcolor = na(patternUpVol) ? chart.bg_color : color.new(bullColor, alphaForVal(upVolSafe, maxTableVol)), text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 0, 3, "Bearish", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 3, downVolText, text_color = chart.fg_color, bgcolor = na(patternDownVol) ? chart.bg_color : color.new(bearColor, alphaForVal(downVolSafe, maxTableVol)), text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 0, 4, "Net", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 4, netVolText, text_color = chart.fg_color, bgcolor = na(patternNetVol) ? chart.bg_color : color.new(netVolColor, alphaForVal(math.abs(netVolSafe), maxTableVol)), text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 0, 5, "Total volume", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 5, totalVolText, text_color = chart.fg_color, bgcolor = na(patternTotalVol) ? chart.bg_color : color.new(chart.fg_color, alphaForVal(totalVolSafe, maxTableVol)), text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 0, 6, "ATR", text_color = chart.fg_color, text_halign = text.align_center, text_size = cellSize)
+    table.cell(patternVolTable, 1, 6, atrText, text_color = chart.fg_color, bgcolor = na(patternAtr) ? chart.bg_color : color.new(chart.fg_color, alphaForVal(atrSafe, maxTableVol)), text_halign = text.align_center, text_size = cellSize)
+
+plotshape(upbreak, "Bullish Breakout Signal", shape.labelup, location.absolute, bullColor, text = "▲", textcolor = chart.fg_color)
+plotshape(downbreak, "Bearish Breakout Signal", shape.labeldown, location.absolute, bearColor, text = "▼", textcolor = chart.fg_color)
+
+bgcolor(draw_bar ? color.new(chart.fg_color,90) : na, title = "Pattern Detected")
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(draw_bar, "Pattern formed", "Flag / wedge pattern detected on chart")
+alertcondition(not na(upbreak), "Bullish breakout", "Bullish breakout — close above pattern boundary")
+alertcondition(not na(downbreak), "Bearish breakout", "Bearish breakout — close below pattern boundary")
+alertcondition(alertStrongBullBreak, "Strong bullish breakout", "Strong bullish breakout (large body past boundary)")
+alertcondition(alertStrongBearBreak, "Strong bearish breakout", "Strong bearish breakout (large body past boundary)")

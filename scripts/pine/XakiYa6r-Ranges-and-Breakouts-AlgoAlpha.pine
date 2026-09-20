@@ -1,0 +1,122 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title="Ranges and Breakouts [AlgoAlpha]", shorttitle="AlgoAlpha - 💥 Ranges/Breakouts", overlay=true, max_boxes_count = 500, explicit_plot_zorder = true)
+length = input.int(30, minval = 1, tooltip = "The main look-back of the indicator")
+threshold = input.int(15, tooltip = "The confirmation length for range detection, a higher value will result in lesser ranges")
+pivlen = input.int(7, "Pivot Detection Length", tooltip = "Detection Length for Pivots, the purely aesthetical dots at highs and lows, (they repaint with a delay of the value of this input).")
+halfStyle = input.string('Dashed', 'Line Style', ['Solid', 'Dashed', 'Dotted'], group='Appearance')
+internal = input.bool(false, "Allow Internal Ranges", "Allows ranges to form wihtin larger ranges", group = "Appearance")
+green = input.color(#00ffbb, "Bullish Color", group = "Appearance")
+red = input.color(#ff1100, "Bearish Color", group = "Appearance")
+
+// Functions
+lineStyle(x) =>
+    switch x
+        'Solid' => line.style_solid
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+
+lower =  ta.lowest(length)
+upper =  ta.highest(length)
+basis =  math.avg(upper, lower)
+
+var upper_solid = 0
+var lower_solid = 0
+var range_exists = 0
+var longs = 0
+var shorts = 0
+
+if ta.barssince(upper != upper[1]) >= threshold
+    upper_solid := 1
+else
+    upper_solid := 0
+
+if ta.barssince(lower != lower[1]) >= threshold
+    lower_solid := 1
+else
+    lower_solid := 0
+
+ranging = upper_solid == 1 and lower_solid == 1
+
+if ranging and not ranging[1]
+    range_exists := 1
+
+pvh = ta.pivothigh(pivlen, pivlen)
+pvl = ta.pivotlow(pivlen, pivlen)
+
+plotchar(range_exists == 1 and pvh != 0 ? true : false, "Pivot Highs", "●", location.abovebar, chart.fg_color, size = size.tiny)
+plotchar(range_exists == 1 and pvl != 0 ? true : false, "Pivot Lows", "●", location.belowbar, chart.fg_color, size = size.tiny)
+
+
+var aRnge = array.new_box()
+var aRngeu = array.new_box()
+var aRngel = array.new_box()
+var midline = array.new_line()
+bull = 0
+bear = 0
+
+col = chart.fg_color
+
+if ranging and not ranging[1] and (internal ? true : range_exists[1] == 0)
+    aRnge.push(box.new(bar_index-threshold, upper, bar_index, lower, color.new(col, 30), 1, line.style_solid, extend.none, bgcolor = color.new(col, 100)))
+    aRngeu.push(box.new(bar_index-threshold,  upper, bar_index, math.avg(math.avg(upper, lower), upper), color.new(red, 100), 1, line.style_solid, extend.none, bgcolor = color.new(red, 80)))
+    aRngel.push(box.new(bar_index-threshold, math.avg(math.avg(upper, lower), lower), bar_index, lower, color.new(green, 100), 1, line.style_solid, extend.none, bgcolor = color.new(green, 80)))
+    midline.push(line.new(bar_index-threshold, math.avg(upper, lower), bar_index+1, math.avg(upper, lower), color = color.new(chart.fg_color, 50), width = 2, style = lineStyle(halfStyle)))
+
+if aRnge.size() > 0
+    qt = aRnge.size()
+    for ln = qt - 1 to 0
+        if ln < aRnge.size()
+            cL = aRnge.get(ln)
+            yL = cL.get_top()
+            xL = cL.get_bottom()
+            if (close > yL or close < xL) and (close[1] > yL or close[1] < xL)
+                aRnge.remove(ln)
+                aRngeu.remove(ln)
+                aRngel.remove(ln)
+                midline.remove(ln)
+                range_exists := 0
+                if close > yL
+                    longs += 1
+                    bull := 1
+                else
+                    shorts += 1
+                    bear := 1
+            else
+                cL.set_right(bar_index + 1)
+                aRngeu.get(ln).set_right(bar_index + 1)
+                aRngel.get(ln).set_right(bar_index + 1)
+                midline.get(ln).set_x2(bar_index + 1)
+
+    while aRnge.size() > 500
+        aRnge.shift().delete()
+    while aRngeu.size() > 500
+        aRngeu.shift().delete()
+    while aRngel.size() > 500
+        aRngel.shift().delete()
+    while midline.size() > 500
+        midline.shift().delete()
+
+ma = ta.hma(close, 70)
+
+volatility = ta.atr(14)
+
+plotchar(ta.crossunder(ma, ma[1]) and longs > 0 ? ma + volatility : na, "Long Take-Profit", "▽", location.absolute, red, size = size.small)
+plotchar(ta.crossover(ma, ma[1]) and shorts > 0 ? ma - volatility : na, "Short Take-Profit", "△", location.absolute, green, size = size.small)
+
+if ta.crossunder(ma, ma[1]) and longs > 0
+    longs -= 1
+if ta.crossover(ma, ma[1]) and shorts > 0
+    shorts -= 1
+
+plot(longs > 0 or shorts > 0 ? ma : na, color = shorts > 0 and longs == 0 ? red : longs > 0 and shorts == 0 ? green : color.white, style = plot.style_linebr, linewidth = 2)
+barcolor(shorts > 0 and longs == 0 ? red : longs > 0 and shorts == 0 ? green : na, title = "Breakout Trend")
+
+//Alerts
+alertcondition(ranging and not ranging[1] and (internal ? true : range_exists[1] == 0), "New Range Formed")
+alertcondition(ta.crossunder(ma, ma[1]) and longs > 0, "Long Take-Profit")
+alertcondition(ta.crossover(ma, ma[1]) and shorts > 0, "Short Take-Profit")
+alertcondition(bull == 1, "Bullish Range Breakout")
+alertcondition(bear == 1, "Bearish Range Breakout")

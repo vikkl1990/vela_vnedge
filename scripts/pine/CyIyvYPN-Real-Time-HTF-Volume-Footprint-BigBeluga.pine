@@ -1,0 +1,172 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator('Real-Time HTF Volume Footprint [BigBeluga]', overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int bins = input.int(20, 'Bins', inline = '1')
+string tf = input.string('1W', 'Timeframe', ['1D', '2D', '3D', '4D', '5D', '1W', '2W', '3W', '1M', '2M', '3M'], inline = '1')
+bool disp_dyn_poc = input.bool(false, 'Dynamic PoC', inline = '2')
+color poc_col = input.color(#298ada, '', inline = '2')
+color bg_col = input.color(color.rgb(120, 123, 134, 90), "BackGround Color")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+request(_src) =>
+    request.security('', tf, _src[1], lookahead = barmerge.lookahead_on)
+
+var series float source_h = float(na)
+var series float source_l = float(na)
+
+series float source__l = request(low)
+
+htf_change = source__l != source__l[1]
+
+var src_l = array.new<float>()
+var src_h = array.new<float>()
+
+if not htf_change
+    src_h.push(high)
+    source_h := src_h.max()
+
+
+    src_l.push(low)
+    source_l := src_l.min()
+    source_l
+
+if htf_change
+    src_l.clear()
+    src_h.clear()
+
+
+series float avg = math.avg(source_h, source_l)
+
+// Update high and lows
+if high > source_h
+    source_h := high
+    source_h
+if low < source_l
+    source_l := low
+    source_l
+
+int step = int((source_h - source_l) / bins)
+
+series float volume_val = volume / ta.stdev(volume, 200)
+
+
+freq_p(bins) =>
+
+    var boxes = array.new<box>(bins > 0 ? bins : 1)
+    var bg_box = array.new<box>(bins > 0 ? bins : 1)
+
+    var array_freq = array.new<float>(bins > 0 ? bins : 1, 0)
+
+    var index = int(na)
+    var line_poc = line(na)
+    var label_h = label(na)
+    var label_l = label(na)
+    var label_p = label(na)
+
+    // Past Profiles
+    if htf_change
+
+        index := bar_index + 1
+
+        for i = 0 to bins - 1 by 1
+
+            float lower = source_l + i * step
+            float upper = lower + step
+            val = array_freq.get(i)
+            color color = val == array_freq.max() ? poc_col : color.gray
+
+            if val == array_freq.max() and not disp_dyn_poc and array_freq.max() > 1
+                line.new(index[1], line_poc.get_y1(), bar_index, line_poc.get_y2(), style = line.style_dashed, color = poc_col, extend = extend.none)
+
+            // Creat Boxes
+            boxes.set(i, box.new(index, upper, index, lower, bgcolor = color, border_width = 1, border_color = chart.bg_color, force_overlay = true))
+            if i == 0
+                bg_box.set(i, box.new(index, upper, index, lower, bgcolor = bg_col, border_width = 1, border_color = chart.bg_color, force_overlay = false))
+
+
+        for i = 0 to bins - 1 by 1
+            array_freq.set(i, 0)
+
+    // Active Profile
+    if not htf_change
+
+        for i = 0 to bins - 1 by 1
+
+            if bg_box.size() > 0
+                box box_id = bg_box.get(i)
+                box_id.set_right(bar_index)
+                box_id.set_top(source_h)
+                box_id.set_bottom(source_l)
+
+
+            float lower = source_l + i * step
+            float upper = lower + step
+            val = array_freq.get(i)
+            color color = val == array_freq.max() and array_freq.max() > 0 ? poc_col : color.from_gradient(val, 2, array_freq.max(), chart.bg_color == color.white ? color.gray : #2e3035, chart.bg_color == color.white ? #cacddb : color.rgb(126, 132, 146))
+
+            // Frequency
+            if low < source_h and high > source_l
+                if close > lower and close < upper
+                    array_freq.set(i, array_freq.get(i) + volume_val)
+
+            // Set rigth of created boxes
+            if boxes.size() > 0
+                box box_id = boxes.get(i)
+                box_id.set_right(index + int(val))
+                box_id.set_top(upper)
+                box_id.set_bottom(lower)
+
+                if color == poc_col
+                    box_id.set_text(str.tostring(val, "#.##"))
+                    box_id.set_text_color(chart.fg_color)
+                    box_id.set_bgcolor(color)
+                else
+                    box_id.set_text('')
+                    box_id.set_bgcolor(color)
+                    box_id.set_border_color(bins > 40 ? color : chart.bg_color)
+
+            if color == poc_col
+                line_poc.delete()
+                line_poc := line.new(index, math.avg(upper, lower), last_bar_index, math.avg(upper, lower), color = disp_dyn_poc ? color(na) : poc_col, extend = extend.none)
+                line_poc
+
+        label_h.delete()
+        label_l.delete()
+        label_p.delete()
+        label_h := label.new(last_bar_index, source_h, text = ' High ' + str.tostring(source_h), color = color.new(poc_col, 90), textcolor = chart.fg_color, style = label.style_label_lower_left)
+        label_l := label.new(last_bar_index, source_l, text = ' Low ' + str.tostring(source_l), color = color.new(poc_col, 90), textcolor = chart.fg_color, style = label.style_label_upper_left)
+        label_p := label.new(last_bar_index, line_poc.get_y2(), text = '<<', color = color(na), textcolor = chart.fg_color, style = label.style_label_left)
+        label_p
+    line_poc.get_y2()
+
+dash() =>
+    if barstate.islast
+        var dash = table.new(position.top_right, 10, 10, color.new(chart.fg_color, 90))
+
+        dash.cell(2, 0, 'Timeframe:  ' + tf, text_color = chart.fg_color, text_halign = text.align_left)
+        dash.cell(2, 1, tf + ' High:      ' + str.tostring(source_h), text_color = chart.fg_color, text_halign = text.align_left)
+        dash.cell(2, 2, tf + ' Low:       ' + str.tostring(source_l), text_color = chart.fg_color, text_halign = text.align_left)
+// }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+poc = 0.0
+
+if last_bar_index - bar_index < 3000
+    dash()
+    poc := freq_p(bins)
+    poc
+
+display = display.all
+p0 = plot(disp_dyn_poc ? poc : na, color = htf_change or htf_change[1] or htf_change[2] ? na : poc_col, style = plot.style_stepline)
+// }

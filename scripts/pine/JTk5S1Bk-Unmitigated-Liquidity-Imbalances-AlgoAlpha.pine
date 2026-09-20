@@ -1,0 +1,123 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator(title="Unmitigated Liquidity Imbalance [AlgoAlpha]", shorttitle="AlgoAlpha - ⚖️𝓤𝓷𝓶𝓲𝓽𝓲𝓰𝓪𝓽𝓮𝓭 𝓛𝓲𝓺𝓾𝓲𝓭𝓲𝓽𝔂", overlay = false)
+len = input.int(33, "Period")
+shw = input.bool(true, "Show Reversal Signals")
+green = input.color(#00ffbb, "Bullish Color")
+red = input.color(#ff1100, "Bearish Color")
+
+// Calculating
+candledir = close > open ? 1 : -1
+candlelen = math.abs(close-open)
+
+valleyform = candlelen > candlelen[1] and candledir * candledir[1] == -1 and candledir == 1
+peakform = candlelen > candlelen[1] and candledir * candledir[1] == -1 and candledir == -1
+
+type bar
+    float h = high
+    float l = low
+    float v = volume
+    int   i = bar_index
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+
+bar b = bar.new()
+
+var x = 1
+var hh = 0.0
+var ll = 0.0
+var aRx = array.new_int()
+var aRy = array.new_float()
+var aSx = array.new_int()
+var aSy = array.new_float()
+var bi = array.new_float()
+var bei = array.new_float()
+var bullinlookback = array.new_float()
+var bearinlookback = array.new_float()
+
+if peakform
+    aRx.push(bar_index)
+    aRy.push(high[1])
+    bei.push(bar_index)
+    bearinlookback.push(bar_index)
+
+if valleyform
+    aSx.push(bar_index)
+    aSy.push(low[1])
+    bi.push(bar_index)
+    bullinlookback.push(bar_index)
+
+
+if aRx.size() > 0
+    qt = aRx.size()
+
+    for ln = qt - 1 to 0
+        if ln < aRx.size()
+            yL = aRy.get(ln)
+            xL = aRx.get(ln)
+            v = bei.indexof(xL)
+
+            if high > yL and v != -1
+                aRx.remove(ln)
+                aRy.remove(ln)
+                bei.remove(v)
+
+if aSx.size() > 0
+    qt = aSx.size()
+
+    for ln = qt - 1 to 0
+        if ln < aSx.size()
+            yL = aSy.get(ln)
+            xL = aSx.get(ln)
+            v = bi.indexof(xL)
+
+            if low < yL and v != -1
+                aSx.remove(ln)
+                aSy.remove(ln)
+                bi.remove(v)
+
+var d = 0.0
+
+if bullinlookback.size() + bearinlookback.size() > len
+    
+    if bullinlookback.first() < bearinlookback.first()
+        
+        v = 0.0
+        ix = 0
+        v := bullinlookback.shift()
+        ix := bi.indexof(v)
+        if ix != -1 and bi.size() > 0
+            bi.remove(ix)
+
+    else if bullinlookback.first() > bearinlookback.first()
+        
+        vv = 0.0
+        ixx = 0
+        vv := bearinlookback.shift()
+        ixx := bei.indexof(vv)
+        if ixx != -1 and bei.size() > 0
+            bei.remove(ixx)
+
+f = bi.size()/(bi.size() + bei.size())
+
+osc = plot(f, color = chart.fg_color)
+mid = plot(0.5, color = chart.fg_color)
+plot(1, "Upper Threshold", color.from_gradient(f, 0.5, 1, color.new(chart.fg_color, 70), color.new(red, 0)), 3)
+plot(0, "Lower Threshold", color.from_gradient(f, 0, 0.5, color.new(green, 0), color.new(chart.fg_color, 70)), 3)
+plotchar(f[1] == 1 and f != 1 ? 1.1 : na, "Bearish Reversal", "▼", location.absolute, red, size = size.tiny, display = shw ? display.all : display.none)
+plotchar(f[1] == 0 and f != 0 ? -0.1 : na, "Bullish Reversal", "▲", location.absolute, green, size = size.tiny, display = shw ? display.all : display.none)
+fill(osc, mid, f>0.5 ? 1 : 0, 0.5, f > 0.5 ? color.new(green, 50) : color.new(red, 50), color.new(chart.bg_color, 0))
+
+
+///////////////Alerts
+alertcondition(f[1] == 1 and f != 1, "Bearish Reversal")
+alertcondition(f[1] == 0 and f != 0, "Bullish Reversal")
+alertcondition((f[1] == 1 and f != 1) or ((f[1] == 0 and f != 0)), "Reversal")
+
+alertcondition(ta.crossover(f, 0.5), "Bullish Trend")
+alertcondition(ta.crossunder(f, 0.5), "Bearish Trend")
+alertcondition(ta.cross(f, 0.5), "Trend Shift")

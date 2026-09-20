@@ -1,0 +1,97 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Volume Spread Analysis [AlgoAlpha]", max_bars_back = 5000, max_boxes_count = 500, precision = 5, explicit_plot_zorder = true)
+
+min_effect_bars = input.int(5, "Minimum Bars for 'Effect' Detection")
+len = input.int(90, "Period for Convergence/Divergence Detection")
+factor = input.int(1, "Outlier Reduction Factor")
+vmalen = input.int(20, "Volume SMA Period")
+contype = input.string("Lower Work Done Relative to Last Effect", "Convergence Detection Method", ["Lower Work Done Relative to Last Effect", "Below High Work Done Threshold"])
+divtype = input.string("Higher Work Done Relative to Last Effect", "Divergence Detection Method", ["Higher Work Done Relative to Last Effect", "Above High Work Done Threshold"])
+green = input.color(#00ffbb, "Bullish Color")
+red = input.color(#ff1100, "Bearish Color")
+vcoll = input.color(#1848cc, "Volume MA Color")
+
+type store
+    float v
+    float ma
+
+scanning_range = 500
+vma = ta.sma(volume, vmalen)
+above_MA = volume > vma
+store[] volume_data = array.new<store>()
+volumes = array.new_float()
+var non_zero_effort = array.new_float()
+var non_zero_effort1 = array.new_float()
+
+if ta.crossunder(volume, vma)[1] and volume < vma and bar_index > scanning_range
+    for i = 2 to scanning_range + 1
+        volume_data.push(store.new(volume[i], vma[i]))
+
+if volume_data.size() > 0
+    for i = 0 to volume_data.size() - 1
+        if (volume_data.get(i).v < volume_data.get(i).ma) and (volume_data.get(i + 1).v < volume_data.get(i + 1).ma)
+            while volume_data.size() - 1 > i - 1
+                volume_data.pop()
+            break
+        
+    if volume_data.size() < min_effect_bars
+        volume_data.clear()
+
+starting_index = bar_index - (volume_data.size() + 1)
+ending_index = starting_index + (volume_data.size() - 1)
+
+boxhi = ta.highest(math.max(volume_data.size() +2, 1)) + ta.atr(28)
+boxlo = ta.lowest(math.max(volume_data.size() +2, 1)) - ta.atr(28)
+
+if volume_data.size() > 0
+    for i = 0 to volume_data.size() - 1
+        volumes.unshift(volume_data.get(i).v)
+    box.new(starting_index, volumes.max(), ending_index, 0, border_style = line.style_solid, border_color = color.new(chart.fg_color, 75) , border_width = 1, bgcolor = color.new(chart.fg_color, 95))
+    box.new(starting_index, boxhi, ending_index, boxlo, border_style = line.style_solid, border_color = color.new(close[bar_index-ending_index]-open[bar_index-starting_index] > 0 ? green : red, 50) , border_width = 1, bgcolor = color.new(close[bar_index-ending_index]-open[bar_index-starting_index] > 0 ? green : red, 99),  force_overlay = true, text = "𝑬𝒇𝒇𝒆𝒄𝒕", text_color = close[bar_index-ending_index]-open[bar_index-starting_index] > 0 ? green : red, text_halign = text.align_center, text_valign = text.align_top, text_size = size.tiny)
+    
+    dist = (close - open)
+
+cause = volumes.sum()
+effect = math.abs(close[bar_index-ending_index]-open[bar_index-starting_index])
+effort = nz(cause/effect)
+fma = ta.sma(close, 10)
+slma = ta.sma(close, 20) 
+trsh = ta.sma(effort, len) + ta.stdev(effort, len*factor)
+
+if effort > 0
+    non_zero_effort.unshift(effort)
+    non_zero_effort1.unshift(effort)
+    label.new(x = math.round(math.avg(starting_index, ending_index)), y = boxlo, text = "Work Done: " + str.format("{0,number,#.##}", effort), force_overlay = true, color = color.new(vcoll, 100), style = label.style_label_up, textcolor = chart.fg_color)
+
+while non_zero_effort.size() - 1 > len
+    non_zero_effort.pop()
+while non_zero_effort1.size() - 1 > (len * factor)
+    non_zero_effort1.pop()
+
+volcol = volume < vma ? volume > volume[1] ? color.new(chart.fg_color, 30) : color.new(chart.fg_color, 50) : (close > open ? color.new(green, 40) : color.new(red, 40))
+bound = plot(vma, color = volume > vma ? na : color.new(vcoll, 60), linewidth = 2)
+value = plot(volume, color = volcol, style = plot.style_columns)
+fill(bound, value, top_value = vma, bottom_value = volume < vma ? volume : na, top_color = color.new(vcoll, 60), bottom_color = color.new(vcoll, 95))
+
+divt(type) =>
+    switch type
+        "Higher Work Done Relative to Last Effect" => non_zero_effort.size() > 1 ? effort > 0 and non_zero_effort.first() > non_zero_effort.get(1) : false
+        "Above High Work Done Threshold" => effort > trsh
+cont(type) =>
+    switch type
+        "Lower Work Done Relative to Last Effect" => non_zero_effort.size() > 1 ? effort > 0 and non_zero_effort.first() < non_zero_effort.get(1) : false
+        "Below High Work Done Threshold" => effort > trsh
+
+plotchar(divt(divtype) and close[bar_index-ending_index]-open[bar_index-starting_index] > 0, "Bearish Divergence", "▽", location.abovebar, red, force_overlay = true, size = size.tiny, text = "𝑫𝒊𝒗𝒆𝒓𝒈𝒆𝒏𝒄𝒆", textcolor = red)
+plotchar(divt(divtype) and close[bar_index-ending_index]-open[bar_index-starting_index] < 0, "Bullish Divergence", "△", location.belowbar, green, force_overlay = true, size = size.tiny, text = "𝑫𝒊𝒗𝒆𝒓𝒈𝒆𝒏𝒄𝒆", textcolor = green)
+plotchar(cont(contype) and close[bar_index-ending_index]-open[bar_index-starting_index] > 0, "Bullish Convergence", "▲", location.belowbar, green, force_overlay = true, size = size.tiny, text = "𝑪𝒐𝒏𝒗𝒆𝒓𝒈𝒆𝒏𝒄𝒆", textcolor = green)
+plotchar(cont(contype) and close[bar_index-ending_index]-open[bar_index-starting_index] < 0, "Bearish Convergence", "▼", location.abovebar, red, force_overlay = true, size = size.tiny, text = "𝑪𝒐𝒏𝒗𝒆𝒓𝒈𝒆𝒏𝒄𝒆", textcolor = red)
+
+/////////////////////////////Alerts
+alertcondition(divt(divtype) and close[bar_index-ending_index]-open[bar_index-starting_index] > 0, "Bearish Divergence")
+alertcondition(divt(divtype) and close[bar_index-ending_index]-open[bar_index-starting_index] < 0, "Bullish Divergence")
+alertcondition(cont(contype) and close[bar_index-ending_index]-open[bar_index-starting_index] > 0, "Bullish Convergence")
+alertcondition(cont(contype) and close[bar_index-ending_index]-open[bar_index-starting_index] < 0, "Bearish Convergence")

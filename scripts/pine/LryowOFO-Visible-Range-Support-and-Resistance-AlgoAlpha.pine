@@ -1,0 +1,52 @@
+//@version=5
+indicator("Visible Range Support and Resistance [AlgoAlpha]", "AlgoAlpha - 🥊Visible Range S/R",overlay = true, max_boxes_count = 500)
+import PineCoders/VisibleChart/4
+
+res = input.int(40, "Resolution")
+scale = input.int(33, "Indicator Horizontal Extention", maxval = 100, minval = 1)
+neut = input.color(color.gray, "Levels Color")
+
+var left = 0
+top_boundaries = array.new_float(res)
+bottom_boundaries = array.new_float(res)
+binlen = array.new_float(res)
+var boxes = array.new_box()
+highs = array.new_float()
+lows = array.new_float()
+
+for i = 0 to bar_index - (bar_index - VisibleChart.bars())
+    highs.push(high[i])
+    lows.push(low[i])
+
+maxx = array.max(highs)
+minn = array.min(lows)
+size = array.size(highs)
+
+while boxes.size() > 0
+    boxes.shift().delete()
+
+if size > 0 and VisibleChart.barIsVisible()
+    step = (maxx - minn) / res
+    granularity = res
+    for i = 0 to granularity - 1
+        bin_size = 0.0
+        bottom = minn + (i*step)
+        top = minn + ( (i+1)*step )
+        bottom_boundaries.insert(i, bottom)
+        top_boundaries.insert(i, top)   
+        for j = 0 to array.size(highs) - 1
+            candle_above_hbar = lows.get(j) > top
+            candle_below_hbar = highs.get(j) < bottom
+            is_candle_in_bucket = not (candle_above_hbar or candle_below_hbar)
+            bin_size += is_candle_in_bucket ? 1 : 0
+        array.insert(binlen, i, bin_size)
+
+for i = 0 to res - 1
+    iskey = (i == res - 1 ? true : binlen.get(i) < binlen.get(i + 1)) and (i == 0 ? true : binlen.get(i) < binlen.get(i - 1))
+    box_right = bar_index + 7 + scale
+    box_left = iskey ? VisibleChart.leftBarIndex() : bar_index
+    box_top = array.get(top_boundaries, i)
+    box_bottom = array.get(bottom_boundaries, i)
+    left := box_left
+    if iskey
+        boxes.push(box.new(box_left, box_top, box_right, box_bottom, border_style = line.style_solid, border_color = color.new(neut, 70), border_width = 1, bgcolor = color.new(neut, 80)))

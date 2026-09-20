@@ -1,0 +1,123 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+
+//@version=6
+indicator("Delta Volume Profile [BigBeluga]", overlay = true, max_boxes_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+lookback = input.int(300)
+
+color_plus = input.color(#c9805c, "Volume +")
+color_minus = input.color(#5c8bc9, "Volume -")
+
+poc_plus = input.color(color.blue, "POC +")
+poc_minus = input.color(color.rgb(218, 131, 0), "POC-")
+
+
+max_min = array.new<float>()
+step = 0.
+bins = 0
+
+
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+atr = ta.atr(200)
+
+if barstate.islast
+    for i = 0 to lookback-1
+
+        h = high[i]
+        l = low[i]
+
+        max_min.push(h)
+        max_min.push(l)
+
+    bins := int((max_min.max() - max_min.min()) / atr)
+    step := (max_min.max() - max_min.min()) / bins
+
+vol_plus = array.new<float>(bins, 0)
+vol_minus = array.new<float>(bins, 0)
+
+
+if barstate.islast
+    for i = 0 to lookback-1
+
+        h = high[i]
+        l = low[i]
+        c = close[i]
+        o = open[i]
+        v = volume[i]
+
+        for k = 0 to bins - 1
+
+            loww = max_min.min() + step * k
+            mid = loww + step/2
+
+            if h > mid and l < mid 
+                if c > o
+                    vol_plus.set(k, vol_plus.get(k) + v)
+                else
+                    vol_minus.set(k, vol_minus.get(k) + v)
+// }
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+var boxes = array.new<box>()
+var labels = array.new<label>()
+
+if barstate.islast
+
+    if boxes.size() >= 0
+        for b in boxes
+            box.delete(b)
+        boxes.clear()
+
+    if labels.size() >= 0
+        for l in labels
+            label.delete(l)
+        labels.clear()
+
+
+    for i = 0 to bins - 1
+
+        loww = max_min.min() + step * i
+        highh = loww + step
+
+        value_plus = int(vol_plus.get(i) / vol_plus.sum()*200)
+        value_minus = int(vol_minus.get(i) / vol_minus.sum()*200)
+
+        max_plus = vol_plus.get(i) == vol_plus.max()
+        max_minus = vol_minus.get(i) == vol_minus.max()
+
+        col_plus = color.from_gradient(vol_plus.get(i), vol_plus.min(), vol_plus.max(), color.new(color_plus, 90), color_plus)
+        col_minus = color.from_gradient(vol_minus.get(i), vol_minus.min(), vol_minus.max(), color.new(color_minus, 90), color_minus)
+
+        sum = value_plus + value_minus
+        tot = vol_plus.sum() + vol_minus.sum()
+
+        delta = ((vol_plus.sum() - vol_minus.sum()) / vol_minus.sum()) * 100
+
+        col_sum = color.from_gradient(sum, 0, 60, color.rgb(189, 189, 189, 100), #787b8699)
+
+        b1=box.new(bar_index-lookback, highh, bar_index, loww, max_plus ? poc_plus : max_minus ? poc_minus : color.new(chart.bg_color, 50), bgcolor = col_sum, force_overlay = false)
+        b2=box.new(bar_index+50, highh, bar_index+50-value_plus, loww, chart.bg_color, bgcolor = max_plus ? poc_plus : col_plus, text =  vol_plus.get(i) != 0 ? "+"+str.tostring(vol_plus.get(i), format.volume) : "", text_color = chart.fg_color, text_size = size.small, text_halign = text.align_right)
+        b3=box.new(bar_index+50, highh, bar_index+50+value_minus, loww, chart.bg_color, bgcolor = max_minus ? poc_minus : col_minus, text = vol_minus.get(i) != 0 ? "-"+str.tostring(vol_minus.get(i), format.volume) : "", text_color = chart.fg_color, text_size = size.small, text_halign = text.align_left)
+
+
+        boxes.push(b1)
+        boxes.push(b2)
+        boxes.push(b3)
+
+        l1=label.new(bar_index+50, max_min.max(), "Delta: "+ str.tostring(delta, format.percent), color = delta > 0 ? color_plus : color_minus, textcolor = chart.fg_color, style = label.style_label_down)
+        l2=label.new(bar_index+50, max_min.min(), "Total: "+ str.tostring(tot, format.volume), color = color.gray, textcolor = chart.fg_color, style = label.style_label_up)
+
+        labels.push(l1)
+        labels.push(l2)
+
+// }

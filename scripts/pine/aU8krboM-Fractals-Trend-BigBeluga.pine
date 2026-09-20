@@ -1,0 +1,61 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Fractals Trend [BigBeluga]", overlay = true, max_lines_count = 500)
+
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+bool  display = input.bool(true, "", inline = "f")
+int   fractalLen = input.int(5, "Fractals Detection Length", inline = "f")
+int   fCount   = input.int(3, "Fractals Storage Qty")
+string typeStore = input.string("avg", "Bands Type", ["avg", "min/max", "median"], tooltip = "Change bands type calculation")
+color colorSup = input.color(color.aqua, "", inline = "col")
+color colorRes = input.color(color.orange, "", inline = "col") 
+int   shadow   = input.int(80, "Shadow Transparency")
+
+var FracrtalsUpper  = array.new<float>(fCount, 0)
+var FracrtalsLower  = array.new<float>(fCount, 0)
+
+var trend      = bool(na)
+// }
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+bool upperF = high[fractalLen] >= ta.highest(high,fractalLen*2+1)
+bool lowerF = low[fractalLen] <= ta.lowest(low,fractalLen*2+1)
+
+switch
+    upperF => FracrtalsUpper.push(high[fractalLen])
+    lowerF => FracrtalsLower.push(low[fractalLen])
+    FracrtalsUpper.size() > fCount => FracrtalsUpper.shift()
+    FracrtalsLower.size() > fCount => FracrtalsLower.shift()
+
+
+
+fractalLineUpper = typeStore == "avg" ? FracrtalsUpper.avg() : typeStore == "min/max" ? FracrtalsUpper.max() : FracrtalsUpper.median()
+fractalLineLower = typeStore == "avg" ? FracrtalsLower.avg() : typeStore == "min/max" ? FracrtalsLower.min() : FracrtalsLower.median()
+
+if ta.crossover(close, fractalLineUpper)
+    trend := true
+if ta.crossunder(close, fractalLineLower)
+    trend := false
+
+trendColor  = trend ? colorSup : colorRes
+fractalLine = trend ? fractalLineLower : fractalLineUpper
+// }
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+pt = plot(trend != trend[1] ? na : fractalLine, "Fractal Line", style = plot.style_linebr, linewidth = 2, color = trendColor)
+ph = plot(hl2, display = display.none, editable = false)
+
+fill(pt, ph, fractalLine, hl2, color.new(trendColor, shadow), na, editable = true)
+
+plotshape(upperF, "", location = location.abovebar, size = size.tiny, color = color.new(colorRes, 50), style = shape.labeldown, offset = -5, display = display ? display.all : display.none)
+plotshape(lowerF, "", location = location.belowbar, size = size.tiny, color = color.new(colorSup, 50), style = shape.labelup, offset = -5, display = display ? display.all : display.none)
+// }
+
+alertcondition(trend != trend[1] and trend, "Trend Up")
+alertcondition(trend != trend[1] and not trend, "Trend Down")

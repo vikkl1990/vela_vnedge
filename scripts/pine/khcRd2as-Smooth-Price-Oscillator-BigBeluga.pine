@@ -1,0 +1,215 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Smooth Price Oscillator [BigBeluga]")
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Input variables for length and threshold
+int    len_smooth   = input.int(20, "Smoothing Length")
+float  threshold    = input.float(1, "Threshold", step = 0.1)
+
+// Length for calculating standard deviation
+int    len_std      = 50
+
+// Create an array to store standard deviation values
+float[] std_array   = array.new<float>(len_std)
+// }
+
+
+// ＦＵＮＣＴＩＯＮＳ ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// @function SuperSmoother filter based on Ehlers Filter
+// @param price (float) The price series to be smoothed
+// @param period (int) The smoothing period
+// @returns [float] Smoothed price
+method smoother_F(float price, int period) =>
+    float step     = 2.0 * math.pi / period
+    float a1       = math.exp(-math.sqrt(2) * math.pi / period)
+    float b1       = 2 * a1 * math.cos(math.sqrt(2) * step / period)
+    float c2       = b1
+    float c3       = -a1 * a1
+    float c1       = 1 - c2 - c3
+    float smoothed = 0.0
+    smoothed := bar_index >= 4 
+                 ? c1 * (price + price[1]) / 2 + c2 * smoothed[1] + c3 * smoothed[2] 
+                 : price
+    smoothed
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Smoothing lines using the SuperSmoother function
+float line_long     = close.smoother_F(len_smooth * 2)
+float line_short    = close.smoother_F(len_smooth)
+
+// Oscillator calculation
+float oscillator    = line_short - line_long
+
+// Standard deviation for the oscillator
+float stdev_osc     = ta.stdev(oscillator, len_std)
+
+// Populate standard deviation values into the array
+for int i = 0 to len_std - 1
+    array.set(std_array, i, stdev_osc[i])
+
+// Shift array if size exceeds len_std
+if array.size(std_array) >= len_std
+    array.shift(std_array)
+
+// Normalize the oscillator using the maximum value from the standard deviation array
+float normalized_osc = ta.hma(oscillator / array.max(std_array), 30)
+
+// Bands for the oscillator
+float basis          =    ta.ema(normalized_osc, 250)
+float deviation      =    2 * ta.stdev(normalized_osc, 250)
+float upper_band     =    basis + deviation
+float lower_band     =    basis - deviation
+// }
+
+
+// ＰＬＯＴ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Plot the upper and lower bands
+plot(upper_band, color = color.gray, editable = false)
+plot(lower_band, color = color.gray, editable = false)
+
+// Plot horizontal lines and fill regions
+p1   =   plot(threshold,  color = #787b867e,  editable = false)
+p_1  =   plot(-threshold, color = #787b867e,  editable = false)
+p0   =   plot(0,          color = color.gray, editable = false)
+p4   =   plot(4,  display = display.none,       editable = false)
+p_4  =   plot(-4, display = display.none,       editable = false)
+
+plot_osc = plot(normalized_osc, color = chart.fg_color, editable = false)
+
+// Fill bands
+fill(p0, p1, threshold, 0, na, color.new(#278ed3, 70), editable = false)
+fill(p0, p_1, 0, -threshold, color.new(#278ed3, 70), na, editable = false)
+fill(p_1, p_4, -threshold, -4, na, color.new(color.aqua, 70), editable = false)
+fill(p1, p4, 4, threshold, color.new(color.orange, 70), na, editable = false)
+fill(p0, plot_osc, normalized_osc, 0, normalized_osc > 0 ? color.aqua : na, na, editable = false)
+fill(p0, plot_osc, normalized_osc, 0, normalized_osc < 0 ? color.orange : na, na, editable = false)
+// }
+
+
+// ＳＩＧＮＡＬＳ―――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+// Buy/Sell signal conditions
+bool signal_up = normalized_osc <-threshold and ta.crossover(normalized_osc, normalized_osc[1])
+bool signal_dn = normalized_osc > threshold and ta.crossover(normalized_osc[1], normalized_osc)
+
+// Remove old labels and create new labels for threshold values
+if barstate.islast
+    label.delete(
+                 label.new(
+                         bar_index, threshold, "+" + str.tostring(threshold), 
+                         color      = color(na), 
+                         textcolor  = chart.fg_color, 
+                         style      = label.style_label_left
+                         )[1]
+                 )
+
+    label.delete(
+                 label.new(
+                         bar_index, -threshold, str.tostring(-threshold), 
+                         color      = color(na), 
+                         textcolor  = chart.fg_color, 
+                         style      = label.style_label_left
+                         )[1]
+                 )
+
+    label.delete(
+                 label.new(
+                         bar_index, 0, "Neutral",
+                         color      = color(na), 
+                         textcolor  = color.gray, 
+                         style      = label.style_label_left
+                         )[1]
+                 )
+
+    label.delete(
+                 label.new(
+                         bar_index, upper_band, "Overbought",
+                         color      = color(na), 
+                         textcolor  = color.orange, 
+                         style      = label.style_label_left
+                         )[1]
+                 )
+
+    label.delete(
+                 label.new(
+                         bar_index, lower_band, "Oversold",
+                         color      = color(na), 
+                         textcolor  = color.aqua, 
+                         style      = label.style_label_left
+                         )[1]
+                 )
+
+// Plot chart signals for mean reversion
+plotshape(signal_dn and normalized_osc < upper_band,
+         location      = location.abovebar, 
+         style         = shape.xcross, 
+         size          = size.tiny, 
+         text          = "↷", 
+         textcolor     = chart.fg_color, 
+         color         = color.orange, 
+         title         = "Mean Reversion Down", 
+         force_overlay = true
+     )
+
+plotshape(signal_dn and normalized_osc > upper_band,
+         location      = location.abovebar, 
+         style         = shape.xcross, 
+         size          = size.tiny, 
+         text          = "+\n↷", 
+         textcolor     = chart.fg_color, 
+         color         = color.orange, 
+         title         = "Strong Mean Reversion Down", 
+         force_overlay = true
+     )
+
+plotshape(signal_up and normalized_osc < lower_band,
+         location      = location.belowbar, 
+         style         = shape.circle, 
+         size          = size.tiny, 
+         text          = "⤻\n+", 
+         textcolor     = chart.fg_color, 
+         color         = color.aqua, 
+         title         = "Strong Mean Reversion Up", 
+         force_overlay = true
+     )
+
+plotshape(signal_up and normalized_osc > lower_band,
+         location      = location.belowbar, 
+         style         = shape.circle, 
+         size          = size.tiny, 
+         text          = "⤻", 
+         textcolor     = chart.fg_color, 
+         color         = color.aqua, 
+         title         = "Mean Reversion Up", 
+         force_overlay = true
+     )
+
+// Plot oscillator signals at exact levels
+plotshape(
+         series        = signal_up ? normalized_osc[1] : na, 
+         title         = "", 
+         style         = shape.circle, 
+         location      = location.absolute, 
+         size          = size.tiny, 
+         color         = color.aqua, 
+         force_overlay = false, 
+         offset        = -1
+     )
+
+
+plotshape(
+         series        = signal_dn ? normalized_osc[1] : na, 
+         title         = "", 
+         style         = shape.xcross, 
+         location      = location.absolute, 
+         size          = size.tiny, 
+         color         = color.orange, 
+         force_overlay = false, 
+         offset        = -1
+     )
+// }

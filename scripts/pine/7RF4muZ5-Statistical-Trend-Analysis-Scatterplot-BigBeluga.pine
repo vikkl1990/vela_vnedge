@@ -1,0 +1,150 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('Statistical Trend Analysis (Scatterplot) [BigBeluga]', 'Statistical TA [BigBeluga]', max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+int length = input.int(40, 'Z Score Length')
+string src_input = input.string('close', 'Source', ['Returns', 'close', 'hl2', 'open', 'high', 'low'])
+
+int data_points = input.int(100, 'Data Points', minval = 20, maxval = 500, step = 10, group = 'Scatterplot')
+color col_up = input.color(color.lime, '+', group = 'Scatterplot', inline = 'col')
+color col_dn = input.color(color.blue, '-', group = 'Scatterplot', inline = 'col')
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+float src = switch src_input
+    'Returns' => (close - open) / close * 100
+    'close' => close
+    'open' => open
+    'high' => high
+    'low' => low
+    'hl2' => hl2
+    => close
+
+var z_vals = array.new<float>(1)
+var z_ch = array.new<float>(1)
+
+
+draw_lbl(x, y, txt, txt1, style, max) =>
+    color color = max == txt ? col_up : chart.fg_color
+    label.delete(label.new(x, y, str.tostring(txt) + txt1, color = color(na), textcolor = color, style = style, size = size.large)[1])
+
+z_score(src, length) =>
+    float z = (src - ta.sma(src, length)) / ta.stdev(src, length)
+    z := math.max(-4, math.min(4, z))
+
+    float z_change = ta.change(z, length / 3)
+    z_change := math.max(-4, math.min(4, z_change))
+
+    [z, z_change]
+
+scales() =>
+    chart.point cp1 = chart.point.from_index(bar_index + 100, -4.1)
+    chart.point cp2 = chart.point.from_index(bar_index + 100, 4.1)
+
+    chart.point cp_1 = chart.point.from_index(bar_index + 49, 0)
+    chart.point cp_2 = chart.point.from_index(bar_index + 151, 0)
+
+
+    for i = 0 to 4 by 1
+        chart.point cp_bt = chart.point.from_index(bar_index + 50 + 12 * i, 4 - i)
+        chart.point cp_bb = chart.point.from_index(bar_index + 150 - 12 * i, -4 + i)
+        box.new(cp_bt, cp_bb, bgcolor = color.new(chart.fg_color, chart.bg_color == color.white ? 90 : 95), border_color = na, text = str.tostring(4 - i), text_valign = text.align_top, text_halign = text.align_right, text_size = size.small, text_color = color.new(chart.fg_color, 60))
+
+        if box.all.size() > 5
+            box.delete(box.all.shift())
+
+    line.delete(line.new(cp1, cp2, color = color.gray)[1])
+    line.delete(line.new(cp_1, cp_2, color = color.gray)[1])
+
+    label.delete(label.new(cp1, '-4\nZ Score', style = label.style_label_up, color = color(na), textcolor = chart.fg_color)[1])
+    label.delete(label.new(cp2, 'Z Score\n4', style = label.style_label_down, color = color(na), textcolor = chart.fg_color)[1])
+
+    label.delete(label.new(cp_1, 'Z Change\n-4', style = label.style_label_right, color = color(na), textcolor = chart.fg_color)[1])
+    label.delete(label.new(cp_2, 'Z change\n4', style = label.style_label_left, color = color(na), textcolor = chart.fg_color)[1])
+
+Scatterplot(x, y, scale) =>
+    var labels = array.new<label>()
+    int X = math.round((x + 4) / 8 * 100)
+    float Y = y
+    chart.point cp = chart.point.from_index(bar_index + scale + X, Y)
+    color color = color.from_gradient(y + x, -2, 2, col_dn, col_up)
+
+    labels.push(label.new(cp, '●', color = color(na), textcolor = color, style = label.style_label_center, size = size.large))
+
+    if labels.size() > data_points
+        label.delete(labels.shift())
+
+
+
+[z, z_change] = z_score(src, src_input == 'Returns' ? 500 : length)
+
+z_vals.push(z)
+z_ch.push(z_change)
+
+if z_vals.size() > data_points
+    z_vals.shift()
+    z_ch.shift()
+
+if barstate.islast
+    max_val = array.new<int>(4)
+
+    int quad1 = 0
+    int quad2 = 0
+    int quad3 = 0
+    int quad4 = 0
+
+    for i = 0 to data_points - 1 by 1
+
+        X = z_ch.get(i)
+        Y = z_vals.get(i)
+
+        Scatterplot(X, Y, 50)
+
+        switch 
+            X > 0 and Y > 0 => 
+        	    quad1 := quad1 + 1
+        	    quad1
+            X < 0 and Y > 0 => 
+        	    quad2 := quad2 + 1
+        	    quad2
+            X < 0 and Y < 0 => 
+        	    quad3 := quad3 + 1
+        	    quad3
+            X > 0 and Y < 0 => 
+        	    quad4 := quad4 + 1
+        	    quad4
+
+
+    max_val.push(quad1)
+    max_val.push(quad2)
+    max_val.push(quad3)
+    max_val.push(quad4)
+
+    int max = max_val.max()
+
+    draw_lbl(bar_index + 150, 4, quad1, ' ⬆⬆', label.style_label_lower_left, max)
+    draw_lbl(bar_index + 50, 4, quad2, ' 〜⬇', label.style_label_lower_right, max)
+
+    draw_lbl(bar_index + 50, -4, quad3, ' ⬇⬇', label.style_label_upper_right, max)
+    draw_lbl(bar_index + 150, -4, quad4, ' 〜⬆', label.style_label_upper_left, max)
+
+    scales()
+    // }
+
+
+
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+color z_color = color.from_gradient(z, -3.5, 3.5, col_dn, col_up)
+color z_ch_col = color.new(chart.fg_color, chart.bg_color == color.white ? 60 : 80)
+
+plot(z_change, 'Z Change', color = z_ch_col, style = plot.style_histogram)
+plot(0, '0', color = chart.fg_color)
+plot(z, 'Z Score', color = z_color, linewidth = 2)
+plotcandle(open, high, low, close, title = 'Color Candles', color = z_color, wickcolor = z_color, bordercolor = z_color, force_overlay = true)
+
+// }

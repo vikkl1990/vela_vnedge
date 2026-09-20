@@ -1,0 +1,189 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator('HTF Delta Flux + Liquidations [BigBeluga]', "HTF Delta Flux [BigBeluga]", overlay = true, max_boxes_count = 500, max_polylines_count = 100, max_lines_count = 500, max_labels_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+string htf           = input.timeframe('D', 'HTF Timeframe', tooltip = 'Select the Higher Timeframe for the candle boxes and delta calculations.')
+bool fullBody        = input.bool(false, "Full Body Mode", tooltip = "When enabled, the candle body extends from High to Low, and wicks are hidden.")
+int dashSize         = input.int(15, 'Dashboard History', tooltip = 'The number of historical HTF candles to track in the dashboard.')
+
+// Liquidation Settings
+bool showLiqs        = input.bool(true, "Show Liquidations", inline = "liq", tooltip = "Toggle visibility of liquidation circle labels.")
+float devThreshold   = input.float(1.2, '', minval = 0.1, step = 0.1, inline = "liq", tooltip = "Multiplier for detecting volume-based liquidations.")
+
+// Style Group
+bool showCurve       = input.bool(true, "Show Delta Curve", group = "Style", tooltip = "Toggle the visibility of the internal delta polyline.")
+color bullColor      = input.color(color.new(#1ab85c, 0), 'Bullish Color', group = "Style")
+color bearColor      = input.color(color.new(#1b8dcf, 0), 'Bearish Color', group = "Style")
+color polyBull       = input.color(color.rgb(30, 190, 174), "Polyline Bullish", group = "Style")
+color polyBear       = input.color(color.rgb(52, 157, 255), "Polyline Bearish", group = "Style")
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+bool isNewHTF = timeframe.change(htf)
+
+var float htfOpen = na
+var float htfHigh = na
+var float htfLow = na
+var float rollingDelta = 0.0
+var float currentLiqVol = 0.0
+
+var array<float> histDelta = array.new_float()
+var array<bool> histBias = array.new_bool()
+var array<float> histLiqVol = array.new_float()
+var array<float> deltaPath = array.new_float()
+var array<label> histLabels = array.new<label>()
+
+// Helper to plot liquidation labels
+plotLiquidation(int targetBar, float dVal, float diff, float bodyBot, float dMin, float dRange, float bodyH) =>
+    float normY = bodyBot + (dVal - dMin) / dRange * bodyH
+    color circCol = diff > 0 ? bullColor : bearColor
+    src = diff > 0 ? high : low
+    label.new(targetBar, src, '●', color = color.new(circCol, 100), textcolor = circCol, style = label.style_label_center, size = size.large)
+    label.new(targetBar, src, str.tostring(dVal, format.volume), color = color.new(circCol, 100), textcolor = circCol, style = diff > 0 ? label.style_label_down : label.style_label_up, size = size.small)
+
+// Internal Liquidation Logic
+if isNewHTF
+    if not na(htfOpen)
+        array.push(histDelta, rollingDelta[1])
+        array.push(histBias, close[1] >= htfOpen[1])
+        array.push(histLiqVol, currentLiqVol)
+
+        if array.size(histDelta) > dashSize
+            array.remove(histDelta, 0)
+            array.remove(histBias, 0)
+            array.remove(histLiqVol, 0)
+
+    htfOpen := open
+    htfHigh := high
+    htfLow := low
+    rollingDelta := close > open ? volume : -volume
+    currentLiqVol := 0.0
+    deltaPath.clear()
+else
+    htfHigh := math.max(htfHigh, high)
+    htfLow := math.min(htfLow, low)
+    float prevRolling = rollingDelta
+    rollingDelta := rollingDelta + (close > open ? volume : -volume)
+    
+    if showLiqs and deltaPath.size() > 1
+        float stdevDelta = array.stdev(deltaPath) * devThreshold
+        float diff = rollingDelta - prevRolling
+        if math.abs(diff) > stdevDelta
+            currentLiqVol += math.abs(diff)
+            float dMin = deltaPath.min()
+            float dMax = math.max(deltaPath.max(), rollingDelta)
+            float dRange = math.max(dMax - dMin, 1e-9)
+            float bodyTop = fullBody ? htfHigh : math.max(htfOpen, close)
+            float bodyBot = fullBody ? htfLow  : math.min(htfOpen, close)
+            float bodyH = math.max(bodyTop - bodyBot, 1e-9)
+            plotLiquidation(bar_index, rollingDelta, diff, bodyBot, dMin, dRange, bodyH)
+
+float htfClose = close
+deltaPath.push(rollingDelta)
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+var box htfBody = na
+var line htfHighWick = na
+var line htfLowWick = na
+var polyline htfPoly = na
+var label htfLabel = na
+
+bool isCurrentBull = htfClose >= htfOpen
+color currentTheme = isCurrentBull ? bullColor : bearColor
+float currentBodyTop = fullBody ? htfHigh : math.max(htfOpen, htfClose)
+float currentBodyBot = fullBody ? htfLow  : math.min(htfOpen, htfClose)
+
+if isNewHTF
+    if not na(htfLabel)
+        array.push(histLabels, htfLabel)
+        if array.size(histLabels) > dashSize - 1
+            label.delete(array.remove(histLabels, 0))
+
+    htfBody := box.new(bar_index, htfOpen, bar_index, htfClose, border_color = currentTheme, border_width = 1, bgcolor = color.new(currentTheme, 85))
+    htfPoly := polyline.new(array.new<chart.point>(), curved = false, line_color = na, line_width = 2)
+    htfHighWick := line.new(bar_index, htfHigh, bar_index, currentBodyTop, color = color.new(currentTheme, 50), width = 2)
+    htfLowWick := line.new(bar_index, htfLow, bar_index, currentBodyBot, color = color.new(currentTheme, 50), width = 2)
+    htfLabel := label.new(bar_index, htfHigh, 'LIVE', color = color(na), textcolor = color.white, style = label.style_label_down, size = size.small)
+else
+    box.set_right(htfBody, bar_index)
+    box.set_top(htfBody, currentBodyTop)
+    box.set_bottom(htfBody, currentBodyBot)
+    htfBody.set_bgcolor(color.new(currentTheme, 95))
+    htfBody.set_border_color(color.new(currentTheme, 0))
+
+    int midX = int(math.avg(box.get_left(htfBody), box.get_right(htfBody)))
+    color wickColor = fullBody ? color(na) : color.new(currentTheme, 0)
+    line.set_xy1(htfHighWick, midX, htfHigh), line.set_xy2(htfHighWick, midX, currentBodyTop)
+    line.set_xy1(htfLowWick, midX, htfLow), line.set_xy2(htfLowWick, midX, currentBodyBot)
+    htfLowWick.set_color(wickColor), htfHighWick.set_color(wickColor)
+
+    label.set_xy(htfLabel, midX, htfHigh)
+    label.set_text(htfLabel, 'LIVE\n' + str.format('{0,number,#}', rollingDelta))
+
+if isNewHTF and array.size(histLabels) > 0
+    int hSize = array.size(histLabels)
+    for i = 0 to hSize - 1 by 1
+        label lbl = array.get(histLabels, hSize - 1 - i)
+        float dVal = array.get(histDelta, array.size(histDelta) - 1 - i)
+        label.set_text(lbl, str.tostring(i + 1) + '\n△ ' + str.format('{0,number,#}', dVal))
+
+if showCurve and not na(htfHigh) and not na(htfLow) and deltaPath.size() > 1
+    polyline.delete(htfPoly)
+    points = array.new<chart.point>()
+    float dMin = deltaPath.min(), dMax = deltaPath.max(), dRange = math.max(dMax - dMin, 1e-9)
+    int startBar = box.get_left(htfBody)
+    for i = 0 to deltaPath.size() - 1 by 1
+        float normY = currentBodyBot + (deltaPath.get(i) - dMin) / dRange * math.max(currentBodyTop - currentBodyBot, 1e-9)
+        points.push(chart.point.from_index(startBar + i, normY))
+    color dynamicPolyColor = deltaPath.last() >= 0 ? polyBull : polyBear
+    htfPoly := polyline.new(points, curved = false, line_color = dynamicPolyColor, line_width = 2, force_overlay = true)
+else
+    polyline.delete(htfPoly)
+
+// Dashboard with Tooltips and Volume-based Liquidations
+var table dash = table.new(position.top_right, 4, dashSize + 10, bgcolor = color.new(color.black, 20), border_color = chart.bg_color, border_width = 2)
+if barstate.islast
+    table.cell(dash, 0, 0, 'HTF', text_color = color.white, bgcolor = color.new(chart.fg_color, 90), tooltip = "The index of the historical Higher Timeframe candle.")
+    table.cell(dash, 1, 0, 'Bias', text_color = color.white, bgcolor = color.new(chart.fg_color, 90), tooltip = "Price action bias (Bullish if Close > Open).")
+    table.cell(dash, 2, 0, 'Delta', text_color = color.white, bgcolor = color.new(chart.fg_color, 90), tooltip = "The cumulative volume delta for the HTF period.")
+    table.cell(dash, 3, 0, 'Liqs', text_color = color.white, bgcolor = color.new(chart.fg_color, 90), tooltip = "Total volume contribution from detected liquidation flushes.")
+    
+    // Live Row
+    table.cell(dash, 0, 1, 'LIVE', text_color = color.white)
+    table.cell(dash, 1, 1, isCurrentBull ? 'BULL' : 'BEAR', text_color = currentTheme)
+    table.cell(dash, 2, 1, str.format('{0,number,#}', rollingDelta), text_color = currentTheme)
+    table.cell(dash, 3, 1, str.format('{0,number,#}', currentLiqVol), text_color = currentTheme)
+    
+    int histSize = array.size(histDelta)
+    avgBias = array.new_int()
+
+    if histSize > 0
+        for i = 0 to math.min(histSize - 1, dashSize - 2) by 1
+            int dIdx = histSize - 1 - i
+            float dV = array.get(histDelta, dIdx)
+            bool bV = array.get(histBias, dIdx)
+            float lV = array.get(histLiqVol, dIdx)
+            avgBias.push(bV ? 1 : -1)
+            
+            table.cell(dash, 0, i + 2, str.tostring(i + 1), text_color = color.white, text_size = size.small, bgcolor = color.new(chart.fg_color, 100-i))
+            table.cell(dash, 1, i + 2, bV ? 'BULL' : 'BEAR', text_color = bV ? bullColor : bearColor, text_size = size.small, bgcolor = color.new(chart.fg_color, 100-i))
+            table.cell(dash, 2, i + 2, str.format('{0,number,#}', dV), text_color = bV ? bullColor : bearColor, text_size = size.small, bgcolor = color.new(chart.fg_color, 100-i))
+            table.cell(dash, 3, i + 2, str.format('{0,number,#}', lV), text_color = bV ? bullColor : bearColor, text_size = size.small, bgcolor = color.new(chart.fg_color, 100-i))
+        
+        // Average Row
+        float avgDelta = array.avg(histDelta)
+        float avgLiqVol = array.avg(histLiqVol)
+        table.cell(dash, 0, histSize + 2, 'AVG', text_color = color.rgb(143, 147, 161), text_size = size.normal, tooltip = "Average values across the tracked dashboard history.")
+        table.cell(dash, 1, histSize + 2, avgBias.avg() > 0 ? "BULL" : "BEAR", text_color = avgBias.avg() > 0 ? bullColor : bearColor, text_size = size.normal)
+        table.cell(dash, 2, histSize + 2, str.format('{0,number,#}', avgDelta), text_color = color.white, text_size = size.normal)
+        table.cell(dash, 3, histSize + 2, str.format('{0,number,#}', avgLiqVol), text_color = color.white, text_size = size.normal)
+
+// }

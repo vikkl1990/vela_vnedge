@@ -1,0 +1,317 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+//@version=6
+//────────────────────────────────────────────────────────────────────── Inputs
+indicator("Inversion Fair Value Gap Signals [AlgoAlpha]",shorttitle = "AlgoAlpha – IFVG Signals",overlay    = true,max_boxes_count = 500, max_lines_count = 500, max_labels_count = 50)
+import TradingView/ta/10
+//────────────────────────────────────────────────────────────────────── FVG Detection Inputs
+maxBoxAge      = input.int(defval=1000, title="Zone Expiration Bars", tooltip="Upper limit (in bars) for how long an unfinished gap will keep stretching to the right before being deleted", group="FVG  Detection")
+ltf_ = input.timeframe("5", "Lower Timeframe Value", tooltip = "Determines the lower timeframe used to calculate buying and selling volume", group="FVG  Detection")
+preventOverlap = input.bool(defval=true, title="Prevent Overlap", tooltip="When enabled, gaps whose price range overlaps an existing unfinished gap or inversion zone (blue/orange) are discarded", group="FVG  Detection")
+showBull       = input.bool(defval=true, title="Show Bullish FVGs", tooltip="Enable detection and rendering of bullish (price-up) fair-value gaps", group="FVG  Detection")
+showBear       = input.bool(defval=true, title="Show Bearish FVGs", tooltip="Enable detection and rendering of bearish (price-down) fair-value gaps", group="FVG  Detection")
+showGapZone    = input.bool(defval=true, title="Show Main Gap Zone", tooltip="Render the main coloured rectangle that represents the full price gap", group="Appearance")
+
+text_size    = input.string("Tiny", "Volume Text Size", options=["Auto","Tiny","Small","Medium","Large"], group="Appearance", tooltip="Size of the volume text at the corner of the channels.")
+bullColor = input.color(#00ffbb, "Bullish Color", tooltip="Color used for bullish trends and indicators. This color appears when price action or indicators suggest upward momentum", group="Appearance")
+bearColor = input.color(#ff1100, "Bearish Color", tooltip="Color used for bearish trends and indicators. This color appears when price action or indicators suggest downward momentum", group="Appearance")
+invis = color.rgb(0,0,0,100)
+//────────────────────────────────────────────────────────────────────── FVG Detection Logic
+atr150 = ta.atr(150)*0.3
+bullFVG = showBull and low > high[2] and (low - high[2]) > atr150
+bearFVG = showBear and high < low[2] and (low[2] - high) > atr150
+
+[upv, downv, deltav] = ta.requestUpAndDownVolume(ltf_)
+//────────────────────────────────────────────────────────────────────── Data Structures
+var box[]   gapBoxes = array.new<box>()
+var int[]   gapTypes = array.new<int>()
+var box[]   gapBoxes_ = array.new<box>()
+var int[]   gapTypes_ = array.new<int>()
+var box[]   gapBoxes_0 = array.new<box>()
+var line[]  gapLines = array.new<line>()
+var line[]  gapLines_ = array.new<line>()
+var line[]  gapLines_0 = array.new<line>()
+var float[] bullVolData = array.new<float>()
+var float[] bearVolData = array.new<float>()
+var box[]   bullvol = array.new<box>()
+var box[]   bearvol = array.new<box>()
+var float[] bullVolData_ = array.new<float>()
+var float[] bearVolData_ = array.new<float>()
+var box[]   bullvol_ = array.new<box>()
+var box[]   bearvol_ = array.new<box>()
+
+bool bullMit = false
+bool bearMit = false
+// Track when price has closed inside a given active FVG (per-gap flag)
+var bool[]  gapInsideFlags = array.new<bool>()
+// Per-bar signal flags for arrows when price exits the FVG without mitigation
+bool bullExitNoMit = false
+bool bearExitNoMit = false
+// Track when price has closed inside a given active inversion zone (orange/blue)
+var bool[]  gapInsideFlagsInv = array.new<bool>()
+// Per-bar signal flags for inversion zones
+bool invBullExitNoMit = false
+bool invBearExitNoMit = false
+
+// IFVG creation alert flags
+bool ifvgBullCreated = false
+bool ifvgBearCreated = false
+
+// IFVG mitigation alert flags
+bool ifvgBullMit = false
+bool ifvgBearMit = false
+
+
+textSize(text_size) =>
+    switch text_size
+        "Auto"  => size.auto
+        "Tiny"  => size.tiny
+        "Small" => size.small
+        "Medium"=> size.normal
+        "Large" => size.large
+
+//────────────────────────────────────────────────────────────────────── Overlap Check Function
+f_can_create(float tNew, float bNew) =>
+    bool ok = true
+    if array.size(gapBoxes) > 0
+        for j = 0 to array.size(gapBoxes) - 1
+            bx = array.get(gapBoxes, j)
+            existingBottom = box.get_bottom(bx)
+            existingTop    = box.get_top(bx)
+            if (tNew > existingBottom) and (bNew < existingTop)
+                ok := false
+                break
+    if ok and array.size(gapBoxes_) > 0
+        for j = 0 to array.size(gapBoxes_) - 1
+            bx = array.get(gapBoxes_, j)
+            existingBottom = box.get_bottom(bx)
+            existingTop    = box.get_top(bx)
+            if (tNew > existingBottom) and (bNew < existingTop)
+                ok := false
+                break
+    ok
+//────────────────────────────────────────────────────────────────────── New Gap Creation Function
+f_new(bool isBull) =>
+    l  = bar_index - 1
+    r  = bar_index + 50
+    t  = isBull ? low     : low[2]
+    b  = isBull ? high[2] : high
+    c  = chart.fg_color
+    bgTransp = showGapZone ? 90 : 100
+    brdTransp = showGapZone ? 95 : 100
+    big = box.new(l, t, r, b,
+         bgcolor      = color.new(c, bgTransp), 
+         border_color = color.new(c, brdTransp),
+         extend       = extend.none, text = "▲: " + str.tostring(upv[1], format.volume) + " | " + "▼: " + str.tostring(downv[1], format.volume), text_size = textSize(text_size), text_color = chart.fg_color, text_halign = text.align_right, text_valign = text.align_bottom)
+    array.unshift(gapBoxes , big)
+    array.unshift(gapTypes , isBull ? 1 : -1)
+    midY = (t + b) / 2.0
+    mid = line.new(l, midY, r, midY)
+    mid.set_extend(extend.none)
+    mid.set_color(color.new(c, 0))
+    mid.set_width(1)
+    mid.set_style(line.style_dashed)
+    array.unshift(gapLines, mid)
+    array.unshift(gapInsideFlags, false)
+    array.unshift(bullVolData, upv[1])
+    array.unshift(bearVolData, math.abs(downv[2]))
+    array.unshift(bullvol, box.new(bar_index-1, t, bar_index, midY, color.new(bullColor, 90), bgcolor = color.new(bullColor, 70)))
+    array.unshift(bearvol, box.new(bar_index-1, midY, bar_index, b, color.new(bearColor, 90), bgcolor = color.new(bearColor, 70)))
+
+//────────────────────────────────────────────────────────────────────── Gap Management and Rendering
+if array.size(gapBoxes) > 0
+    for i = array.size(gapBoxes) - 1 to 0
+        bx  = array.get(gapBoxes, i)
+        l   = box.get_left(bx)
+        t   = box.get_top(bx)
+        b   = box.get_bottom(bx)
+        typ = array.get(gapTypes , i)
+        age = bar_index - l
+        done = typ == 1 ? (close <= b) : (close >= t)
+        insideNow = (close <= t) and (close >= b)
+        wasInside = array.get(gapInsideFlags, i)
+        if not done
+            if insideNow and not wasInside
+                array.set(gapInsideFlags, i, true)
+            else if wasInside and not insideNow
+                if typ == 1 and close > t
+                    bullExitNoMit := true
+                    array.set(gapInsideFlags, i, false)
+                if typ == -1 and close < b
+                    bearExitNoMit := true
+                    array.set(gapInsideFlags, i, false)
+        if done
+            array.get(gapBoxes, i).set_right(bar_index)
+            array.get(gapBoxes, i).set_text("")
+            if typ == 1
+                bullMit := true
+            else
+                bearMit := true
+            array.unshift(gapBoxes_, box.new(bar_index, t, bar_index + 50, b, color.new(typ == 1 ? bearColor : bullColor, 95), bgcolor = color.new(typ == 1 ? bearColor : bullColor, 90), text = "▲: " + str.tostring(upv[1], format.volume) + " | " + "▼: " + str.tostring(downv[1], format.volume), text_size = textSize(text_size), text_color = chart.fg_color, text_halign = text.align_right, text_valign = text.align_bottom))
+            invMidY = (t + b) / 2.0
+            invMid = line.new(bar_index, invMidY, bar_index + 50, invMidY)
+            invMid.set_extend(extend.none)
+            invMid.set_color(typ == 1 ? bearColor : bullColor)
+            invMid.set_width(1)
+            invMid.set_style(line.style_dashed)
+            array.unshift(gapLines_, invMid)
+            array.unshift(gapBoxes_0, array.get(gapBoxes, i))
+            array.unshift(gapLines_0, array.get(gapLines, i))
+            array.unshift(gapTypes_, -typ)
+            if (-typ) == 1
+                ifvgBullCreated := true
+            else
+                ifvgBearCreated := true
+            array.unshift(bullVolData_, upv[1])
+            array.unshift(bearVolData_, math.abs(downv[2]))
+            array.unshift(bullvol_, box.new(bar_index-1, t, bar_index, invMidY, color.new(bullColor, 90), bgcolor = color.new(bullColor, 70)))
+            array.unshift(bearvol_, box.new(bar_index-1, invMidY, bar_index, b, color.new(bearColor, 90), bgcolor = color.new(bearColor, 70)))
+            array.unshift(gapInsideFlagsInv, false)
+            array.remove(gapBoxes, i)
+            array.remove(gapLines, i)
+            array.remove(gapTypes, i)
+            array.remove(gapInsideFlags, i)
+            array.remove(bullVolData, i)
+            array.remove(bearVolData, i)
+            bv = array.get(bullvol, i)
+            sv = array.get(bearvol, i)
+            bv.delete()
+            sv.delete()
+            array.remove(bullvol, i)
+            array.remove(bearvol, i)
+            continue
+        if age > maxBoxAge
+            array.remove(gapBoxes, i).delete()
+            array.remove(gapLines, i).delete()
+            array.remove(gapTypes, i)
+            array.remove(gapInsideFlags, i)
+            array.remove(bullVolData, i)
+            array.remove(bearVolData, i)
+            bv2 = array.get(bullvol, i)
+            sv2 = array.get(bearvol, i)
+            bv2.delete()
+            sv2.delete()
+            array.remove(bullvol, i)
+            array.remove(bearvol, i)
+            continue
+        array.get(gapBoxes, i).set_right(bar_index + 50)
+        array.get(gapLines, i).set_x2(bar_index + 50)
+        midX = int(math.avg(l, bar_index + 50))
+        ratio = array.get(bullVolData, i) / math.max(array.get(bearVolData, i), 0.0000001)
+        if ratio > 1
+            array.get(bullvol, i).set_right(midX)
+            array.get(bearvol, i).set_right(int(l + (midX-l) / ratio))     
+        else
+            array.get(bullvol, i).set_right(int(l + (midX-l) * ratio))     
+            array.get(bearvol, i).set_right(midX)
+
+if array.size(gapBoxes_) > 0
+    for i = array.size(gapBoxes_) - 1 to 0
+        bx  = array.get(gapBoxes_, i)
+        l   = box.get_left(bx)
+        t   = box.get_top(bx)
+        b   = box.get_bottom(bx)
+        typ = array.get(gapTypes_, i)
+        age = bar_index - l
+        done = typ == 1 ? (close <= b) : (close >= t)
+        insideNowInv = (close <= t) and (close >= b)
+        wasInsideInv = array.size(gapInsideFlagsInv) > i ? array.get(gapInsideFlagsInv, i) : false
+        if not done
+            if insideNowInv and not wasInsideInv
+                array.set(gapInsideFlagsInv, i, true)
+            else if wasInsideInv and not insideNowInv
+                if typ == 1 and close > t
+                    invBullExitNoMit := true
+                    array.set(gapInsideFlagsInv, i, false)
+                if typ == -1 and close < b
+                    invBearExitNoMit := true
+                    array.set(gapInsideFlagsInv, i, false)
+        if done
+            if typ == 1
+                ifvgBullMit := true
+            else
+                ifvgBearMit := true
+            array.remove(gapBoxes_0, i).delete()
+            array.remove(gapLines_0, i).delete()
+            array.remove(gapBoxes_, i).delete()
+            array.remove(gapLines_, i).delete()
+            array.remove(gapTypes_, i)
+            array.remove(bullVolData_, i)
+            array.remove(bearVolData_, i)
+            bv3 = array.get(bullvol_, i)
+            sv3 = array.get(bearvol_, i)
+            bv3.delete()
+            sv3.delete()
+            array.remove(bullvol_, i)
+            array.remove(bearvol_, i)
+            if array.size(gapInsideFlagsInv) > i
+                array.remove(gapInsideFlagsInv, i)
+            continue
+        if age > maxBoxAge
+            array.remove(gapBoxes_0, i).delete()
+            array.remove(gapLines_0, i).delete()
+            array.remove(gapBoxes_, i).delete()
+            array.remove(gapLines_, i).delete()
+            array.remove(gapTypes_, i)
+            array.remove(bullVolData_, i)
+            array.remove(bearVolData_, i)
+            bv4 = array.get(bullvol_, i)
+            sv4 = array.get(bearvol_, i)
+            bv4.delete()
+            sv4.delete()
+            array.remove(bullvol_, i)
+            array.remove(bearvol_, i)
+            if array.size(gapInsideFlagsInv) > i
+                array.remove(gapInsideFlagsInv, i)
+            continue
+        array.get(gapBoxes_, i).set_right(bar_index + 50)
+        array.get(gapLines_, i).set_x2(bar_index + 50)
+        midX = int(math.avg(l, bar_index + 50))
+        ratio_ = array.get(bullVolData_, i) / math.max(array.get(bearVolData_, i), 0.0000001)
+        if ratio_ > 1
+            array.get(bullvol_, i).set_right(midX)
+            array.get(bearvol_, i).set_right(int(l + (midX-l) / ratio_))     
+        else
+            array.get(bullvol_, i).set_right(int(l + (midX-l) * ratio_))     
+            array.get(bearvol_, i).set_right(midX)
+
+
+
+
+//────────────────────────────────────────────────────────────────────── New Gap Detection
+if bullFVG
+    tProp = low
+    bProp = high[2]
+    if not preventOverlap or f_can_create(tProp, bProp)
+        f_new(true)
+if bearFVG
+    tProp = low[2]
+    bProp = high
+    if not preventOverlap or f_can_create(tProp, bProp)
+        f_new(false)
+//────────────────────────────────────────────────────────────────────── Signals: exit FVG without mitigation
+if bullExitNoMit
+    label.new(bar_index, low - atr150, "△", style = label.style_text_outline, color = invis, textcolor = color.new(chart.fg_color, 50), size = size.small, xloc = xloc.bar_index)
+if bearExitNoMit
+    label.new(bar_index, high + atr150, "▽", style = label.style_text_outline, color = invis, textcolor = color.new(chart.fg_color, 50), size = size.small, xloc = xloc.bar_index)
+//────────────────────────────────────────────────────────────────────── Signals: exit inversion (orange/blue) without mitigation
+if invBullExitNoMit
+    label.new(bar_index, low - atr150, "▲", style = label.style_text_outline, color = invis, textcolor = color.new(bullColor, 30), size = size.small, xloc = xloc.bar_index)
+if invBearExitNoMit
+    label.new(bar_index, high + atr150, "▼", style = label.style_text_outline, color = invis, textcolor = color.new(bearColor, 30), size = size.small, xloc = xloc.bar_index)
+//────────────────────────────────────────────────────────────────────── Alerts
+alertcondition(bullFVG, "Bullish FVG", "Bullish fair-value gap detected")
+alertcondition(bearFVG, "Bearish FVG", "Bearish fair-value gap detected")
+alertcondition(bullMit, "Bullish FVG Mitigated", "Bullish fair-value gap mitigated")
+alertcondition(bearMit, "Bearish FVG Mitigated", "Bearish fair-value gap mitigated")
+// IFVG creation alerts
+alertcondition(ifvgBullCreated, "Bullish IFVG Created", "Bullish inversion fair-value gap created")
+alertcondition(ifvgBearCreated, "Bearish IFVG Created", "Bearish inversion fair-value gap created")
+// IFVG mitigation alerts
+alertcondition(ifvgBullMit, "Bullish IFVG Mitigated", "Bullish inversion fair-value gap mitigated")
+alertcondition(ifvgBearMit, "Bearish IFVG Mitigated", "Bearish inversion fair-value gap mitigated")
+// Rejection alerts (exit without mitigation)
+alertcondition(bullExitNoMit, "Bullish FVG Rejection", "Price rejected bullish FVG without mitigation")
+alertcondition(bearExitNoMit, "Bearish FVG Rejection", "Price rejected bearish FVG without mitigation")
+alertcondition(invBullExitNoMit, "Bullish IFVG Rejection", "Price rejected bullish IFVG without mitigation")
+alertcondition(invBearExitNoMit, "Bearish IFVG Rejection", "Price rejected bearish IFVG without mitigation")

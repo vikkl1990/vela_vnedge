@@ -1,0 +1,101 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("Gradient Range [BigBeluga]", overlay = true, max_lines_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+bool show_range  = input.bool(true, "Display:", group = "PRICE RANGE", inline = "Range")
+int  box_len     = input.int(200, "", group = "PRICE RANGE", inline = "Range", maxval = 250)
+
+bool mean_rev   = input.bool(true, "Display:", inline = "coll", group = "Mean Reversion Points")
+color col_mr    = input.color(#ffffff, "", inline = "coll", group = "Mean Reversion Points")
+
+bool display_candlesticks   = input.bool(true, "Display:", inline = "col", group = "Gradient Candlesticks")
+color col_top               = input.color(#c305e5, "", inline = "col", group = "Gradient Candlesticks")
+color col_bot               = input.color(color.lime, "", inline = "col", group = "Gradient Candlesticks")
+
+
+H = array.new<float>(box_len)
+points = array.new<chart.point>()
+values = array.new<float>(box_len)
+atr = ta.atr(200)*0.05
+// }
+
+
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+[_, _, adx] = ta.dmi(14, 17)
+ranging = adx <= 35
+
+// Store historical prices in array on the last bar
+if barstate.islast
+    for i = 0 to box_len
+        H.push(close[i])
+
+// Calculate high, low, and mid prices from the historical array
+h = H.max()
+l = H.min()
+m = (h+l) /2
+
+draw_circle(bool src, int mult_x, int mult_y, offset) =>
+    points.clear()
+
+    float angle = 0
+    var float source = 0.
+    var color color = na
+
+    switch 
+        src => source := high[offset+1]
+        => source := low[offset+1]
+    	
+    for i = 1 to 11 by 1
+        int xValue = int(math.round(2 * mult_x * math.sin(angle))) + bar_index -1- offset
+        float yValue = atr * mult_y * math.cos(angle) + source
+        angle := angle + math.pi / 5
+
+        points.push(chart.point.from_index(xValue, yValue))
+
+    polyline.new(points, curved = false, line_color = col_mr, line_width = 1, force_overlay = false)
+
+// Draw Range
+if barstate.islast and show_range
+    box.delete(box.new(bar_index-box_len, h, bar_index, l, color.gray, 1, bgcolor = color.new(color.gray, 90))[1])
+    line.delete(line.new(bar_index-box_len, m, bar_index, m, color = color.gray, style = line.style_dashed)[1])
+
+
+if barstate.islast
+    src = 0.
+    for i = 0 to box_len-1
+        src := m - close[i]
+        values.set(i, src)
+
+    if display_candlesticks
+        for i = 0 to box_len-1
+            color_ = color.from_gradient(values.get(i), values.min(), values.max(), col_top, col_bot)
+
+            // Draw Candlesticks
+            line.new(bar_index-i, high[i], bar_index-i, low[i], color = color_, width = 1, force_overlay = true)
+            line.new(bar_index-i, open[i], bar_index-i, close[i], color = color_, width = 5, force_overlay = true)
+
+    label.delete(label.new(bar_index, l, ranging ? "🟢 Ranging" : "🟡 Trending", style = label.style_label_left, color = color(na), textcolor = chart.fg_color)[1])
+
+    hig = 0.
+
+    for i = 0 to box_len-10
+
+        hig := high[i]
+        hig_ = high[i+1]
+
+        lo = low[i]
+        lo_ = low[i+1]
+
+        if ranging and mean_rev
+            if hig_ > h and hig < h 
+                draw_circle(true, 2, 15, i)
+            if lo_ < l and lo > l 
+                draw_circle(false, 2, 15, i)
+
+// }
+
+

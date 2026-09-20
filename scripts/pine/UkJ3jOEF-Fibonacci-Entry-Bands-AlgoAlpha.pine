@@ -1,0 +1,119 @@
+//@version=6
+indicator("Fibonacci Entry Bands [AlgoAlpha]", shorttitle = "AlgoAlpha - Entry Bands", overlay=true, max_lines_count=500)
+
+grp1 = "Indicator Settings"
+tpAggressiveness = input.string("low", "TP Aggressiveness", options=["low", "medium", "high"], group=grp1, tooltip="Controls how aggressive the Take Profit (TP) trigger is. Low = slower exits, High = faster exits.", display = display.data_window)
+src = input.source(hlc3, "Source", group=grp1, tooltip="Price source used for band calculations", display = display.data_window)
+len = input.int(21, "Length", group=grp1, tooltip="Length for the basis calculation", display = display.data_window)
+atrLen = input.int(14, "ATR Length", group=grp1, tooltip="Length for ATR or Stdev volatility basis", display = display.data_window)
+useATR = input.bool(true, "Use ATR", group=grp1, tooltip="Toggle between ATR or standard deviation for band width", display = display.data_window)
+
+grp2 = "Visual Options"
+showRej = input.bool(true, "Show Take Profit Crosses", group=grp2, display = display.data_window)
+showBounce = input.bool(true, "Show Basis Bounce Arrows", group=grp2, display = display.data_window)
+colorbar = input.bool(true, "Custom Bar Color", group=grp2, display = display.data_window)
+green = input.color(#00ffbb, "Bullish Color", group=grp2, display = display.data_window)
+red = input.color(#ff1100, "Bearish Color", group=grp2, display = display.data_window)
+gray = input.color(color.gray, "Basis Color", group=grp2, display = display.data_window)
+
+basis = ta.ema(ta.ema(src, len), len)
+vol = useATR ? ta.atr(atrLen) : ta.stdev(src, len)
+
+mult1 = 0.618
+mult2 = 1.0
+mult3 = 1.618
+mult4 = 2.618
+
+var int trend = 0
+trend := basis > basis[1] ? 1 : basis < basis[1] ? -1 : nz(trend[1])
+
+upper1 = basis + vol * mult1
+upper2 = basis + vol * mult2
+upper3 = basis + vol * mult3
+upper4 = basis + vol * mult4
+lower1 = basis - vol * mult1
+lower2 = basis - vol * mult2
+lower3 = basis - vol * mult3
+lower4 = basis - vol * mult4
+
+plot(basis, title="Basis", color=gray, linewidth=1)
+
+upper1_plot = plot(trend == -1 ? upper1 : na, title="Upper 0.618", color=color.new(red, 60), style=plot.style_linebr)
+upper4_plot = plot(trend == -1 ? upper4 : na, title="Upper 2.618", color=color.new(red, 30), style=plot.style_linebr)
+lower1_plot = plot(trend == 1 ? lower1 : na, title="Lower 0.618", color=color.new(green, 60), style=plot.style_linebr)
+lower4_plot = plot(trend == 1 ? lower4 : na, title="Lower 2.618", color=color.new(green, 30), style=plot.style_linebr)
+
+plot(trend == -1 ? upper2 : na, title="Upper 1.0", color=color.new(red, 50), style=plot.style_linebr)
+plot(trend == -1 ? upper3 : na, title="Upper 1.618", color=color.new(red, 40), style=plot.style_linebr)
+plot(trend == 1 ? lower2 : na, title="Lower 1.0", color=color.new(green, 50), style=plot.style_linebr)
+plot(trend == 1 ? lower3 : na, title="Lower 1.618", color=color.new(green, 40), style=plot.style_linebr)
+
+fill(upper1_plot, upper4_plot, 
+     trend == -1 ? upper1 : na, 
+     trend == -1 ? upper4 : na, 
+     color.new(chart.bg_color, 90), 
+     color.new(red, 70), 
+     title="Downtrend Band Fill")
+
+fill(lower1_plot, lower4_plot, 
+     trend == 1 ? lower1 : na, 
+     trend == 1 ? lower4 : na, 
+     color.new(chart.bg_color, 90), 
+     color.new(green, 70), 
+     title="Uptrend Band Fill")
+
+normDist = trend == -1 ? math.abs(close - basis) / (vol * mult4) : trend == 1 ? math.abs(close - basis) / (vol * mult4) : 0
+normDist := math.min(normDist, 1)
+
+alpha = math.min(math.round(normDist * 100), 70)
+
+avg_oc = math.avg(open, close)
+
+barCol = color(na)
+if trend == 1
+    barCol := avg_oc < basis ? gray : color.new(green, alpha)
+else if trend == -1
+    barCol := avg_oc > basis ? gray : color.new(red, alpha)
+else
+    barCol := na
+
+barcolor(colorbar ? barCol : na)
+
+longSignal = ta.crossover(basis, basis[1])
+shortSignal = ta.crossunder(basis, basis[1])
+plotshape(longSignal ? lower4 : na, title="Long Entry", location=location.absolute, style=shape.labelup, color=green, text="▲", textcolor=color.white)
+plotshape(shortSignal ? upper4 : na, title="Short Entry", location=location.absolute, style=shape.labeldown, color=red, text="▼", textcolor=color.white)
+
+var float tpLongBand = na
+var float tpShortBand = na
+switch tpAggressiveness
+    "low" =>
+        tpLongBand := lower4
+        tpShortBand := upper4
+    "medium" =>
+        tpLongBand := lower2
+        tpShortBand := upper2
+    "high" =>
+        tpLongBand := lower1
+        tpShortBand := upper1
+
+con1 = ta.crossunder(close, tpLongBand)
+con2 = ta.crossover(close, tpShortBand)
+
+rejectionLong = showRej and con1 and trend == -1
+rejectionShort = showRej and con2 and trend == 1
+plotshape(rejectionLong, title="Rejection Long", location=location.belowbar, color=red, style=shape.xcross, size=size.tiny)
+plotshape(rejectionShort, title="Rejection Short", location=location.abovebar, color=green, style=shape.xcross, size=size.tiny)
+
+longBounce = showBounce and trend == 1 and low < basis and close > basis and not longSignal
+shortBounce = showBounce and trend == -1 and high > basis and close < basis and not shortSignal
+
+plotshape(longBounce, title="Long Bounce", location=location.belowbar, style=shape.triangleup, color=green, size=size.tiny)
+plotshape(shortBounce, title="Short Bounce", location=location.abovebar, style=shape.triangledown, color=red, size=size.tiny)
+
+alertcondition(longSignal, title="Long Entry")
+alertcondition(shortSignal, title="Short Entry")
+alertcondition(rejectionLong, title="Rejection Long (TP for Short)")
+alertcondition(rejectionShort, title="Rejection Short (TP for Long)")
+alertcondition(longBounce, title="Long Bounce")
+alertcondition(shortBounce, title="Short Bounce")

@@ -1,0 +1,94 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Bubbles Volume [BigBeluga]", overlay = true)
+
+//#region ———————————————————— Inputs
+// @variable Toggle to show volume bubbles
+bool  bubles     = input.bool(true, "", group = "Bubles", inline = "1")
+// @variable Threshold for volume significance
+float threshold  = input.float(1, "Threshold", step = 0.1, maxval = 7, group = "Bubles", inline = "1")
+// @variable Toggle for heatmap coloring
+bool  color_     = input.bool(false, "HeatMap", group = "Bubles")
+
+// @variable Toggle to show significant volume levels
+bool  levels     = input.bool(false, "Significant Levels", "Significant Volume Levels", group = "Volume Levels")
+// @variable Qty of significant volume levels
+int   levels_qty = input.int(10, "Levels Qty", group = "Volume Levels")
+
+// @variable Main color for volume bubbles
+color m_col = color.green
+ 
+// @variable Color definitions for heatmap
+color col1  = color.new(color.aqua, 50)
+color col2  = color.new(color.green, 50)
+color col3  = color.new(color.yellow, 50)
+color col4  = color.new(color.orange, 30)
+color col5  = #d32626
+//#endregion
+
+//#region ———————————————————— Calculations
+series float VOL      = volume
+series float source   = hl2
+// @variable Normalized volume
+series float norm_vol = VOL / ta.stdev(VOL, 200)
+
+// @variable Color gradient based on normalized volume
+color gradient_col    = not color_
+                         ? color.from_gradient(
+                             norm_vol, 0, 8, 
+                             chart.bg_color == color.white ? color.new(m_col, 100) : color.rgb(18, 34, 18, 50),
+                             m_col
+                             )
+                         :
+                          (
+                          norm_vol < 1
+                          ? color.from_gradient(norm_vol, 0, 1, col1, col2) 
+                          : norm_vol > 1 and norm_vol < 4
+                          ? color.from_gradient(norm_vol, 1, 4, col3, col4)
+                          : norm_vol > 4 
+                          ? color.from_gradient(norm_vol, 4, 8, col4, col5) : na
+                          )
+
+// @variable Conditions for different volume levels
+bool condition1 = norm_vol > 0 and norm_vol < threshold and bubles
+bool condition2 = norm_vol > threshold and norm_vol < 3  and bubles
+bool condition3 = norm_vol > threshold+2 and norm_vol < 4 and bubles
+bool condition4 = norm_vol > threshold+3 and norm_vol < 6 and bubles
+bool condition5 = norm_vol > 6
+//#endregion
+
+//#region ———————————————————— Plotting
+// Plot labels for significant volume levels
+if condition5 and (levels or bubles)
+    label.new(bubles ? bar_index : last_bar_index, source, str.tostring(volume, format.volume), xloc.bar_index, yloc.price ,
+                 #00000000, bubles ? label.style_label_center : label.style_label_left, chart.fg_color)
+
+// Plot lines for significant volume levels
+if condition5 and levels
+    line.new(bar_index, source, last_bar_index, source, xloc.bar_index, extend.none, gradient_col, width = 2) 
+
+// Plot volume bubbles of different sizes based on volume levels
+plotshape(condition1 ? source : na, "", shape.circle, location.absolute, gradient_col, 0, "", na, size = size.tiny)
+plotshape(condition2 ? source : na, "", shape.circle, location.absolute, gradient_col, 0, "", na, size = size.small)
+plotshape(condition3 ? source : na, "", shape.circle, location.absolute, gradient_col, 0, "", na, size = size.normal)
+plotshape(condition4 ? source : na, "", shape.circle, location.absolute, gradient_col, 0, "", na, size = size.large)
+plotshape(condition5 and bubles ? source : na, "", shape.circle, location.absolute, gradient_col, 0, "", na, size = size.huge)
+
+// Manage the number of lines and labels on the chart
+a_allLines = line.all
+if array.size(a_allLines) > levels_qty
+    line.delete(array.shift(a_allLines))
+
+a_allLabels = label.all
+if array.size(a_allLabels) > levels_qty and not bubles
+    label.delete(array.shift(a_allLabels))
+    
+// Warning if no Volume data Provided
+if ta.cum(volume) <= 0 and barstate.islast
+    label.new(bar_index, hl2, "No Volume Data Provided\n Use other Symbol", 
+                 style     = label.style_label_left, 
+                 textcolor = chart.fg_color)
+//#endregion

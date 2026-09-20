@@ -1,0 +1,77 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+//@version=6
+indicator("Momentum Trail Oscillator [AlgoAlpha]", shorttitle="AlgoAlpha - Momentum Trail", overlay=false, behind_chart = false)
+
+//━━━━━━━━━━━━━━━━ 2.  INPUTS ━━━━━━━━━━━━━━━━
+oscLen     = input.int(21, "Oscillator Length", tooltip="Length for HMA smoothing of price", group="Calculation Settings")
+trailMult  = input.float(12, "Trail Multiplier", tooltip="Distance multiplier between mid-line and trail bands", group="Calculation Settings")
+smthLen    = oscLen
+trailLen   = 5
+
+//━━━━━━━━━━━━━━━━ 3.  APPEARANCE INPUTS ━━━━━━━━━━━━━━━━
+over = input.bool(true, "Overlay Signals", "Enables signals on the price chart", group="Appearance")
+COL_UP = input.color(#5996ff, "Bullish Color (Up)", group="Appearance")
+COL_DN = input.color(#fff176, "Bearish Color (Down)", group="Appearance")
+COL_HU = input.color(#90bff9, "Oversold Zone Color", group="Appearance")
+COL_HD = input.color(#ffc973, "Overbought Zone Color", group="Appearance")
+
+//━━━━━━━━━━━━━━━━ 4.  FUNCTIONS ━━━━━━━━━━━━━━━━
+double_smooth(src, len, smthlen) =>
+    first = ta.ema(src, len)
+    ta.ema(first, smthlen)
+
+trail(src, len, mult) =>
+    basis = ta.wma(src, int(len / 2))
+    vola  = ta.hma(math.abs(src - src[1]), len)
+    var float upper = na
+    var float lower = na
+    var int   dir   = 1
+    dist  = vola
+    uBand = basis + dist * mult
+    lBand = basis - dist * mult
+    upper := ta.wma((uBand < nz(upper[1]) or src[1] > nz(upper[1])) ? uBand : nz(upper[1]), len * 3)
+    lower := ta.wma((lBand > nz(lower[1]) or src[1] < nz(lower[1])) ? lBand : nz(lower[1]), len * 3)
+    dir := na(dir[1]) ? 1 :
+           dir[1] == -1 and src > upper ?  1 :
+           dir[1] ==  1 and src < lower ? -1 :
+           dir[1]
+    [dir, upper, lower]
+
+//━━━━━━━━━━━━━━━━ 5.  CALCULATIONS ━━━━━━━━━━━━━━━━
+price                = ta.hma(close, int(oscLen / 3))
+pc                   = ta.change(price)
+doublePc             = double_smooth(pc, oscLen, smthLen)
+doubleAbsPc          = double_smooth(math.abs(pc), oscLen, smthLen)
+mom                  = 100 * (doublePc / doubleAbsPc)
+[direction, up, dn]  = trail(mom, trailLen, trailMult)
+
+//━━━━━━━━━━━━━━━━ 6.  VISUALS ━━━━━━━━━━━━━━━━
+momcol = color.from_gradient(mom, -50, 50, COL_HU, COL_HD)
+plot(mom, title="Momentum", color=momcol)
+plot(direction == 1 ? dn : na, title="Trailing-Up", color=color.new(COL_UP, 70), style=plot.style_linebr)
+plot(direction == -1 ? up : na, title="Trailing-Down", color=color.new(COL_DN, 70), style=plot.style_linebr)
+m   = hline(0, "Mid-Line", color.gray, hline.style_solid)
+max = hline(50, display=display.none)
+hh  = hline(40, display=display.none)
+lh  = hline(30, display=display.none)
+min = hline(-50, display=display.none)
+ll  = hline(-40, display=display.none)
+hl  = hline(-30, display=display.none)
+fill(lh, hh, color.new(COL_HD, 86))
+fill(hh, max, color.new(COL_HD, 79))
+fill(ll, hl, color.new(COL_HU, 87))
+fill(ll, min, color.new(COL_HU, 80))
+obCond = ta.crossunder(mom, 40)
+osCond = ta.crossover(mom, -40)
+plotchar(obCond ? 65 : na, "OB", "▼", location.absolute, COL_DN, size=size.tiny)
+plotchar(osCond ? -65 : na, "OS", "▲", location.absolute, COL_UP, size=size.tiny)
+plotchar(ta.cross(direction, 0) ? (direction < 0 ? up : dn) : na, "Trend Change", "◉", location.absolute, direction < 0 ? COL_DN : COL_UP, size=size.tiny)
+plotchar(obCond and over, "OB", "▼", location.abovebar, COL_DN, size=size.tiny, force_overlay = true)
+plotchar(osCond and over, "OS", "▲", location.belowbar, COL_UP, size=size.tiny, force_overlay = true)
+plotcandle(open,high,low,close,"price chart",(over ? (mom < 0 ? COL_HD : COL_HU) : na), (over ? (mom < 0 ? COL_HD : COL_HU) : na), bordercolor = over ? (mom < 0 ? COL_HD : COL_HU) : na, force_overlay = true)
+//━━━━━━━━━━━━━━━━ 7.  ALERTS ━━━━━━━━━━━━━━━━
+alertcondition(obCond, title="Overbought Zone Breach")
+alertcondition(osCond, title="Oversold Zone Breach")
+alertcondition(ta.crossover(direction, 0), title="Trend Changed Up")
+alertcondition(ta.crossunder(direction, 0), title="Trend Changed Down")

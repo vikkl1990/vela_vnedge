@@ -1,0 +1,819 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Liquidity Sweep Hunter Algo [AlgoAlpha]", "AlgoAlpha - Liquidity Sweep Hunter", overlay = true, max_boxes_count = 500, max_lines_count = 500, behind_chart = false)
+
+settingsGroup = "Levels"
+signalsGroup = "Signals"
+appearanceGroup = "Appearance"
+
+shortBars = input.int(14, "Fast", minval = 1, group = settingsGroup, inline = "lookbacks")
+mediumBars = input.int(42, "Mid", minval = 1, group = settingsGroup, inline = "lookbacks")
+longBars = input.int(120, "Slow", minval = 1, group = settingsGroup, inline = "lookbacks", tooltip = "Fast, Mid, and Slow set the lookbacks used to detect short-term, medium-term, and major liquidity highs and lows. Higher values require broader price extremes before a new level is created.")
+keepLevelsForBars = input.int(1000, "Max Age", minval = 50, maxval = 5000, group = settingsGroup, tooltip = "Maximum number of bars a stored liquidity level can remain active before it is removed from memory.")
+removeLevelWhen = input.string("Wick", "Remove On", options = ["Wick", "Close"], group = settingsGroup, tooltip = "Choose whether a level is mitigated as soon as price wicks through it or only after a candle closes beyond it.")
+heatmapLookback = input.int(777, "Price Range Lookback", minval = 20, maxval = 5000, group = settingsGroup, tooltip = "Number of recent bars used to measure the price range that determines each heatmap box height. Higher values produce a more slowly changing vertical scale.")
+heatmapResolution = input.int(200, "Price Resolution", minval = 2, maxval = 300, group = settingsGroup, tooltip = "Number of vertical divisions across the measured price range. Higher values make each liquidity heatmap band thinner.")
+heatmapCellBars = input.int(5, "Cell Width", minval = 1, maxval = 50, group = settingsGroup, tooltip = "Horizontal width of each historical heatmap box, measured in chart bars. Higher values create longer cells and fewer colour updates.")
+filterSweepsByStrength = input.bool(true, "Filter Sweeps by Strength", group = signalsGroup, inline = "sweepStrength")
+minimumSweepStrength = input.int(33, "Strength", minval = 1, maxval = 90, group = signalsGroup, inline = "sweepStrength", tooltip = "Filter Sweeps by Strength enables or disables the signal filter. Strength sets the minimum average normalized strength, from 1% to 90%, required across the visibly distinct levels swept by the same candle. The value uses the same shared bull/bear scale that determines the box colours.")
+showTradeDrawings = input.bool(true, "Show TP/SL", group = signalsGroup, inline = "tradeDrawings")
+tradeRiskReward = input.float(3.0, "RR", minval = 0.1, maxval = 20.0, step = 0.1, group = signalsGroup, inline = "tradeDrawings")
+tradeExpiryBars = input.int(40, "Signal Expiry", minval = 1, maxval = 500, group = signalsGroup, inline = "tradeDrawings", tooltip = "Show TP/SL enables the post-signal trade drawing. RR sets the final reward distance as a multiple of the four-bar stop distance. Signal Expiry sets how many bars the stop, target, and three milestone lines extend from the next bar's entry open.")
+
+heatmapWeakColor = input.color(color.rgb(140, 0, 255), "Weak", group = appearanceGroup, inline = "boxColors")
+heatmapMidColor = input.color(#00ffbb, "Mid", group = appearanceGroup, inline = "boxColors")
+heatmapStrongColor = input.color(color.rgb(255, 230, 0), "Strong", group = appearanceGroup, inline = "boxColors", tooltip = "Weak, Mid, and Strong set the low, midpoint, and high colours of the shared strength gradient used for both upper and lower liquidity boxes.")
+bullishSignalColor = input.color(#00ffbb, "Bullish Signal", group = appearanceGroup, inline = "signalColors")
+bearishSignalColor = input.color(#ff1100, "Bearish Signal", group = appearanceGroup, inline = "signalColors", tooltip = "Bullish Signal and Bearish Signal set the colours of the reversal labels. The bullish colour is also used for both target boxes and all three target lines, while the bearish colour is used for the stop box.")
+
+const int SHIFT_COMPARISON_BARS = 3
+const int LEVEL_MERGE_TICKS = 2
+const int CLEANUP_BARS = 10
+const int VOLUME_AVERAGE_BARS = 100
+const float MAX_VOLUME_SCORE_PER_BAR = 3.0
+const float FULL_HEATMAP_STRENGTH = 50.0
+const float CLOSEST_LEVEL_WEIGHT = 1.0
+const float SECOND_LEVEL_WEIGHT = 0.25
+const float THIRD_LEVEL_WEIGHT = 0.05
+const int MIN_LEVELS_FOR_SIGNAL = 2
+const int SIGNAL_RECLAIM_BARS = 2
+const int SIGNAL_ATR_LENGTH = 14
+const float SIGNAL_OFFSET_MULTIPLIER = 0.15
+const int TRADE_STOP_LOOKBACK_BARS = 4
+const int TRADE_MILESTONE_COUNT = 3
+const int TRADE_STOP_BOX_TRANSPARENCY = 82
+const int TRADE_TARGET_BOX_TRANSPARENCY = 90
+const int TRADE_PROGRESS_BOX_TRANSPARENCY = 68
+const int TRADE_BOX_BORDER_TRANSPARENCY = 100
+const int TRADE_TARGET_LINE_TRANSPARENCY = 20
+
+// Level source
+
+h1_ = ta.highest(high, shortBars)
+h2_ = ta.highest(high, mediumBars)
+h3_ = ta.highest(high, longBars)
+
+l1_ = ta.lowest(low, shortBars)
+l2_ = ta.lowest(low, mediumBars)
+l3_ = ta.lowest(low, longBars)
+
+var float h1 = na
+var float h2 = na
+var float h3 = na
+
+var float l1 = na
+var float l2 = na
+var float l3 = na
+
+h1Shift = not na(h1_) and (na(h1) or (not na(h1_[SHIFT_COMPARISON_BARS]) and h1_ > h1_[SHIFT_COMPARISON_BARS] and h1_ != h1_[SHIFT_COMPARISON_BARS] and h1_ == h1_[1]))
+h2Shift = not na(h2_) and (na(h2) or (not na(h2_[SHIFT_COMPARISON_BARS]) and h2_ > h2_[SHIFT_COMPARISON_BARS] and h2_ != h2_[SHIFT_COMPARISON_BARS] and h2_ == h2_[1]))
+h3Shift = not na(h3_) and (na(h3) or (not na(h3_[SHIFT_COMPARISON_BARS]) and h3_ > h3_[SHIFT_COMPARISON_BARS] and h3_ != h3_[SHIFT_COMPARISON_BARS] and h3_ == h3_[1]))
+
+l1Shift = not na(l1_) and (na(l1) or (not na(l1_[SHIFT_COMPARISON_BARS]) and l1_ < l1_[SHIFT_COMPARISON_BARS] and l1_ != l1_[SHIFT_COMPARISON_BARS] and l1_ == l1_[1]))
+l2Shift = not na(l2_) and (na(l2) or (not na(l2_[SHIFT_COMPARISON_BARS]) and l2_ < l2_[SHIFT_COMPARISON_BARS] and l2_ != l2_[SHIFT_COMPARISON_BARS] and l2_ == l2_[1]))
+l3Shift = not na(l3_) and (na(l3) or (not na(l3_[SHIFT_COMPARISON_BARS]) and l3_ < l3_[SHIFT_COMPARISON_BARS] and l3_ != l3_[SHIFT_COMPARISON_BARS] and l3_ == l3_[1]))
+
+if h1Shift
+    h1 := h1_
+
+if h2Shift
+    h2 := h2_
+
+if h3Shift
+    h3 := h3_
+
+if l1Shift
+    l1 := l1_
+
+if l2Shift
+    l2 := l2_
+
+if l3Shift
+    l3 := l3_
+
+// Level memory
+
+var array<float> upperPrices = array.new<float>()
+var array<int> upperBirths = array.new<int>()
+var array<float> upperStrengths = array.new<float>()
+var array<box> upperLastBoxes = array.new<box>()
+var array<float> upperLastNorms = array.new<float>()
+var array<float> upperLastCellHeights = array.new<float>()
+var array<int> upperLastDrawBars = array.new<int>()
+
+var array<float> lowerPrices = array.new<float>()
+var array<int> lowerBirths = array.new<int>()
+var array<float> lowerStrengths = array.new<float>()
+var array<box> lowerLastBoxes = array.new<box>()
+var array<float> lowerLastNorms = array.new<float>()
+var array<float> lowerLastCellHeights = array.new<float>()
+var array<int> lowerLastDrawBars = array.new<int>()
+
+var array<int> pendingUpperSweepBars = array.new<int>()
+var array<float> pendingUpperReclaimLevels = array.new<float>()
+var array<int> pendingLowerSweepBars = array.new<int>()
+var array<float> pendingLowerReclaimLevels = array.new<float>()
+
+var array<int> tradeDirections = array.new<int>()
+var array<int> tradeExpiryBarValues = array.new<int>()
+var array<float> tradeEntryPrices = array.new<float>()
+var array<float> tradeStopPrices = array.new<float>()
+var array<float> tradeTargetLevel1Values = array.new<float>()
+var array<float> tradeTargetLevel2Values = array.new<float>()
+var array<float> tradeTargetLevel3Values = array.new<float>()
+var array<int> tradeReachedMilestones = array.new<int>()
+var array<box> tradeStopBoxes = array.new<box>()
+var array<box> tradeTargetBoxes = array.new<box>()
+var array<box> tradeProgressBoxes = array.new<box>()
+var array<line> tradeTargetLine1Values = array.new<line>()
+var array<line> tradeTargetLine2Values = array.new<line>()
+var array<line> tradeTargetLine3Values = array.new<line>()
+
+// Helpers
+
+f_roundToTick(float value) =>
+    math.round(value / syminfo.mintick) * syminfo.mintick
+
+f_findInsertIndex(array<float> prices, float price, bool descending) =>
+    int lo = 0
+    int hi = array.size(prices)
+
+    while lo < hi
+        int mid = int(math.floor((lo + hi) * 0.5))
+        float midPrice = array.get(prices, mid)
+
+        if descending
+            if midPrice > price
+                lo := mid + 1
+            else
+                hi := mid
+        else
+            if midPrice < price
+                lo := mid + 1
+            else
+                hi := mid
+
+    lo
+
+f_addLevel(array<float> prices, array<int> births, array<float> strengths, array<box> lastBoxes, array<float> lastNorms, array<float> lastCellHeights, array<int> lastDrawBars, float rawPrice, float tolerance, bool descending) =>
+    if not na(rawPrice)
+        float price = f_roundToTick(rawPrice)
+        int size = array.size(prices)
+        int insertIndex = f_findInsertIndex(prices, price, descending)
+
+        int matchIndex = na
+        float bestDistance = na
+
+        if insertIndex < size
+            float distance = math.abs(array.get(prices, insertIndex) - price)
+            if distance <= tolerance
+                matchIndex := insertIndex
+                bestDistance := distance
+
+        if insertIndex > 0
+            float distance = math.abs(array.get(prices, insertIndex - 1) - price)
+            if distance <= tolerance and (na(bestDistance) or distance < bestDistance)
+                matchIndex := insertIndex - 1
+
+        if na(matchIndex)
+            array.insert(prices, insertIndex, price)
+            array.insert(births, insertIndex, bar_index)
+            array.insert(strengths, insertIndex, 0.0)
+            array.insert(lastBoxes, insertIndex, na)
+            array.insert(lastNorms, insertIndex, na)
+            array.insert(lastCellHeights, insertIndex, na)
+            array.insert(lastDrawBars, insertIndex, na)
+        else
+            array.set(births, matchIndex, bar_index)
+
+f_pruneExpired(array<float> prices, array<int> births, array<float> strengths, array<box> lastBoxes, array<float> lastNorms, array<float> lastCellHeights, array<int> lastDrawBars, int maxAge) =>
+    if array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            if bar_index - array.get(births, i) > maxAge
+                array.remove(prices, i)
+                array.remove(births, i)
+                array.remove(strengths, i)
+                array.remove(lastBoxes, i)
+                array.remove(lastNorms, i)
+                array.remove(lastCellHeights, i)
+                array.remove(lastDrawBars, i)
+
+f_extendWickSweptUppers(array<float> prices, array<box> lastBoxes, float wickHigh) =>
+    if array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+
+            if levelPrice <= wickHigh
+                box lastBox = array.get(lastBoxes, i)
+                if not na(lastBox)
+                    box.set_right(lastBox, bar_index)
+            else
+                break
+
+f_mitigateUppers(array<float> prices, array<int> births, array<float> strengths, array<box> lastBoxes, array<float> lastNorms, array<float> lastCellHeights, array<int> lastDrawBars, float mitigationPrice) =>
+    int removed = 0
+
+    while array.size(prices) > 0
+        int lastIndex = array.size(prices) - 1
+        float levelPrice = array.get(prices, lastIndex)
+
+        if levelPrice <= mitigationPrice
+            array.pop(prices)
+            array.pop(births)
+            array.pop(strengths)
+            array.pop(lastBoxes)
+            array.pop(lastNorms)
+            array.pop(lastCellHeights)
+            array.pop(lastDrawBars)
+            removed += 1
+        else
+            break
+
+    removed
+
+f_extendWickSweptLowers(array<float> prices, array<box> lastBoxes, float wickLow) =>
+    if array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+
+            if levelPrice >= wickLow
+                box lastBox = array.get(lastBoxes, i)
+                if not na(lastBox)
+                    box.set_right(lastBox, bar_index)
+            else
+                break
+
+f_mitigateLowers(array<float> prices, array<int> births, array<float> strengths, array<box> lastBoxes, array<float> lastNorms, array<float> lastCellHeights, array<int> lastDrawBars, float mitigationPrice) =>
+    int removed = 0
+
+    while array.size(prices) > 0
+        int lastIndex = array.size(prices) - 1
+        float levelPrice = array.get(prices, lastIndex)
+
+        if levelPrice >= mitigationPrice
+            array.pop(prices)
+            array.pop(births)
+            array.pop(strengths)
+            array.pop(lastBoxes)
+            array.pop(lastNorms)
+            array.pop(lastCellHeights)
+            array.pop(lastDrawBars)
+            removed += 1
+        else
+            break
+
+    removed
+
+f_upperVisibleSweepStats(array<float> prices, array<box> lastBoxes, array<float> lastNorms, array<float> lastCellHeights, array<int> lastDrawBars, float wickHigh, int maxVisibleAge) =>
+    int bandCount = 0
+    float reclaimLevel = na
+    float strengthSum = 0.0
+    bool bandOpen = false
+    float bandTop = na
+    float bandStrength = 0.0
+
+    if array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+
+            if levelPrice <= wickHigh
+                box lastBox = array.get(lastBoxes, i)
+                float lastNorm = array.get(lastNorms, i)
+                float lastCellHeight = array.get(lastCellHeights, i)
+                int lastDrawBar = array.get(lastDrawBars, i)
+                bool recentlyDrawn = not na(lastDrawBar) and bar_index - lastDrawBar <= maxVisibleAge
+                bool visibleLevel = recentlyDrawn and not na(lastBox) and not na(lastNorm) and not na(lastCellHeight) and lastCellHeight > 0.0
+
+                if visibleLevel
+                    float levelBottom = levelPrice - lastCellHeight * 0.5
+                    float levelTop = levelPrice + lastCellHeight * 0.5
+                    reclaimLevel := na(reclaimLevel) ? levelPrice : math.min(reclaimLevel, levelPrice)
+
+                    if not bandOpen
+                        bandOpen := true
+                        bandTop := levelTop
+                        bandStrength := lastNorm
+                    else if levelBottom <= bandTop
+                        bandTop := math.max(bandTop, levelTop)
+                        bandStrength := math.max(bandStrength, lastNorm)
+                    else
+                        bandCount += 1
+                        strengthSum += bandStrength
+                        bandTop := levelTop
+                        bandStrength := lastNorm
+            else
+                break
+
+    if bandOpen
+        bandCount += 1
+        strengthSum += bandStrength
+
+    float averageStrength = bandCount > 0 ? strengthSum / bandCount : 0.0
+    [bandCount, reclaimLevel, averageStrength]
+
+f_lowerVisibleSweepStats(array<float> prices, array<box> lastBoxes, array<float> lastNorms, array<float> lastCellHeights, array<int> lastDrawBars, float wickLow, int maxVisibleAge) =>
+    int bandCount = 0
+    float reclaimLevel = na
+    float strengthSum = 0.0
+    bool bandOpen = false
+    float bandBottom = na
+    float bandStrength = 0.0
+
+    if array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+
+            if levelPrice >= wickLow
+                box lastBox = array.get(lastBoxes, i)
+                float lastNorm = array.get(lastNorms, i)
+                float lastCellHeight = array.get(lastCellHeights, i)
+                int lastDrawBar = array.get(lastDrawBars, i)
+                bool recentlyDrawn = not na(lastDrawBar) and bar_index - lastDrawBar <= maxVisibleAge
+                bool visibleLevel = recentlyDrawn and not na(lastBox) and not na(lastNorm) and not na(lastCellHeight) and lastCellHeight > 0.0
+
+                if visibleLevel
+                    float levelBottom = levelPrice - lastCellHeight * 0.5
+                    float levelTop = levelPrice + lastCellHeight * 0.5
+                    reclaimLevel := na(reclaimLevel) ? levelPrice : math.max(reclaimLevel, levelPrice)
+
+                    if not bandOpen
+                        bandOpen := true
+                        bandBottom := levelBottom
+                        bandStrength := lastNorm
+                    else if levelTop >= bandBottom
+                        bandBottom := math.min(bandBottom, levelBottom)
+                        bandStrength := math.max(bandStrength, lastNorm)
+                    else
+                        bandCount += 1
+                        strengthSum += bandStrength
+                        bandBottom := levelBottom
+                        bandStrength := lastNorm
+            else
+                break
+
+    if bandOpen
+        bandCount += 1
+        strengthSum += bandStrength
+
+    float averageStrength = bandCount > 0 ? strengthSum / bandCount : 0.0
+    [bandCount, reclaimLevel, averageStrength]
+
+f_addStrength(array<float> strengths, int levelIndex, float amount, float cap) =>
+    if not na(levelIndex)
+        if levelIndex >= 0 and levelIndex < array.size(strengths) and amount > 0.0
+            float currentStrength = array.get(strengths, levelIndex)
+            array.set(strengths, levelIndex, math.min(currentStrength + amount, cap))
+
+f_getFloat(array<float> values, int index) =>
+    float result = na
+
+    if not na(index)
+        if index >= 0 and index < array.size(values)
+            result := array.get(values, index)
+
+    result
+
+f_resolveUpperSweeps(array<int> sweepBars, array<float> reclaimLevels, float closePrice, int maxBars) =>
+    bool signal = false
+
+    if array.size(sweepBars) > 0
+        for i = array.size(sweepBars) - 1 to 0
+            int age = bar_index - array.get(sweepBars, i)
+            float reclaimLevel = array.get(reclaimLevels, i)
+
+            if age > maxBars
+                array.remove(sweepBars, i)
+                array.remove(reclaimLevels, i)
+            else if closePrice < reclaimLevel
+                signal := true
+                array.remove(sweepBars, i)
+                array.remove(reclaimLevels, i)
+
+    signal
+
+f_resolveLowerSweeps(array<int> sweepBars, array<float> reclaimLevels, float closePrice, int maxBars) =>
+    bool signal = false
+
+    if array.size(sweepBars) > 0
+        for i = array.size(sweepBars) - 1 to 0
+            int age = bar_index - array.get(sweepBars, i)
+            float reclaimLevel = array.get(reclaimLevels, i)
+
+            if age > maxBars
+                array.remove(sweepBars, i)
+                array.remove(reclaimLevels, i)
+            else if closePrice > reclaimLevel
+                signal := true
+                array.remove(sweepBars, i)
+                array.remove(reclaimLevels, i)
+
+    signal
+
+f_heatmapColor(norm) =>
+    clippedNorm = math.max(0.0, math.min(1.0, norm))
+    clippedNorm <= 0.5 ? color.from_gradient(clippedNorm, 0.0, 0.5, heatmapWeakColor, heatmapMidColor) : color.from_gradient(clippedNorm, 0.5, 1.0, heatmapMidColor, heatmapStrongColor)
+
+f_heatmapNorm(float levelStrength, float maxStrength) =>
+    maxStrength > 0.0 ? math.max(0.0, math.min(1.0, nz(levelStrength, 0.0) / maxStrength)) : 0.0
+
+f_drawHeatmapCell(float levelPrice, float norm, int leftX, int rightX, float cellHeight) =>
+    float halfHeight = cellHeight * 0.5
+    box.new(left = leftX, top = levelPrice + halfHeight, right = rightX, bottom = levelPrice - halfHeight, border_color = na, bgcolor = color.new(f_heatmapColor(norm), 33))
+
+// Level memory update
+
+mergeTolerance = syminfo.mintick * LEVEL_MERGE_TICKS
+removeOnWick = removeLevelWhen == "Wick"
+
+upperMitigationPrice = removeOnWick ? high : close
+lowerMitigationPrice = removeOnWick ? low : close
+
+bool upperMitigated = false
+bool lowerMitigated = false
+bool bearishSweepSignal = false
+bool bullishSweepSignal = false
+
+if removeOnWick
+    f_extendWickSweptUppers(upperPrices, upperLastBoxes, high)
+    f_extendWickSweptLowers(lowerPrices, lowerLastBoxes, low)
+
+if barstate.isconfirmed
+    [upperVisibleBandCount, upperReclaimLevel, upperAverageStrength] = f_upperVisibleSweepStats(upperPrices, upperLastBoxes, upperLastNorms, upperLastCellHeights, upperLastDrawBars, high, heatmapCellBars)
+    [lowerVisibleBandCount, lowerReclaimLevel, lowerAverageStrength] = f_lowerVisibleSweepStats(lowerPrices, lowerLastBoxes, lowerLastNorms, lowerLastCellHeights, lowerLastDrawBars, low, heatmapCellBars)
+
+    int upperRemovedCount = f_mitigateUppers(upperPrices, upperBirths, upperStrengths, upperLastBoxes, upperLastNorms, upperLastCellHeights, upperLastDrawBars, upperMitigationPrice)
+    int lowerRemovedCount = f_mitigateLowers(lowerPrices, lowerBirths, lowerStrengths, lowerLastBoxes, lowerLastNorms, lowerLastCellHeights, lowerLastDrawBars, lowerMitigationPrice)
+
+    upperMitigated := upperRemovedCount > 0
+    lowerMitigated := lowerRemovedCount > 0
+
+    float minimumSweepStrengthNormalized = minimumSweepStrength / 100.0
+    bool upperStrengthQualified = not filterSweepsByStrength or upperAverageStrength >= minimumSweepStrengthNormalized
+    bool lowerStrengthQualified = not filterSweepsByStrength or lowerAverageStrength >= minimumSweepStrengthNormalized
+
+    if removeOnWick and upperVisibleBandCount >= MIN_LEVELS_FOR_SIGNAL and upperStrengthQualified and not na(upperReclaimLevel)
+        array.push(pendingUpperSweepBars, bar_index)
+        array.push(pendingUpperReclaimLevels, upperReclaimLevel)
+
+    if removeOnWick and lowerVisibleBandCount >= MIN_LEVELS_FOR_SIGNAL and lowerStrengthQualified and not na(lowerReclaimLevel)
+        array.push(pendingLowerSweepBars, bar_index)
+        array.push(pendingLowerReclaimLevels, lowerReclaimLevel)
+
+    bearishSweepSignal := f_resolveUpperSweeps(pendingUpperSweepBars, pendingUpperReclaimLevels, close, SIGNAL_RECLAIM_BARS)
+    bullishSweepSignal := f_resolveLowerSweeps(pendingLowerSweepBars, pendingLowerReclaimLevels, close, SIGNAL_RECLAIM_BARS)
+
+    if bar_index % CLEANUP_BARS == 0
+        f_pruneExpired(upperPrices, upperBirths, upperStrengths, upperLastBoxes, upperLastNorms, upperLastCellHeights, upperLastDrawBars, keepLevelsForBars)
+        f_pruneExpired(lowerPrices, lowerBirths, lowerStrengths, lowerLastBoxes, lowerLastNorms, lowerLastCellHeights, lowerLastDrawBars, keepLevelsForBars)
+
+    if h1Shift
+        f_addLevel(upperPrices, upperBirths, upperStrengths, upperLastBoxes, upperLastNorms, upperLastCellHeights, upperLastDrawBars, h1, mergeTolerance, true)
+
+    if h2Shift
+        f_addLevel(upperPrices, upperBirths, upperStrengths, upperLastBoxes, upperLastNorms, upperLastCellHeights, upperLastDrawBars, h2, mergeTolerance, true)
+
+    if h3Shift
+        f_addLevel(upperPrices, upperBirths, upperStrengths, upperLastBoxes, upperLastNorms, upperLastCellHeights, upperLastDrawBars, h3, mergeTolerance, true)
+
+    if l1Shift
+        f_addLevel(lowerPrices, lowerBirths, lowerStrengths, lowerLastBoxes, lowerLastNorms, lowerLastCellHeights, lowerLastDrawBars, l1, mergeTolerance, false)
+
+    if l2Shift
+        f_addLevel(lowerPrices, lowerBirths, lowerStrengths, lowerLastBoxes, lowerLastNorms, lowerLastCellHeights, lowerLastDrawBars, l2, mergeTolerance, false)
+
+    if l3Shift
+        f_addLevel(lowerPrices, lowerBirths, lowerStrengths, lowerLastBoxes, lowerLastNorms, lowerLastCellHeights, lowerLastDrawBars, l3, mergeTolerance, false)
+
+// Nearest active levels
+
+float activeUpper1 = na
+float activeUpper2 = na
+float activeUpper3 = na
+
+float activeLower1 = na
+float activeLower2 = na
+float activeLower3 = na
+
+int activeUpperIndex1 = na
+int activeUpperIndex2 = na
+int activeUpperIndex3 = na
+
+int activeLowerIndex1 = na
+int activeLowerIndex2 = na
+int activeLowerIndex3 = na
+
+int upperFound = 0
+
+if array.size(upperPrices) > 0
+    int i = array.size(upperPrices) - 1
+
+    while i >= 0 and upperFound < 3
+        float levelPrice = array.get(upperPrices, i)
+        int levelBirth = array.get(upperBirths, i)
+        bool validLevel = levelPrice > close and bar_index - levelBirth <= keepLevelsForBars
+
+        if validLevel
+            upperFound += 1
+
+            if upperFound == 1
+                activeUpper1 := levelPrice
+                activeUpperIndex1 := i
+            else if upperFound == 2
+                activeUpper2 := levelPrice
+                activeUpperIndex2 := i
+            else if upperFound == 3
+                activeUpper3 := levelPrice
+                activeUpperIndex3 := i
+
+        i -= 1
+
+int lowerFound = 0
+
+if array.size(lowerPrices) > 0
+    int i = array.size(lowerPrices) - 1
+
+    while i >= 0 and lowerFound < 3
+        float levelPrice = array.get(lowerPrices, i)
+        int levelBirth = array.get(lowerBirths, i)
+        bool validLevel = levelPrice < close and bar_index - levelBirth <= keepLevelsForBars
+
+        if validLevel
+            lowerFound += 1
+
+            if lowerFound == 1
+                activeLower1 := levelPrice
+                activeLowerIndex1 := i
+            else if lowerFound == 2
+                activeLower2 := levelPrice
+                activeLowerIndex2 := i
+            else if lowerFound == 3
+                activeLower3 := levelPrice
+                activeLowerIndex3 := i
+
+        i -= 1
+
+// Directional volume strength
+
+barVolume = na(volume) ? 0.0 : volume
+volumeAverage = ta.sma(barVolume, VOLUME_AVERAGE_BARS)
+safeVolumeAverage = na(volumeAverage) or volumeAverage <= 0.0 ? barVolume : volumeAverage
+
+rawNormalizedVolume = safeVolumeAverage > 0.0 ? barVolume / safeVolumeAverage : 0.0
+normalizedVolume = math.min(rawNormalizedVolume, MAX_VOLUME_SCORE_PER_BAR)
+
+barDirection = close > open ? 1.0 : close < open ? -1.0 : 0.0
+signedNormalizedVolume = normalizedVolume * barDirection
+
+if barstate.isconfirmed
+    if signedNormalizedVolume < 0.0
+        float upperVolumeContribution = math.abs(signedNormalizedVolume)
+
+        f_addStrength(upperStrengths, activeUpperIndex1, upperVolumeContribution * CLOSEST_LEVEL_WEIGHT, FULL_HEATMAP_STRENGTH)
+        f_addStrength(upperStrengths, activeUpperIndex2, upperVolumeContribution * SECOND_LEVEL_WEIGHT, FULL_HEATMAP_STRENGTH)
+        f_addStrength(upperStrengths, activeUpperIndex3, upperVolumeContribution * THIRD_LEVEL_WEIGHT, FULL_HEATMAP_STRENGTH)
+
+    else if signedNormalizedVolume > 0.0
+        float lowerVolumeContribution = signedNormalizedVolume
+
+        f_addStrength(lowerStrengths, activeLowerIndex1, lowerVolumeContribution * CLOSEST_LEVEL_WEIGHT, FULL_HEATMAP_STRENGTH)
+        f_addStrength(lowerStrengths, activeLowerIndex2, lowerVolumeContribution * SECOND_LEVEL_WEIGHT, FULL_HEATMAP_STRENGTH)
+        f_addStrength(lowerStrengths, activeLowerIndex3, lowerVolumeContribution * THIRD_LEVEL_WEIGHT, FULL_HEATMAP_STRENGTH)
+
+activeUpperStrength1 = f_getFloat(upperStrengths, activeUpperIndex1)
+activeUpperStrength2 = f_getFloat(upperStrengths, activeUpperIndex2)
+activeUpperStrength3 = f_getFloat(upperStrengths, activeUpperIndex3)
+
+activeLowerStrength1 = f_getFloat(lowerStrengths, activeLowerIndex1)
+activeLowerStrength2 = f_getFloat(lowerStrengths, activeLowerIndex2)
+activeLowerStrength3 = f_getFloat(lowerStrengths, activeLowerIndex3)
+
+activeHeatmapMaxStrength = math.max(math.max(math.max(nz(activeUpperStrength1, 0.0), nz(activeUpperStrength2, 0.0)), nz(activeUpperStrength3, 0.0)), math.max(math.max(nz(activeLowerStrength1, 0.0), nz(activeLowerStrength2, 0.0)), nz(activeLowerStrength3, 0.0)))
+
+// Persistent box heatmap cells
+
+heatmapHighRaw = ta.highest(high, heatmapLookback)
+heatmapLowRaw = ta.lowest(low, heatmapLookback)
+heatmapHigh = nz(heatmapHighRaw, high)
+heatmapLow = nz(heatmapLowRaw, low)
+heatmapPriceRange = math.max(heatmapHigh - heatmapLow, syminfo.mintick * heatmapResolution)
+heatmapCellHeight = heatmapPriceRange / heatmapResolution
+
+newHeatmapCell = barstate.isconfirmed and (bar_index + 1) % heatmapCellBars == 0
+
+if newHeatmapCell
+    int cellLeft = int(math.max(0, bar_index - heatmapCellBars + 1))
+    int cellRight = bar_index + 1
+
+    if not na(activeUpper1)
+        float upperNorm1 = f_heatmapNorm(activeUpperStrength1, activeHeatmapMaxStrength)
+        box upperBox1 = f_drawHeatmapCell(activeUpper1, upperNorm1, cellLeft, cellRight, heatmapCellHeight)
+        array.set(upperLastBoxes, activeUpperIndex1, upperBox1)
+        array.set(upperLastNorms, activeUpperIndex1, upperNorm1)
+        array.set(upperLastCellHeights, activeUpperIndex1, heatmapCellHeight)
+        array.set(upperLastDrawBars, activeUpperIndex1, bar_index)
+
+    if not na(activeUpper2)
+        float upperNorm2 = f_heatmapNorm(activeUpperStrength2, activeHeatmapMaxStrength)
+        box upperBox2 = f_drawHeatmapCell(activeUpper2, upperNorm2, cellLeft, cellRight, heatmapCellHeight)
+        array.set(upperLastBoxes, activeUpperIndex2, upperBox2)
+        array.set(upperLastNorms, activeUpperIndex2, upperNorm2)
+        array.set(upperLastCellHeights, activeUpperIndex2, heatmapCellHeight)
+        array.set(upperLastDrawBars, activeUpperIndex2, bar_index)
+
+    if not na(activeUpper3)
+        float upperNorm3 = f_heatmapNorm(activeUpperStrength3, activeHeatmapMaxStrength)
+        box upperBox3 = f_drawHeatmapCell(activeUpper3, upperNorm3, cellLeft, cellRight, heatmapCellHeight)
+        array.set(upperLastBoxes, activeUpperIndex3, upperBox3)
+        array.set(upperLastNorms, activeUpperIndex3, upperNorm3)
+        array.set(upperLastCellHeights, activeUpperIndex3, heatmapCellHeight)
+        array.set(upperLastDrawBars, activeUpperIndex3, bar_index)
+
+    if not na(activeLower1)
+        float lowerNorm1 = f_heatmapNorm(activeLowerStrength1, activeHeatmapMaxStrength)
+        box lowerBox1 = f_drawHeatmapCell(activeLower1, lowerNorm1, cellLeft, cellRight, heatmapCellHeight)
+        array.set(lowerLastBoxes, activeLowerIndex1, lowerBox1)
+        array.set(lowerLastNorms, activeLowerIndex1, lowerNorm1)
+        array.set(lowerLastCellHeights, activeLowerIndex1, heatmapCellHeight)
+        array.set(lowerLastDrawBars, activeLowerIndex1, bar_index)
+
+    if not na(activeLower2)
+        float lowerNorm2 = f_heatmapNorm(activeLowerStrength2, activeHeatmapMaxStrength)
+        box lowerBox2 = f_drawHeatmapCell(activeLower2, lowerNorm2, cellLeft, cellRight, heatmapCellHeight)
+        array.set(lowerLastBoxes, activeLowerIndex2, lowerBox2)
+        array.set(lowerLastNorms, activeLowerIndex2, lowerNorm2)
+        array.set(lowerLastCellHeights, activeLowerIndex2, heatmapCellHeight)
+        array.set(lowerLastDrawBars, activeLowerIndex2, bar_index)
+
+    if not na(activeLower3)
+        float lowerNorm3 = f_heatmapNorm(activeLowerStrength3, activeHeatmapMaxStrength)
+        box lowerBox3 = f_drawHeatmapCell(activeLower3, lowerNorm3, cellLeft, cellRight, heatmapCellHeight)
+        array.set(lowerLastBoxes, activeLowerIndex3, lowerBox3)
+        array.set(lowerLastNorms, activeLowerIndex3, lowerNorm3)
+        array.set(lowerLastCellHeights, activeLowerIndex3, heatmapCellHeight)
+        array.set(lowerLastDrawBars, activeLowerIndex3, bar_index)
+
+// Signals and alerts
+
+signalAtr = ta.atr(SIGNAL_ATR_LENGTH)
+signalOffset = nz(signalAtr, high - low) * SIGNAL_OFFSET_MULTIPLIER
+
+plotshape(bullishSweepSignal ? low - signalOffset : na, title = "Bullish Multi-Level Sweep Reversal", style = shape.labelup, location = location.absolute, color = bullishSignalColor, text = "▲", textcolor = color.white, size = size.small)
+plotshape(bearishSweepSignal ? high + signalOffset : na, title = "Bearish Multi-Level Sweep Reversal", style = shape.labeldown, location = location.absolute, color = bearishSignalColor, text = "▼", textcolor = color.white, size = size.small)
+
+// Trade drawings
+
+bullishStopCandidate = ta.lowest(low[1], TRADE_STOP_LOOKBACK_BARS)
+bearishStopCandidate = ta.highest(high[1], TRADE_STOP_LOOKBACK_BARS)
+
+bool createBullishTradeDrawing = showTradeDrawings and bullishSweepSignal[1]
+bool createBearishTradeDrawing = showTradeDrawings and bearishSweepSignal[1]
+
+if createBullishTradeDrawing and not na(bullishStopCandidate)
+    float bullishEntryPrice = open
+    float bullishStopPrice = bullishStopCandidate
+    float bullishRiskDistance = bullishEntryPrice - bullishStopPrice
+
+    if bullishRiskDistance > syminfo.mintick
+        float bullishMilestoneStep = bullishRiskDistance * tradeRiskReward / TRADE_MILESTONE_COUNT
+        float bullishTargetLevel1 = bullishEntryPrice + bullishMilestoneStep
+        float bullishTargetLevel2 = bullishEntryPrice + bullishMilestoneStep * 2.0
+        float bullishTargetLevel3 = bullishEntryPrice + bullishMilestoneStep * 3.0
+        int bullishExpiryBar = bar_index + tradeExpiryBars
+
+        box bullishStopBox = box.new(left = bar_index, top = bullishEntryPrice, right = bullishExpiryBar, bottom = bullishStopPrice, xloc = xloc.bar_index, border_color = color.new(bearishSignalColor, TRADE_BOX_BORDER_TRANSPARENCY), bgcolor = color.new(bearishSignalColor, TRADE_STOP_BOX_TRANSPARENCY))
+        box bullishTargetBox = box.new(left = bar_index, top = bullishTargetLevel3, right = bullishExpiryBar, bottom = bullishEntryPrice, xloc = xloc.bar_index, border_color = color.new(bullishSignalColor, TRADE_BOX_BORDER_TRANSPARENCY), bgcolor = color.new(bullishSignalColor, TRADE_TARGET_BOX_TRANSPARENCY))
+        box bullishProgressBox = box.new(left = bar_index, top = bullishEntryPrice, right = bar_index, bottom = bullishEntryPrice, xloc = xloc.bar_index, border_color = color.new(bullishSignalColor, 100), bgcolor = color.new(bullishSignalColor, 100))
+        line bullishTargetLine1 = line.new(x1 = bar_index, y1 = bullishTargetLevel1, x2 = bullishExpiryBar, y2 = bullishTargetLevel1, xloc = xloc.bar_index, extend = extend.none, color = color.new(bullishSignalColor, TRADE_TARGET_LINE_TRANSPARENCY), style = line.style_dashed, width = 1)
+        line bullishTargetLine2 = line.new(x1 = bar_index, y1 = bullishTargetLevel2, x2 = bullishExpiryBar, y2 = bullishTargetLevel2, xloc = xloc.bar_index, extend = extend.none, color = color.new(bullishSignalColor, TRADE_TARGET_LINE_TRANSPARENCY), style = line.style_dashed, width = 1)
+        line bullishTargetLine3 = line.new(x1 = bar_index, y1 = bullishTargetLevel3, x2 = bullishExpiryBar, y2 = bullishTargetLevel3, xloc = xloc.bar_index, extend = extend.none, color = color.new(bullishSignalColor, TRADE_TARGET_LINE_TRANSPARENCY), style = line.style_dashed, width = 1)
+
+        array.push(tradeDirections, 1)
+        array.push(tradeExpiryBarValues, bullishExpiryBar)
+        array.push(tradeEntryPrices, bullishEntryPrice)
+        array.push(tradeStopPrices, bullishStopPrice)
+        array.push(tradeTargetLevel1Values, bullishTargetLevel1)
+        array.push(tradeTargetLevel2Values, bullishTargetLevel2)
+        array.push(tradeTargetLevel3Values, bullishTargetLevel3)
+        array.push(tradeReachedMilestones, 0)
+        array.push(tradeStopBoxes, bullishStopBox)
+        array.push(tradeTargetBoxes, bullishTargetBox)
+        array.push(tradeProgressBoxes, bullishProgressBox)
+        array.push(tradeTargetLine1Values, bullishTargetLine1)
+        array.push(tradeTargetLine2Values, bullishTargetLine2)
+        array.push(tradeTargetLine3Values, bullishTargetLine3)
+
+if createBearishTradeDrawing and not na(bearishStopCandidate)
+    float bearishEntryPrice = open
+    float bearishStopPrice = bearishStopCandidate
+    float bearishRiskDistance = bearishStopPrice - bearishEntryPrice
+
+    if bearishRiskDistance > syminfo.mintick
+        float bearishMilestoneStep = bearishRiskDistance * tradeRiskReward / TRADE_MILESTONE_COUNT
+        float bearishTargetLevel1 = bearishEntryPrice - bearishMilestoneStep
+        float bearishTargetLevel2 = bearishEntryPrice - bearishMilestoneStep * 2.0
+        float bearishTargetLevel3 = bearishEntryPrice - bearishMilestoneStep * 3.0
+        int bearishExpiryBar = bar_index + tradeExpiryBars
+
+        box bearishStopBox = box.new(left = bar_index, top = bearishStopPrice, right = bearishExpiryBar, bottom = bearishEntryPrice, xloc = xloc.bar_index, border_color = color.new(bearishSignalColor, TRADE_BOX_BORDER_TRANSPARENCY), bgcolor = color.new(bearishSignalColor, TRADE_STOP_BOX_TRANSPARENCY))
+        box bearishTargetBox = box.new(left = bar_index, top = bearishEntryPrice, right = bearishExpiryBar, bottom = bearishTargetLevel3, xloc = xloc.bar_index, border_color = color.new(bullishSignalColor, TRADE_BOX_BORDER_TRANSPARENCY), bgcolor = color.new(bullishSignalColor, TRADE_TARGET_BOX_TRANSPARENCY))
+        box bearishProgressBox = box.new(left = bar_index, top = bearishEntryPrice, right = bar_index, bottom = bearishEntryPrice, xloc = xloc.bar_index, border_color = color.new(bullishSignalColor, 100), bgcolor = color.new(bullishSignalColor, 100))
+        line bearishTargetLine1 = line.new(x1 = bar_index, y1 = bearishTargetLevel1, x2 = bearishExpiryBar, y2 = bearishTargetLevel1, xloc = xloc.bar_index, extend = extend.none, color = color.new(bullishSignalColor, TRADE_TARGET_LINE_TRANSPARENCY), style = line.style_dashed, width = 1)
+        line bearishTargetLine2 = line.new(x1 = bar_index, y1 = bearishTargetLevel2, x2 = bearishExpiryBar, y2 = bearishTargetLevel2, xloc = xloc.bar_index, extend = extend.none, color = color.new(bullishSignalColor, TRADE_TARGET_LINE_TRANSPARENCY), style = line.style_dashed, width = 1)
+        line bearishTargetLine3 = line.new(x1 = bar_index, y1 = bearishTargetLevel3, x2 = bearishExpiryBar, y2 = bearishTargetLevel3, xloc = xloc.bar_index, extend = extend.none, color = color.new(bullishSignalColor, TRADE_TARGET_LINE_TRANSPARENCY), style = line.style_dashed, width = 1)
+
+        array.push(tradeDirections, -1)
+        array.push(tradeExpiryBarValues, bearishExpiryBar)
+        array.push(tradeEntryPrices, bearishEntryPrice)
+        array.push(tradeStopPrices, bearishStopPrice)
+        array.push(tradeTargetLevel1Values, bearishTargetLevel1)
+        array.push(tradeTargetLevel2Values, bearishTargetLevel2)
+        array.push(tradeTargetLevel3Values, bearishTargetLevel3)
+        array.push(tradeReachedMilestones, 0)
+        array.push(tradeStopBoxes, bearishStopBox)
+        array.push(tradeTargetBoxes, bearishTargetBox)
+        array.push(tradeProgressBoxes, bearishProgressBox)
+        array.push(tradeTargetLine1Values, bearishTargetLine1)
+        array.push(tradeTargetLine2Values, bearishTargetLine2)
+        array.push(tradeTargetLine3Values, bearishTargetLine3)
+
+bool bullishThirdTargetWick = false
+bool bearishThirdTargetWick = false
+
+if array.size(tradeDirections) > 0
+    for i = array.size(tradeDirections) - 1 to 0
+        int tradeDirection = array.get(tradeDirections, i)
+        int tradeExpiryBar = array.get(tradeExpiryBarValues, i)
+        float tradeEntryPrice = array.get(tradeEntryPrices, i)
+        float tradeStopPrice = array.get(tradeStopPrices, i)
+        float tradeTargetLevel1 = array.get(tradeTargetLevel1Values, i)
+        float tradeTargetLevel2 = array.get(tradeTargetLevel2Values, i)
+        float tradeTargetLevel3 = array.get(tradeTargetLevel3Values, i)
+        int reachedMilestone = array.get(tradeReachedMilestones, i)
+        bool pastExpiry = bar_index > tradeExpiryBar
+        bool stopHit = tradeDirection > 0 ? low <= tradeStopPrice : high >= tradeStopPrice
+        int newestMilestone = reachedMilestone
+
+        if not pastExpiry
+            if tradeDirection > 0
+                newestMilestone := high >= tradeTargetLevel3 ? 3 : high >= tradeTargetLevel2 ? 2 : high >= tradeTargetLevel1 ? 1 : reachedMilestone
+            else
+                newestMilestone := low <= tradeTargetLevel3 ? 3 : low <= tradeTargetLevel2 ? 2 : low <= tradeTargetLevel1 ? 1 : reachedMilestone
+
+        if newestMilestone > reachedMilestone
+            if newestMilestone >= TRADE_MILESTONE_COUNT and reachedMilestone < TRADE_MILESTONE_COUNT
+                if tradeDirection > 0
+                    bullishThirdTargetWick := true
+                else
+                    bearishThirdTargetWick := true
+
+            float reachedPrice = newestMilestone == 3 ? tradeTargetLevel3 : newestMilestone == 2 ? tradeTargetLevel2 : tradeTargetLevel1
+            box progressBox = array.get(tradeProgressBoxes, i)
+
+            if tradeDirection > 0
+                box.set_top(progressBox, reachedPrice)
+                box.set_bottom(progressBox, tradeEntryPrice)
+            else
+                box.set_top(progressBox, tradeEntryPrice)
+                box.set_bottom(progressBox, reachedPrice)
+
+            box.set_right(progressBox, bar_index)
+            box.set_border_color(progressBox, color.new(bullishSignalColor, TRADE_BOX_BORDER_TRANSPARENCY))
+            box.set_bgcolor(progressBox, color.new(bullishSignalColor, TRADE_PROGRESS_BOX_TRANSPARENCY))
+            array.set(tradeReachedMilestones, i, newestMilestone)
+
+        bool finalTargetHit = newestMilestone >= TRADE_MILESTONE_COUNT
+
+        if pastExpiry or stopHit or finalTargetHit
+            array.remove(tradeDirections, i)
+            array.remove(tradeExpiryBarValues, i)
+            array.remove(tradeEntryPrices, i)
+            array.remove(tradeStopPrices, i)
+            array.remove(tradeTargetLevel1Values, i)
+            array.remove(tradeTargetLevel2Values, i)
+            array.remove(tradeTargetLevel3Values, i)
+            array.remove(tradeReachedMilestones, i)
+            array.remove(tradeStopBoxes, i)
+            array.remove(tradeTargetBoxes, i)
+            array.remove(tradeProgressBoxes, i)
+            array.remove(tradeTargetLine1Values, i)
+            array.remove(tradeTargetLine2Values, i)
+            array.remove(tradeTargetLine3Values, i)
+
+plotchar(bullishThirdTargetWick, title = "Bullish Third Target Wick", char = "✅", location = location.abovebar, color = bullishSignalColor, size = size.tiny)
+plotchar(bearishThirdTargetWick, title = "Bearish Third Target Wick", char = "✅", location = location.belowbar, color = bearishSignalColor, size = size.tiny)
+
+upperLevelDetected = barstate.isconfirmed and (h1Shift or h2Shift or h3Shift)
+lowerLevelDetected = barstate.isconfirmed and (l1Shift or l2Shift or l3Shift)
+anyLevelDetected = upperLevelDetected or lowerLevelDetected
+anyLevelRemoved = upperMitigated or lowerMitigated
+
+alertcondition(upperLevelDetected, "Upper Liquidity Detected", "A new upper liquidity level was detected.")
+alertcondition(lowerLevelDetected, "Lower Liquidity Detected", "A new lower liquidity level was detected.")
+alertcondition(anyLevelDetected, "Any Liquidity Detected", "A new liquidity level was detected.")
+alertcondition(upperMitigated, "Upper Level Removed", "An upper liquidity level was removed.")
+alertcondition(lowerMitigated, "Lower Level Removed", "A lower liquidity level was removed.")
+alertcondition(anyLevelRemoved, "Any Level Removed", "A liquidity level was removed.")
+alertcondition(bullishSweepSignal, "Bullish Multi-Level Sweep Reversal", "Price cleared at least two visibly distinct lower liquidity bands in one bar, passed the optional user-defined average-strength filter, and closed back above all swept bands within two bars.")
+alertcondition(bearishSweepSignal, "Bearish Multi-Level Sweep Reversal", "Price cleared at least two visibly distinct upper liquidity bands in one bar, passed the optional user-defined average-strength filter, and closed back below all swept bands within two bars.")

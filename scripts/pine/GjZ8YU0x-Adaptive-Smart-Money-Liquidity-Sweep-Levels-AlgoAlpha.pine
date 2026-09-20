@@ -1,0 +1,870 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Adaptive Smart Money Liquidity Sweep Levels [AlgoAlpha]", "AlgoAlpha - Adaptive Smart Money", overlay = true, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500, max_polylines_count = 100, explicit_plot_zorder = true, behind_chart = false)
+
+levelsGroup = "Levels"
+shortBars = input.int(7, "Fast", minval = 1, group = levelsGroup, inline = "lookbacks", tooltip = "")
+mediumBars = input.int(21, "Mid", minval = 1, group = levelsGroup, inline = "lookbacks", tooltip = "")
+longBars = input.int(40, "Slow", minval = 1, group = levelsGroup, inline = "lookbacks", tooltip = "Fast, mid, and slow lookbacks used to detect short-term, medium-term, and major liquidity highs/lows.")
+keepLevelsForBars = input.int(1000, "Max Age", minval = 50, maxval = 5000, group = levelsGroup, tooltip = "Maximum number of bars a stored liquidity level can remain active.")
+removeLevelWhen = input.string("Wick", "Remove On", options = ["Wick", "Close"], group = levelsGroup, tooltip = "Choose whether a level is removed when price wicks through it or only when price closes past it.")
+
+volumeGroup = "Liquidity Depth"
+closestLevelWeight = input.float(1.00, "Near Weight", minval = 0.0, step = 0.05, group = volumeGroup, tooltip = "Raw volume weight added to the nearest active level on the matching side.")
+secondLevelWeight = input.float(0.50, "Second Weight", minval = 0.0, step = 0.05, group = volumeGroup, tooltip = "Raw volume weight added to the second-nearest active level on the matching side.")
+thirdLevelWeight = input.float(0.25, "Third Weight", minval = 0.0, step = 0.05, group = volumeGroup, tooltip = "Raw volume weight added to the third-nearest active level on the matching side.")
+
+visualsGroup = "Visuals"
+bearColor = input.color(#ff1100, "Bear", group = visualsGroup, inline = "colors", tooltip = "")
+bullColor = input.color(#00ffbb, "Bull", group = visualsGroup, inline = "colors", tooltip = "Bear controls upper liquidity, short-liquidation signals, and bearish-side depth. Bull controls lower liquidity, long-liquidation signals, and bullish-side depth.")
+levelDotSize = input.int(1, "Dot Size", minval = 1, maxval = 5, group = visualsGroup, tooltip = "Thickness of the plotted liquidity level dots.")
+showVolumeBars = input.bool(true, "Balance Chart", group = visualsGroup, tooltip = "Show the two-column near-range liquidity balance chart on the right side.")
+showDepthCurve = input.bool(true, "Depth Curve", group = visualsGroup, tooltip = "Show the cumulative orderbook-style liquidity depth profile on the right side.")
+rightOffset = input.int(20, "Right Offset", minval = 1, maxval = 160, group = visualsGroup, tooltip = "Horizontal offset from the current bar to the depth display.")
+depthWidth = input.int(100, "Depth Width", minval = 20, maxval = 200, group = visualsGroup, tooltip = "Horizontal width used for the cumulative depth profile.")
+
+const int SHIFT_COMPARISON_BARS = 3
+const int LEVEL_MERGE_TICKS = 2
+
+const int CLEANUP_BARS = 10
+
+const int VOLUME_AVERAGE_BARS = 100
+const float MAX_VOLUME_SCORE_PER_BAR = 3.0
+const float FULL_DARK_STRENGTH = 50.0
+const int WEAK_LEVEL_TRANSPARENCY = 85
+const int STRONG_LEVEL_TRANSPARENCY = 0
+
+const int VOLUME_CHART_GAP = 85
+const int VOLUME_AXIS_PAD = 11
+const int VOLUME_BAR_WIDTH = 24
+const int VOLUME_BAR_GAP = 10
+
+// Level source
+
+h1_ = ta.highest(high, shortBars)
+h2_ = ta.highest(high, mediumBars)
+h3_ = ta.highest(high, longBars)
+
+l1_ = ta.lowest(low, shortBars)
+l2_ = ta.lowest(low, mediumBars)
+l3_ = ta.lowest(low, longBars)
+
+var float h1 = na
+var float h2 = na
+var float h3 = na
+
+var float l1 = na
+var float l2 = na
+var float l3 = na
+
+h1Shift = not na(h1_) and (na(h1) or (not na(h1_[SHIFT_COMPARISON_BARS]) and h1_ > h1_[SHIFT_COMPARISON_BARS] and h1_ != h1_[SHIFT_COMPARISON_BARS] and h1_ == h1_[1]))
+h2Shift = not na(h2_) and (na(h2) or (not na(h2_[SHIFT_COMPARISON_BARS]) and h2_ > h2_[SHIFT_COMPARISON_BARS] and h2_ != h2_[SHIFT_COMPARISON_BARS] and h2_ == h2_[1]))
+h3Shift = not na(h3_) and (na(h3) or (not na(h3_[SHIFT_COMPARISON_BARS]) and h3_ > h3_[SHIFT_COMPARISON_BARS] and h3_ != h3_[SHIFT_COMPARISON_BARS] and h3_ == h3_[1]))
+
+l1Shift = not na(l1_) and (na(l1) or (not na(l1_[SHIFT_COMPARISON_BARS]) and l1_ < l1_[SHIFT_COMPARISON_BARS] and l1_ != l1_[SHIFT_COMPARISON_BARS] and l1_ == l1_[1]))
+l2Shift = not na(l2_) and (na(l2) or (not na(l2_[SHIFT_COMPARISON_BARS]) and l2_ < l2_[SHIFT_COMPARISON_BARS] and l2_ != l2_[SHIFT_COMPARISON_BARS] and l2_ == l2_[1]))
+l3Shift = not na(l3_) and (na(l3) or (not na(l3_[SHIFT_COMPARISON_BARS]) and l3_ < l3_[SHIFT_COMPARISON_BARS] and l3_ != l3_[SHIFT_COMPARISON_BARS] and l3_ == l3_[1]))
+
+if h1Shift
+    h1 := h1_
+
+if h2Shift
+    h2 := h2_
+
+if h3Shift
+    h3 := h3_
+
+if l1Shift
+    l1 := l1_
+
+if l2Shift
+    l2 := l2_
+
+if l3Shift
+    l3 := l3_
+
+// Memory
+
+var array<float> upperPrices = array.new<float>()
+var array<int> upperBirths = array.new<int>()
+var array<float> upperStrengths = array.new<float>()
+var array<float> upperRawVolumes = array.new<float>()
+
+var array<float> lowerPrices = array.new<float>()
+var array<int> lowerBirths = array.new<int>()
+var array<float> lowerStrengths = array.new<float>()
+var array<float> lowerRawVolumes = array.new<float>()
+
+// Helpers
+
+f_roundToTick(float value) =>
+    math.round(value / syminfo.mintick) * syminfo.mintick
+
+f_findInsertIndex(array<float> prices, float price, bool descending) =>
+    int lo = 0
+    int hi = array.size(prices)
+
+    while lo < hi
+        int mid = int(math.floor((lo + hi) * 0.5))
+        float midPrice = array.get(prices, mid)
+
+        if descending
+            if midPrice > price
+                lo := mid + 1
+            else
+                hi := mid
+        else
+            if midPrice < price
+                lo := mid + 1
+            else
+                hi := mid
+
+    lo
+
+f_addLevel(array<float> prices, array<int> births, array<float> strengths, array<float> rawVolumes, float rawPrice, float tolerance, bool descending) =>
+    if not na(rawPrice)
+        float price = f_roundToTick(rawPrice)
+        int size = array.size(prices)
+        int insertIndex = f_findInsertIndex(prices, price, descending)
+
+        int matchIndex = na
+        float bestDistance = na
+
+        if insertIndex < size
+            float distance = math.abs(array.get(prices, insertIndex) - price)
+            if distance <= tolerance
+                matchIndex := insertIndex
+                bestDistance := distance
+
+        if insertIndex > 0
+            float distance = math.abs(array.get(prices, insertIndex - 1) - price)
+            if distance <= tolerance and (na(bestDistance) or distance < bestDistance)
+                matchIndex := insertIndex - 1
+                bestDistance := distance
+
+        if na(matchIndex)
+            array.insert(prices, insertIndex, price)
+            array.insert(births, insertIndex, bar_index)
+            array.insert(strengths, insertIndex, 0.0)
+            array.insert(rawVolumes, insertIndex, 0.0)
+        else
+            array.set(births, matchIndex, bar_index)
+
+f_pruneExpired(array<float> prices, array<int> births, array<float> strengths, array<float> rawVolumes, int maxAge) =>
+    if array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            if bar_index - array.get(births, i) > maxAge
+                array.remove(prices, i)
+                array.remove(births, i)
+                array.remove(strengths, i)
+                array.remove(rawVolumes, i)
+
+f_mitigateUppers(array<float> prices, array<int> births, array<float> strengths, array<float> rawVolumes, float mitigationPrice) =>
+    int removed = 0
+
+    while array.size(prices) > 0
+        int lastIndex = array.size(prices) - 1
+        float levelPrice = array.get(prices, lastIndex)
+
+        if levelPrice <= mitigationPrice
+            array.pop(prices)
+            array.pop(births)
+            array.pop(strengths)
+            array.pop(rawVolumes)
+            removed += 1
+        else
+            break
+
+    removed
+
+f_mitigateLowers(array<float> prices, array<int> births, array<float> strengths, array<float> rawVolumes, float mitigationPrice) =>
+    int removed = 0
+
+    while array.size(prices) > 0
+        int lastIndex = array.size(prices) - 1
+        float levelPrice = array.get(prices, lastIndex)
+
+        if levelPrice >= mitigationPrice
+            array.pop(prices)
+            array.pop(births)
+            array.pop(strengths)
+            array.pop(rawVolumes)
+            removed += 1
+        else
+            break
+
+    removed
+
+f_addStrength(array<float> strengths, int levelIndex, float amount, float cap) =>
+    if not na(levelIndex)
+        if levelIndex >= 0 and levelIndex < array.size(strengths) and amount > 0.0
+            float currentStrength = array.get(strengths, levelIndex)
+            float updatedStrength = math.min(currentStrength + amount, cap)
+            array.set(strengths, levelIndex, updatedStrength)
+
+f_addRawVolume(array<float> rawVolumes, int levelIndex, float amount) =>
+    if not na(levelIndex)
+        if levelIndex >= 0 and levelIndex < array.size(rawVolumes) and amount > 0.0
+            float currentRaw = array.get(rawVolumes, levelIndex)
+            array.set(rawVolumes, levelIndex, currentRaw + amount)
+
+f_getFloat(array<float> values, int index) =>
+    float result = na
+
+    if not na(index)
+        if index >= 0 and index < array.size(values)
+            result := array.get(values, index)
+
+    result
+
+f_sum3(float a, float b, float c) =>
+    nz(a, 0.0) + nz(b, 0.0) + nz(c, 0.0)
+
+f_strengthTransparency(float strength, float fullStrengthValue, int weakTransparencyValue, int strongTransparencyValue) =>
+    float safeFullStrength = math.max(fullStrengthValue, 0.000001)
+    float safeStrength = na(strength) ? 0.0 : math.max(strength, 0.0)
+    float intensity = math.min(safeStrength / safeFullStrength, 1.0)
+
+    int weakTransparency = math.max(weakTransparencyValue, strongTransparencyValue)
+    int strongTransparency = math.min(weakTransparencyValue, strongTransparencyValue)
+
+    int rawTransparency = int(math.round(weakTransparency - (weakTransparency - strongTransparency) * intensity))
+    int clampedTransparency = math.max(math.min(rawTransparency, 100), 0)
+
+    clampedTransparency
+
+f_formatVolume(float value) =>
+    float safeValue = na(value) ? 0.0 : value
+    float absValue = math.abs(safeValue)
+
+    string textValue = absValue >= 1000000000.0 ? str.tostring(safeValue / 1000000000.0, "#.##") + "B" :
+         absValue >= 1000000.0 ? str.tostring(safeValue / 1000000.0, "#.##") + "M" :
+         absValue >= 1000.0 ? str.tostring(safeValue / 1000.0, "#.##") + "K" :
+         str.tostring(safeValue, "#.##")
+
+    textValue
+
+f_upperBodyCrossCount(array<float> prices, float bodyOpen, float bodyClose) =>
+    int count = 0
+
+    if bodyClose > bodyOpen and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price > bodyOpen and price < bodyClose
+                count += 1
+
+    count
+
+f_lowerBodyCrossCount(array<float> prices, float bodyOpen, float bodyClose) =>
+    int count = 0
+
+    if bodyClose < bodyOpen and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price < bodyOpen and price > bodyClose
+                count += 1
+
+    count
+
+f_upperBodyCrossRaw(array<float> prices, array<float> rawVolumes, float bodyOpen, float bodyClose) =>
+    float total = 0.0
+
+    if bodyClose > bodyOpen and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price > bodyOpen and price < bodyClose
+                total += array.get(rawVolumes, i)
+
+    total
+
+f_lowerBodyCrossRaw(array<float> prices, array<float> rawVolumes, float bodyOpen, float bodyClose) =>
+    float total = 0.0
+
+    if bodyClose < bodyOpen and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price < bodyOpen and price > bodyClose
+                total += array.get(rawVolumes, i)
+
+    total
+
+f_upperFirstBodyCross(array<float> prices, float bodyOpen, float bodyClose) =>
+    float firstPrice = na
+
+    if bodyClose > bodyOpen and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price > bodyOpen and price < bodyClose
+                if na(firstPrice) or price < firstPrice
+                    firstPrice := price
+
+    firstPrice
+
+f_lowerFirstBodyCross(array<float> prices, float bodyOpen, float bodyClose) =>
+    float firstPrice = na
+
+    if bodyClose < bodyOpen and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price < bodyOpen and price > bodyClose
+                if na(firstPrice) or price > firstPrice
+                    firstPrice := price
+
+    firstPrice
+
+f_upperWickHit(array<float> prices, float bodyHigh, float wickHigh) =>
+    bool hit = false
+
+    if wickHigh > bodyHigh and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price > bodyHigh and price <= wickHigh
+                hit := true
+                break
+
+    hit
+
+f_lowerWickHit(array<float> prices, float bodyLow, float wickLow) =>
+    bool hit = false
+
+    if wickLow < bodyLow and array.size(prices) > 0
+        for i = array.size(prices) - 1 to 0
+            float price = array.get(prices, i)
+            if price < bodyLow and price >= wickLow
+                hit := true
+                break
+
+    hit
+
+f_totalUpperDepth(array<float> prices, array<int> births, array<float> rawVolumes, int maxAge, float anchorPrice) =>
+    float total = 0.0
+
+    if array.size(prices) > 0
+        for i = 0 to array.size(prices) - 1
+            float levelPrice = array.get(prices, i)
+            int levelBirth = array.get(births, i)
+            if levelPrice > anchorPrice and bar_index - levelBirth <= maxAge
+                total += math.max(array.get(rawVolumes, i), 0.0)
+
+    total
+
+f_totalLowerDepth(array<float> prices, array<int> births, array<float> rawVolumes, int maxAge, float anchorPrice) =>
+    float total = 0.0
+
+    if array.size(prices) > 0
+        for i = 0 to array.size(prices) - 1
+            float levelPrice = array.get(prices, i)
+            int levelBirth = array.get(births, i)
+            if levelPrice < anchorPrice and bar_index - levelBirth <= maxAge
+                total += math.max(array.get(rawVolumes, i), 0.0)
+
+    total
+
+f_upperDepthPoints(array<float> prices, array<int> births, array<float> rawVolumes, int maxAge, float anchorPrice, int xRight, int width, float maxDepth) =>
+    chart.point[] points = array.new<chart.point>()
+    array.push(points, chart.point.from_index(xRight, anchorPrice))
+
+    float cumulativeDepth = 0.0
+    int currentX = xRight
+
+    if array.size(prices) > 0 and maxDepth > 0.0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+            int levelBirth = array.get(births, i)
+            if levelPrice > anchorPrice and bar_index - levelBirth <= maxAge
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+                cumulativeDepth += math.max(array.get(rawVolumes, i), 0.0)
+                currentX := xRight - int(math.round(cumulativeDepth / maxDepth * width))
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+
+    points
+
+f_lowerDepthPoints(array<float> prices, array<int> births, array<float> rawVolumes, int maxAge, float anchorPrice, int xRight, int width, float maxDepth) =>
+    chart.point[] points = array.new<chart.point>()
+    array.push(points, chart.point.from_index(xRight, anchorPrice))
+
+    float cumulativeDepth = 0.0
+    int currentX = xRight
+
+    if array.size(prices) > 0 and maxDepth > 0.0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+            int levelBirth = array.get(births, i)
+            if levelPrice < anchorPrice and bar_index - levelBirth <= maxAge
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+                cumulativeDepth += math.max(array.get(rawVolumes, i), 0.0)
+                currentX := xRight - int(math.round(cumulativeDepth / maxDepth * width))
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+
+    points
+
+f_upperDepthFillPoints(array<float> prices, array<int> births, array<float> rawVolumes, int maxAge, float anchorPrice, int xRight, int width, float maxDepth) =>
+    chart.point[] points = array.new<chart.point>()
+    array.push(points, chart.point.from_index(xRight, anchorPrice))
+
+    float cumulativeDepth = 0.0
+    int currentX = xRight
+    float lastLevelPrice = na
+    bool hasLevel = false
+
+    if array.size(prices) > 0 and maxDepth > 0.0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+            int levelBirth = array.get(births, i)
+            if levelPrice > anchorPrice and bar_index - levelBirth <= maxAge
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+                cumulativeDepth += math.max(array.get(rawVolumes, i), 0.0)
+                currentX := xRight - int(math.round(cumulativeDepth / maxDepth * width))
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+                lastLevelPrice := levelPrice
+                hasLevel := true
+
+    if hasLevel
+        array.push(points, chart.point.from_index(xRight, lastLevelPrice))
+
+    points
+
+f_lowerDepthFillPoints(array<float> prices, array<int> births, array<float> rawVolumes, int maxAge, float anchorPrice, int xRight, int width, float maxDepth) =>
+    chart.point[] points = array.new<chart.point>()
+    array.push(points, chart.point.from_index(xRight, anchorPrice))
+
+    float cumulativeDepth = 0.0
+    int currentX = xRight
+    float lastLevelPrice = na
+    bool hasLevel = false
+
+    if array.size(prices) > 0 and maxDepth > 0.0
+        for i = array.size(prices) - 1 to 0
+            float levelPrice = array.get(prices, i)
+            int levelBirth = array.get(births, i)
+            if levelPrice < anchorPrice and bar_index - levelBirth <= maxAge
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+                cumulativeDepth += math.max(array.get(rawVolumes, i), 0.0)
+                currentX := xRight - int(math.round(cumulativeDepth / maxDepth * width))
+                array.push(points, chart.point.from_index(currentX, levelPrice))
+                lastLevelPrice := levelPrice
+                hasLevel := true
+
+    if hasLevel
+        array.push(points, chart.point.from_index(xRight, lastLevelPrice))
+
+    points
+
+f_clearBoxes(array<box> boxes) =>
+    while array.size(boxes) > 0
+        box b = array.shift(boxes)
+        if not na(b)
+            box.delete(b)
+
+f_clearLines(array<line> lines) =>
+    while array.size(lines) > 0
+        line l = array.shift(lines)
+        if not na(l)
+            line.delete(l)
+
+f_clearLabels(array<label> labels) =>
+    while array.size(labels) > 0
+        label l = array.shift(labels)
+        if not na(l)
+            label.delete(l)
+
+// Liquidation check
+
+bodyHigh = math.max(open, close)
+bodyLow = math.min(open, close)
+bodyMid = (open + close) * 0.5
+
+upperBodyCrossCount = barstate.isconfirmed ? f_upperBodyCrossCount(upperPrices, open, close) : 0
+lowerBodyCrossCount = barstate.isconfirmed ? f_lowerBodyCrossCount(lowerPrices, open, close) : 0
+
+upperBodyCrossRaw = barstate.isconfirmed ? f_upperBodyCrossRaw(upperPrices, upperRawVolumes, open, close) : 0.0
+lowerBodyCrossRaw = barstate.isconfirmed ? f_lowerBodyCrossRaw(lowerPrices, lowerRawVolumes, open, close) : 0.0
+
+upperFirstBodyCross = barstate.isconfirmed ? f_upperFirstBodyCross(upperPrices, open, close) : na
+lowerFirstBodyCross = barstate.isconfirmed ? f_lowerFirstBodyCross(lowerPrices, open, close) : na
+
+upperMassLiquidation = barstate.isconfirmed and upperBodyCrossCount >= 2 and not na(upperFirstBodyCross) and bodyMid > upperFirstBodyCross
+lowerMassLiquidation = barstate.isconfirmed and lowerBodyCrossCount >= 2 and not na(lowerFirstBodyCross) and bodyMid < lowerFirstBodyCross
+massLiquidation = upperMassLiquidation or lowerMassLiquidation
+
+upperWickSweepRaw = barstate.isconfirmed and f_upperWickHit(upperPrices, bodyHigh, high)
+lowerWickSweepRaw = barstate.isconfirmed and f_lowerWickHit(lowerPrices, bodyLow, low)
+
+upperWickSweep = upperWickSweepRaw and not massLiquidation
+lowerWickSweep = lowerWickSweepRaw and not massLiquidation
+anyWickSweep = upperWickSweep or lowerWickSweep
+
+// Memory update
+
+mergeTolerance = syminfo.mintick * LEVEL_MERGE_TICKS
+removeOnWick = removeLevelWhen == "Wick"
+
+upperMitigationPrice = removeOnWick ? high : close
+lowerMitigationPrice = removeOnWick ? low : close
+
+bool upperMitigated = false
+bool lowerMitigated = false
+
+if barstate.isconfirmed
+    int upperRemovedCount = f_mitigateUppers(upperPrices, upperBirths, upperStrengths, upperRawVolumes, upperMitigationPrice)
+    int lowerRemovedCount = f_mitigateLowers(lowerPrices, lowerBirths, lowerStrengths, lowerRawVolumes, lowerMitigationPrice)
+
+    upperMitigated := upperRemovedCount > 0
+    lowerMitigated := lowerRemovedCount > 0
+
+    if bar_index % CLEANUP_BARS == 0
+        f_pruneExpired(upperPrices, upperBirths, upperStrengths, upperRawVolumes, keepLevelsForBars)
+        f_pruneExpired(lowerPrices, lowerBirths, lowerStrengths, lowerRawVolumes, keepLevelsForBars)
+
+    if h1Shift
+        f_addLevel(upperPrices, upperBirths, upperStrengths, upperRawVolumes, h1, mergeTolerance, true)
+
+    if h2Shift
+        f_addLevel(upperPrices, upperBirths, upperStrengths, upperRawVolumes, h2, mergeTolerance, true)
+
+    if h3Shift
+        f_addLevel(upperPrices, upperBirths, upperStrengths, upperRawVolumes, h3, mergeTolerance, true)
+
+    if l1Shift
+        f_addLevel(lowerPrices, lowerBirths, lowerStrengths, lowerRawVolumes, l1, mergeTolerance, false)
+
+    if l2Shift
+        f_addLevel(lowerPrices, lowerBirths, lowerStrengths, lowerRawVolumes, l2, mergeTolerance, false)
+
+    if l3Shift
+        f_addLevel(lowerPrices, lowerBirths, lowerStrengths, lowerRawVolumes, l3, mergeTolerance, false)
+
+// Nearest levels
+
+float activeUpper1 = na
+float activeUpper2 = na
+float activeUpper3 = na
+
+float activeLower1 = na
+float activeLower2 = na
+float activeLower3 = na
+
+int activeUpperIndex1 = na
+int activeUpperIndex2 = na
+int activeUpperIndex3 = na
+
+int activeLowerIndex1 = na
+int activeLowerIndex2 = na
+int activeLowerIndex3 = na
+
+int upperFound = 0
+
+if array.size(upperPrices) > 0
+    int i = array.size(upperPrices) - 1
+
+    while i >= 0 and upperFound < 3
+        float levelPrice = array.get(upperPrices, i)
+        int levelBirth = array.get(upperBirths, i)
+        bool validLevel = levelPrice > close and bar_index - levelBirth <= keepLevelsForBars
+
+        if validLevel
+            upperFound += 1
+
+            if upperFound == 1
+                activeUpper1 := levelPrice
+                activeUpperIndex1 := i
+            else if upperFound == 2
+                activeUpper2 := levelPrice
+                activeUpperIndex2 := i
+            else if upperFound == 3
+                activeUpper3 := levelPrice
+                activeUpperIndex3 := i
+
+        i -= 1
+
+int lowerFound = 0
+
+if array.size(lowerPrices) > 0
+    int i = array.size(lowerPrices) - 1
+
+    while i >= 0 and lowerFound < 3
+        float levelPrice = array.get(lowerPrices, i)
+        int levelBirth = array.get(lowerBirths, i)
+        bool validLevel = levelPrice < close and bar_index - levelBirth <= keepLevelsForBars
+
+        if validLevel
+            lowerFound += 1
+
+            if lowerFound == 1
+                activeLower1 := levelPrice
+                activeLowerIndex1 := i
+            else if lowerFound == 2
+                activeLower2 := levelPrice
+                activeLowerIndex2 := i
+            else if lowerFound == 3
+                activeLower3 := levelPrice
+                activeLowerIndex3 := i
+
+        i -= 1
+
+// Volume
+
+barVolume = na(volume) ? 0.0 : volume
+volumeAverage = ta.sma(barVolume, VOLUME_AVERAGE_BARS)
+safeVolumeAverage = na(volumeAverage) or volumeAverage <= 0.0 ? barVolume : volumeAverage
+
+rawNormalizedVolume = safeVolumeAverage > 0.0 ? barVolume / safeVolumeAverage : 0.0
+normalizedVolume = math.min(rawNormalizedVolume, MAX_VOLUME_SCORE_PER_BAR)
+
+barDirection = close > open ? 1.0 : close < open ? -1.0 : 0.0
+signedNormalizedVolume = normalizedVolume * barDirection
+
+if barstate.isconfirmed
+    if signedNormalizedVolume < 0.0
+        float upperVolumeContribution = math.abs(signedNormalizedVolume)
+
+        f_addStrength(upperStrengths, activeUpperIndex1, upperVolumeContribution * closestLevelWeight, FULL_DARK_STRENGTH)
+        f_addStrength(upperStrengths, activeUpperIndex2, upperVolumeContribution * secondLevelWeight, FULL_DARK_STRENGTH)
+        f_addStrength(upperStrengths, activeUpperIndex3, upperVolumeContribution * thirdLevelWeight, FULL_DARK_STRENGTH)
+
+        f_addRawVolume(upperRawVolumes, activeUpperIndex1, barVolume * closestLevelWeight)
+        f_addRawVolume(upperRawVolumes, activeUpperIndex2, barVolume * secondLevelWeight)
+        f_addRawVolume(upperRawVolumes, activeUpperIndex3, barVolume * thirdLevelWeight)
+
+    else if signedNormalizedVolume > 0.0
+        float lowerVolumeContribution = signedNormalizedVolume
+
+        f_addStrength(lowerStrengths, activeLowerIndex1, lowerVolumeContribution * closestLevelWeight, FULL_DARK_STRENGTH)
+        f_addStrength(lowerStrengths, activeLowerIndex2, lowerVolumeContribution * secondLevelWeight, FULL_DARK_STRENGTH)
+        f_addStrength(lowerStrengths, activeLowerIndex3, lowerVolumeContribution * thirdLevelWeight, FULL_DARK_STRENGTH)
+
+        f_addRawVolume(lowerRawVolumes, activeLowerIndex1, barVolume * closestLevelWeight)
+        f_addRawVolume(lowerRawVolumes, activeLowerIndex2, barVolume * secondLevelWeight)
+        f_addRawVolume(lowerRawVolumes, activeLowerIndex3, barVolume * thirdLevelWeight)
+
+// Active data
+
+activeUpperStrength1 = f_getFloat(upperStrengths, activeUpperIndex1)
+activeUpperStrength2 = f_getFloat(upperStrengths, activeUpperIndex2)
+activeUpperStrength3 = f_getFloat(upperStrengths, activeUpperIndex3)
+
+activeLowerStrength1 = f_getFloat(lowerStrengths, activeLowerIndex1)
+activeLowerStrength2 = f_getFloat(lowerStrengths, activeLowerIndex2)
+activeLowerStrength3 = f_getFloat(lowerStrengths, activeLowerIndex3)
+
+activeUpperRaw1 = f_getFloat(upperRawVolumes, activeUpperIndex1)
+activeUpperRaw2 = f_getFloat(upperRawVolumes, activeUpperIndex2)
+activeUpperRaw3 = f_getFloat(upperRawVolumes, activeUpperIndex3)
+
+activeLowerRaw1 = f_getFloat(lowerRawVolumes, activeLowerIndex1)
+activeLowerRaw2 = f_getFloat(lowerRawVolumes, activeLowerIndex2)
+activeLowerRaw3 = f_getFloat(lowerRawVolumes, activeLowerIndex3)
+
+upperNearestRaw = f_sum3(activeUpperRaw1, activeUpperRaw2, activeUpperRaw3)
+lowerNearestRaw = f_sum3(activeLowerRaw1, activeLowerRaw2, activeLowerRaw3)
+
+activeUpperTransparency1 = f_strengthTransparency(activeUpperStrength1, FULL_DARK_STRENGTH, WEAK_LEVEL_TRANSPARENCY, STRONG_LEVEL_TRANSPARENCY)
+activeUpperTransparency2 = f_strengthTransparency(activeUpperStrength2, FULL_DARK_STRENGTH, WEAK_LEVEL_TRANSPARENCY, STRONG_LEVEL_TRANSPARENCY)
+activeUpperTransparency3 = f_strengthTransparency(activeUpperStrength3, FULL_DARK_STRENGTH, WEAK_LEVEL_TRANSPARENCY, STRONG_LEVEL_TRANSPARENCY)
+
+activeLowerTransparency1 = f_strengthTransparency(activeLowerStrength1, FULL_DARK_STRENGTH, WEAK_LEVEL_TRANSPARENCY, STRONG_LEVEL_TRANSPARENCY)
+activeLowerTransparency2 = f_strengthTransparency(activeLowerStrength2, FULL_DARK_STRENGTH, WEAK_LEVEL_TRANSPARENCY, STRONG_LEVEL_TRANSPARENCY)
+activeLowerTransparency3 = f_strengthTransparency(activeLowerStrength3, FULL_DARK_STRENGTH, WEAK_LEVEL_TRANSPARENCY, STRONG_LEVEL_TRANSPARENCY)
+
+// Plots
+
+plot(activeUpper1, "Upper 1", color = color.new(bearColor, activeUpperTransparency1), style = plot.style_circles, linewidth = levelDotSize)
+plot(activeUpper2, "Upper 2", color = color.new(bearColor, activeUpperTransparency2), style = plot.style_circles, linewidth = levelDotSize)
+plot(activeUpper3, "Upper 3", color = color.new(bearColor, activeUpperTransparency3), style = plot.style_circles, linewidth = levelDotSize)
+
+plot(activeLower1, "Lower 1", color = color.new(bullColor, activeLowerTransparency1), style = plot.style_circles, linewidth = levelDotSize)
+plot(activeLower2, "Lower 2", color = color.new(bullColor, activeLowerTransparency2), style = plot.style_circles, linewidth = levelDotSize)
+plot(activeLower3, "Lower 3", color = color.new(bullColor, activeLowerTransparency3), style = plot.style_circles, linewidth = levelDotSize)
+
+// Liquidation candles
+
+liquidationCandle = massLiquidation
+liquidationFill = upperMassLiquidation ? color.new(bearColor, 33) : lowerMassLiquidation ? color.new(bullColor, 55) : na
+liquidationBorder = upperMassLiquidation ? color.new(bearColor, 0) : lowerMassLiquidation ? color.new(bullColor, 0) : na
+
+plotcandle(liquidationCandle ? open : na, liquidationCandle ? high : na, liquidationCandle ? low : na, liquidationCandle ? close : na, "Mass Liquidation Candle", color = liquidationFill, wickcolor = liquidationBorder, bordercolor = liquidationBorder)
+
+if upperMassLiquidation
+    label.new(bar_index, high, "Shorts Liquidated: " + f_formatVolume(upperBodyCrossRaw), style = label.style_label_down, color = color.new(bearColor, 0), textcolor = color.white, size = size.small)
+
+if lowerMassLiquidation
+    label.new(bar_index, low, "Longs Liquidated: " + f_formatVolume(lowerBodyCrossRaw), style = label.style_label_up, color = color.new(bullColor, 0), textcolor = color.white, size = size.small)
+
+// Wick sweeps
+
+plotchar(upperWickSweep, "Upper Liquidity Wick Sweep", "▼", location.abovebar, color = bearColor, size = size.tiny)
+plotchar(lowerWickSweep, "Lower Liquidity Wick Sweep", "▲", location.belowbar, color = bullColor, size = size.tiny)
+
+// Panel scale
+
+rangeHigh = ta.highest(high, 100)
+rangeLow = ta.lowest(low, 100)
+rangeSpan = rangeHigh - rangeLow
+rangeRaw = ta.highest(rangeSpan, 50) * 2.0
+dynamicRange = ta.sma(rangeRaw, 50)
+panelRange = math.max(nz(dynamicRange, nz(rangeSpan, high - low)), syminfo.mintick * 100.0)
+
+// Balance chart
+
+var array<box> contributionBars = array.new<box>()
+var array<line> contributionLines = array.new<line>()
+var array<label> contributionLabels = array.new<label>()
+
+if barstate.islast
+    f_clearBoxes(contributionBars)
+    f_clearLines(contributionLines)
+    f_clearLabels(contributionLabels)
+
+    if showVolumeBars
+        int depthRightX = bar_index + rightOffset + depthWidth
+        int axisLeft = depthRightX + VOLUME_CHART_GAP
+        int bearLeft = axisLeft + VOLUME_AXIS_PAD
+        int bearRight = bearLeft + VOLUME_BAR_WIDTH
+        int bullLeft = bearRight + VOLUME_BAR_GAP
+        int bullRight = bullLeft + VOLUME_BAR_WIDTH
+        int axisRight = bullRight + VOLUME_AXIS_PAD
+
+        float chartHeight = panelRange * 0.36
+        float chartBottom = close - chartHeight * 0.5
+        float chartTop = chartBottom + chartHeight
+        float labelGap = panelRange * 0.018
+
+        float maxNearestRaw = math.max(upperNearestRaw, lowerNearestRaw)
+        float bearRatio = maxNearestRaw > 0.0 ? upperNearestRaw / maxNearestRaw : 0.0
+        float bullRatio = maxNearestRaw > 0.0 ? lowerNearestRaw / maxNearestRaw : 0.0
+
+        float bearHeight = chartHeight * bearRatio
+        float bullHeight = chartHeight * bullRatio
+
+        if upperNearestRaw > 0.0
+            bearHeight := math.max(bearHeight, chartHeight * 0.025)
+
+        if lowerNearestRaw > 0.0
+            bullHeight := math.max(bullHeight, chartHeight * 0.025)
+
+        int bearTransparency = int(math.round(45.0 + 30.0 * (1.0 - bearRatio)))
+        int bullTransparency = int(math.round(45.0 + 30.0 * (1.0 - bullRatio)))
+
+        line axisV = line.new(axisLeft, chartBottom, axisLeft, chartTop, color = chart.fg_color, style = line.style_solid, width = 4)
+        line axisH = line.new(axisLeft, chartBottom, axisRight, chartBottom, color = chart.fg_color, style = line.style_solid, width = 4)
+        line midGrid = line.new(axisLeft, chartBottom + chartHeight * 0.5, axisRight, chartBottom + chartHeight * 0.5, color = color.new(chart.fg_color, 75), style = line.style_dotted, width = 1)
+
+        array.push(contributionLines, axisV)
+        array.push(contributionLines, axisH)
+        array.push(contributionLines, midGrid)
+
+        if upperNearestRaw > 0.0
+            box bearBox = box.new(left = bearLeft, top = chartBottom + bearHeight, right = bearRight, bottom = chartBottom, bgcolor = color.new(bearColor, bearTransparency), border_color = color.new(#ffffff, 70), border_width = 1, border_style = line.style_solid)
+            array.push(contributionBars, bearBox)
+
+        if lowerNearestRaw > 0.0
+            box bullBox = box.new(left = bullLeft, top = chartBottom + bullHeight, right = bullRight, bottom = chartBottom, bgcolor = color.new(bullColor, bullTransparency), border_color = color.new(#ffffff, 70), border_width = 1, border_style = line.style_solid)
+            array.push(contributionBars, bullBox)
+
+        int titleX = int(math.round((bearLeft + bullRight) * 0.5))
+        int bearMidX = int(math.round((bearLeft + bearRight) * 0.5))
+        int bullMidX = int(math.round((bullLeft + bullRight) * 0.5))
+
+        label titleLabel = label.new(titleX, chartTop + panelRange * 0.045, "Near Range Liquidity Balance", style = label.style_none, color = color.new(chart.bg_color, 100), textcolor = chart.fg_color, textalign = text.align_center, size = size.large)
+        label axisTitle = label.new(axisLeft - 10, chartBottom + chartHeight * 0.5, "Liquidity Depth", style = label.style_label_right, color = color.new(chart.bg_color, 100), textcolor = chart.fg_color, textalign = text.align_right, size = size.normal)
+        label topTip = label.new(axisLeft, chartTop - chartHeight * 0.15, "▲", style = label.style_label_down, color = color.new(chart.bg_color, 100), textcolor = chart.fg_color, size = size.large)
+        label rightTip = label.new(axisRight - 2, chartBottom, "▶", style = label.style_label_left, color = color.new(chart.bg_color, 100), textcolor = chart.fg_color, size = size.large)
+
+        label bearName = label.new(bearMidX, chartBottom - panelRange * 0.04, "Bear", style = label.style_none, color = color.new(chart.bg_color, 100), textcolor = bearColor, textalign = text.align_center, size = size.normal)
+        label bullName = label.new(bullMidX, chartBottom - panelRange * 0.04, "Bull", style = label.style_none, color = color.new(chart.bg_color, 100), textcolor = bullColor, textalign = text.align_center, size = size.normal)
+
+        label bearValue = label.new(bearMidX, chartBottom + bearHeight + labelGap, f_formatVolume(upperNearestRaw), style = label.style_none, color = color.new(chart.bg_color, 100), textcolor = chart.fg_color, textalign = text.align_center, size = size.normal)
+        label bullValue = label.new(bullMidX, chartBottom + bullHeight + labelGap, f_formatVolume(lowerNearestRaw), style = label.style_none, color = color.new(chart.bg_color, 100), textcolor = chart.fg_color, textalign = text.align_center, size = size.normal)
+
+        array.push(contributionLabels, titleLabel)
+        array.push(contributionLabels, axisTitle)
+        array.push(contributionLabels, topTip)
+        array.push(contributionLabels, rightTip)
+        array.push(contributionLabels, bearName)
+        array.push(contributionLabels, bullName)
+        array.push(contributionLabels, bearValue)
+        array.push(contributionLabels, bullValue)
+
+// Depth curve
+
+var polyline upperDepthCurve = na
+var polyline lowerDepthCurve = na
+var polyline upperDepthFill = na
+var polyline lowerDepthFill = na
+
+if barstate.islast
+    if not na(upperDepthCurve)
+        polyline.delete(upperDepthCurve)
+        upperDepthCurve := na
+
+    if not na(lowerDepthCurve)
+        polyline.delete(lowerDepthCurve)
+        lowerDepthCurve := na
+
+    if not na(upperDepthFill)
+        polyline.delete(upperDepthFill)
+        upperDepthFill := na
+
+    if not na(lowerDepthFill)
+        polyline.delete(lowerDepthFill)
+        lowerDepthFill := na
+
+    if showDepthCurve
+        int depthRightX = bar_index + rightOffset + depthWidth
+        int safeDepthWidth = math.max(depthWidth, 1)
+
+        float upperTotalDepth = f_totalUpperDepth(upperPrices, upperBirths, upperRawVolumes, keepLevelsForBars, close)
+        float lowerTotalDepth = f_totalLowerDepth(lowerPrices, lowerBirths, lowerRawVolumes, keepLevelsForBars, close)
+        float maxDepth = math.max(upperTotalDepth, lowerTotalDepth)
+
+        if maxDepth > 0.0
+            chart.point[] upperPoints = f_upperDepthPoints(upperPrices, upperBirths, upperRawVolumes, keepLevelsForBars, close, depthRightX, safeDepthWidth, maxDepth)
+            chart.point[] lowerPoints = f_lowerDepthPoints(lowerPrices, lowerBirths, lowerRawVolumes, keepLevelsForBars, close, depthRightX, safeDepthWidth, maxDepth)
+            chart.point[] upperFillPoints = f_upperDepthFillPoints(upperPrices, upperBirths, upperRawVolumes, keepLevelsForBars, close, depthRightX, safeDepthWidth, maxDepth)
+            chart.point[] lowerFillPoints = f_lowerDepthFillPoints(lowerPrices, lowerBirths, lowerRawVolumes, keepLevelsForBars, close, depthRightX, safeDepthWidth, maxDepth)
+
+            if array.size(upperFillPoints) > 2
+                upperDepthFill := polyline.new(upperFillPoints, closed = true, line_color = color.new(bearColor, 100), fill_color = color.new(bearColor, 86), line_style = line.style_solid, line_width = 1)
+
+            if array.size(lowerFillPoints) > 2
+                lowerDepthFill := polyline.new(lowerFillPoints, closed = true, line_color = color.new(bullColor, 100), fill_color = color.new(bullColor, 86), line_style = line.style_solid, line_width = 1)
+
+            if array.size(upperPoints) > 1
+                upperDepthCurve := polyline.new(upperPoints, line_color = color.new(bearColor, 0), line_style = line.style_solid, line_width = 2)
+
+            if array.size(lowerPoints) > 1
+                lowerDepthCurve := polyline.new(lowerPoints, line_color = color.new(bullColor, 0), line_style = line.style_solid, line_width = 2)
+
+// Alerts
+
+upperLevelDetected = barstate.isconfirmed and (h1Shift or h2Shift or h3Shift)
+lowerLevelDetected = barstate.isconfirmed and (l1Shift or l2Shift or l3Shift)
+anyLevelDetected = upperLevelDetected or lowerLevelDetected
+
+anyLevelRemoved = upperMitigated or lowerMitigated
+anyMassLiquidation = upperMassLiquidation or lowerMassLiquidation
+
+bearDepthDominant = upperNearestRaw > lowerNearestRaw and upperNearestRaw > 0.0
+bullDepthDominant = lowerNearestRaw > upperNearestRaw and lowerNearestRaw > 0.0
+prevBearDepthDominant = bar_index > 0 ? bearDepthDominant[1] : false
+prevBullDepthDominant = bar_index > 0 ? bullDepthDominant[1] : false
+
+bearDepthFlip = bearDepthDominant and not prevBearDepthDominant
+bullDepthFlip = bullDepthDominant and not prevBullDepthDominant
+
+alertcondition(upperLevelDetected, "Upper Liquidity Detected", "A new upper liquidity level was detected.")
+alertcondition(lowerLevelDetected, "Lower Liquidity Detected", "A new lower liquidity level was detected.")
+alertcondition(anyLevelDetected, "Any Liquidity Detected", "A new liquidity level was detected.")
+alertcondition(upperMitigated, "Upper Level Removed", "An upper liquidity level was removed.")
+alertcondition(lowerMitigated, "Lower Level Removed", "A lower liquidity level was removed.")
+alertcondition(anyLevelRemoved, "Any Level Removed", "A liquidity level was removed.")
+alertcondition(upperWickSweep, "Upper Liquidity Wick Sweep", "Price wicked through upper liquidity without a body break.")
+alertcondition(lowerWickSweep, "Lower Liquidity Wick Sweep", "Price wicked through lower liquidity without a body break.")
+alertcondition(anyWickSweep, "Any Liquidity Wick Sweep", "Price wicked through liquidity without a body break.")
+alertcondition(upperMassLiquidation, "Shorts Liquidated", "Price crossed two or more upper liquidity levels with body continuation.")
+alertcondition(lowerMassLiquidation, "Longs Liquidated", "Price crossed two or more lower liquidity levels with body continuation.")
+alertcondition(anyMassLiquidation, "Any Mass Liquidation", "Price crossed two or more liquidity levels with body continuation.")
+alertcondition(bearDepthFlip, "Near Range Liquidity Balance: Bear Dominant", "Upper near-range liquidity depth has become dominant.")
+alertcondition(bullDepthFlip, "Near Range Liquidity Balance: Bull Dominant", "Lower near-range liquidity depth has become dominant.")

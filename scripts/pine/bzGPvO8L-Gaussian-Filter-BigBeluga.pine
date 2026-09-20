@@ -1,0 +1,210 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=5
+indicator("Gaussian Filter [BigBeluga]", overlay = true, max_labels_count = 500)
+
+
+// ＩＮＰＵＴＳ ========================================================================================================{
+
+// Gaussian Filter Inputs
+group1 = "Gaussian Filter"
+//@variable Length of the Gaussian filter
+int   length      = input(50,  "Length", group = group1)
+//@variable Sigma value for Gaussian filter smoothing
+int   sigma       = input(10, "Sigma",  group = group1, tooltip = "Sigma defines the amount of smoothing")
+
+// Additional Features Inputs
+group2 = "Additional Features"
+//@variable Toggle for displaying levels
+bool  levels      = input(true, "Show Levels", inline = "1", group = group2)
+//@variable Toggle for coloring candles
+bool  candles_c   = input(false, "Candles Color", group = group2)
+
+// Color Inputs
+group3 = "Colors"
+//@variable Color for uptrend
+color colUp       = input(#18e7a2, "Up Trend Color", group = group3)
+//@variable Color for downtrend
+color colDn       = input(#fc7c13, "Down Trend Color", group = group3)
+//@variable Color for trend change
+color change_col  = color.gray
+
+// Variables for tracking trend and price
+var   trend       = bool(na)             // Current trend direction (up or down)
+var   price       = float(na)           // Last price level for labeling
+var   value       = array.new<float>() // Array to store filter values
+
+// Variables for labeling and plotting
+var   point       = float(na)     // Current point for level plotting
+var   index_dn    = 0            // Index for downtrend labels
+var   index_up    = 0           // Index for uptrend labels
+var   color       = color(na)  // Current trend color
+var   color_level = color(na)
+label lbl         = label(na)
+var   percent_change = 0.
+
+// Define a type for the Gaussian Filter parameters
+//@type Defines the structure for Gaussian Filter parameters
+type GaussianFilterParams
+    int length
+    int sigma
+
+// Create an instance of GaussianFilterParams
+GaussianFilterParams filterParams = GaussianFilterParams.new(length, sigma)
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ ============================================================================================{
+
+// ATR (Average True Range) for level calculation
+float atr   = ta.atr(200)
+
+//@function Draws a label on the chart with the specified text, color, index, and price.
+//@param txt_ (string) The text to display.
+//@param color_ (color) Color of the text.
+//@param index_ (int) Index position for the label.
+//@param value_ (float) The value used for positioning the label.
+//@param price_ (float) Price level to display.
+//@param size (size) Size of the label, default is size.normal.
+//@returns (label) The label.
+method draw_label(string txt_, color_, index_, value_, price_, size = size.normal)=>
+    label.new(chart.point.from_index(index_, value_),
+                 text         = txt_ + "\n" + price_,
+                 style        = label.style_label_left,
+                 color        = color(na), 
+                 textcolor    = color_, 
+                 size         = size,
+                 tooltip      = "Trend " + txt_ + " Level", 
+                 force_overlay = true)
+
+//@function GaussianFilter is used for smoothing, reducing noise, and computing derivatives of data.
+//@param src (float) The source data (e.g., close price) to be smoothed.
+//@param params (GaussianFilterParams) Gaussian filter parameters that include length and sigma.
+//@returns (float) The smoothed value from the Gaussian filter.
+gaussian_filter(float src, params) =>
+    var float[] weights = array.new_float(params.length)  // Array to store Gaussian weights
+    total = 0.0
+    pi = math.pi
+    for i = 0 to params.length - 1
+        weight = math.exp(-0.5 * math.pow((i - params.length / 2) / params.sigma, 2.0))
+                                         / math.sqrt(params.sigma * 2.0 * pi)
+        weights.set(i, weight)
+        total := total + weight
+
+    for i = 0 to params.length - 1
+        weights.set(i, weights.get(i) / total)
+
+    sum = 0.0
+    for i = 0 to params.length - 1
+        sum := sum + src[i] * weights.get(i)
+    sum
+
+// Calculate the smoothed Gaussian value
+smoothed     = gaussian_filter(close, filterParams)
+
+// Detect trend changes based on crossover conditions
+condition_up = ta.rising(smoothed, 4)
+condition_dn = ta.falling(smoothed, 4)
+
+// Set the trend direction and color based on the detected conditions
+switch 
+    condition_up => trend := true,  color := colUp
+    condition_dn => trend := false, color := colDn
+
+// }
+// ＰＬＯＴ============================================================================================================{
+
+// Determine the candle color based on trend change if enabled
+col_trend_ch = (hl2 > smoothed and not trend ? change_col : hl2 < smoothed and trend ? change_col : color)
+
+// Plot the Gaussian Filter line
+// Gaussian Filter line
+p1 = plot(   
+          series     = smoothed, 
+          color      = col_trend_ch, 
+          title      = "Gaussian Filter",
+          linewidth  = 1
+          )
+
+// Plot the price line (hidden by default)
+// Hidden price line
+p2 = plot(
+          series    = ta.sma(hl2, 5), 
+          title     = "Price", 
+          display   = display.none,
+          editable  = false
+          )
+
+// Fill the area between the Gaussian Filter and price lines
+// Fills the area between the Gaussian Filter and price lines
+fill(p1, p2, ta.sma(hl2, 5), smoothed, na, color.new(col_trend_ch, 95))
+fill(p1, p2, ta.sma(hl2, 5), smoothed, na, color.new(col_trend_ch, 95))
+
+// Enter/Exit labels
+if levels
+    //@check Checks for trend change and plots "Enter" or "Exit" labels
+    if condition_up and ta.change(trend)
+        point       := smoothed - atr
+        price       := math.round(close, 2)
+        color_level := colUp
+
+        if not na(point)
+            "Exit".draw_label(color.new(colDn, 40), index_dn, point[1],
+                                  str.tostring(price) + "\n" + str.tostring(percent_change, format.percent), size.small)
+
+    if condition_dn and ta.change(trend)
+        point       := smoothed + atr
+        price       := math.round(close, 2)
+        color_level := colDn
+
+        if not na(point)
+            "Enter".draw_label(color.new(colUp, 40), index_up, point[1], 
+                                  str.tostring(price) + "\n" + str.tostring(percent_change, format.percent), size.small)
+
+    // Delete previous labels when trend changes
+    if not trend and not na(point)
+        lbl         := na
+        index_dn    := bar_index
+        lbl         := "Exit".draw_label(colDn, index_dn, point, str.tostring(percent_change, format.percent))
+        label.delete(lbl[1])
+
+    if trend and not na(point)
+        index_up    := bar_index
+        lbl         := na
+        lbl         := "Enter".draw_label(colUp, index_up, point, str.tostring(percent_change, format.percent))
+        label.delete(lbl[1])
+
+    percent_change := (close/price-1) * 100
+
+
+// Signals
+// Plot markers on the chart for trend change signals
+plotchar(condition_up and ta.change(trend) ? smoothed : na, "Filter Up", "⦿", 
+         location      = location.absolute,
+         size          = size.tiny, 
+         color         = colUp,
+         force_overlay = true)
+
+plotchar(condition_dn and ta.change(trend) ? smoothed : na, "Filter Dn", "⦿", 
+         location      = location.absolute, 
+         size          = size.tiny, 
+         color         = colDn, 
+         force_overlay = true)
+
+// Enter and Exit Levels
+plot(levels ? (ta.change(point) or na(point) ? na : point) : na,
+             style     = plot.style_linebr, 
+             color     = bar_index % 3 == 0 ? color_level : na,
+             linewidth = 1,
+             editable  = false) 
+
+
+// Color Candles
+coolor_candles = candles_c ? col_trend_ch : color(na)
+plotcandle(open, high, low, close, 
+             color = coolor_candles,
+              wickcolor = coolor_candles,
+               bordercolor = coolor_candles,
+                  editable   = false)
+
+// }

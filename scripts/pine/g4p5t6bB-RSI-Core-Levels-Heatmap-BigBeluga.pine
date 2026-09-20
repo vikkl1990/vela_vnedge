@@ -1,0 +1,222 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International  
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © BigBeluga
+
+//@version=6
+indicator("RSI Core Levels Heatmap [BigBeluga]", overlay = false, max_lines_count = 500)
+
+// ＩＮＰＵＴＳ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+//  Level Limits 
+maxActiveLevels = input.int(5, title="Max Active Levels & Labels", minval=1, tooltip="Maximum number of active lines and labels allowed on the price chart simultaneously before old ones are removed on the last bar.", group="Core Settings")
+
+//  Signal Line Inputs 
+rsiLength = input.int(14, title="RSI Length", minval=1, tooltip="RSI Line Length.", group="Core Settings")
+sigLength = input.int(14, title="Signal Line Length", minval=1, tooltip="The smoothing period used to calculate the RSI Signal Line.", group="Core Settings")
+sigColor  = input.color(color.orange, title="Signal Line Color", tooltip="The color used to display the RSI Signal Line.", group="Core Settings")
+
+//  Aesthetic Branding Colors 
+bullBaseColor = input.color(color.rgb(4, 195, 112), title="Bullish Base Color", tooltip="The intense color used when RSI is heavily oversold.", group="Color Theme")
+bearBaseColor = input.color(#ff0000, title="Bearish Base Color", tooltip="The intense color used when RSI is heavily overbought.", group="Color Theme")
+
+//  Midline Compression Settings 
+showMidZone       = input.bool(true, title="Show Midline Squeeze Zone", tooltip="Toggle the visibility of the neutral compression gradient area around the 50 line.", group="Midline Settings")
+midZoneColorInput = input.color(color.yellow, title="Midline Zone Color", tooltip="Choose the color for the neutral compression zone gradient.", group="Midline Settings")
+
+//  Dashboard Settings 
+showTable = input.bool(true, title="Show Dashboard Table", tooltip="Toggle the visibility of the closest levels dashboard.", group="Dashboard Settings")
+tablePos  = input.string("top_right", title="Table Position", options=["top_right", "bottom_right", "top_left", "bottom_left"], group="Dashboard Settings")
+
+// }
+// ＣＡＬＣＵＬＡＴＩＯＮＳ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+//  Core RSI Metrics 
+rsiValue = ta.rsi(close, rsiLength)
+sigline  = ta.sma(rsiValue, sigLength)
+
+//  Custom Structural Object Types 
+type BlockLevel
+    line  lvlLine
+    label lvlLabel
+    float topPrice
+    float botPrice
+    bool  isBull
+
+// Persistent historical tracker array for active chart levels
+var BlockLevel[] activeBlocks = array.new<BlockLevel>()
+
+//  Strict Collision Box Overlap Detection 
+// Prevents redundant levels from being drawn stacked directly on top of each other
+is_overlapping_existing_block(high_val, low_val) =>
+    overlap = false
+    if array.size(activeBlocks) > 0
+        for i = 0 to array.size(activeBlocks) - 1
+            BlockLevel item = array.get(activeBlocks, i)
+            // Match overlapping coordinate bands
+            if (high_val <= item.topPrice and high_val >= item.botPrice) or (low_val >= item.botPrice and low_val <= item.topPrice) or (high_val >= item.topPrice and low_val <= item.botPrice)
+                overlap := true
+                break
+    overlap
+
+//  Signal Execution Triggers 
+bullBlock = ta.crossover(rsiValue, sigline) and rsiValue < 50 
+bearBlock = ta.crossunder(rsiValue, sigline) and rsiValue > 50
+
+//  Confirmed Bar Logic Processing 
+if barstate.isconfirmed
+    
+    // Handle Bullish S&R Level Construction
+    if bullBlock
+        for i = 0 to 10
+            bear = close[i] < open[i]
+            if bear
+                box_top = open[i]
+                box_bot = low[i]
+                
+                if not is_overlapping_existing_block(box_top, box_bot)
+                    color dynamicGreen = color.from_gradient(rsiValue[i], 15.0, 50.0, bullBaseColor, color.new(bullBaseColor, 80))
+                    
+                    new_line = line.new(x1 = bar_index[i], y1 = box_bot, x2 = bar_index, y2 = box_bot, color = dynamicGreen, width = 2, force_overlay = true)
+                    new_label = label.new(x = bar_index, y = box_bot, text = "RSI: " + str.tostring(rsiValue[i], "#.##"), color = color.new(color.black, 100), textcolor = dynamicGreen, style = label.style_label_left, force_overlay = true)
+                    
+                    array.push(activeBlocks, BlockLevel.new(new_line, new_label, box_top, box_bot, true))
+                break
+
+    // Handle Bearish S&R Level Construction
+    if bearBlock
+        for i = 0 to 10
+            bull = close[i] > open[i]
+            if bull
+                box_top = high[i]
+                box_bot = open[i]
+                
+                if not is_overlapping_existing_block(box_top, box_bot)
+                    color dynamicRed = color.from_gradient(rsiValue[i], 50.0, 85.0, color.new(bearBaseColor, 80), bearBaseColor)
+                    
+                    new_line = line.new(x1 = bar_index[i], y1 = box_top, x2 = bar_index, y2 = box_top, color = dynamicRed, width = 2, force_overlay = true)
+                    new_label = label.new(x = bar_index, y = box_top, text = "RSI: " + str.tostring(rsiValue[i], "#.##"), color = color.new(color.black, 100), textcolor = dynamicRed, style = label.style_label_left, force_overlay = true)
+                    
+                    array.push(activeBlocks, BlockLevel.new(new_line, new_label, box_top, box_bot, false))
+                break
+
+//  Object Array State Lifecycle Management 
+if array.size(activeBlocks) > 0
+    for i = array.size(activeBlocks) - 1 to 0
+        BlockLevel item = array.get(activeBlocks, i)
+        
+        // Check if level was broken or breached by current price action
+        bool broken = item.isBull ? (close < item.botPrice) : (close > item.topPrice)
+        
+        if broken
+            label.delete(item.lvlLabel)
+            line.set_style(item.lvlLine, line.style_dashed)
+            line.set_color(item.lvlLine, color.gray)
+            line.set_width(item.lvlLine, 1)
+            array.remove(activeBlocks, i) // Clean up memory footprint
+        else
+            // Extend unbreached level lines cleanly into live price space
+            line.set_x2(item.lvlLine, bar_index)
+            label.set_x(item.lvlLabel, bar_index)
+
+    // Enforce user-defined historic limit caps on real-time rendering engine
+    if barstate.islast and array.size(activeBlocks) > maxActiveLevels
+        int items_to_delete = array.size(activeBlocks) - maxActiveLevels
+        for i = 0 to items_to_delete - 1
+            BlockLevel old_item = array.shift(activeBlocks)
+            line.delete(old_item.lvlLine)
+            label.delete(old_item.lvlLabel)
+
+//  Proximity HUD Dashboard Matrix Math 
+float closest_sup = na
+float closest_res = na
+float min_sup_dist = na
+float min_res_dist = na
+
+if array.size(activeBlocks) > 0
+    for i = 0 to array.size(activeBlocks) - 1
+        BlockLevel item = array.get(activeBlocks, i)
+        if item.isBull 
+            float dist = close - item.botPrice
+            if dist >= 0 and (na(min_sup_dist) or dist < min_sup_dist)
+                min_sup_dist := dist
+                closest_sup := item.botPrice
+        else 
+            float dist = item.topPrice - close
+            if dist >= 0 and (na(min_res_dist) or dist < min_res_dist)
+                min_res_dist := dist
+                closest_res := item.topPrice
+
+// }
+// ＰＬＯＴ ――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――{
+
+//  RSI & Signal Line Plots 
+rsiColor = color.from_gradient(rsiValue, 30.0, 70.0, bullBaseColor, bearBaseColor)
+plot(rsiValue, color=rsiColor, title="RSI (Gradiented)", linewidth =2)
+plot(sigline, color=sigColor, title="Signal")
+hline(50, "Middle Line", color=color.gray, linestyle=hline.style_dashed)
+
+//  Visual Ribbon via Dynamic Plotshapes 
+// Instead of fills, plot square shapes along specific anchor levels to create a clean matrix track at the top/bottom/middle
+
+// Conditions for the shapes
+bool isOverbought = rsiValue >= 70.0
+bool isOversold   = rsiValue <= 30.0
+bool isSqueeze    = showMidZone and rsiValue >= 40.0 and rsiValue <= 60.0
+
+// Dynamic Gradient Colors for the Plotshapes
+color shapeColorOB = color.from_gradient(rsiValue, 70.0, 100.0, color.new(bearBaseColor, 90), color.new(bearBaseColor, 0))
+color shapeColorOS = color.from_gradient(rsiValue, 0.0, 30.0, color.new(bullBaseColor, 0), color.new(bullBaseColor, 90))
+color shapeColorSq1 = color.from_gradient(rsiValue, 45.0, 50.0, color.new(midZoneColorInput, 100), color.new(midZoneColorInput, 0))
+color shapeColorSq2 = color.from_gradient(rsiValue, 50.0, 55.0, color.new(midZoneColorInput, 0), color.new(midZoneColorInput, 100))
+
+// Render the Ribbon tracks
+plotshape(isOverbought ? 95 : na, title="Overbought Track", style=shape.square, location=location.absolute, color=shapeColorOB, size=size.tiny)
+plotshape(isSqueeze    ? 50 : na, title="Midline Squeeze Track", style=shape.square, location=location.absolute, color=rsiValue < 50 ? shapeColorSq1 : shapeColorSq2, size=size.tiny)
+plotshape(isOversold   ? 5  : na, title="Oversold Track", style=shape.square, location=location.absolute, color=shapeColorOS, size=size.tiny)
+
+//  Main Price Chart Overlay Shapes 
+// Render squares above/below the actual price candles when extremes are active
+plotshape(isOverbought, title="Main Chart Overbought", style=shape.square, location=location.abovebar, color=shapeColorOB, size=size.tiny, force_overlay=true)
+plotshape(isOversold,   title="Main Chart Oversold",   style=shape.square, location=location.belowbar, color=shapeColorOS, size=size.tiny, force_overlay=true)
+
+//  Realtime UX HUD Dashboard Table Rendering  
+var table d_table = na
+t_pos = tablePos == "top_right" ? position.top_right : tablePos == "bottom_right" ? position.bottom_right : tablePos == "top_left" ? position.top_left : position.bottom_left
+
+if showTable and barstate.islast
+    d_table := table.new(position=t_pos, columns=3, rows=4, bgcolor=color.new(color.black, 30), border_width=1, border_color=chart.bg_color)
+    
+    // Table Column Headers
+    table.cell(d_table, 0, 0, "Level Type", text_color=color.white, text_size=size.normal, bgcolor=#4f5569)
+    table.cell(d_table, 1, 0, "Price Value", text_color=color.white, text_size=size.normal, bgcolor=#4f5569)
+    table.cell(d_table, 2, 0, "Distance (Points / %)", text_color=color.white, text_size=size.normal, bgcolor=#4f5569)
+    
+    // Core Reference Anchor Row
+    table.cell(d_table, 0, 1, "Current Close", text_color=color.white, text_size=size.normal)
+    table.cell(d_table, 1, 1, str.tostring(close, "#.##"), text_color=color.white, text_size=size.normal)
+    table.cell(d_table, 2, 1, "Pivot Center", text_color=color.white, text_size=size.normal)
+    
+    // Live Resistance Data Fields
+    if not na(closest_res)
+        float res_dist_points = closest_res - close
+        float res_dist_per    = (res_dist_points / close) * 100
+        table.cell(d_table, 0, 2, "Nearest Resistance", text_color=bearBaseColor, text_size=size.normal)
+        table.cell(d_table, 1, 2, str.tostring(closest_res, "#.##"), text_color=color.white, text_size=size.normal)
+        table.cell(d_table, 2, 2, str.tostring(res_dist_points, "#.##") + " (" + str.tostring(res_dist_per, "#.##") + "%)", text_color=bearBaseColor, text_size=size.normal)
+    else
+        table.cell(d_table, 0, 2, "Nearest Resistance", text_color=bearBaseColor, text_size=size.normal)
+        table.cell(d_table, 1, 2, "None Active", text_color=color.white, text_size=size.normal)
+        table.cell(d_table, 2, 2, "-", text_color=bearBaseColor, text_size=size.normal)
+    
+    // Live Support Data Fields
+    if not na(closest_sup)
+        float sup_dist_points = close - closest_sup
+        float sup_dist_per    = (sup_dist_points / close) * 100
+        table.cell(d_table, 0, 3, "Nearest Support", text_color=bullBaseColor, text_size=size.normal)
+        table.cell(d_table, 1, 3, str.tostring(closest_sup, "#.##"), text_color=color.white, text_size=size.normal)
+        table.cell(d_table, 2, 3, str.tostring(sup_dist_points, "#.##") + " (" + str.tostring(sup_dist_per, "#.##") + "%)", text_color=bullBaseColor, text_size=size.normal)
+    else
+        table.cell(d_table, 0, 3, "Nearest Support", text_color=bullBaseColor, text_size=size.normal)
+        table.cell(d_table, 1, 3, "None Active", text_color=color.white, text_size=size.normal)
+        table.cell(d_table, 2, 3, "-", text_color=bullBaseColor, text_size=size.normal)
+// }

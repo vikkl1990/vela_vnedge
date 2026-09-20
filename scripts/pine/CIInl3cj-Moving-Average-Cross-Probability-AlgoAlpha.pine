@@ -1,0 +1,107 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=5
+indicator("Moving Average Cross Probability [AlgoAlpha]", "AlgoAlpha - 🪙 MA Cross %", false)
+
+mod = input.string("EMA", "Moving Average Type", ["EMA", "SMA"])
+len = input.int(7, "Data Processing Smoothing Window")
+slen = input.int(30, "Slow MA length")
+flen = input.int(14, "Fast MA length")
+res = input.int(50, "Resolution")
+green = input.color(#00ffbb, "EMA Colors", group = "Appearance", inline = "tsig")
+red = input.color(#ff1100, "", group = "Appearance", inline = "tsig")
+if slen < flen
+    runtime.error("WARNING: 'Fast MA length' needs to be LESS than 'Slow MA length'")
+type store
+    float s
+    float f   
+
+array_sma(array<float> prices, simple int period) => 
+    Values = prices
+    if Values.size() > period
+        Values.reverse()
+        while Values.size() - period > 0
+            Values.shift()
+    Values.avg()
+
+array_ema(array<float> src, per) => 
+    alpha = 2 / (per + 1)
+    ema = src.get(src.size()-1)
+    emavals = array.new_float(src.size(), ema)
+
+    for i = src.size() - 2 to 0
+        ema := (alpha * src.get(i)) + ((1 - alpha) * nz(ema))
+        emavals.unshift(ema)
+
+    emavals.first()
+
+price = ta.hma(close, len)
+forecastlen = 1
+gradient = (price - price[forecastlen]) / forecastlen
+forecast = price + gradient
+upper = forecast + ta.stdev(close, len, true) * 4
+lower = forecast - ta.stdev(close, len, true) * 4
+
+seg = (upper - lower) / (res-1)
+
+possibilities = array.new_float()
+memory = array.new_float()
+store[] MApossibilities = array.new<store>()
+
+for i = 0 to res - 1
+    possibilities.unshift(lower + seg * i)
+
+for i = 0 to slen * 2
+    memory.push(close[i])
+
+for i = 0 to possibilities.size() - 1
+    temp = array.new_float()
+    for j = memory.size()-1 to 0
+        temp.unshift(memory.get(j))
+    temp.unshift(possibilities.get(i))
+    MApossibilities.push(store.new(mod == "EMA" ? array_ema(temp, slen) : array_sma(temp, slen), mod == "EMA" ? array_ema(temp, flen) : array_sma(temp, flen)))
+
+slwMA = mod == "EMA" ? ta.ema(close, slen) : ta.sma(close, slen)
+fstMA = mod == "EMA" ? ta.ema(close, flen) : ta.sma(close, flen)
+
+test = fstMA > slwMA ? -1 : 1
+
+testResults = array.new_float()
+
+for i = MApossibilities.size() - 1 to 0
+    if test == -1
+        if MApossibilities.get(i).s > MApossibilities.get(i).f
+            testResults.unshift(1)
+        else
+            testResults.unshift(0)
+    else if test == 1
+        if MApossibilities.get(i).s > MApossibilities.get(i).f
+            testResults.unshift(0)
+        else
+            testResults.unshift(1)
+
+odds = mod == "EMA" ? testResults.sum() / testResults.size() : 1 - (testResults.sum() / testResults.size())
+
+plot(odds * 100, "Probability of Crossover", test > 0 ? green : red, style = plot.style_columns, format = format.percent)
+
+var data_table = table.new(position=position.bottom_right, columns=2, rows=8, bgcolor=color.new(#000000, 10), border_width=1, border_color = #ffffff, frame_color = #ffffff, frame_width = 1, force_overlay = true)
+
+p1 = plot(slwMA, color = fstMA > slwMA ? green : red, force_overlay = true)
+p2 = plot(fstMA, color = fstMA > slwMA ? green : red, force_overlay = true)
+
+fill(p1, p2, math.max(slwMA, fstMA), math.min(slwMA, fstMA), color.new(fstMA > slwMA ? green : red, fstMA > slwMA ? 100 : 70), color.new(fstMA > slwMA ? green : red, fstMA > slwMA ? 70 : 100))
+
+table.cell(data_table, text_halign=text.align_center, column=0, row=0, text="🪙 MA Cross Probability Data Window", text_color = #ffffff)
+table.merge_cells(data_table, 0, 0, 1, 0)
+table.cell(data_table, text_halign=text.align_left, column=0, row=1, text="MA Cross Forecast Direction", text_color = #ffffff)
+dir_text = test < 0 ? "Crossunder" : "Crossover"
+table.cell(data_table, text_halign=text.align_right, column=1, row=1, text = dir_text, text_color = #ffffff)
+table.cell(data_table, text_halign=text.align_left, column=0, row=2, text="Probability of " + dir_text, text_color = #ffffff)
+table.cell(data_table, text_halign=text.align_right, column=1, row=2, text=str.tostring(odds * 100) + " %", text_color = #ffffff)
+if test < 0
+    table.cell_set_bgcolor(data_table, column=1, row=2, bgcolor=color.from_gradient(odds, 0, 1, color.new(red, 50), red))
+if test > 0
+    table.cell_set_bgcolor(data_table, column=1, row=2, bgcolor=color.from_gradient(odds, 0, 1, color.new(green, 50), green))
+
+alertcondition(odds > 0, "Probability of Cross is larger than zero")
