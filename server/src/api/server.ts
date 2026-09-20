@@ -177,6 +177,11 @@ export class ApiServer {
     });
 
     this.add('GET', '/api/scanners', () => a.scannerViews());
+    this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {
+      const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? 3), minProfitFactor: Number(body?.minProfitFactor ?? 1) });
+      await a.onConfigChanged();
+      return { tuned: report.length, disabled: report.filter(r => r.disabled).length, report };
+    });
     this.add('GET', '/api/scanners/:id', (_r, _s, p) => { const v = a.scannerView(p.id); if (!v) throw new HttpError(404, 'unknown scanner'); return v; });
     this.add('POST', '/api/scanners/:id', async (_r, _s, p, _u, body) => {
       const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner');
@@ -192,11 +197,6 @@ export class ApiServer {
       if (patch.hidden) { const n = a.paper.closeScanner(p.id, 'removed'); if (n) log.info(`closed ${n} open position(s) of removed scanner ${p.id}`); }
       await a.onConfigChanged();
       return a.scannerView(p.id);
-    });
-    this.add('POST', '/api/scanners/auto-tune', async (_r, _s, _p, _u, body) => {
-      const report = a.scanners.autoTune({ minTrades: Number(body?.minTrades ?? 3), minProfitFactor: Number(body?.minProfitFactor ?? 1) });
-      await a.onConfigChanged();
-      return { tuned: report.length, disabled: report.filter(r => r.disabled).length, report };
     });
     this.add('POST', '/api/scanners/:id/run', (_r, _s, p) => ({ queued: a.scanners.runNow(p.id) }));
     this.add('GET', '/api/scanners/:id/source', (_r, _s, p) => { const s = a.registry.get(p.id); if (!s) throw new HttpError(404, 'unknown scanner'); return { id: s.id, name: s.name, source: s.source, patched: s.patched, patches: s.patches }; });
