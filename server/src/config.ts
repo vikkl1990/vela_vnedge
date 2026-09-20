@@ -42,6 +42,10 @@ export interface ScannerConfig {
   symbols: string[] | null;
   timeframes: string[] | null;
   exitMode: ExitMode;
+  /** Generic derivation rule for scripts that never phrase a trade call (see scanners/rules.ts). */
+  rule?: GenericRule | null;
+  /** Per-script Pine `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
+  inputs?: Record<string, number | string | boolean>;
 }
 
 export interface ExecutionConfig {
@@ -70,6 +74,10 @@ export interface AutoTuneConfig {
   minTrades: number;
   minProfitFactor: number;
   intervalHours: number;
+  /** Out-of-sample gate: keep a scanner×symbol only when its walk-forward OOS result passes (falls back to in-sample when no walk-forward data). */
+  oos: OosTuneConfig;
+  /** Also tune each scanner's timeframe list: every configured (symbol, tf) pair is evaluated separately. */
+  tuneTimeframes: boolean;
 }
 
 export interface AppConfig {
@@ -82,13 +90,14 @@ export interface AppConfig {
   paper: PaperConfig;
   execution: ExecutionConfig;
   scanners: Record<string, ScannerConfig>;
+  validation: ValidationConfig;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
   symbols: ['BTCUSD', 'ETHUSD'],
   universe: { mode: 'list', top: 20, exclude: [] },
   ml: { minProb: 0, useAsScore: false },
-  autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6 },
+  autoTune: { enabled: true, minTrades: 3, minProfitFactor: 1, intervalHours: 6, oos: { enabled: false, minTrades: 10, minProfitFactor: 1.1, minPositiveWeeks: 2 }, tuneTimeframes: false },
   timeframes: ['15m'],
   historyBars: 1000,
   paper: {
@@ -112,6 +121,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   execution: { mode: 'paper' },
   scanners: {},
+  validation: {
+    history: { enabled: true, days: 60, chunkBars: 4000, delayMs: 250, backtestBars: 0 },
+    walkForward: { days: 60, trainDays: 10, testDays: 3, stepDays: 1, autoRun: false },
+    consensus: { enabled: false, minScanners: 2, windowBars: 1 },
+    shadow: { enabled: true, minProb: 0.55 },
+  },
 };
 
 export const SUPPORTED_TIMEFRAMES = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '1d'] as const;
@@ -187,6 +202,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!['paper', 'testnet'].includes(c.execution?.mode)) errs.push('execution.mode must be paper|testnet');
   if (!(c.ml?.minProb >= 0 && c.ml?.minProb < 1)) errs.push('ml.minProb must be 0..1');
   if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
+  errs.push(...validateExtendedConfig(c));
   return errs;
 }
 
@@ -233,4 +249,86 @@ export class ConfigStore {
   private save() {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.cfg, null, 2));
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 1 / 6 additions (validation, shadow, consensus, generic rules, script inputs)
+// ---------------------------------------------------------------------------------------------
+
+/** Generic derivation rules selectable per scanner (`scanners.<id>.rule`). */
+export type GenericRule = 'trailing' | 'oscillator';
+export const GENERIC_RULES: readonly GenericRule[] = ['trailing', 'oscillator'];
+
+export interface OosTuneConfig {
+  enabled: boolean;
+  minTrades: number;
+  minProfitFactor: number;
+  minPositiveWeeks: number;
+}
+
+export interface HistoryConfig {
+  /** Use the SQLite candle cache (deep history paged from Delta REST) for validation runs. */
+  enabled: boolean;
+  /** Days of history kept per symbol×timeframe for walk-forward validation. */
+  days: number;
+  /** Bars per Delta REST request (Delta serves at most ~4000). */
+  chunkBars: number;
+  /** Pause between consecutive requests for the same symbol (rate-limit courtesy). */
+  delayMs: number;
+  /** When > historyBars, warm backtests use this many cached bars instead of the in-memory history (0 = off; live runs always use memory). */
+  backtestBars: number;
+}
+
+export interface WalkForwardConfig {
+  /** Total history evaluated (≤ history.days). */
+  days: number;
+  trainDays: number;
+  testDays: number;
+  stepDays: number;
+  /** Re-run walk-forward validation automatically after each scheduled re-backtest. */
+  autoRun: boolean;
+}
+
+export interface ConsensusConfig {
+  /** Require `minScanners` distinct scanners to signal the same side on the same symbol×tf within `windowBars` bars before entering. */
+  enabled: boolean;
+  minScanners: number;
+  windowBars: number;
+}
+
+export interface ShadowConfig {
+  /** Mirror live signals into two in-memory paper variants: `ungated` and `ml-gated` (entries below `minProb` skipped). */
+  enabled: boolean;
+  minProb: number;
+}
+
+export interface ValidationConfig {
+  history: HistoryConfig;
+  walkForward: WalkForwardConfig;
+  consensus: ConsensusConfig;
+  shadow: ShadowConfig;
+}
+
+export function validateExtendedConfig(c: AppConfig): string[] {
+  const errs: string[] = [];
+  const o = c.autoTune?.oos;
+  if (o && !(o.minTrades >= 1 && o.minProfitFactor >= 0 && o.minPositiveWeeks >= 0)) errs.push('autoTune.oos.minTrades ≥ 1, minProfitFactor ≥ 0, minPositiveWeeks ≥ 0');
+  const v = c.validation;
+  if (v) {
+    const h = v.history;
+    if (!(h.days >= 1 && h.days <= 400)) errs.push('validation.history.days must be 1..400');
+    if (!(h.chunkBars >= 100 && h.chunkBars <= 4000)) errs.push('validation.history.chunkBars must be 100..4000');
+    if (!(h.delayMs >= 0 && h.delayMs <= 10_000)) errs.push('validation.history.delayMs must be 0..10000');
+    if (!(h.backtestBars >= 0 && h.backtestBars <= 50_000)) errs.push('validation.history.backtestBars must be 0..50000');
+    const w = v.walkForward;
+    if (!(w.days >= 2 && w.days <= 400)) errs.push('validation.walkForward.days must be 2..400');
+    if (!(w.trainDays >= 1 && w.testDays >= 1 && w.stepDays >= 1 && w.trainDays + w.testDays <= w.days)) errs.push('validation.walkForward: trainDays, testDays, stepDays ≥ 1 and trainDays + testDays ≤ days');
+    if (!(v.consensus.minScanners >= 1 && v.consensus.windowBars >= 0)) errs.push('validation.consensus.minScanners ≥ 1, windowBars ≥ 0');
+    if (!(v.shadow.minProb >= 0 && v.shadow.minProb < 1)) errs.push('validation.shadow.minProb must be 0..1');
+  }
+  for (const [id, sc] of Object.entries(c.scanners ?? {})) {
+    if (sc?.rule != null && !GENERIC_RULES.includes(sc.rule)) errs.push(`scanners.${id}.rule must be ${GENERIC_RULES.join('|')}`);
+    if (sc?.inputs != null && (typeof sc.inputs !== 'object' || Array.isArray(sc.inputs) || Object.values(sc.inputs).some(x => !['number', 'string', 'boolean'].includes(typeof x)))) errs.push(`scanners.${id}.inputs must map names to number|string|boolean`);
+  }
+  return errs;
 }
