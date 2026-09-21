@@ -9,4 +9,5 @@ export type Extension = (add: RouteAdder, app: App) => void;
 
 export const EXTENSIONS: Extension[] = [
   // phase modules append here, e.g.: validationRoutes,
+  (await import('../risk/routes.ts')).riskRoutes, // phases 2/3/5: /api/risk, /api/execution, /api/marks
 ];

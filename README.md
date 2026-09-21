@@ -103,9 +103,18 @@ Everything is editable in the dashboard (**Settings**) or `data/config.json`:
     "liquidation": true, "maintenanceMarginPct": 0.5,
     "feeRatePct": 0.05, "makerFeeRatePct": 0.02, "slippageBps": 2, "tpSplit": [0.4, 0.3, 0.3],
     "breakEvenAfterTp1": true, "allowReversal": true,
-    "fallbackAtrSl": 1.5, "fallbackRR": [1, 2, 3], "maxOpenPositions": 20
+    "fallbackAtrSl": 1.5, "fallbackRR": [1, 2, 3], "maxOpenPositions": 20,
+    "fillSource": "candles",          // "tape": fill on Delta's trade stream with latency, resting TP limits, mark-price liquidation
+    "limitFill": "through", "depthUsdPerBp": 0, "latencyMs": 1500, "tapeFallbackMs": 5000, "fundingCharges": true
   },
-  "execution": { "mode": "paper" },
+  "execution": { "mode": "paper", "bracket": true, "reconcileSec": 60, "allowProduction": false },   // paper | dry-run | testnet
+  "risk": {                           // portfolio risk layer, see docs/calculations.md
+    "enabled": true, "maxDailyLossPct": 15, "maxWeeklyLossPct": 30, "closeAllOnKill": false,
+    "maxPositionsTotal": 8, "maxPositionsPerSymbol": 2, "perScannerMaxPositions": 4, "perScannerDailyLossPct": 0,
+    "maxBetaExposurePct": 0, "corrBars": 20, "cooldownAfterLosses": 0, "cooldownMinutes": 120,
+    "ddScale": [{ "ddPct": 10, "leverageMult": 0.5 }],
+    "regime": { "enabled": true, "minAtrPct": 0.30, "noWeekend": true, "exempt": [] }
+  },
   "scanners": { "reactive-trail-system": { "enabled": true, "symbols": null, "timeframes": null, "exitMode": "both" } }
 }
 ```
@@ -113,7 +122,26 @@ Everything is editable in the dashboard (**Settings**) or `data/config.json`:
 Environment variables: `PORT` (8787), `HOST` (127.0.0.1), `VNEDGE_WORKERS` (worker threads),
 `VNEDGE_SYMBOLS`, `VNEDGE_TIMEFRAMES`, `LOG_LEVEL`, `VNEDGE_DATA_DIR`.
 
-### Optional: mirror paper fills to the Delta India demo account
+### Execution realism (phase 2)
+
+`paper.fillSource: "tape"` fills on Delta's `all_trades` stream instead of 1-minute candles: an entry
+fills at the first print `latencyMs` after the signal, stops trigger on the last trade, TP legs rest as
+limit orders (`limitFill: through` needs a print beyond the level), liquidation is checked on the
+exchange **mark price**, funding is charged every 8 h (`reason: "funding"` fills) and market slippage
+grows with size against `depthUsdPerBp`. Candles take over automatically when the tape is silent for
+`tapeFallbackMs`. The default `candles` mode is byte-for-byte the previous behaviour. `GET /api/marks`
+shows mark price, funding schedule, tape status and pending entries.
+
+### Portfolio risk layer (phase 3)
+
+On by default: daily (15 %) and weekly (30 %) max-loss kill switches, 8 positions total / 2 per symbol /
+4 per scanner, drawdown-scaled sizing (half size beyond −10 % from the equity peak) and the regime filter
+learned from the trade data (no entries when ATR % < 0.30, no weekend entries). Optional: per-scanner daily
+loss budget, cooldown after N consecutive losses, BTC-beta exposure cap from a rolling 20-bar correlation.
+Every veto is recorded on the signal as `rejected:risk <reason>`. `GET /api/risk`, `POST /api/risk/kill`
+(manual halt, optional close-all), `POST /api/risk/reset`.
+
+### Optional: mirror paper fills to the Delta India demo account (phase 5)
 
 Create API keys on the **demo** site (<https://demo-india.delta.exchange>), then:
 
@@ -121,8 +149,17 @@ Create API keys on the **demo** site (<https://demo-india.delta.exchange>), then
 DELTA_API_KEY=… DELTA_API_SECRET=… npm start
 ```
 
-and set `"execution": { "mode": "testnet" }`. Fills are sent as market orders to the
-testnet host only (`cdn-ind.testnet.deltaex.org`); production keys are never used.
+and set `"execution": { "mode": "testnet" }` (or `"dry-run"` to only log the exact order payloads,
+no keys needed). Entries go out as market orders; each paper position gets exchange-side **reduce-only**
+stop-loss (mark-price trigger) and take-profit limit orders that are re-placed on break-even and
+cancelled on close, the demo account is reconciled with the paper book every `reconcileSec` seconds
+(drift is logged and shown under `GET /api/execution`), and `POST /api/execution/close-all`
+`{ "confirm": true }` flattens the demo account with reduce-only market orders.
+
+The production host is unreachable unless **both** `"execution": { "allowProduction": true }` and the
+environment variable `DELTA_LIVE=1` are set, and even then the client sends nothing but market orders
+with reduce-only exits (no resting orders). Production keys are never needed for anything in this
+repository; keep them out of the environment.
 
 ## Repository layout
 
@@ -136,8 +173,9 @@ data/        runtime: vnedge.db, config.json, logs/   (git-ignored)
 
 ## Notes & limitations
 
-* Paper fills are bar-based (1-minute resolution) and resolve SL before TP on ambiguous
-  bars — conservative versus TradingView's tick-level fills.
+* Default paper fills are bar-based (1-minute resolution) and resolve SL before TP on ambiguous
+  bars — conservative versus TradingView's tick-level fills. `paper.fillSource: "tape"` uses the
+  trade stream instead (see above); backtests always use candles.
 * PineTS is a re-implementation of Pine; a handful of built-ins behave differently. The
   patches in `server/src/pine/patches.ts` document every deviation VNEdge works around.
 * This is a research/paper-trading tool, not investment advice. Nothing here places real
