@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    name: server (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.x', '24.x']   # native TypeScript needs >= 22.18; 24 is the current LTS line
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: node --version
+      - run: npm ci
+      - name: Type-check server
+        run: npx tsc --noEmit -p server/tsconfig.json
+      - name: Server unit + integration tests
+        working-directory: server
+        env:
+          LOG_LEVEL: warn
+          VNEDGE_WORKERS: '2'
+        run: node --no-warnings=ExperimentalWarning --test --test-concurrency=2 'src/**/*.test.ts' 'test/**/*.test.ts'
+
+  dashboard:
+    name: dashboard build + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint --workspace=dashboard
+      - name: Build
+        run: npm run build --workspace=dashboard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard/dist
+          retention-days: 7
+
+  ops-files:
+    name: ops files
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate launchd plist template
+        run: sed -e 's#__ROOT__#/tmp/vnedge#g' -e 's#__NODE_DIR__#/usr/local/bin#g' -e 's#__HOME__#/tmp#g' ops/launchd/com.vnedge.server.plist > /tmp/t.plist && plutil -lint /tmp/t.plist
+      - name: Shell syntax
+        run: zsh -n ops/install-launchd.sh && zsh -n ops/uninstall-launchd.sh && node -e "require('./ops/pm2.config.cjs')"

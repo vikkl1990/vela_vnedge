@@ -50,7 +50,7 @@ export class DeltaRest {
     return createHmac('sha256', this.apiSecret!).update(prehash).digest('hex');
   }
 
-  async request<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, opts: { query?: Record<string, any>; body?: any; auth?: boolean; retries?: number } = {}): Promise<T> {
+  async request<T = any>(method: 'GET' | 'POST' | 'PUT' | 'DELETE', path: string, opts: { query?: Record<string, any>; body?: any; auth?: boolean; retries?: number; raw?: boolean } = {}): Promise<T> {
     const qs = opts.query ? '?' + new URLSearchParams(Object.entries(opts.query).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString() : '';
     const bodyStr = opts.body ? JSON.stringify(opts.body) : '';
     const headers: Record<string, string> = { 'User-Agent': this.ua, 'Content-Type': 'application/json', Accept: 'application/json' };
@@ -77,7 +77,7 @@ export class DeltaRest {
           if (res.status >= 500 && attempt < retries) { lastErr = new Error(msg); await sleep(500 * (attempt + 1)); continue; }
           throw new Error(msg);
         }
-        return (json.result ?? json) as T;
+        return (opts.raw ? json : json.result ?? json) as T;
       } catch (e: any) {
         lastErr = e;
         if (e?.name === 'AbortError' || /fetch failed|ECONNRESET|ETIMEDOUT/.test(String(e?.message))) {
@@ -98,13 +98,15 @@ export class DeltaRest {
     if (!force && this.productCache && Date.now() - this.productCacheAt < 600_000) return this.productCache;
     const map = new Map<string, DeltaProduct>();
     let after: string | undefined;
+    // `meta.after` only exists on the raw envelope, so page with `raw: true` until it runs out.
     for (let page = 0; page < 20; page++) {
-      const res = await this.request<any>('GET', '/v2/products', { query: { contract_types: 'perpetual_futures', states: 'live', page_size: 200, after } });
-      const list: DeltaProduct[] = Array.isArray(res) ? res : res?.result ?? [];
+      const env = await this.request<any>('GET', '/v2/products', { query: { contract_types: 'perpetual_futures', states: 'live', page_size: 200, after }, raw: true });
+      const list: DeltaProduct[] = env?.result ?? [];
       for (const p of list) map.set(p.symbol, p);
-      after = undefined;
-      break; // the API returns meta.after only inside the raw envelope; 200 covers all live perps today
+      after = env?.meta?.after ?? undefined;
+      if (!after || list.length === 0) break;
     }
+    log.debug(`products: ${map.size} live perpetuals`);
     this.productCache = map; this.productCacheAt = Date.now();
     return map;
   }

@@ -1,4 +1,4 @@
-import { ConfigStore, type AppConfig } from './config.ts';
+import { ConfigStore, DATA_DIR, type AppConfig } from './config.ts';
 import { CandleStore } from './data/candleStore.ts';
 import { Db } from './db.ts';
 import { DeltaRest } from './delta/rest.ts';
@@ -13,34 +13,50 @@ import { subscribeRealtime, wireRealtime } from './execution/wiring.ts';
 import { MarkStore } from './data/marks.ts';
 import { RiskManager } from './risk/manager.ts';
 import { MlService } from './ml/service.ts';
+import { OpsService } from './ops/service.ts';
+import { WorkerTracker } from './ops/workers.ts';
 
 const log = logger.scoped('app');
+
+/** Optional replacements for the network/file-backed collaborators (integration tests inject recorded feeds). */
+export interface AppDeps {
+  rest?: DeltaRest;
+  feed?: DeltaFeed;
+  registry?: ScannerRegistry;
+  /** Replaces the Telegram transport for alerts. */
+  alertTransport?: (text: string) => Promise<void>;
+}
 
 /** Composition root: wires feed → candles → scanners → paper engine, plus the optional testnet mirror. */
 export class App {
   readonly startedAt = Date.now();
   readonly config = new ConfigStore();
   readonly db = new Db();
-  readonly rest = new DeltaRest();
-  readonly feed = new DeltaFeed();
+  readonly rest: DeltaRest;
+  readonly feed: DeltaFeed;
   readonly candles: CandleStore;
   readonly pool: PinePool;
-  readonly registry = new ScannerRegistry();
+  readonly registry: ScannerRegistry;
   readonly paper: PaperEngine;
   readonly ml: MlService;
   readonly scanners: ScannerEngine;
   readonly marks = new MarkStore();
   readonly risk: RiskManager;
   readonly executor: ExchangeExecutor | null = null;
+  readonly ops: OpsService;
   lastError: string | null = null;
   private marketCache: { at: number; list: any[] } | null = null;
   /** Symbols actually scanned after resolving the universe (list / top N / all). */
   resolvedSymbols: string[] = [];
 
-  constructor() {
+  constructor(deps: AppDeps = {}) {
     const cfg = () => this.config.get();
+    this.rest = deps.rest ?? new DeltaRest();
+    this.feed = deps.feed ?? new DeltaFeed();
+    this.registry = deps.registry ?? new ScannerRegistry();
     this.candles = new CandleStore(this.rest, this.feed, cfg().historyBars + 50);
-    this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined);
+    const workers = new WorkerTracker();
+    this.pool = new PinePool(Number(process.env.VNEDGE_WORKERS) || undefined, undefined, workers.factory);
     this.paper = new PaperEngine(this.db, cfg);
     this.ml = new MlService(this.db, () => Object.fromEntries(this.registry.all().map(s => [s.id, s.name])));
     this.scanners = new ScannerEngine({ registry: this.registry, cfgRef: cfg, candles: this.candles, pool: this.pool, paper: this.paper, db: this.db, rest: this.rest, symbolsRef: () => this.resolvedSymbols, ml: this.ml, cfgStore: this.config });
@@ -56,6 +72,7 @@ export class App {
     this.paper.risk = this.risk;
     this.executor = createExecutor(this.paper, cfg);
     wireRealtime(this);
+    this.ops = new OpsService({ cfg, onConfigChange: l => this.config.onChange(l), db: this.db, dataDir: DATA_DIR, feed: this.feed, pool: this.pool, paper: this.paper, candles: this.candles, scanners: this.scanners, workers, transport: deps.alertTransport });
     process.on('unhandledRejection', (e: any) => { this.lastError = String(e?.message ?? e); log.error('unhandled rejection', this.lastError); });
     process.on('uncaughtException', (e: any) => { this.lastError = String(e?.message ?? e); log.error('uncaught exception', e?.stack ?? e); });
   }
@@ -92,6 +109,7 @@ export class App {
     this.feed.subscribe('v2/ticker', this.resolvedSymbols);
     subscribeRealtime(this);
     if (this.executor) await this.executor.start();
+    this.ops.start();
     // don't block the API on warm-up
     this.scanners.start().catch(e => { this.lastError = String(e?.message ?? e); log.error('scanner start failed', e); });
   }
@@ -115,6 +133,7 @@ export class App {
       scanners: { total: all.length, runnable: all.filter(s => s.status === 'ok').length, enabled: all.filter(s => this.scanners.isActive(s)).length },
       universe: { mode: cfg.universe?.mode ?? 'list', symbols: this.resolvedSymbols.length, list: this.resolvedSymbols.slice(0, 50) },
       worker: this.pool.stats, lastError: this.lastError,
+      ...this.ops.status(),
     };
   }
 

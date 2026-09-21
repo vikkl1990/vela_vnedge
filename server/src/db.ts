@@ -52,11 +52,19 @@ CREATE TABLE IF NOT EXISTS backtests (
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `;
 
+export interface BackupResult { file: string; bytes: number; at: number; ms: number; pruned: string[] }
+
 export class Db {
   readonly db: DatabaseSync;
+  /** Path of the database file (':memory:' for in-memory databases). */
+  readonly file: string;
+  /** Statement failures since start (UNIQUE-constraint rejections used for de-duplication are not counted). */
+  errors = 0;
+  lastError: { at: number; message: string } | null = null;
 
   constructor(file = path.join(DATA_DIR, 'vnedge.db')) {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    this.file = file;
+    if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
@@ -66,12 +74,73 @@ export class Db {
     if (!cols.some(c => c.name === 'ml_prob')) this.db.exec('ALTER TABLE signals ADD COLUMN ml_prob REAL');
   }
 
-  run(sql: string, ...params: any[]) { return this.db.prepare(sql).run(...params); }
-  all<T = any>(sql: string, ...params: any[]): T[] { return this.db.prepare(sql).all(...params) as T[]; }
-  get<T = any>(sql: string, ...params: any[]): T | undefined { return this.db.prepare(sql).get(...params) as T | undefined; }
+  run(sql: string, ...params: any[]) { try { return this.db.prepare(sql).run(...params); } catch (e) { this.noteError(e); throw e; } }
+  all<T = any>(sql: string, ...params: any[]): T[] { try { return this.db.prepare(sql).all(...params) as T[]; } catch (e) { this.noteError(e); throw e; } }
+  get<T = any>(sql: string, ...params: any[]): T | undefined { try { return this.db.prepare(sql).get(...params) as T | undefined; } catch (e) { this.noteError(e); throw e; } }
   transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN');
-    try { const r = fn(); this.db.exec('COMMIT'); return r; } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    try { const r = fn(); this.db.exec('COMMIT'); return r; } catch (e) { this.db.exec('ROLLBACK'); this.noteError(e); throw e; }
+  }
+
+  private noteError(e: unknown) {
+    const msg = String((e as any)?.message ?? e);
+    if (/UNIQUE constraint/i.test(msg)) return; // expected: signal de-duplication
+    this.errors++; this.lastError = { at: Date.now(), message: msg.slice(0, 300) };
+  }
+
+  // ---- maintenance (Phase 4 ops) ----
+
+  /** Bytes on disk for the main file plus its WAL (0 for in-memory). */
+  sizeBytes(): number {
+    if (this.file === ':memory:') return 0;
+    let n = 0;
+    for (const f of [this.file, this.file + '-wal']) { try { n += fs.statSync(f).size; } catch { /* missing */ } }
+    return n;
+  }
+
+  /** `PRAGMA quick_check`: 'ok' or the first problem reported by SQLite. */
+  integrityCheck(): string {
+    try { const r = this.db.prepare('PRAGMA quick_check').get() as any; return String(r?.quick_check ?? r?.integrity_check ?? 'ok'); }
+    catch (e: any) { this.noteError(e); return String(e?.message ?? e); }
+  }
+
+  /**
+   * Consistent snapshot via `VACUUM INTO` (works while the app keeps writing in WAL mode),
+   * then deletes snapshots in `dir` older than `keepDays`. Names: `vnedge-YYYYMMDD-HHMMSS.db`.
+   */
+  backup(dir: string, keepDays: number, now = Date.now()): BackupResult {
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date(now).toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    const file = path.join(dir, `vnedge-${stamp}.db`);
+    const t0 = Date.now();
+    try { fs.rmSync(file, { force: true }); } catch { /* ignore */ }
+    try { this.db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`); }
+    catch (e) { this.noteError(e); throw e; }
+    const bytes = fs.statSync(file).size;
+    const pruned = Db.pruneBackups(dir, keepDays, now, file);
+    return { file, bytes, at: now, ms: Date.now() - t0, pruned };
+  }
+
+  /** Delete `vnedge-*.db` snapshots in `dir` older than `keepDays` (never the file just written). Returns the removed paths. */
+  static pruneBackups(dir: string, keepDays: number, now = Date.now(), keep?: string): string[] {
+    const out: string[] = [];
+    const cutoff = now - keepDays * 86_400_000;
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(dir); } catch { return out; }
+    for (const name of entries) {
+      if (!/^vnedge-\d{8}-\d{6}\.db$/.test(name)) continue;
+      const full = path.join(dir, name);
+      if (keep && path.resolve(full) === path.resolve(keep)) continue;
+      try { if (fs.statSync(full).mtimeMs < cutoff) { fs.rmSync(full, { force: true }); out.push(full); } } catch { /* ignore */ }
+    }
+    return out;
+  }
+
+  /** List snapshots in `dir`, newest first. */
+  static listBackups(dir: string): Array<{ file: string; bytes: number; at: number }> {
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(dir); } catch { return []; }
+    return entries.filter(n => /^vnedge-\d{8}-\d{6}\.db$/.test(n)).map(n => { const full = path.join(dir, n); const st = fs.statSync(full); return { file: full, bytes: st.size, at: st.mtimeMs }; }).sort((a, b) => b.at - a.at);
   }
 
   kvGet<T = any>(k: string): T | undefined { const r = this.get<{ v: string }>('SELECT v FROM kv WHERE k = ?', k); return r ? JSON.parse(r.v) : undefined; }

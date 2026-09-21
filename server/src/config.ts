@@ -99,7 +99,43 @@ export interface AutoTuneConfig {
   tuneTimeframes: boolean;
 }
 
+export interface OpsConfig {
+  /** UTC hour of the nightly SQLite snapshot into data/backups. */
+  backupHourUtc: number;
+  /** Snapshots older than this are deleted after every backup run. */
+  backupKeepDays: number;
+  /** Rotate data/logs/vnedge.log when it exceeds this size. */
+  logMaxBytes: number;
+  /** Rotated files kept (vnedge.log.1 … .N). */
+  logMaxFiles: number;
+  /** Worker queue depth that counts as "too deep" for the queue alert. */
+  queueDepthAlert: number;
+  /** Free disk space (MB) on the data volume below which an alert fires. */
+  diskLowMb: number;
+  /** Clock drift versus Delta server time above which a warning is logged / alerted. */
+  driftWarnMs: number;
+  /** Max time graceful shutdown waits for in-flight script runs before exiting. */
+  shutdownTimeoutMs: number;
+}
+
+export interface AlertsConfig {
+  /** Telegram target; `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` override these (preferred: keeps the token out of config.json). */
+  telegram: { botToken: string; chatId: string };
+  /** Alert when equity falls this far (%) below its all-time peak. */
+  drawdownPct: number;
+  /** Send a message on every closed live trade. */
+  onTrade: boolean;
+  /** UTC hour of the daily summary; null disables it. */
+  dailySummaryHourUtc: number | null;
+  /** A condition that stays active is re-sent at most every this many minutes. */
+  repeatMinutes: number;
+  /** Hard cap on messages per hour (dedupe + rate limit). */
+  maxPerHour: number;
+}
+
 export interface AppConfig {
+  ops: OpsConfig;
+  alerts: AlertsConfig;
   symbols: string[];
   universe: SymbolUniverse;
   ml: MlConfig;
@@ -147,6 +183,8 @@ export interface RiskConfig {
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
+  ops: { backupHourUtc: 2, backupKeepDays: 14, logMaxBytes: 10 * 1024 * 1024, logMaxFiles: 5, queueDepthAlert: 200, diskLowMb: 500, driftWarnMs: 2000, shutdownTimeoutMs: 20_000 },
+  alerts: { telegram: { botToken: '', chatId: '' }, drawdownPct: 10, onTrade: false, dailySummaryHourUtc: 0, repeatMinutes: 60, maxPerHour: 30 },
   symbols: ['BTCUSD', 'ETHUSD'],
   universe: { mode: 'list', top: 20, exclude: [] },
   ml: { minProb: 0, useAsScore: false },
@@ -279,6 +317,7 @@ export function validateConfig(c: AppConfig): string[] {
   if (!(c.autoTune?.minTrades >= 1 && c.autoTune?.minProfitFactor >= 0 && c.autoTune?.intervalHours >= 1)) errs.push('autoTune.minTrades ≥ 1, minProfitFactor ≥ 0, intervalHours ≥ 1');
   errs.push(...validateRealismAndRisk(c));
   errs.push(...validateExtendedConfig(c));
+  errs.push(...validateOpsConfig(c));
   return errs;
 }
 
@@ -305,6 +344,32 @@ export function validateRealismAndRisk(c: AppConfig): string[] {
   if (!(r.cooldownAfterLosses >= 0 && r.cooldownMinutes >= 0)) errs.push('risk.cooldownAfterLosses and cooldownMinutes must be ≥ 0');
   if (!Array.isArray(r.ddScale) || r.ddScale.some(d => !(d.ddPct >= 0 && d.ddPct <= 100 && d.leverageMult >= 0 && d.leverageMult <= 1))) errs.push('risk.ddScale must be [{ddPct 0..100, leverageMult 0..1}]');
   if (!(r.regime && Number.isFinite(r.regime.minAtrPct) && r.regime.minAtrPct >= 0 && Array.isArray(r.regime.exempt))) errs.push('risk.regime.minAtrPct must be ≥ 0 and exempt an array');
+  return errs;
+}
+
+/** Validation for the Phase 4 `ops` / `alerts` sections (appended; kept separate so the core validator stays untouched). */
+export function validateOpsConfig(c: AppConfig): string[] {
+  const errs: string[] = [];
+  const o = c.ops, a = c.alerts;
+  // sections are merged from DEFAULT_CONFIG by ConfigStore; a hand-built config without them is still valid
+  if (o === undefined) return errs;
+  if (typeof o !== 'object' || o === null) return ['ops must be an object'];
+  if (!(Number.isInteger(o.backupHourUtc) && o.backupHourUtc >= 0 && o.backupHourUtc <= 23)) errs.push('ops.backupHourUtc must be 0..23');
+  if (!(Number.isFinite(o.backupKeepDays) && o.backupKeepDays >= 1 && o.backupKeepDays <= 3650)) errs.push('ops.backupKeepDays must be 1..3650');
+  if (!(Number.isFinite(o.logMaxBytes) && o.logMaxBytes >= 64 * 1024)) errs.push('ops.logMaxBytes must be ≥ 65536');
+  if (!(Number.isInteger(o.logMaxFiles) && o.logMaxFiles >= 1 && o.logMaxFiles <= 100)) errs.push('ops.logMaxFiles must be 1..100');
+  if (!(Number.isFinite(o.queueDepthAlert) && o.queueDepthAlert >= 1)) errs.push('ops.queueDepthAlert must be ≥ 1');
+  if (!(Number.isFinite(o.diskLowMb) && o.diskLowMb >= 0)) errs.push('ops.diskLowMb must be ≥ 0');
+  if (!(Number.isFinite(o.driftWarnMs) && o.driftWarnMs >= 100)) errs.push('ops.driftWarnMs must be ≥ 100');
+  if (!(Number.isFinite(o.shutdownTimeoutMs) && o.shutdownTimeoutMs >= 0 && o.shutdownTimeoutMs <= 600_000)) errs.push('ops.shutdownTimeoutMs must be 0..600000');
+  if (a === undefined) return errs;
+  if (typeof a !== 'object' || a === null) return [...errs, 'alerts must be an object'];
+  if (!a.telegram || typeof a.telegram.botToken !== 'string' || typeof a.telegram.chatId !== 'string') errs.push('alerts.telegram must be { botToken, chatId } strings');
+  if (!(Number.isFinite(a.drawdownPct) && a.drawdownPct > 0 && a.drawdownPct <= 100)) errs.push('alerts.drawdownPct must be 0..100');
+  if (typeof a.onTrade !== 'boolean') errs.push('alerts.onTrade must be boolean');
+  if (!(a.dailySummaryHourUtc === null || (Number.isInteger(a.dailySummaryHourUtc) && a.dailySummaryHourUtc >= 0 && a.dailySummaryHourUtc <= 23))) errs.push('alerts.dailySummaryHourUtc must be 0..23 or null');
+  if (!(Number.isFinite(a.repeatMinutes) && a.repeatMinutes >= 1)) errs.push('alerts.repeatMinutes must be ≥ 1');
+  if (!(Number.isFinite(a.maxPerHour) && a.maxPerHour >= 1)) errs.push('alerts.maxPerHour must be ≥ 1');
   return errs;
 }
 

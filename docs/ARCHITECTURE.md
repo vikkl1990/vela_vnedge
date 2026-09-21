@@ -60,6 +60,17 @@ Delta Exchange India ──REST (history, products, tickers)──┐
 | `validation/consensus.ts` | Optional entry filter: N distinct scanners must agree on side/symbol/tf within a window. |
 | `pine/inputs.ts` | Parses `input.*()` declarations from Pine; validates per-scanner overrides that the worker applies through PineTS's `Indicator.input`. |
 | `ml/model.ts` / `ml/service.ts` | Logistic regression with a time-ordered holdout, Platt calibration, reliability buckets, and live feature-drift monitoring. |
+| `execution/testnet.ts` | Optional mirror of paper fills to the Delta **demo** account (off by default). |
+| `api/server.ts` | HTTP router, SSE broadcaster, static dashboard hosting. `api/extensions.ts` lists route modules (one line per phase). |
+| `log.ts` | Console (text or `LOG_FORMAT=json`), ring buffer for `/api/logs`, size-rotated `data/logs/vnedge.log`, per-level counters. |
+| `db.ts` | SQLite schema + helpers; Phase 4 adds `backup()` (`VACUUM INTO`), retention pruning, `integrityCheck()`, statement-error counters. |
+| `ops/service.ts` | Composition of the ops modules below; `status()` feeds `/api/health`; `shutdown()` drains in-flight script runs with a timeout. |
+| `ops/metrics.ts` | Dependency-free Prometheus registry (counters, sampled gauges, event-loop lag, CPU). |
+| `ops/alerts.ts` | Telegram transport, per-key de-duplication, repeat interval, hourly cap, "resolved" notes. Token never logged. |
+| `ops/monitor.ts` | Alert conditions on a 15 s timer (feed, crash loop, queue depth, drawdown, stale bars, disk, db errors), daily summary, per-trade notes. |
+| `ops/backup.ts` | Nightly snapshot scheduler with persisted last-run and on-demand runs. |
+| `ops/workers.ts` | Worker factory handed to `PinePool` so respawns can be counted without touching the pool. |
+| `ops/routes.ts` | `/api/metrics`, `/api/ops/*`; `attachRawMetrics` serves the text exposition ahead of the JSON router. |
 
 ## Signal semantics
 
@@ -119,7 +130,42 @@ CandleCache (SQLite, 60–90 d)  ──bars──▶  PinePool (one run per scan
 * **Script inputs**: `scanners.<id>.inputs` travels in the `WorkerJob`; the worker builds a PineTS `Indicator`, writes each override through `indicator.input[name|title]` (validated by PineTS) and runs it. Invalid overrides fail the run loudly.
 * **Generic rules** (`scanners.<id>.rule`): `trailing` picks the overlay series that behaves like a trailing stop (title hint, else the one the close crosses least often; complementary up/down plots are merged) and enters on flips with the trail as the stop; `oscillator` picks the pane series and uses zero-line crosses or OB/OS exits based on its range. Plot data is requested for the whole history when a generic rule is configured.
 
+## Candle integrity
+
+* `CandleStore` keeps `lastClosedEmitted` per series; `closed` is emitted only for a bar time above
+  it, which makes the event exactly-once even when REST and websocket deliver the same bar.
+* A websocket bar that jumps more than one timeframe, a reconnect `resync`, the initial backfill and
+  a one-minute maintenance timer all run `findGaps` (missing grid times between consecutive bars)
+  and backfill from `/v2/history/candles`. Bars REST cannot supply (no trades in that period) are
+  remembered as unfillable and reported once. After a fill or resync, the newest closed bar is
+  announced once if it was never announced, so scanners re-run over the repaired history; inner gap
+  bars are not announced (scripts always run on the full history anyway).
+* Clock drift = local time minus exchange timestamps (websocket tickers continuously, REST ticker
+  with half the round trip every two minutes); above `ops.driftWarnMs` an `integrity` event and a
+  warning are raised (at most every 5 min).
+* Symbol lifecycle: every 10 min tracked symbols are checked against `/v2/products` (confirmed with
+  the single-product endpoint, since the list is paged); a missing symbol raises `delisted`, a
+  changed tick size or contract value raises `tick-size` (restart to apply, `marketInfo` is cached).
+
+## Operations
+
+* **Supervision**: `ops/launchd/com.vnedge.server.plist` (KeepAlive, RunAtLoad, 10 s throttle,
+  45 s exit timeout) via `ops/install-launchd.sh`; `ops/pm2.config.cjs` for pm2.
+* **Shutdown**: SIGTERM/SIGINT → `OpsService.shutdown()`: timers off, wait ≤ `ops.shutdownTimeoutMs`
+  for busy workers and the queue, `App.stop()`, log flush; a hard exit fires 10 s after the timeout.
+* **Alerts**: conditions are evaluated regardless of configuration (they show in `/api/health`
+  and metrics); messages go out only when `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` or
+  `alerts.telegram` are set. Keyed conditions send once on raise, repeat every
+  `alerts.repeatMinutes`, and send one note on clear; `alerts.maxPerHour` caps everything.
+* **Backups**: `VACUUM INTO data/backups/vnedge-<stamp>.db` at `ops.backupHourUtc` (a minute-level
+  scheduler catches up after downtime), pruned after `ops.backupKeepDays`.
+* **Metrics**: `GET /api/metrics` (text) is served by a request wrapper installed in `index.ts`
+  because the route hook cannot set headers; the same path answers JSON with `?format=json`.
+
 ## Data & persistence
 
 `data/vnedge.db` (WAL) holds signals, positions, orders, equity curve, last runs, backtests, the candle cache (`candles`), walk-forward results (`walk_forward`), ML samples and, in `kv`, the ML models, live feature ring and shadow ledgers.
 `data/config.json` holds user settings. Delete the DB to start clean, or use *Reset paper account*.
+`data/vnedge.db` (WAL) holds signals, positions, orders, equity curve, last runs and backtests.
+`data/config.json` holds user settings (including `ops` and `alerts`). Delete the DB to start clean, or use *Reset paper account*.
+`data/backups/` holds nightly snapshots, `data/logs/` the rotated application log (and supervisor stdout/stderr).

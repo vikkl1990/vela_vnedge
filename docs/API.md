@@ -15,8 +15,20 @@ resolution strings: `1m 3m 5m 15m 30m 1h 2h 4h 6h 1d`.
   "feed": { "connected": true, "lastTickAt": 1789902184652, "subscriptions": ["BTCUSD:15m","BTCUSD:1m"] },
   "scanners": { "total": 42, "runnable": 36, "enabled": 30 },
   "worker": { "size": 4, "queued": 0, "busy": 1 },
-  "lastError": null }
+  "lastError": null,
+  "integrity": { "gapsFound": 2, "gapsFilled": 2, "gapsUnfillable": 0, "barsBackfilled": 2, "backfillErrors": 0,
+                 "driftMs": 412, "driftCheckedAt": 1789902184652, "driftWarnings": 0, "delisted": [], "tickSizeChanges": 0,
+                 "symbolsCheckedAt": 1789902184652, "lastEvent": { "at": 1, "type": "gap-filled", "symbol": "BTCUSD", "tf": "15m", "filled": 2, "detail": "…" } },
+  "alerts": { "configured": true, "channel": "telegram", "sent": 3, "suppressed": 0, "failed": 0,
+              "lastSent": { "at": 1, "key": "feed.disconnected", "text": "…", "delivered": true }, "active": [] },
+  "ops": { "backup": { "dir": "…/data/backups", "lastAt": 1, "lastFile": "…", "lastBytes": 86016, "lastMs": 2, "lastError": null, "count": 1, "failures": 0, "nextAt": 1, "running": false },
+           "log": { "file": "…/data/logs/vnedge.log", "bytes": 1223, "rotations": 0, "writeErrors": 0, "format": "text" },
+           "db": { "bytes": 245760, "errors": 0, "lastError": null },
+           "workers": { "spawns": 4, "respawns": 0, "respawnsLast5m": 0 },
+           "monitor": { "feedDownSince": null, "queueDeepSince": null, "equityPeak": 100000, "drawdownPct": 0, "dbErrorsSeen": 0, "diskFreeMb": 210000, "lastEvalAt": 1, "lastSummaryDay": null, "evaluations": 12 },
+           "shuttingDown": false } }
 ```
+`candles` entries carry `lastBarTime`, `lastClosedAt` and `loadedAt` (ms) for staleness checks. `integrity.driftMs` is local clock minus exchange time (positive = local clock ahead).
 
 `GET /api/config` → current config (shape below). `PUT /api/config` with a partial
 object merges and persists it; returns the full config. Changing `symbols`/`timeframes`
@@ -47,7 +59,13 @@ re-subscribes the feed and re-warms scanners.
   "scanners": { "<scannerId>": { "enabled": true, "symbols": null, "timeframes": null, "exitMode": "both",
                                  "rule": null,                      // "trailing" | "oscillator" | null (generic derivation rule)
                                  "inputs": { "maLenInput": 34 } } } }
+             "fallbackRR": [1, 2, 3], "maxOpenPositions": 20 },
+  "execution": { "mode": "paper" },
+  "ops": { "backupHourUtc": 2, "backupKeepDays": 14, "logMaxBytes": 10485760, "logMaxFiles": 5, "queueDepthAlert": 200, "diskLowMb": 500, "driftWarnMs": 2000, "shutdownTimeoutMs": 20000 },
+  "alerts": { "telegram": { "botToken": "", "chatId": "" }, "drawdownPct": 10, "onTrade": false, "dailySummaryHourUtc": 0, "repeatMinutes": 60, "maxPerHour": 30 },
+  "scanners": { "<scannerId>": { "enabled": true, "symbols": null, "timeframes": null, "exitMode": "both" } } }
 ```
+`alerts.telegram` is returned as stored; set `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` in the environment instead to keep the token out of the config file and this endpoint.
 
 ## Markets & candles
 
@@ -252,6 +270,36 @@ In `paper` mode the object is `{ mode: "paper", host: null, hasKeys: false, ... 
 `POST /api/execution/close-all` body `{ "confirm": true }` → cancels every open order on the exchange account and sends a reduce-only market order against every exchange position (demo host; logged only in dry-run). Returns `{ closed: [{ symbol, size, order }], cancelled: [product_id], dryRun }`. Without `confirm` → 500.
 
 `GET /api/marks` → `{ at, fillSource, symbols: { "BTCUSD": { markPrice, at, last, tapeActive, funding: { ratePct, predictedRatePct, intervalSec, nextAt, at, lastChargedAt } } }, pending: [{ id, scannerId, symbol, tf, side, signalPrice, at, dueAt }] }` — exchange mark price and funding state per symbol (`ratePct` is Delta's percent-per-8h figure, 0.01 = 0.01 %), whether the tape is live, and tape-mode entries waiting for their fill.
+## Operations
+
+`GET /api/metrics` → Prometheus text exposition (`Content-Type: text/plain; version=0.0.4`). Also served at `/metrics`. `?format=json` returns the same values as a JSON object. Names are prefixed `vnedge_`:
+
+| metric | type | meaning |
+|---|---|---|
+| `bars_closed_total{symbol,tf}` | counter | bar closes announced to scanners |
+| `script_runs_total{status="ok"\|"error"}`, `script_runs_per_minute`, `script_errors_per_minute` | counter / gauge | Pine runs and failures |
+| `signals_total{kind,action}`, `trades_closed_total{result}`, `fills_total` | counter | signals, closed trades, fills |
+| `feed_connected`, `feed_last_tick_age_seconds`, `feed_status_changes_total{connected}` | gauge / counter | websocket state |
+| `worker_queue_depth`, `worker_busy`, `worker_pool_size`, `worker_respawns` | gauge | worker pool |
+| `open_positions`, `paper_equity`, `paper_realized_pnl`, `paper_unrealized_pnl`, `paper_drawdown_from_peak_pct`, `backtests_total` | gauge | account |
+| `candle_gaps_found_total`, `candle_gaps_filled_total`, `candle_integrity_events_total{type}`, `clock_drift_ms` | gauge / counter | candle integrity |
+| `alerts_sent_total`, `alerts_active`, `backup_last_timestamp_seconds`, `backup_failures_total`, `db_size_bytes`, `db_errors_total`, `log_file_bytes`, `log_entries_total{level}` | gauge / counter | ops |
+| `process_resident_memory_bytes`, `process_heap_used_bytes`, `process_cpu_percent`, `process_uptime_seconds`, `event_loop_lag_p50_ms`, `event_loop_lag_p99_ms`, `event_loop_lag_max_ms` | gauge | process |
+
+`GET /api/ops` → the `{ integrity, alerts, ops }` block of `/api/health`.
+
+`GET /api/ops/integrity` → integrity counters plus `series: [{ symbol, tf, bars, loaded, lastBarTime, lastClosedAt, loadedAt, gaps: [<missing bar start ms>…] }]`.
+`POST /api/ops/integrity/check` → resyncs every tracked series (gap backfill), re-measures clock drift and re-checks symbols now: `{ filled: { "BTCUSD:15m": 2 }, driftMs, symbols: { delisted, changed }, integrity }`.
+
+`GET /api/ops/backups` → backup status plus `files: [{ file, bytes, at }]` newest first.
+`POST /api/ops/backup` → snapshot now: `{ file, bytes, at, ms, pruned: [...], status }`.
+
+`GET /api/ops/alerts` → alert status, `recent: [{ at, key, text, delivered, error? }]` (newest first, last 20) and the monitor state.
+`POST /api/ops/alerts/test` body `{ "text": "hello" }` sends a message (`{ delivered, configured, lastSent }`); `{ "evaluate": true }` runs the condition evaluation immediately and returns the alert status; `{ "summary": true }` sends the daily summary now.
+
+`POST /api/ops/logs/rotate` → rotates `data/logs/vnedge.log` now; returns the log file stats.
+
+Alert keys used by the monitor: `feed.disconnected`, `workers.crashloop`, `workers.queue`, `paper.drawdown`, `candles.stale`, `disk.low`, `db.errors`.
 
 ## Server-Sent Events
 
