@@ -14,7 +14,8 @@
     "exits": "node --no-warnings=ExperimentalWarning src/cli/exits.ts",
     "losses": "node --no-warnings=ExperimentalWarning src/cli/losses.ts",
     "timeframes": "node --no-warnings=ExperimentalWarning src/cli/timeframes.ts",
-    "hybrid": "node --no-warnings=ExperimentalWarning src/cli/hybrid.ts"
+    "hybrid": "node --no-warnings=ExperimentalWarning src/cli/hybrid.ts",
+    "sweep": "node --no-warnings=ExperimentalWarning src/cli/sweep.ts"
   },
   "dependencies": {
     "pinets": "^0.9.34"
