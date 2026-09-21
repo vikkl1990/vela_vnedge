@@ -84,9 +84,12 @@ Removing or disabling a scanner stops new entries only; positions already open k
 ATR-fallback stop far from entry could risk most of the account in a single trade. When even one
 contract breaches the cap the entry is refused rather than silently taken. Set it to 0 to disable.
 
-`paper.maxSignalAgeSec` (default 90) rejects an entry whose signal bar closed more than that many
+`paper.maxSignalAgeSec` (default 300) rejects an entry whose signal bar closed more than that many
 seconds ago. Restarts, deep worker queues and warm-up re-runs used to replay bar-old signals
-straight into the book at prices that were never available.
+straight into the book at prices that were never available. The default accommodates real feed
+lag: measured bar-close detection on Delta is median 11 s and p90 71 s, but thin symbols such as
+PIEVERSEUSD can take 234 s for their candle to arrive, so a tighter gate silently drops their
+signals while doing nothing about the multi-hour replays it exists to stop.
 
 ## Spread-crossing fills
 

@@ -85,7 +85,7 @@ Other commands:
   in `GET /api/ml`.
 * **Hard stop-loss cap** (`paper.maxStopLossPct`, default 2 %): no single trade may lose more
   than that share of equity at its stop, in any sizing mode. **Stale signals** whose bar closed
-  more than `paper.maxSignalAgeSec` (default 90 s) ago are rejected.
+  more than `paper.maxSignalAgeSec` (default 300 s) ago are rejected.
 * **Spread-crossing fills** (`paper.useSpread`): market fills pay the live bid/ask instead of
   assuming the last price, falling back to the slippage model when no fresh quote exists.
 * **Fee-aware entries**: a signal is skipped when its stop is closer than `minRiskFeeRatio`

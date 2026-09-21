@@ -25,7 +25,12 @@ export interface PaperConfig {
   minRiskFeeRatio: number;
   /** Hard cap: the modelled loss at the stop may never exceed this % of equity, in ANY sizing mode (0 = off). */
   maxStopLossPct: number;
-  /** Reject entries whose signal bar closed more than this many seconds ago (0 = off). */
+  /**
+   * Reject entries whose signal bar closed more than this many seconds ago (0 = off).
+   * Measured bar-close lag on this feed: median 11 s, p90 71 s, worst 234 s on thin symbols
+   * (their websocket candle simply arrives late), so 300 s passes every legitimate run while
+   * still blocking the restart replays that acted on bars 3 h old.
+   */
   maxSignalAgeSec: number;
   /** Cross the live spread when a fresh quote exists: buy at the ask, sell at the bid (falls back to the slippage model). */
   useSpread: boolean;
@@ -209,7 +214,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     maintenanceMarginPct: 0.5,
     minRiskFeeRatio: 4,
     maxStopLossPct: 2,
-    maxSignalAgeSec: 90,
+    maxSignalAgeSec: 300,
     useSpread: true,
     quoteMaxAgeMs: 10_000,
     feeRatePct: 0.05,
