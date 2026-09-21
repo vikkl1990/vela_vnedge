@@ -70,6 +70,19 @@ Other commands:
   enabled scanner is restricted to the symbols where its backtest is profitable (≥ 3 trades,
   PF ≥ 1); a scanner with no qualifying symbol is disabled. Settings → Auto-tune, or the
   "Auto-tune symbols" button / `POST /api/scanners/auto-tune`.
+* **Honest validation** (`docs/ARCHITECTURE.md` → Validation loop): a SQLite **candle cache** pages
+  60–90 days of history from Delta (4,000-bar chunks), **walk-forward validation** replays every
+  scanner × pair over rolling train/test windows and reports in-sample vs out-of-sample stats and
+  positive weeks (`GET /api/validation`, `POST /api/validation/run`), and auto-tune can be switched
+  to the **out-of-sample rule** (`autoTune.oos`) with per-decision reporting (`provisional` when a
+  pair has no walk-forward data yet). Two **shadow paper accounts** (`ungated` vs `ml-gated`) run
+  beside the live one on the same signals and fills (`GET /api/validation/shadow`). Optional
+  **consensus** entry filter (`validation.consensus`).
+* **Scanner quality**: per-script Pine **input overrides** (`GET/PUT /api/scanners/:id/inputs`),
+  generic **trailing-stop** and **oscillator** derivation rules for silent scripts
+  (`PUT /api/scanners/:id/rule`), per-scanner **timeframe tuning** (`autoTune.tuneTimeframes`), and
+  ML **probability calibration** (Platt), reliability buckets and live **feature-drift** monitoring
+  in `GET /api/ml`.
 * **Fee-aware entries**: a signal is skipped when its stop is closer than `minRiskFeeRatio`
   (default 4) × the round-trip taker fee, so fees cannot eat the risk budget on tight stops.
 * The **paper engine** sizes by risk % of equity, fills SL/TP legs on 1-minute candles,
@@ -115,9 +128,26 @@ Everything is editable in the dashboard (**Settings**) or `data/config.json`:
     "ddScale": [{ "ddPct": 10, "leverageMult": 0.5 }],
     "regime": { "enabled": true, "minAtrPct": 0.30, "noWeekend": true, "exempt": [] }
   },
-  "scanners": { "reactive-trail-system": { "enabled": true, "symbols": null, "timeframes": null, "exitMode": "both" } }
+  "execution": { "mode": "paper" },
+  "autoTune": { "enabled": true, "minTrades": 3, "minProfitFactor": 1, "intervalHours": 6,
+                "oos": { "enabled": false, "minTrades": 10, "minProfitFactor": 1.1, "minPositiveWeeks": 2 }, "tuneTimeframes": false },
+  "validation": {
+    "history": { "enabled": true, "days": 60, "chunkBars": 4000, "delayMs": 250, "backtestBars": 0 },
+    "walkForward": { "days": 60, "trainDays": 10, "testDays": 3, "stepDays": 1, "autoRun": false },
+    "consensus": { "enabled": false, "minScanners": 2, "windowBars": 1 },
+    "shadow": { "enabled": true, "minProb": 0.55 }
+  },
+  "scanners": { "reactive-trail-system": { "enabled": true, "symbols": null, "timeframes": null, "exitMode": "both",
+                                           "rule": null, "inputs": { "maLenInput": 34 } } }
 }
 ```
+
+Validation keys: `history.backtestBars` (> `historyBars`) runs warm backtests over the cached deep
+history while live runs keep the in-memory bars; `walkForward.autoRun` re-validates every
+`autoTune.intervalHours`; `autoTune.oos.enabled` switches auto-tune to the out-of-sample rule;
+`autoTune.tuneTimeframes` tunes each scanner's timeframe list too; `scanners.<id>.rule` selects a
+generic derivation rule (`trailing` | `oscillator`); `scanners.<id>.inputs` overrides Pine inputs.
+All new keys default to the previous behaviour.
 
 Environment variables: `PORT` (8787), `HOST` (127.0.0.1), `VNEDGE_WORKERS` (worker threads),
 `VNEDGE_SYMBOLS`, `VNEDGE_TIMEFRAMES`, `LOG_LEVEL`, `VNEDGE_DATA_DIR`.

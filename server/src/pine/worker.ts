@@ -4,7 +4,7 @@
  * runaway script cannot block the event loop of the main process.
  */
 import { parentPort, workerData } from 'node:worker_threads';
-import { PineTS } from 'pinets';
+import { PineTS, Indicator } from 'pinets';
 import { DeltaPineProvider, type ProviderBar } from './provider.ts';
 import { DeltaRest } from '../delta/rest.ts';
 import { TF_SECONDS, TF_TO_PINE } from '../config.ts';
@@ -21,6 +21,8 @@ export interface WorkerJob {
   tailBars: number | 'all';
   /** Number of plot points to return for charting overlays. */
   plotTail: number;
+  /** Per-script `input.*` overrides keyed by variable name or title (see pine/inputs.ts). */
+  inputs?: Record<string, number | string | boolean>;
 }
 
 export interface WorkerAlert { barIndex: number; time: number; type: 'alert' | 'alertcondition'; title?: string; message: string }
@@ -73,7 +75,16 @@ async function runJob(job: WorkerJob): Promise<WorkerResult> {
     const pine = new PineTS(provider as any, job.symbol, TF_TO_PINE[job.tf] ?? '15', job.bars.length);
     pine.setAlertMode('all');
     pine.setMaxLoops(200_000);
-    const ctx: any = await pine.run(job.source);
+    let program: string | Indicator = job.source;
+    if (job.inputs && Object.keys(job.inputs).length) {
+      // PineTS validates each override (type, minval/maxval, options); an invalid override fails the run rather than silently using the default
+      const ind = new Indicator(job.source);
+      const bad: string[] = [];
+      for (const [k, v] of Object.entries(job.inputs)) { try { (ind.input as any)[k] = v; } catch (e: any) { bad.push(String(e?.message ?? e)); } }
+      if (bad.length) throw new Error(`input overrides rejected: ${bad.join('; ')}`);
+      program = ind;
+    }
+    const ctx: any = await pine.run(program as any);
     const n = job.bars.length;
     const fromIdx = job.tailBars === 'all' ? 0 : Math.max(0, n - job.tailBars);
     const timeAt = (i: number) => job.bars[i]?.time ?? 0;

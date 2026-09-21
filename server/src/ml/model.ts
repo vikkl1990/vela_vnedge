@@ -11,13 +11,57 @@ export interface Sample {
   features: Features; win: number; r: number; pnl: number; exitReason: string; bt: boolean;
 }
 
+export interface ReliabilityBucket { lo: number; hi: number; n: number; predicted: number; observed: number }
+
+export interface ModelMetrics {
+  holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number;
+  /** Walk-forward split: the model is fitted on the oldest samples and every metric below comes from the newest `holdout` samples. */
+  walkForward: { trainN: number; testN: number; trainTo: number; testFrom: number; testTo: number };
+  /** Brier score of the raw and the Platt-calibrated probabilities on the holdout. */
+  brier: number; brierCalibrated: number;
+  logLossCalibrated: number;
+  /** Reliability (calibration) buckets on the holdout: predicted vs observed win rate, raw and calibrated. */
+  reliability: ReliabilityBucket[]; reliabilityCalibrated: ReliabilityBucket[];
+}
+
 export interface LogRegModel {
   mean: number[]; std: number[]; weights: number[]; bias: number; n: number;
-  metrics: { holdout: number; accuracy: number; auc: number; logLoss: number; baseWinRate: number };
+  metrics: ModelMetrics;
   importance: Array<{ feature: FeatureName; label: string; weight: number }>;
+  /** Platt scaling fitted on the holdout: p' = sigmoid(a·logit(p) + b). Null for models saved before calibration existed. */
+  calibration: { a: number; b: number } | null;
 }
 
 function sigmoid(z: number) { return 1 / (1 + Math.exp(-z)); }
+function logit(p: number) { const q = Math.min(1 - 1e-6, Math.max(1e-6, p)); return Math.log(q / (1 - q)); }
+
+/** Platt scaling: fit (a, b) minimising log-loss of sigmoid(a·z + b) on holdout logits. */
+export function fitPlatt(logits: number[], ys: number[], opts: { epochs?: number; lr?: number; l2?: number } = {}): { a: number; b: number } {
+  const n = logits.length;
+  if (n < 10) return { a: 1, b: 0 };
+  // Platt's prior-corrected targets reduce over-fitting on small holdouts
+  const pos = ys.reduce((s, y) => s + y, 0), neg = n - pos;
+  const tPos = (pos + 1) / (pos + 2), tNeg = 1 / (neg + 2);
+  let a = 1, b = 0;
+  const lr = opts.lr ?? 0.05, l2 = opts.l2 ?? 0.001, epochs = opts.epochs ?? 500;
+  for (let ep = 0; ep < epochs; ep++) {
+    let ga = 0, gb = 0;
+    for (let i = 0; i < n; i++) { const t = ys[i] ? tPos : tNeg; const e = sigmoid(a * logits[i] + b) - t; ga += e * logits[i]; gb += e; }
+    a -= lr * (ga / n + l2 * (a - 1)); b -= lr * (gb / n + l2 * b);
+  }
+  return { a, b };
+}
+
+/** Bucket predicted probabilities and compare with observed outcomes. */
+export function reliability(probs: number[], ys: number[], buckets = 5): ReliabilityBucket[] {
+  const out: ReliabilityBucket[] = Array.from({ length: buckets }, (_, k) => ({ lo: k / buckets, hi: (k + 1) / buckets, n: 0, predicted: 0, observed: 0 }));
+  for (let i = 0; i < probs.length; i++) { const k = Math.min(buckets - 1, Math.floor(probs[i] * buckets)); out[k].n++; out[k].predicted += probs[i]; out[k].observed += ys[i]; }
+  for (const b of out) { if (b.n) { b.predicted /= b.n; b.observed /= b.n; } }
+  return out;
+}
+
+function brier(probs: number[], ys: number[]): number { let s = 0; for (let i = 0; i < probs.length; i++) s += (probs[i] - ys[i]) ** 2; return probs.length ? s / probs.length : 0; }
+function logLoss(probs: number[], ys: number[]): number { let ll = 0; for (let i = 0; i < probs.length; i++) { const p = Math.min(1 - 1e-6, Math.max(1e-6, probs[i])); ll -= ys[i] * Math.log(p) + (1 - ys[i]) * Math.log(1 - p); } return probs.length ? ll / probs.length : 0; }
 
 export function trainLogReg(samples: Sample[], opts: { epochs?: number; lr?: number; l2?: number; holdoutFrac?: number } = {}): LogRegModel | null {
   const n = samples.length;
@@ -44,22 +88,38 @@ export function trainLogReg(samples: Sample[], opts: { epochs?: number; lr?: num
     for (let j = 0; j < d; j++) w[j] -= lr * (gw[j] / trainN + l2 * w[j]);
     b -= lr * (gb / trainN);
   }
-  // holdout metrics
-  const probs: number[] = [], ys: number[] = [];
-  for (let i = trainN; i < n; i++) { let z = b; for (let j = 0; j < d; j++) z += w[j] * Z[i][j]; probs.push(sigmoid(z)); ys.push(y[i]); }
-  let correct = 0, ll = 0;
-  for (let i = 0; i < probs.length; i++) { const p = Math.min(1 - 1e-6, Math.max(1e-6, probs[i])); if ((p >= 0.5 ? 1 : 0) === ys[i]) correct++; ll -= ys[i] * Math.log(p) + (1 - ys[i]) * Math.log(1 - p); }
+  // walk-forward holdout: the newest 20 % by time, never seen during fitting
+  const probs: number[] = [], ys: number[] = [], logits: number[] = [];
+  for (let i = trainN; i < n; i++) { let z = b; for (let j = 0; j < d; j++) z += w[j] * Z[i][j]; logits.push(z); probs.push(sigmoid(z)); ys.push(y[i]); }
+  let correct = 0;
+  for (let i = 0; i < probs.length; i++) if ((probs[i] >= 0.5 ? 1 : 0) === ys[i]) correct++;
   const auc = rankAuc(probs, ys);
   const base = ys.reduce((a, v) => a + v, 0) / Math.max(1, ys.length);
   const importance = FEATURE_NAMES.map((f, j) => ({ feature: f, label: FEATURE_LABELS[f], weight: Number(w[j].toFixed(4)) })).sort((a, c) => Math.abs(c.weight) - Math.abs(a.weight));
-  return { mean, std, weights: w, bias: b, n, metrics: { holdout: probs.length, accuracy: correct / Math.max(1, probs.length), auc, logLoss: ll / Math.max(1, probs.length), baseWinRate: base }, importance };
+  const calibration = fitPlatt(logits, ys);
+  const calProbs = logits.map(z => sigmoid(calibration.a * z + calibration.b));
+  const metrics: ModelMetrics = {
+    holdout: probs.length, accuracy: correct / Math.max(1, probs.length), auc, logLoss: logLoss(probs, ys), baseWinRate: base,
+    walkForward: { trainN, testN: probs.length, trainTo: sorted[trainN - 1]?.at ?? 0, testFrom: sorted[trainN]?.at ?? 0, testTo: sorted[n - 1]?.at ?? 0 },
+    brier: brier(probs, ys), brierCalibrated: brier(calProbs, ys), logLossCalibrated: logLoss(calProbs, ys),
+    reliability: reliability(probs, ys), reliabilityCalibrated: reliability(calProbs, ys),
+  };
+  return { mean, std, weights: w, bias: b, n, metrics, importance, calibration };
 }
 
-export function predict(model: LogRegModel, f: Features): number {
+/** P(win). `calibrated` (default) applies the model's Platt scaling when it has one. */
+export function predict(model: LogRegModel, f: Features, calibrated = true): number {
   const x = featureVector(f);
   let z = model.bias;
   for (let j = 0; j < x.length; j++) z += model.weights[j] * ((x[j] - model.mean[j]) / model.std[j]);
+  if (calibrated && model.calibration) return sigmoid(model.calibration.a * z + model.calibration.b);
   return sigmoid(z);
+}
+
+/** Apply a model's calibration to a raw probability (for probabilities produced elsewhere). */
+export function calibrate(model: Pick<LogRegModel, 'calibration'>, rawProb: number): number {
+  if (!model.calibration) return rawProb;
+  return sigmoid(model.calibration.a * logit(rawProb) + model.calibration.b);
 }
 
 function rankAuc(p: number[], y: number[]): number {
