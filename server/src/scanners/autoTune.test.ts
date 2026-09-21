@@ -91,3 +91,14 @@ test('multi-timeframe: every (symbol, tf) pair is evaluated and both lists are t
   assert.deepEqual(r2.afterTimeframes.sort(), ['15m', '1h']);
   assert.deepEqual(cfg.scanners.s.timeframes!.sort(), ['15m', '1h']);
 });
+
+test('a scanner with no backtest yet is skipped, not disabled (enable → refresh race)', t => {
+  const { db, cfg, engine } = build(); t.after(() => db.db.close());
+  cfg.scanners.fresh = { enabled: true, symbols: ['BTCUSD'], timeframes: ['15m'], exitMode: 'both' };
+  (engine as any).registry = { all: () => [{ id: 'fresh', name: 'Fresh', status: 'ok', patched: '' }], get: () => undefined };
+  const [r] = engine.autoTune({ minTrades: 3, minProfitFactor: 1 });
+  assert.equal(r.skipped, true);
+  assert.equal(r.disabled, false);
+  assert.deepEqual(r.after, ['BTCUSD']);
+  assert.equal(cfg.scanners.fresh.enabled, true, 'enabling a scanner must survive the refresh that follows it');
+});

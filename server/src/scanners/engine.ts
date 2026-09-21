@@ -48,6 +48,8 @@ export interface AutoTuneReport {
   provisional: boolean;
   dropped: Array<{ symbol: string; trades: number; pnl: number }>;
   decisions: AutoTuneDecision[];
+  /** True when the scanner was left untouched because none of its pairs has a backtest yet. */
+  skipped?: boolean;
 }
 
 interface Overlay { at: number; plots: WorkerResult['plots']; shapes: WorkerResult['shapes']; labels: WorkerResult['labels'] }
@@ -186,6 +188,14 @@ export class ScannerEngine extends EventEmitter {
       if (!this.isActive(s)) continue;
       const before = this.symbolsFor(s.id);
       const tfs = this.timeframesFor(s.id);
+      // A scanner enabled moments ago has no backtest yet; disabling it for "0 trades" would
+      // silently undo the operator's change, so leave unmeasured scanners alone until they warm.
+      if (!before.some(sym => tfs.some(tf => this.backtests.has(`${s.id}:${sym}:${tf}`)))) {
+        report.push({ id: s.id, name: s.name, before, after: before, beforeTimeframes: tfs, afterTimeframes: tfs, disabled: false,
+          rule: oos ? 'oos' : 'in-sample', provisional: false, dropped: [], decisions: [], skipped: true });
+        log.info(`auto-tune ${s.id}: skipped, no backtest yet`);
+        continue;
+      }
       const decisions: AutoTuneDecision[] = [];
       for (const symbol of before) {
         const groups: string[][] = byTf ? tfs.map(tf => [tf]) : [tfs];
@@ -238,7 +248,8 @@ export class ScannerEngine extends EventEmitter {
     if (!at?.enabled) return;
     const report = this.autoTune({ minTrades: at.minTrades, minProfitFactor: at.minProfitFactor, oos: at.oos ?? null, tuneTimeframes: at.tuneTimeframes ?? false, reason });
     const changed = report.filter(r => r.disabled || r.after.length !== r.before.length);
-    log.info(`auto-tune (${reason}): ${report.length} scanners checked, ${changed.length} changed, ${report.filter(r => r.disabled).length} disabled`);
+    const skipped = report.filter(r => r.skipped).length;
+    log.info(`auto-tune (${reason}): ${report.length} scanners checked, ${changed.length} changed, ${report.filter(r => r.disabled).length} disabled${skipped ? `, ${skipped} skipped (not backtested yet)` : ''}`);
     for (const r of report) this.emit('scanner', { id: r.id, lastRun: this.getLastRun(r.id), stats: this.paper.scannerStats(r.id) });
   }
 
