@@ -184,8 +184,8 @@ export class PaperEngine extends EventEmitter {
     this.open.set(id, pos);
     this.persist(pos);
     this.persistFill(pos, pos.fills[0]);
+    this.emit('order', orderOf(pos, pos.fills[0]));   // the fill precedes the open position (executor: entry before bracket)
     this.emit('position', { type: 'opened', position: pos });
-    this.emit('order', orderOf(pos, pos.fills[0]));
     this.recordEquity(true);
     log.info(`OPEN ${pos.side.toUpperCase()} ${pos.symbol} x${pos.qty} @ ${pos.entryPrice.toFixed(2)} ${pos.leverage.toFixed(1)}x sl ${pos.sl} tp ${pos.tp.join('/')} liq ${pos.liqPrice?.toFixed(1) ?? '-'} [${p.scannerTag}]`);
     return pos;
@@ -321,11 +321,11 @@ export class PaperEngine extends EventEmitter {
     this.recordEquity(false);
   }
 
-  closeManual(id: number, reason = 'manual'): Position | undefined {
+  closeManual(id: number, reason = 'manual', at = Date.now()): Position | undefined {
     const pos = this.open.get(id);
     if (!pos) return undefined;
     const px = this.marks.get(pos.symbol) ?? pos.entryPrice;
-    this.applyFills(pos, [fillExit(pos, px, pos.qtyOpen, reason, Date.now(), this.paper, true)]);
+    this.applyFills(pos, [fillExit(pos, px, pos.qtyOpen, reason, at, this.paper, true)]);
     return pos;
   }
 

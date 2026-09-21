@@ -121,15 +121,16 @@ export class RiskManager extends EventEmitter implements RiskGate {
   private onTradeClosed(t: { scannerId: string; pnl: number; exitAt: number }) {
     const c = this.cfg;
     const s = this.st.scanners[t.scannerId] ?? (this.st.scanners[t.scannerId] = { consecutive: 0, lastLossAt: null, cooldownUntil: null });
+    const at = Math.max(this.now(), t.exitAt);
     if (t.pnl < 0) {
       s.consecutive++; s.lastLossAt = t.exitAt;
       if (c?.cooldownAfterLosses > 0 && s.consecutive >= c.cooldownAfterLosses) {
-        s.cooldownUntil = t.exitAt + c.cooldownMinutes * 60_000;
+        s.cooldownUntil = at + c.cooldownMinutes * 60_000;
         log.warn(`${t.scannerId}: ${s.consecutive} consecutive losses → cooldown until ${new Date(s.cooldownUntil).toISOString()}`);
       }
     } else if (t.pnl > 0) { s.consecutive = 0; }
     this.save();
-    this.tick(Math.max(this.now(), t.exitAt));
+    this.tick(at);
   }
 
   // ---- entry gate ----
