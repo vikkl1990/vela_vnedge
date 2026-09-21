@@ -119,6 +119,7 @@ CandleCache (SQLite, 60–90 d)  ──bars──▶  PinePool (one run per scan
 ```
 
 * **Honest numbers**: `outOfSample` only counts test windows whose preceding training window the tuner would have selected, so it is the return of *following the tuner*, not of the script. `outOfSampleAll` is the unconditional figure. Overlapping test windows are de-duplicated by entry time.
+* **Auto-tune skips unmeasured scanners**: a scanner with no backtest for any of its pairs is reported as `skipped` and left untouched. Enabling a scanner starts a background warm-up and then a tune; without this, a tune triggered by a later enable would see the earlier one at zero trades and disable it.
 * **Auto-tune rules**: in-sample (default, unchanged behaviour) or OOS (`autoTune.oos.enabled`): keep a pair when OOS trades ≥ min, PF ≥ min, positive weeks ≥ min and pnl > 0. Missing walk-forward data → in-sample fallback marked `provisional` in the report. `autoTune.tuneTimeframes` evaluates every (symbol, tf) pair and tunes both lists.
 * **Deep warm backtests**: `validation.history.backtestBars` > `historyBars` makes the engine run the *backtest* over cached history; the live run always uses the in-memory bars (a second, short script run when both are needed in one warm-up).
 * **Shadow accounts** subscribe to the engine's `signal` events and the candle store's 1m `bar`/`closed` events; nothing is written to the live tables (the ledger is snapshotted in `kv`).
